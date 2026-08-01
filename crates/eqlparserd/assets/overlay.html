@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EQL Overlay</title>
+    <link rel="stylesheet" href="/overlay.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="meter" class="panel">
+        <div class="head">
+          <span id="enc-title" class="title idle">Connecting…</span>
+          <span id="enc-meta" class="meta"></span>
+        </div>
+        <div id="rows" class="rows"></div>
+        <div id="enc-sub" class="sub"></div>
+      </div>
+
+      <div id="xp-panel" class="panel">
+        <div class="head">
+          <span id="xp-title" class="title">Experience</span>
+          <span id="xp-meta" class="meta"></span>
+        </div>
+        <div id="xp-rows" class="rows"></div>
+      </div>
+
+      <div id="heal-panel" class="panel">
+        <div class="head"><span class="title">Healing</span></div>
+        <div id="heal-rows" class="rows"></div>
+      </div>
+
+      <div id="taken-panel" class="panel">
+        <div class="head"><span class="title">Damage taken</span></div>
+        <div id="taken-rows" class="rows"></div>
+      </div>
+
+      <div id="aura-panel" class="panel">
+        <div class="head">
+          <span class="title">Auras</span>
+          <span id="aura-meta" class="meta"></span>
+        </div>
+        <div id="auras" class="rows"></div>
+      </div>
+
+      <div id="debuff-panel" class="panel">
+        <div class="head"><span class="title">Debuffs</span></div>
+        <div id="debuffs" class="rows"></div>
+      </div>
+
+      <div id="buff-panel" class="panel">
+        <div class="head">
+          <span class="title">Buffs</span>
+        </div>
+        <div id="buffs" class="buffs"></div>
+      </div>
+
+      <div id="sky-panel" class="panel hidden">
+        <div class="head">
+          <span class="title">Sky turn-ins ready</span>
+          <span id="sky-meta" class="meta"></span>
+        </div>
+        <div id="sky-rows" class="rows"></div>
+      </div>
+
+      <div id="status" class="panel offline hidden">Reconnecting…</div>
+    </div>
+    <script src="/overlay.js"></script>
+  </body>
+</html>

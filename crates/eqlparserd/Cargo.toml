@@ -1,0 +1,15 @@
+[package]
+name = "eqlparserd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+eqlparser-core = { path = "../eqlparser-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal"] }
+axum = { version = "0.8.9", features = ["ws"] }
+tower-http = { version = "0.7.0", features = ["fs", "cors"] }

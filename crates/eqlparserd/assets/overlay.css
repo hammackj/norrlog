@@ -1,0 +1,342 @@
+/* Overlay styling.
+ *
+ * Designed to sit on top of moving game footage, which is the hard constraint:
+ * anything low-contrast or thin disappears over a bright spell effect. Hence
+ * the dark scrim behind every panel, the heavy text shadows, and the avoidance
+ * of pure-white-on-transparent text.
+ *
+ * The page background stays fully transparent so OBS Browser Sources and
+ * Electron transparent windows composite cleanly. Do not set a body colour.
+ */
+
+:root {
+  --bg-panel: rgba(10, 12, 18, 0.74);
+  --bg-row: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.1);
+  --text: #f2f5fa;
+  --text-dim: #9aa5b8;
+  --accent: #ffc857;
+  --you: #4fc3f7;
+  --enemy: #ff7b72;
+  --pet: #c792ea;
+  --heal: #7ee787;
+  --radius: 6px;
+  --gap: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  /* Clicks pass through to the game underneath; the on-screen window relies on
+     this so the overlay never steals input. */
+  pointer-events: none;
+  user-select: none;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: 8px;
+  /* Origin for the ?scale= transform. */
+  transform-origin: top left;
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- header ---- */
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.title {
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+.title.idle {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.meta {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.meta b {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+/* ---- damage meter ---- */
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--bg-row);
+  overflow: hidden;
+  /* Sits above the ::before bar. */
+  isolation: isolate;
+}
+
+/* The share bar is a background layer rather than a separate element so the
+   text always stays legible on top of it. */
+.row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--share, 0%);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.07));
+  z-index: -1;
+  transition: width 220ms ease-out;
+}
+
+.row.you::before {
+  background: linear-gradient(90deg, rgba(79, 195, 247, 0.55), rgba(79, 195, 247, 0.14));
+}
+
+.row.enemy::before {
+  background: linear-gradient(90deg, rgba(255, 123, 114, 0.42), rgba(255, 123, 114, 0.1));
+}
+
+.row.pet::before {
+  background: linear-gradient(90deg, rgba(199, 146, 234, 0.48), rgba(199, 146, 234, 0.12));
+}
+
+.row .name {
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+.row.you .name {
+  color: var(--you);
+}
+
+.row.pet .name {
+  color: var(--pet);
+}
+
+.row .nums {
+  display: flex;
+  gap: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+.row .dps {
+  font-weight: 650;
+  min-width: 52px;
+  text-align: right;
+}
+
+.row .dmg {
+  color: var(--text-dim);
+  min-width: 56px;
+  text-align: right;
+}
+
+.tag {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(199, 146, 234, 0.25);
+  color: var(--pet);
+  margin-left: 5px;
+  vertical-align: middle;
+}
+
+/* ---- buffs ---- */
+
+.buffs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.buff {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--bg-row);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Bar colour = what the effect does. Timer colour = how urgent it is. Folding
+   urgency into the bar would turn every buff amber near expiry and erase the
+   category signal exactly when you are scanning for it. */
+.buff::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--remain, 0%);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.06));
+  z-index: -1;
+  transition: width 400ms linear;
+}
+
+.buff.cat-heal::before {
+  background: linear-gradient(90deg, rgba(126, 231, 135, 0.45), rgba(126, 231, 135, 0.12));
+}
+.buff.cat-buff::before,
+.buff.cat-cure::before {
+  background: linear-gradient(90deg, rgba(255, 200, 87, 0.42), rgba(255, 200, 87, 0.11));
+}
+.buff.cat-detrimental::before,
+.buff.cat-damage::before,
+.buff.critical::before {
+  background: linear-gradient(90deg, rgba(255, 123, 114, 0.5), rgba(255, 123, 114, 0.13));
+}
+
+.buff.cat-heal .bname { color: var(--heal); }
+.buff.cat-buff .bname,
+.buff.cat-cure .bname { color: var(--accent); }
+
+.buff.expiring .btime { color: var(--accent); }
+.buff.urgent .btime { color: var(--enemy); }
+
+.buff .bname {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+.buff .btime {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+/* A buff we identified only by ambiguous flavour text. Marked rather than
+   hidden, so the number is never silently wrong. */
+.buff.unsure .bname::after {
+  content: "?";
+  color: var(--accent);
+  margin-left: 4px;
+  font-weight: 700;
+}
+
+/* ---- misc ---- */
+
+.sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 5px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  white-space: nowrap;
+}
+
+.offline {
+  color: var(--enemy);
+}
+
+.empty {
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 2px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Sky turn-ins: the reward line sits under the quest name as a continuation,
+   so it reads as one entry rather than two rows. */
+.row .name.reward {
+  color: var(--accent);
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+/* Dragging.
+ *
+ * The Electron overlay window is frameless, so it has no titlebar to grab.
+ * Panel headers act as the drag handle instead. Inert in OBS, which ignores
+ * app-region entirely, and inert in the Electron window while click-through is
+ * on because mouse events never reach the page.
+ *
+ * Headers rather than the whole page: a full-page drag region would make the
+ * window impossible to resize from its edges, which is the other half of
+ * arranging it. */
+.panel .head,
+.panel .title {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* A grip only appears when the window is actually interactive, so it never
+   shows up in a recording. */
+.panel .head::after {
+  content: "⠿";
+  color: var(--text-dim);
+  opacity: 0;
+  margin-left: 6px;
+  transition: opacity 120ms ease-out;
+}
+
+.panel:hover .head::after {
+  opacity: 0.6;
+}

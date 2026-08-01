@@ -1,0 +1,23 @@
+# Rust build output. 2 GB and fully reproducible from Cargo.lock.
+/target/
+
+# Electron dependencies. Reproducible from package-lock.json, which *is*
+# tracked so builds are pinned.
+node_modules/
+
+# Runtime state lives in ~/.config/eqlparser and ~/.config/eqlparser-gui —
+# buff marks, seeded task definitions, the Sky quest catalogue, window
+# geometry. Never inside the repo, but ignore stray copies just in case.
+*.local.json
+/config.json
+
+# Game logs. Enormous, and they contain the player's chat.
+*.txt.log
+eqlog_*.txt
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
