@@ -19,7 +19,13 @@
 
   const params = new URLSearchParams(location.search);
   const opt = {
-    panels: (params.get("panels") || "meter,buffs").split(",").map((s) => s.trim()),
+    // `?? ` not `||`: an absent parameter means "use the defaults", but an
+    // empty one means the user turned everything off, and falling back would
+    // put panels back on screen that they had just unticked.
+    panels: (params.get("panels") ?? "meter,buffs")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     rows: int(params.get("rows"), 6),
     buffs: int(params.get("buffs"), 8),
     scale: float(params.get("scale"), 1),
