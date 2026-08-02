@@ -1699,6 +1699,7 @@ mod tests {
             good_effect: 0,
             category_id: 0,
             is_charm,
+            linked: Vec::new(),
         };
         let mut m = std::collections::HashMap::new();
         m.insert(1, mk(1, "Solon's Bewitching Bravura", true));

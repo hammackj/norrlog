@@ -57,6 +57,17 @@ pub struct Spell {
     pub class_levels: [u8; CLASS_COUNT],
     /// The game's own effect category; see [`Spell::category`].
     pub category_id: u8,
+    /// Spells this one applies to you as a side effect.
+    ///
+    /// A single cast can grant several buffs. `Form of the Great Wolf` is the
+    /// wolf illusion *and* `Illusion Benefit Dena`, the stat buff that comes
+    /// with it — two entries in the game's buff window from one cast.
+    ///
+    /// This has to be read from the effect table because the linked spell has
+    /// no landing text of its own: nothing is ever written to the log when it
+    /// takes hold, so following the link is the only way it can be known
+    /// about at all.
+    pub linked: Vec<u32>,
     /// True when any effect slot is SPA 22, the charm effect.
     ///
     /// Needed because the landing text cannot be trusted on its own: eleven
@@ -314,6 +325,10 @@ impl SpellDb {
         const F_EFFECTS: usize = 172;
         // Server Packet Argument for Charm.
         const SPA_CHARM: &str = "22";
+        // SPAs that apply another spell to the same target. 475 is the
+        // illusion-benefit link; 374 is the general "cast this too" effect.
+        // Both carry the linked spell id in the slot's second base value.
+        const SPA_APPLY: [&str; 2] = ["374", "475"];
 
         let file = std::fs::File::open(path)?;
         let reader = BufReader::with_capacity(1 << 20, file);
@@ -360,6 +375,21 @@ impl SpellDb {
                             })
                         })
                         .unwrap_or(false),
+                    linked: f
+                        .get(F_EFFECTS)
+                        .map(|e| {
+                            e.split('$')
+                                .filter_map(|slot| {
+                                    let p: Vec<&str> = slot.split('|').collect();
+                                    let spa = *p.get(1)?;
+                                    if !SPA_APPLY.contains(&spa) {
+                                        return None;
+                                    }
+                                    p.get(3)?.parse::<u32>().ok().filter(|v| *v > 0)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     name: f[F_NAME].to_string(),
                     cast_time_ms: num(F_CAST_TIME),
                     recovery_ms: num(F_RECOVERY),
@@ -737,6 +767,60 @@ impl SpellResolver {
     /// Returns the chosen spell id when the text is recognised. Ambiguity is
     /// resolved by preferring a candidate whose name matches a cast started
     /// within the association window.
+    /// Put a spell into the active list, or refresh it if already there.
+    ///
+    /// Shared by direct landings and by companion buffs pulled in through a
+    /// spell's effect links, so both are tracked identically.
+    fn activate(&mut self, id: u32, timestamp: i64, confidence: f32) {
+        let Some(spell) = self.db.get(id) else { return };
+
+        // An instant effect — a direct nuke, a heal — is an event, not a
+        // state. Tracking it would leave it in the list forever, since it has
+        // no duration to expire.
+        if !spell.is_timed_buff() {
+            return;
+        }
+        let secs = spell.duration_seconds(self.level);
+        let expires = (secs > 0).then(|| timestamp + secs);
+
+        let mark = self.marks.get(&spell.name.to_lowercase()).copied();
+        let category = spell.category();
+        let permanent = spell.is_permanent() || mark == Some(BuffMark::Permanent);
+        let beneficial = spell.is_beneficial();
+        let name = spell.name.clone();
+        let spell_id = spell.id;
+
+        // Re-casting refreshes rather than stacks. Update in place so the
+        // refresh history survives — discarding and re-inserting would reset
+        // the pulse count that identifies auras.
+        match self.active.iter_mut().find(|b| b.name == name) {
+            Some(existing) => {
+                existing.spell_id = spell_id;
+                existing.started = timestamp;
+                existing.expires = expires;
+                existing.confidence = confidence;
+                existing.permanent = permanent;
+                existing.beneficial = beneficial;
+                existing.mark = mark;
+                existing.category = category;
+                existing.refreshes += 1;
+            }
+            None => self.active.push(ActiveBuff {
+                spell_id,
+                name,
+                started: timestamp,
+                expires,
+                confidence,
+                permanent,
+                beneficial,
+                mark,
+                category,
+                first_seen: timestamp,
+                refreshes: 0,
+            }),
+        }
+    }
+
     pub fn resolve_landing(&mut self, timestamp: i64, text: &str) -> Option<u32> {
         // Copied out so the mutable updates below do not conflict with the
         // immutable borrow of the database.
@@ -752,63 +836,20 @@ impl SpellResolver {
         if confidence >= 0.9 {
             self.learned.insert(text.to_string(), chosen);
         }
-        let spell = self.db.get(chosen)?;
+        self.activate(chosen, timestamp, confidence);
 
-        let expires = if spell.is_timed_buff() {
-            let secs = spell.duration_seconds(self.level);
-            if secs > 0 {
-                Some(timestamp + secs)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // An instant effect — a direct nuke, a heal — is an event, not a state.
-        // Tracking it as active would leave it in the list forever, since it
-        // has no duration to expire. The landing is still resolved so the line
-        // counts as understood; it simply is not a lasting effect.
-        if !spell.is_timed_buff() {
-            return Some(chosen);
+        // A single cast can grant more than one buff, and the extra ones have
+        // no landing text — nothing is written to the log when they take
+        // hold. `Form of the Great Wolf` is the wolf illusion plus
+        // `Illusion Benefit Dena`, the stats that come with it. Following the
+        // link is the only way the second one can be known about.
+        let linked: Vec<u32> = self.db.get(chosen).map(|s| s.linked.clone()).unwrap_or_default();
+        for id in linked {
+            // Confidence is inherited: the link is certain, so a companion
+            // buff is exactly as trustworthy as the landing that implied it.
+            self.activate(id, timestamp, confidence);
         }
 
-        let mark = self.marks.get(&spell.name.to_lowercase()).copied();
-        let category = spell.category();
-        let permanent = spell.is_permanent() || mark == Some(BuffMark::Permanent);
-        let beneficial = spell.is_beneficial();
-        let name = spell.name.clone();
-        let id = spell.id;
-
-        // Re-casting refreshes rather than stacks. Update in place so the
-        // refresh history survives — discarding and re-inserting would reset
-        // the pulse count that identifies auras.
-        match self.active.iter_mut().find(|b| b.name == name) {
-            Some(existing) => {
-                existing.spell_id = id;
-                existing.started = timestamp;
-                existing.expires = expires;
-                existing.confidence = confidence;
-                existing.permanent = permanent;
-                existing.beneficial = beneficial;
-                existing.mark = mark;
-                existing.category = category;
-                existing.refreshes += 1;
-            }
-            None => self.active.push(ActiveBuff {
-                spell_id: id,
-                name,
-                started: timestamp,
-                expires,
-                confidence,
-                permanent,
-                beneficial,
-                mark,
-                category,
-                first_seen: timestamp,
-                refreshes: 0,
-            }),
-        }
         Some(chosen)
     }
 
@@ -1074,6 +1115,7 @@ mod tests {
             good_effect: 1,
             category_id: 1,
             is_charm: false,
+            linked: Vec::new(),
         }
     }
 
@@ -1159,6 +1201,40 @@ mod tests {
         assert_eq!(base_spell_name("V"), "V");
         // Nor is a real word ending the name.
         assert_eq!(base_spell_name("Shield of Thorns"), "Shield of Thorns");
+    }
+
+    /// One cast, two buffs. The companion has no landing text of its own, so
+    /// following the effect link is the only way it can ever be tracked.
+    #[test]
+    fn a_linked_spell_is_activated_alongside_its_parent() {
+        let mut m = HashMap::new();
+        // The illusion: permanent, and it applies the stat buff.
+        let mut wolf = spell(427, "Form of the Great Wolf", "You are now a wolf.", "You are no longer a wolf.", 50, 0);
+        wolf.linked = vec![40593];
+        m.insert(427, wolf);
+        // The companion: a real duration, and no text anywhere.
+        let mut benefit = spell(40593, "Illusion Benefit Dena", "", "", 3, 720);
+        benefit.landed_on_you = None;
+        benefit.fades = None;
+        m.insert(40593, benefit);
+
+        let mut r = SpellResolver::new(SpellDb::from_spells(m), 50);
+        r.resolve_landing(1000, "You are now a wolf.");
+
+        let names: Vec<String> = r.active_buffs(1000).iter().map(|b| b.name.clone()).collect();
+        assert!(names.contains(&"Form of the Great Wolf".to_string()));
+        assert!(
+            names.contains(&"Illusion Benefit Dena".to_string()),
+            "the linked stat buff must come with it: {names:?}"
+        );
+
+        // Each keeps its own duration: the illusion outlasts the benefit.
+        let benefit = r
+            .active_buffs(1000)
+            .into_iter()
+            .find(|b| b.name == "Illusion Benefit Dena")
+            .unwrap();
+        assert!(benefit.expires.is_some(), "the companion is timed, not permanent");
     }
 
     /// Death strips buffs and the client says nothing, so a permanent buff
