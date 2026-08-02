@@ -1190,7 +1190,21 @@ impl Engine {
 
     /// Plane of Sky quest progress, flagged against the character's classes.
     pub fn sky_report(&self) -> SkyReport {
-        self.sky.report(&self.current_class_names())
+        let now = self.current_class_names();
+        // Every class ever put in a loadout, so a respec does not hide the
+        // sets you were part-way through collecting for the old one.
+        let mut played: Vec<String> = self
+            .classes
+            .classes_ever_declared()
+            .into_iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        for c in &now {
+            if !played.contains(c) {
+                played.push(c.clone());
+            }
+        }
+        self.sky.report_for(&now, &played)
     }
 
     /// The character's current classes by full name, for matching against

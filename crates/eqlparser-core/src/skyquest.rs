@@ -281,8 +281,21 @@ impl SkyTracker {
     /// everything relevant, which is the honest default before the class
     /// detector has an opinion.
     pub fn report(&self, active_classes: &[String]) -> SkyReport {
+        self.report_for(active_classes, active_classes)
+    }
+
+    /// As [`Self::report`], but distinguishing the classes you play now from
+    /// the wider set you have ever played.
+    ///
+    /// Visibility follows loadouts, not items. Basing it on progress instead
+    /// looked reasonable and was not: Wind Runes are shared between classes,
+    /// so holding one made every class's quest that uses it "in progress" —
+    /// 92 of 95 quests, which is no filter at all.
+    pub fn report_for(&self, active_classes: &[String], played_classes: &[String]) -> SkyReport {
         let active: std::collections::BTreeSet<String> =
             active_classes.iter().map(|c| c.to_lowercase()).collect();
+        let played: std::collections::BTreeSet<String> =
+            played_classes.iter().map(|c| c.to_lowercase()).collect();
         let mut quests: Vec<SkyQuestProgress> = self
             .defs
             .iter()
@@ -307,14 +320,15 @@ impl SkyTracker {
                     .collect();
                 let have_count = items.iter().filter(|i| i.have).count();
                 let completed = self.completions.get(&d.name).map(|c| c.0).unwrap_or(0);
-                // Work already done keeps a quest visible after a respec.
-                // Hiding it because the class is no longer current would drop
-                // half-collected sets and finished turn-ins out of the view
-                // the moment you swapped, which is exactly when you would want
-                // to know what you were holding for them.
-                let mine = active.is_empty() || active.contains(&d.class.to_lowercase());
+                // A class you have played keeps its quests visible after a
+                // respec: half-collected sets should not vanish the moment you
+                // swap, which is exactly when you want to see what you hold
+                // for them. A quest you have actually turned in stays visible
+                // regardless.
+                let key = d.class.to_lowercase();
+                let mine = active.is_empty() || active.contains(&key);
                 SkyQuestProgress {
-                    relevant: mine || have_count > 0 || completed > 0,
+                    relevant: mine || played.contains(&key) || completed > 0,
                     current_class: mine,
                     complete: have_count == items.len(),
                     need_count: items.len() - have_count,
@@ -688,19 +702,37 @@ mod tests {
     /// Swapping a class must not hide the sets you were part-way through
     /// collecting for it.
     #[test]
-    fn a_quest_with_progress_stays_visible_after_a_respec() {
+    fn quests_of_a_class_you_used_to_play_stay_visible() {
         let mut t = SkyTracker::new();
-        t.on_loot("Wind Rune Meda", 1); // Druid Test of Wolf
-        // Now playing Shaman, not Druid.
-        let r = t.report(&["Shaman".to_string(), "Warrior".to_string()]);
+        t.on_loot("Wind Rune Meda", 1);
+        let now = ["Shaman".to_string(), "Warrior".to_string()];
+        let played = ["Shaman".into(), "Warrior".into(), "Druid".into()];
+        let r = t.report_for(&now, &played);
 
         let wolf = r.quests.iter().find(|q| q.name == "Druid Test of Wolf").unwrap();
-        assert!(wolf.relevant, "held items keep it in view");
-        assert!(!wolf.current_class, "but it is not a class you play");
+        assert!(wolf.relevant, "a class you played stays in view");
+        assert!(!wolf.current_class, "but it is not one you play now");
 
-        // An untouched quest of a class you no longer play stays hidden.
-        let bee = r.quests.iter().find(|q| q.name == "Druid Test of The Bee").unwrap();
-        assert!(!bee.relevant);
+        // A class never played stays hidden, even holding a shared rune of
+        // theirs — Wind Rune Meda is also the Cleric's and the Ranger's.
+        let cleric = r.quests.iter().find(|q| q.name == "Cleric Test of Skill").unwrap();
+        assert!(!cleric.relevant, "a shared rune is not a reason to show it");
+    }
+
+    /// Runes are shared between classes, so holding one must not make every
+    /// class's quest that uses it count as yours.
+    #[test]
+    fn a_shared_rune_does_not_make_every_class_relevant() {
+        let mut t = SkyTracker::new();
+        // Held by Wizard, Enchanter, Rogue, Paladin and Beastlord quests.
+        t.on_loot("Wind Rune Izah", 1);
+        let me = ["Druid".to_string()];
+        let r = t.report_for(&me, &me);
+        assert_eq!(
+            r.relevant_count, 6,
+            "only the Druid six: {:?}",
+            r.quests.iter().filter(|q| q.relevant).map(|q| &q.name).collect::<Vec<_>>()
+        );
     }
 
     /// A finished turn-in is history worth keeping in view too.
@@ -712,7 +744,7 @@ mod tests {
             t.on_offer(i, 1);
         }
         t.on_trade_complete(5000, "Strandar Pinemist");
-        let r = t.report(&["Shaman".to_string()]);
+        let r = t.report_for(&["Shaman".to_string()], &["Shaman".to_string()]);
         let nature = r.quests.iter().find(|q| q.name == "Druid Test of Nature").unwrap();
         assert_eq!(nature.have_count, 0, "items were handed over");
         assert!(nature.relevant, "completed quests stay visible");

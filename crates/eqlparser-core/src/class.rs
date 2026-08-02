@@ -486,6 +486,24 @@ impl ClassDetector {
             .collect()
     }
 
+    /// Every class that has ever appeared in a loaded spell set.
+    ///
+    /// The record of loadouts actually played, as opposed to classes that
+    /// merely share an item or a spell with one. A set is only ever named by
+    /// the player for a build they run.
+    pub fn classes_ever_declared(&self) -> Vec<Class> {
+        let mut out: Vec<Class> = Vec::new();
+        for (_, classes) in &self.spell_sets {
+            for c in classes {
+                if !out.contains(c) {
+                    out.push(*c);
+                }
+            }
+        }
+        out.sort_by_key(|c| c.index());
+        out
+    }
+
     /// The trio named by the spell set loaded nearest `at`.
     ///
     /// A loaded set is the player stating their loadout outright, so it beats
