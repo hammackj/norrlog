@@ -299,6 +299,8 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// The character logged in. Starts a play session.
+    LoggedOn,
     /// An item handed to an NPC. Several may precede one [`Event::TradeComplete`].
     TradeOffer { quantity: u64, item: String, npc: String },
     /// The trade was accepted, consuming everything offered.

@@ -347,12 +347,12 @@ pub struct Snapshot {
 /// Wider than the experience window: points arrive as whole units and far less
 /// often, so a short window reads zero most of the time.
 /// How long a charm failure stays on the overlay.
-/// A gap in the log longer than this starts a new play session.
+/// Fallback session boundary, used only until a logon is seen.
 ///
-/// Chosen against the real thing: the log's quiet stretches are either a few
-/// minutes (afk, zoning, sorting bags) or hours (logged off overnight). Thirty
-/// minutes sits in the empty space between those, and splits five days into
-/// fourteen sessions that line up with when the character was actually played.
+/// The client announces each logon outright, which is what normally starts a
+/// session. This covers the case where the log begins part-way through one —
+/// there is no marker to find behind us, and treating the whole file as a
+/// single session would be worse than guessing from its quiet stretches.
 const SESSION_GAP_SECONDS: i64 = 30 * 60;
 
 const CHARM_FAILURE_WINDOW: i64 = 300;
@@ -411,6 +411,8 @@ pub struct Engine {
     last_timestamp: i64,
     /// When the current play session began.
     session_start: i64,
+    /// Whether a logon has been seen, after which gaps stop being used.
+    seen_logon: bool,
     /// Difference between log time and system time, learned once we are
     /// following the file live.
     ///
@@ -445,6 +447,7 @@ impl Engine {
             player,
             last_timestamp: 0,
             session_start: 0,
+            seen_logon: false,
             clock_offset: None,
             live: false,
         };
@@ -516,13 +519,18 @@ impl Engine {
     }
 
     fn push_entry(&mut self, entry: LogEntry) {
-        // A long silence means the character was logged off. Detected from the
-        // log's own clock rather than the daemon's uptime, so restarting the
-        // app mid-session does not look like a new one.
-        if self.last_timestamp > 0 && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS {
-            self.session_start = entry.timestamp;
-        } else if self.session_start == 0 {
-            self.session_start = entry.timestamp;
+        // A session starts at a logon, which the client states outright; see
+        // the `LoggedOn` arm below. Until one has been seen the log may have
+        // begun mid-session, so fall back to inferring a boundary from a long
+        // silence.
+        if !self.seen_logon {
+            if self.last_timestamp > 0
+                && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS
+            {
+                self.session_start = entry.timestamp;
+            } else if self.session_start == 0 {
+                self.session_start = entry.timestamp;
+            }
         }
         self.last_timestamp = entry.timestamp;
         // Keep the log/system clock relationship current while following live;
@@ -644,6 +652,10 @@ impl Engine {
                 if self.landed_effect_is_your_charm(entry.timestamp, text) {
                     self.tracker.set_charmed(entry.timestamp, target, true);
                 }
+            }
+            Event::LoggedOn => {
+                self.session_start = entry.timestamp;
+                self.seen_logon = true;
             }
             Event::Tell { from, to, message } => {
                 // The counterpart is whichever end is not you.
@@ -1874,6 +1886,74 @@ mod tests {
             e.charm_report().failures.is_empty(),
             "failures must age out"
         );
+    }
+
+    /// The client announces each logon, so a session boundary is stated
+    /// rather than inferred.
+    ///
+    /// Asserted as offsets: the engine reads the log's naive local time, so a
+    /// hardcoded epoch would only be right in one timezone.
+    #[test]
+    fn a_logon_starts_a_session() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage."],
+        );
+        let opened = e.session_start();
+        feed(&mut e, &["[Tue Jul 28 14:00:05 2026] Welcome to EverQuest Legends!"]);
+        assert_eq!(e.session_start(), opened + 5, "the logon moves it");
+    }
+
+    /// A relog two minutes later is still a new session: the marker says so,
+    /// and a gap that short would never have been noticed.
+    #[test]
+    fn a_quick_relog_starts_a_new_session() {
+        let mut e = engine();
+        feed(&mut e, &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"]);
+        let first = e.session_start();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:10 2026] You slash a rat for 10 points of damage.",
+                "[Tue Jul 28 14:02:00 2026] Welcome to EverQuest Legends!",
+            ],
+        );
+        assert_eq!(e.session_start(), first + 120, "the later logon wins");
+    }
+
+    /// A log that begins part-way through a session has no marker behind it,
+    /// so a long silence still has to serve.
+    #[test]
+    fn without_a_logon_a_long_gap_still_starts_a_session() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage."],
+        );
+        let opened = e.session_start();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 16:00:00 2026] You slash a rat for 10 points of damage."],
+        );
+        assert_eq!(e.session_start(), opened + 7200, "the gap starts a session");
+    }
+
+    /// Once a logon has been seen, a quiet stretch must not invent a boundary
+    /// the client never announced — idling is not logging out.
+    #[test]
+    fn after_a_logon_a_quiet_stretch_does_not_split_the_session() {
+        let mut e = engine();
+        feed(&mut e, &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"]);
+        let logon = e.session_start();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:10 2026] You slash a rat for 10 points of damage.",
+                "[Tue Jul 28 16:00:00 2026] You slash a rat for 10 points of damage.",
+            ],
+        );
+        assert_eq!(e.session_start(), logon, "still the logon");
     }
 
     /// The UIs style charmed pets from `is_pet`; if the meter stops carrying

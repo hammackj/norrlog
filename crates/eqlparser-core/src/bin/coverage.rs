@@ -226,6 +226,7 @@ fn kind_name(e: &Event) -> &'static str {
     match e {
         Event::Damage { .. } => "Damage",
         Event::SpellSetLoaded { .. } => "SpellSetLoaded",
+        Event::LoggedOn => "LoggedOn",
         Event::Tell { .. } => "Tell",
         Event::TradeOffer { .. } => "TradeOffer",
         Event::TradeComplete { .. } => "TradeComplete",

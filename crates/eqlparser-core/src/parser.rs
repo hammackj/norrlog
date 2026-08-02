@@ -86,6 +86,7 @@ enum RuleId {
     PetAttack,
     EffectWoreOffTarget,
     EffectLandedOnTarget,
+    LoggedOn,
     TradeOffer,
     TradeComplete,
     SkillTrained,
@@ -303,6 +304,13 @@ static RULES: &[(RuleId, &str)] = &[
         r"^(?P<who>.+?) ha(?:s|ve) left the group\.$",
     ),
     // ---- Charm / pets -------------------------------------------------------
+    // "Welcome to EverQuest Legends!"
+    //
+    // Written once per logon, so it marks the start of a play session
+    // outright. Better than inferring one from a gap in the log: a quick
+    // relog leaves almost no gap at all, and a long silence mid-session looks
+    // identical to having logged off.
+    (RuleId::LoggedOn, r"^Welcome to EverQuest Legends!$"),
     // "You offered 1 Efreeti Scimitar to Strandar Pinemist."
     // "You complete the trade with Strandar Pinemist."
     //
@@ -922,6 +930,7 @@ impl Parser {
                     pet: self.actor(g("pet").unwrap_or_default()),
                     target: self.actor(g("target").unwrap_or_default()),
                 },
+                RuleId::LoggedOn => Event::LoggedOn,
                 RuleId::TradeOffer => Event::TradeOffer {
                     quantity: num("qty"),
                     item: g("item").unwrap_or_default().to_string(),
