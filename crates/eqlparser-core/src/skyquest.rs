@@ -30,6 +30,15 @@
 //! trade backed out of, and consuming those items would report you as poorer
 //! than you are. A completed trade whose items satisfy one of the giver's
 //! quests also records that quest as turned in.
+//!
+//! # What cannot be known
+//!
+//! The reward is not one of them. It arrives on the cursor with nothing
+//! written to the log at all — the turn-in above produced only
+//! `You gain experience!` and the trade closing. So a quest is reported as
+//! *turned in*, never as *rewarded*: the completion count is the honest
+//! measure, and a "rewards received" tally could only ever read zero and imply
+//! the reward never came.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -105,8 +114,6 @@ pub struct SkyQuestProgress {
     pub last_started: Option<i64>,
     /// Belongs to one of the character's own classes.
     pub relevant: bool,
-    /// Times the reward item has been looted.
-    pub rewards_received: u32,
     /// Times this quest's requirements have been handed to its giver.
     pub completed: u32,
     pub last_completed: Option<i64>,
@@ -303,7 +310,6 @@ impl SkyTracker {
                     need_count: items.len() - have_count,
                     have_count,
                     last_started: self.said.get(&d.phrase.to_lowercase()).copied(),
-                    rewards_received: *self.looted.get(&d.reward.to_lowercase()).unwrap_or(&0),
                     completed: self.completions.get(&d.name).map(|c| c.0).unwrap_or(0),
                     last_completed: self.completions.get(&d.name).map(|c| c.1),
                     giver_text: self
