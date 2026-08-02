@@ -914,10 +914,16 @@ impl Engine {
     /// silent — arrives only every few hours. Too tight a window simply loses
     /// it, and a shared-spell class takes the slot instead.
     fn build_label(&self, at: i64) -> String {
-        let trio = self.classes.trio_around(at, 24 * 3600);
+        let mut trio = self.classes.trio_around(at, 24 * 3600);
         if trio.len() < 3 {
             return String::new();
         }
+        // Canonical order, not the order the evidence happened to arrive in.
+        // The label is a grouping key: a spell set named "WAR / BRD / DRU" and
+        // another named "WAR / DRU / BRD - Buffs" describe the same build, and
+        // ordering by whichever was loaded last split one build into two in
+        // the kill history.
+        trio.sort_by_key(|c| c.class.index());
         trio.iter()
             .map(|c| c.class.abbrev())
             .collect::<Vec<_>>()

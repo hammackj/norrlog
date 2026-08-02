@@ -240,6 +240,14 @@ struct ClassTally {
 #[derive(Debug, Default)]
 pub struct ClassDetector {
     evidence: Vec<ClassEvidence>,
+    /// Spell sets loaded, with the classes each names.
+    ///
+    /// Kept apart from the weighted evidence because it answers a different
+    /// question. Evidence accumulates, which is right for "what has this
+    /// character been", and wrong for "what is it right now": on the day of a
+    /// respec the outgoing class has a full day banked and the incoming one
+    /// has minutes, so scoring alone reports the swap hours late.
+    spell_sets: Vec<(i64, Vec<Class>)>,
 }
 
 impl ClassDetector {
@@ -285,6 +293,22 @@ impl ClassDetector {
     /// as proof: only tokens that exactly match a class abbreviation count,
     /// which ignores the "- Buffs" and "- Naggy" suffixes people append.
     pub fn observe_spell_set(&mut self, timestamp: i64, set_name: &str) {
+        let mut named: Vec<Class> = Vec::new();
+        for token in set_name.split(|c: char| !c.is_ascii_alphabetic()) {
+            if token.is_empty() {
+                continue;
+            }
+            for i in 0..CLASS_COUNT {
+                let class = Class::from_index(i).unwrap();
+                if token.eq_ignore_ascii_case(class.abbrev()) && !named.contains(&class) {
+                    named.push(class);
+                }
+            }
+        }
+        if !named.is_empty() {
+            self.spell_sets.push((timestamp, named));
+        }
+
         for token in set_name.split(|c: char| !c.is_ascii_alphabetic()) {
             if token.is_empty() {
                 continue;
@@ -462,6 +486,46 @@ impl ClassDetector {
             .collect()
     }
 
+    /// The trio named by the spell set loaded nearest `at`.
+    ///
+    /// A loaded set is the player stating their loadout outright, so it beats
+    /// inference for the moment it was loaded — and it changes the instant
+    /// they swap, which accumulated evidence cannot. Only a set naming exactly
+    /// three classes is trusted: anything else is a partial or oddly-named set
+    /// rather than a declaration of the build.
+    ///
+    /// The catch is that it is player-authored: a set left with its old name
+    /// keeps asserting a class no longer played. Nothing in the log can tell
+    /// the difference, so this defers to it and the naming is the user's
+    /// responsibility.
+    fn trio_from_spell_set(&self, at: i64, window: i64) -> Option<Vec<ClassScore>> {
+        let (_, classes) = self
+            .spell_sets
+            .iter()
+            .filter(|(t, c)| c.len() == 3 && (at - t).abs() <= window)
+            .min_by_key(|(t, _)| (at - t).abs())?;
+
+        let scored = self.tally(i64::MIN, i64::MAX);
+        let total: f32 = scored.iter().map(|t| t.score).sum();
+        Some(
+            classes
+                .iter()
+                .map(|c| {
+                    let t = scored.iter().find(|t| t.class == *c);
+                    ClassScore {
+                        class: *c,
+                        score: t.map(|t| t.score).unwrap_or(0.0),
+                        share: t.map(|t| if total > 0.0 { t.score / total } else { 0.0 })
+                            .unwrap_or(0.0),
+                        top_reasons: t
+                            .map(|t| t.reasons.keys().take(8).cloned().collect())
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect(),
+        )
+    }
+
     /// The trio in effect *around* `at`, using evidence from both sides.
     ///
     /// [`current_trio`](Self::current_trio) looks only backwards, which is
@@ -470,6 +534,9 @@ impl ClassDetector {
     /// to precede it. What you played at a moment is better evidenced by the
     /// hours either side of it.
     pub fn trio_around(&self, at: i64, half_window: i64) -> Vec<ClassScore> {
+        if let Some(t) = self.trio_from_spell_set(at, half_window) {
+            return t;
+        }
         for factor in [1, 4, 16, 64] {
             let ranked = self.select_trio(at - half_window * factor, at + half_window * factor);
             if ranked.len() >= 3 {
@@ -480,6 +547,9 @@ impl ClassDetector {
     }
 
     pub fn current_trio(&self, now: i64, window_seconds: i64) -> Vec<ClassScore> {
+        if let Some(t) = self.trio_from_spell_set(now, window_seconds) {
+            return t;
+        }
         for factor in [1, 4, 16, 64] {
             let ranked = self.select_trio(now - window_seconds * factor, now);
             if ranked.len() >= 3 {
@@ -500,6 +570,72 @@ mod tests {
             l[c.index()] = *lv;
         }
         l
+    }
+
+    /// Swapping one caster for another must be picked up from the new class's
+    /// own spells, and must not be blocked by the outgoing class's history.
+    #[test]
+    fn a_class_swap_is_reflected_once_the_new_class_casts() {
+        let mut d = ClassDetector::new();
+        // A day as WAR/BRD/DRU.
+        for t in 0..200 {
+            d.observe_spell(t, "Chords of Dissonance", &levels(&[(Class::Bard, 10)]));
+            d.observe_spell(t, "Efflorescing Heal", &levels(&[(Class::Druid, 20)]));
+            d.observe_skill(t, "Taunt");
+        }
+        d.observe_spell_set(100, "WAR / BRD / DRU");
+
+        // Then the swap: shaman spells, and a renamed set.
+        for t in 1000..1200 {
+            d.observe_spell(t, "Chords of Dissonance", &levels(&[(Class::Bard, 10)]));
+            d.observe_spell(t, "Spirit of Bear", &levels(&[(Class::Shaman, 20)]));
+            d.observe_skill(t, "Taunt");
+        }
+        d.observe_spell_set(1100, "WAR / BRD / SHM");
+
+        let now: Vec<&str> = d
+            .current_trio(1200, 3600)
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
+        assert!(now.contains(&"SHM"), "new class must appear: {now:?}");
+        assert!(!now.contains(&"DRU"), "old class must fall away: {now:?}");
+
+        // The past is still read as the past: a kill back then was WAR/BRD/DRU.
+        let then: Vec<&str> = d
+            .trio_around(100, 3600)
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
+        assert!(then.contains(&"DRU"), "history must not be rewritten: {then:?}");
+        assert!(!then.contains(&"SHM"));
+    }
+
+    /// A spell set left with its old name keeps asserting the class that is no
+    /// longer played — the one way a swap can be reported wrongly.
+    #[test]
+    fn a_stale_spell_set_name_still_asserts_its_classes() {
+        let mut d = ClassDetector::new();
+        for t in 1000..1100 {
+            d.observe_spell(t, "Chords of Dissonance", &levels(&[(Class::Bard, 10)]));
+            d.observe_spell(t, "Spirit of Bear", &levels(&[(Class::Shaman, 20)]));
+            d.observe_skill(t, "Taunt");
+        }
+        // Loaded repeatedly under the old name after the swap.
+        for t in 1000..1030 {
+            d.observe_spell_set(t, "WAR / BRD / DRU");
+        }
+        let now: Vec<&str> = d
+            .current_trio(1100, 3600)
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
+        // Documents the behaviour rather than endorsing it: the set name is
+        // player-authored, so a stale one is stale evidence.
+        assert!(
+            now.contains(&"DRU"),
+            "a stale set name still asserts its classes: {now:?}"
+        );
     }
 
     /// The set name is the only place a non-casting class reliably appears.

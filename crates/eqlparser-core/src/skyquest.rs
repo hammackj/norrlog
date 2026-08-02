@@ -112,8 +112,10 @@ pub struct SkyQuestProgress {
     /// Phrases are shared between classes, so this can be true for a quest you
     /// have never taken. Only meaningful alongside `relevant`.
     pub last_started: Option<i64>,
-    /// Belongs to one of the character's own classes.
+    /// Shown by default: either a class you play, or one you have progress on.
     pub relevant: bool,
+    /// Belongs to a class you are playing right now.
+    pub current_class: bool,
     /// Times this quest's requirements have been handed to its giver.
     pub completed: u32,
     pub last_completed: Option<i64>,
@@ -304,13 +306,21 @@ impl SkyTracker {
                     })
                     .collect();
                 let have_count = items.iter().filter(|i| i.have).count();
+                let completed = self.completions.get(&d.name).map(|c| c.0).unwrap_or(0);
+                // Work already done keeps a quest visible after a respec.
+                // Hiding it because the class is no longer current would drop
+                // half-collected sets and finished turn-ins out of the view
+                // the moment you swapped, which is exactly when you would want
+                // to know what you were holding for them.
+                let mine = active.is_empty() || active.contains(&d.class.to_lowercase());
                 SkyQuestProgress {
-                    relevant: active.is_empty() || active.contains(&d.class.to_lowercase()),
+                    relevant: mine || have_count > 0 || completed > 0,
+                    current_class: mine,
                     complete: have_count == items.len(),
                     need_count: items.len() - have_count,
                     have_count,
                     last_started: self.said.get(&d.phrase.to_lowercase()).copied(),
-                    completed: self.completions.get(&d.name).map(|c| c.0).unwrap_or(0),
+                    completed,
                     last_completed: self.completions.get(&d.name).map(|c| c.1),
                     giver_text: self
                         .giver_text
@@ -675,6 +685,40 @@ mod tests {
         );
     }
 
+    /// Swapping a class must not hide the sets you were part-way through
+    /// collecting for it.
+    #[test]
+    fn a_quest_with_progress_stays_visible_after_a_respec() {
+        let mut t = SkyTracker::new();
+        t.on_loot("Wind Rune Meda", 1); // Druid Test of Wolf
+        // Now playing Shaman, not Druid.
+        let r = t.report(&["Shaman".to_string(), "Warrior".to_string()]);
+
+        let wolf = r.quests.iter().find(|q| q.name == "Druid Test of Wolf").unwrap();
+        assert!(wolf.relevant, "held items keep it in view");
+        assert!(!wolf.current_class, "but it is not a class you play");
+
+        // An untouched quest of a class you no longer play stays hidden.
+        let bee = r.quests.iter().find(|q| q.name == "Druid Test of The Bee").unwrap();
+        assert!(!bee.relevant);
+    }
+
+    /// A finished turn-in is history worth keeping in view too.
+    #[test]
+    fn a_completed_quest_stays_visible_after_a_respec() {
+        let mut t = SkyTracker::new();
+        for i in ["Wind Rune Izah", "Storm Sky Opal", "Efreeti Scimitar"] {
+            t.on_loot(i, 1);
+            t.on_offer(i, 1);
+        }
+        t.on_trade_complete(5000, "Strandar Pinemist");
+        let r = t.report(&["Shaman".to_string()]);
+        let nature = r.quests.iter().find(|q| q.name == "Druid Test of Nature").unwrap();
+        assert_eq!(nature.have_count, 0, "items were handed over");
+        assert!(nature.relevant, "completed quests stay visible");
+        assert!(!nature.current_class);
+    }
+
     /// A completed turn-in consumes the items and records the quest.
     #[test]
     fn a_completed_trade_consumes_items_and_records_the_quest() {
@@ -810,15 +854,14 @@ mod tests {
             .filter(|q| q.relevant && q.have_count > 0)
             .map(|q| (q.name.as_str(), q.need_count))
             .collect();
-        assert_eq!(started[0].1, 1, "a one-away quest must lead: {started:?}");
-        assert_eq!(started[1].1, 1);
-        // Among the two one-away quests, the further-along one leads.
-        assert_eq!(started[0].0, "Bard Test of Harmony");
-        assert_eq!(
-            started.last().unwrap().1,
-            2,
-            "the two-away quest sorts last: {started:?}"
+        // Ordered by what is left, fewest first, all the way down.
+        assert!(
+            started.windows(2).all(|w| w[0].1 <= w[1].1),
+            "not ordered by need: {started:?}"
         );
+        assert_eq!(started[0].1, 1, "a one-away quest must lead: {started:?}");
+        // Among the one-away quests, the further-along one leads.
+        assert_eq!(started[0].0, "Bard Test of Harmony");
     }
 
     #[test]
