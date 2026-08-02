@@ -71,11 +71,24 @@ pub struct SkillProgress {
     pub first_seen_at: u32,
     /// Number of skill-up messages.
     pub ups: u32,
+    /// Points bought from an NPC trainer rather than earned by crafting.
+    ///
+    /// Counted separately because they say nothing about what you made: six
+    /// tradeskills on a real character reached 20 purely by paying a trainer,
+    /// and reporting that as crafting progress would be a lie about how the
+    /// skill was raised.
+    #[serde(default)]
+    pub trained: u32,
     pub first_up: i64,
     pub last_up: i64,
 }
 
 impl SkillProgress {
+    /// Points earned by actually practising the skill.
+    pub fn from_practice(&self) -> u32 {
+        self.ups.saturating_sub(self.trained)
+    }
+
     /// Skill points gained within this log.
     pub fn gained(&self) -> u32 {
         self.current.saturating_sub(self.first_seen_at)
@@ -223,6 +236,24 @@ impl TradeskillTracker {
     }
 
     /// Record a skill-up. Ignored unless it is a tradeskill.
+    /// A trainer confirmed a point it just sold you.
+    ///
+    /// The client writes this *after* the skill-up line, so the point has
+    /// already been counted; this reclassifies it rather than adding to it.
+    /// Only ever subtracts from the practice tally, never from the total.
+    pub fn on_trained(&mut self, skill: &str) {
+        if !is_tradeskill(skill) {
+            return;
+        }
+        if let Some(e) = self.skills.get_mut(&skill.to_lowercase()) {
+            // Cannot exceed the ups actually seen: a trainer line without a
+            // matching skill-up would otherwise push practice below zero.
+            if e.trained < e.ups {
+                e.trained += 1;
+            }
+        }
+    }
+
     pub fn on_skill_up(&mut self, timestamp: i64, skill: &str, value: u32) {
         if !is_tradeskill(skill) {
             return;
@@ -235,6 +266,7 @@ impl TradeskillTracker {
                 current: value,
                 first_seen_at: value,
                 ups: 0,
+                trained: 0,
                 first_up: timestamp,
                 last_up: timestamp,
             });
@@ -316,6 +348,35 @@ impl TradeskillTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A point bought from a trainer is progress you paid for, not progress
+    /// you made — counting it as crafting misdescribes how the skill rose.
+    #[test]
+    fn trained_points_are_separated_from_practice() {
+        let mut t = TradeskillTracker::new();
+        t.on_skill_up(100, "Pottery", 3);
+        t.on_trained("Pottery");
+        t.on_skill_up(200, "Pottery", 4);
+
+        let p = &t.report().skills[0];
+        assert_eq!(p.ups, 2, "both points counted");
+        assert_eq!(p.trained, 1);
+        assert_eq!(p.from_practice(), 1);
+    }
+
+    /// A trainer line with no matching skill-up must not drive practice
+    /// negative.
+    #[test]
+    fn a_stray_trainer_line_cannot_exceed_the_points_seen() {
+        let mut t = TradeskillTracker::new();
+        t.on_skill_up(100, "Pottery", 3);
+        for _ in 0..5 {
+            t.on_trained("Pottery");
+        }
+        let p = &t.report().skills[0];
+        assert_eq!(p.trained, 1);
+        assert_eq!(p.from_practice(), 0);
+    }
 
     #[test]
     fn only_tradeskills_are_tracked() {

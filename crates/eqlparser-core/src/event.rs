@@ -293,6 +293,8 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// A skill point bought from an NPC trainer rather than earned by use.
+    SkillTrained { trainer: String, skill: String },
     /// The target cannot be charmed at all. Names nothing — the client says
     /// only "This NPC cannot be charmed." — so the caller must supply the
     /// target from whatever it was last trying to charm.

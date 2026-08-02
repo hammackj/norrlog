@@ -85,6 +85,7 @@ enum RuleId {
     PetAttack,
     EffectWoreOffTarget,
     EffectLandedOnTarget,
+    SkillTrained,
     CharmImmune,
     TargetUnaffected,
     AbilityCooldown,
@@ -291,6 +292,16 @@ static RULES: &[(RuleId, &str)] = &[
         r"^(?P<who>.+?) ha(?:s|ve) left the group\.$",
     ),
     // ---- Charm / pets -------------------------------------------------------
+    // "Guntrik told you, 'You have increased your skill in Pottery.'"
+    //
+    // A skill point bought from an NPC trainer, not earned by doing the thing.
+    // Six tradeskills on a real character went 2 -> 20 this way with not one
+    // combine involved, which a skill-up count alone reports as progress you
+    // made rather than progress you paid for.
+    (
+        RuleId::SkillTrained,
+        r"^(?P<trainer>.+?) told you, 'You have increased your skill in (?P<skill>.+?)\.'$",
+    ),
     // "An imp protector told you, 'Attacking an imp protector Master.'"
     // Only a creature under your control addresses you as Master, so this
     // identifies a charmed pet by name.
@@ -881,6 +892,10 @@ impl Parser {
                 RuleId::PetAttack => Event::PetAttack {
                     pet: self.actor(g("pet").unwrap_or_default()),
                     target: self.actor(g("target").unwrap_or_default()),
+                },
+                RuleId::SkillTrained => Event::SkillTrained {
+                    trainer: g("trainer").unwrap_or_default().to_string(),
+                    skill: g("skill").unwrap_or_default().to_string(),
                 },
                 RuleId::CharmImmune => Event::CharmImmune,
                 RuleId::TargetUnaffected => Event::TargetUnaffected,

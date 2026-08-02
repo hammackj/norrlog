@@ -617,6 +617,7 @@ impl Engine {
                     self.tracker.set_charmed(entry.timestamp, target, true);
                 }
             }
+            Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
             }
