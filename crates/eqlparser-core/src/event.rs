@@ -293,6 +293,12 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// The target cannot be charmed at all. Names nothing — the client says
+    /// only "This NPC cannot be charmed." — so the caller must supply the
+    /// target from whatever it was last trying to charm.
+    CharmImmune,
+    /// A spell landed on nothing. Also nameless, for the same reason.
+    TargetUnaffected,
     /// A pet under your control announced its target.
     ///
     /// This is how a charmed creature identifies itself: EverQuest pets answer

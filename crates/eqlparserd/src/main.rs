@@ -6,12 +6,13 @@
 
 mod engine;
 mod server;
+mod store;
 mod tail;
 
 use engine::Engine;
 use eqlparser_core::Parser;
 use server::AppState;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
@@ -20,6 +21,9 @@ use tokio::sync::broadcast;
 const SNAPSHOT_RECENT: usize = 40;
 
 const DEFAULT_PORT: u16 = 8777;
+
+/// How often durable history is written while following live.
+const HISTORY_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 struct Config {
     log: Option<PathBuf>,
@@ -116,6 +120,21 @@ async fn main() -> anyhow::Result<()> {
     let spell_db = Engine::load_spell_db(cfg.game_dir.as_deref());
     let engine = Engine::new(player, spell_db);
 
+    // History outlives any one log file. Opened before the follower starts so
+    // the first flush after catch-up has somewhere to go.
+    let history = match store::Store::open(&history_path()) {
+        Ok(s) => {
+            if let Ok((k, e, l)) = s.counts() {
+                eprintln!("[eqlparserd] history: {k} boss kills, {e} raid fights, {l} levels");
+            }
+            Some(Arc::new(Mutex::new(s)))
+        }
+        Err(e) => {
+            eprintln!("[eqlparserd] history unavailable ({e}); running without it");
+            None
+        }
+    };
+
     let engine = Arc::new(Mutex::new(engine));
     let snapshot = Arc::new(RwLock::new(engine.lock().unwrap().snapshot(SNAPSHOT_RECENT)));
     let (updates, _) = broadcast::channel(64);
@@ -125,12 +144,14 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&engine),
         Arc::clone(&snapshot),
         updates.clone(),
+        history.clone(),
     );
 
     let state = AppState {
         engine,
         snapshot,
         updates,
+        store: history,
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
@@ -147,11 +168,49 @@ async fn main() -> anyhow::Result<()> {
 /// Parsing is CPU-bound and synchronous, so it lives on a dedicated OS thread
 /// rather than competing with the async runtime. It publishes a snapshot after
 /// each batch and signals listeners.
+/// Where durable history lives. One database per machine, keyed internally by
+/// nothing — a different character means a different log and, in practice, a
+/// different install; mixing two would need a character column and has no user
+/// asking for it yet.
+fn history_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".config/eqlparser/history.db")
+}
+
+/// Write derived history to the store.
+///
+/// Every row carries a natural key and is written with REPLACE, so this is
+/// safe to call as often as we like: re-flushing unchanged history is a no-op
+/// in effect, and a flush that now knows more (a build label that needed later
+/// evidence) improves the stored row.
+fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
+    let (kills, encs, levels, aa) = { engine.lock().unwrap().history_to_persist() };
+    let mut st = store.lock().unwrap();
+    if let Err(e) = st
+        .put_kills(&kills)
+        .and_then(|_| st.put_encounters(&encs))
+        .and_then(|_| st.put_levels(&levels))
+        .and_then(|_| st.put_aa(&aa))
+    {
+        eprintln!("[eqlparserd] history write failed: {e}");
+        return;
+    }
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = st.note_source(&path.to_string_lossy(), bytes, now);
+}
+
 fn spawn_follower(
     path: PathBuf,
     engine: Arc<Mutex<Engine>>,
     snapshot: Arc<RwLock<engine::Snapshot>>,
     updates: broadcast::Sender<()>,
+    store: Option<Arc<Mutex<store::Store>>>,
 ) {
     std::thread::spawn(move || {
         let mut follower = match tail::Follower::open(&path) {
@@ -180,8 +239,12 @@ fn spawn_follower(
             "[eqlparserd] parsed {backlog} lines in {:.2}s; following live",
             start.elapsed().as_secs_f64()
         );
+        if let Some(st) = &store {
+            flush_history(&engine, st, &path);
+        }
 
         // Follow.
+        let mut last_flush = std::time::Instant::now();
         loop {
             std::thread::sleep(tail::POLL_INTERVAL);
             {
@@ -192,6 +255,15 @@ fn spawn_follower(
             }
             // Always republish: buff timers count down even with no new lines.
             publish(&engine, &snapshot, &updates);
+
+            // History changes on the scale of minutes, so flushing on the poll
+            // interval would be pure write amplification.
+            if last_flush.elapsed() >= HISTORY_FLUSH_INTERVAL {
+                last_flush = std::time::Instant::now();
+                if let Some(st) = &store {
+                    flush_history(&engine, st, &path);
+                }
+            }
         }
     });
 }

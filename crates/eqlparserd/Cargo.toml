@@ -13,3 +13,4 @@ anyhow = { workspace = true }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower-http = { version = "0.7.0", features = ["fs", "cors"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }

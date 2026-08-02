@@ -22,6 +22,15 @@ use std::collections::HashMap;
 /// pause but short enough to separate consecutive pulls.
 pub const DEFAULT_IDLE_TIMEOUT: i64 = 12;
 
+/// How far back a death looks for the blows that caused it.
+///
+/// Long enough to cover a burst that began before the final hit, short enough
+/// that ordinary chip damage from earlier in the fight does not crowd it out.
+pub const DEATH_WINDOW: i64 = 15;
+
+/// How many individual blows a death lists.
+pub const DEATH_BLOWS_SHOWN: usize = 10;
+
 /// Per-ability damage breakdown.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AbilityStats {
@@ -119,6 +128,16 @@ pub struct ActorStats {
     /// coexists with `damaged_by_you`; the UI should treat charm as the more
     /// specific classification while it holds.
     pub charmed_by_you: bool,
+    /// Seconds this creature spent charmed by you during the fight.
+    ///
+    /// Charm on a bard is a rhythm rather than a state — it breaks and is
+    /// resung constantly — so the useful figure is how much of the fight it
+    /// actually held, not whether it was ever charmed at all.
+    #[serde(default)]
+    pub charmed_seconds: i64,
+    /// How many times the charm broke.
+    #[serde(default)]
+    pub charm_breaks: u32,
     /// Damage this actor dealt while charmed by you. Kept apart from
     /// `damage_done` so a charmed mob's contribution can be credited to you
     /// without double counting it in the encounter total.
@@ -243,6 +262,25 @@ pub struct DeathRecord {
     pub timestamp: i64,
     pub victim: String,
     pub killer: Option<String>,
+    /// What landed on you in the seconds before you died, newest first.
+    ///
+    /// The client names a killer but never says what actually did it, and the
+    /// killing blow is rarely the interesting part — a death is usually the
+    /// last few seconds, not the last hit. Only recorded for your own deaths.
+    #[serde(default)]
+    pub final_blows: Vec<IncomingHit>,
+    /// Total damage you took in [`DEATH_WINDOW`] seconds before dying.
+    #[serde(default)]
+    pub damage_in_window: u64,
+}
+
+/// One hit that landed on you.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingHit {
+    pub at: i64,
+    pub source: String,
+    pub ability: String,
+    pub amount: u64,
 }
 
 /// An item looted during an encounter.
@@ -401,6 +439,25 @@ impl Encounter {
     }
 
     /// Actors that were under your control during this fight.
+    /// Share of the fight your charms held, 0.0–1.0.
+    ///
+    /// Summed across pets and capped at 1.0: charming two creatures at once is
+    /// possible but does not make a fight more than fully charmed.
+    pub fn charm_uptime(&self) -> f64 {
+        let held: i64 = self
+            .actors
+            .values()
+            .filter(|s| s.charmed_by_you)
+            .map(|s| s.charmed_seconds)
+            .sum();
+        (held as f64 / self.duration() as f64).min(1.0)
+    }
+
+    /// Total times a charm broke during the fight.
+    pub fn charm_breaks(&self) -> u32 {
+        self.actors.values().map(|s| s.charm_breaks).sum()
+    }
+
     pub fn charmed_pets(&self) -> Vec<&ActorStats> {
         let mut v: Vec<&ActorStats> = self
             .actors
@@ -533,6 +590,10 @@ pub struct EncounterTracker {
     /// Lives on the tracker rather than the encounter because a charm can be
     /// established in one pull and still hold when the next one starts.
     charmed: std::collections::HashSet<String>,
+    /// When the charm currently held on each creature began.
+    charm_since: std::collections::HashMap<String, i64>,
+    /// Rolling buffer of damage aimed at you, for death post-mortems.
+    recent_incoming: Vec<IncomingHit>,
 }
 
 /// How long after a fight closes its corpses may still be looted.
@@ -552,6 +613,8 @@ impl EncounterTracker {
             current: None,
             last_combat: 0,
             charmed: std::collections::HashSet::new(),
+            charm_since: std::collections::HashMap::new(),
+            recent_incoming: Vec::new(),
         }
     }
 
@@ -571,15 +634,27 @@ impl EncounterTracker {
     /// breaks and is recast constantly, and a mob that fought for you at any
     /// point in a fight should read as a pet for the whole of it rather than
     /// flickering between pet and enemy.
-    pub fn set_charmed(&mut self, actor: &Actor, charmed: bool) {
+    pub fn set_charmed(&mut self, timestamp: i64, actor: &Actor, charmed: bool) {
+        let key = actor.key();
         if charmed {
-            self.charmed.insert(actor.key());
+            self.charmed.insert(key.clone());
+            // Re-landing a charm that never broke must not restart the clock,
+            // or a fight of constant refreshes would report almost no uptime.
+            self.charm_since.entry(key).or_insert(timestamp);
             if let Some(enc) = self.current.as_mut() {
                 let player = self.player.clone();
                 enc.entry(actor, &player).charmed_by_you = true;
             }
         } else {
-            self.charmed.remove(&actor.key());
+            self.charmed.remove(&key);
+            if let Some(since) = self.charm_since.remove(&key) {
+                if let Some(enc) = self.current.as_mut() {
+                    let player = self.player.clone();
+                    let st = enc.entry(actor, &player);
+                    st.charmed_seconds += (timestamp - since).max(0);
+                    st.charm_breaks += 1;
+                }
+            }
         }
     }
 
@@ -644,6 +719,9 @@ impl EncounterTracker {
                 let enc = self.current.as_mut().unwrap();
 
                 let ability_name = ability.clone().unwrap_or_else(|| kind_label(*kind).to_string());
+                let ability_label = ability_name.clone();
+                let mut incoming: Option<IncomingHit> = None;
+                let mut tgt_is_you = false;
                 let src_is_you = source.is_you();
                 {
                     let s = enc.entry(source, &player);
@@ -687,11 +765,28 @@ impl EncounterTracker {
                         .entry(ability_in)
                         .or_default()
                         .record_hit(*amount, crit);
-                    *t.damage_taken_by_source.entry(source_name).or_default() += *amount;
+                    *t.damage_taken_by_source.entry(source_name.clone()).or_default() += *amount;
                     if src_is_you {
                         t.damaged_by_you = true;
                     }
+                    tgt_is_you = target.is_you();
+                    if tgt_is_you {
+                        incoming = Some(IncomingHit {
+                            at: entry.timestamp,
+                            source: source_name,
+                            ability: ability_label,
+                            amount: *amount,
+                        });
+                    }
                 }
+                // Buffered outside the encounter so a death that opens its own
+                // encounter still has the run-up available.
+                if let Some(hit) = incoming {
+                    self.recent_incoming.push(hit);
+                    let cutoff = entry.timestamp - DEATH_WINDOW;
+                    self.recent_incoming.retain(|h| h.at >= cutoff);
+                }
+                let _ = tgt_is_you;
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
             }
@@ -767,10 +862,30 @@ impl EncounterTracker {
                 if let Some(k) = killer {
                     enc.entry(k, &player).killing_blows += 1;
                 }
+                // Only your own deaths get a post-mortem: the buffer only
+                // holds damage aimed at you, so attaching it to a mob's death
+                // would be nonsense.
+                let (final_blows, damage_in_window) = if victim.is_you() {
+                    let cutoff = entry.timestamp - DEATH_WINDOW;
+                    let mut blows: Vec<IncomingHit> = self
+                        .recent_incoming
+                        .iter()
+                        .filter(|h| h.at >= cutoff)
+                        .cloned()
+                        .collect();
+                    let total = blows.iter().map(|h| h.amount).sum();
+                    blows.reverse();
+                    blows.truncate(DEATH_BLOWS_SHOWN);
+                    (blows, total)
+                } else {
+                    (Vec::new(), 0)
+                };
                 enc.deaths.push(DeathRecord {
                     timestamp: entry.timestamp,
                     victim: victim.display(&player),
                     killer: killer.as_ref().map(|k| k.display(&player)),
+                    final_blows,
+                    damage_in_window,
                 });
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
@@ -825,6 +940,23 @@ impl EncounterTracker {
 
     /// Close the open encounter, returning it if it was worth keeping.
     pub fn close(&mut self) -> Option<Encounter> {
+        // A charm still held when the fight ends counts up to that moment;
+        // otherwise the most common case — charming right through to the kill
+        // — would report zero uptime.
+        let ends_at = self.current.as_ref().map(|e| e.end);
+        if let (Some(end), Some(enc)) = (ends_at, self.current.as_mut()) {
+            for (key, since) in self.charm_since.iter() {
+                if let Some(st) = enc.actors.get_mut(key) {
+                    st.charmed_seconds += (end - *since).max(0);
+                }
+            }
+        }
+        // Charm survives the fight boundary in the game, but the interval
+        // clock restarts with the next encounter.
+        for since in self.charm_since.values_mut() {
+            *since = ends_at.unwrap_or(*since);
+        }
+
         let enc = self.current.take()?;
         if enc.is_significant() {
             Some(enc)
@@ -1340,7 +1472,7 @@ mod tests {
         for e in &before {
             t.push(e);
         }
-        t.set_charmed(&Actor::Named("An imp protector".into()), false);
+        t.set_charmed(103, &Actor::Named("An imp protector".into()), false);
         for e in &entries(&[(104, "An imp protector hits YOU for 70 points of damage.")]) {
             t.push(e);
         }
@@ -1352,6 +1484,111 @@ mod tests {
             "damage after the charm broke must not be credited"
         );
         assert_eq!(enc.your_damage_with_pets(), 31);
+    }
+
+    /// A death is the last few seconds, not the last hit — so the record has
+    /// to carry the run-up, and only for your own deaths.
+    #[test]
+    fn your_death_records_the_blows_that_caused_it() {
+        let encs = run(&[
+            (100, "A fire giant hits YOU for 300 points of damage."),
+            (102, "A fire giant crushes YOU for 450 points of damage."),
+            (104, "You have been slain by a fire giant!"),
+        ]);
+        let d = &encs[0].deaths[0];
+        assert_eq!(d.victim.to_lowercase(), "tharn", "the player, by name");
+        assert_eq!(d.damage_in_window, 750);
+        assert_eq!(d.final_blows.len(), 2);
+        // Newest first: the last thing to land leads.
+        assert_eq!(d.final_blows[0].amount, 450);
+        assert_eq!(d.final_blows[1].amount, 300);
+        assert_eq!(d.final_blows[0].source.to_lowercase(), "a fire giant");
+    }
+
+    /// The buffer only holds damage aimed at you, so a mob dying must not be
+    /// handed your incoming hits.
+    #[test]
+    fn a_mob_death_carries_no_post_mortem() {
+        let encs = run(&[
+            (100, "A fire giant hits YOU for 300 points of damage."),
+            (102, "You slash a fire giant for 900 points of damage."),
+            (104, "You have slain a fire giant!"),
+        ]);
+        let d = encs[0].deaths.iter().find(|d| d.victim != "Tharn").unwrap();
+        assert!(d.final_blows.is_empty());
+        assert_eq!(d.damage_in_window, 0);
+    }
+
+    /// Damage from earlier in a long fight is not what killed you.
+    #[test]
+    fn blows_older_than_the_death_window_are_not_blamed() {
+        let encs = run(&[
+            (100, "A fire giant hits YOU for 999 points of damage."),
+            (108, "A fire giant hits YOU for 10 points of damage."),
+            (118, "A fire giant hits YOU for 20 points of damage."),
+            (120, "You have been slain by a fire giant!"),
+        ]);
+        let d = &encs[0].deaths[0];
+        // The 999 at t=100 is outside the 15s window ending at t=120.
+        assert_eq!(d.damage_in_window, 30, "{:?}", d.final_blows);
+        assert_eq!(d.final_blows.len(), 2);
+    }
+
+    /// Charm breaks and is resung constantly, so the number worth reporting is
+    /// how much of the fight it actually held.
+    ///
+    /// Timestamps stay inside the idle timeout; spacing them further apart
+    /// would close the fight and start another.
+    #[test]
+    fn charm_uptime_measures_held_time_not_whether_it_ever_landed() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        let hit = |t: &mut EncounterTracker, ts: i64| {
+            for e in &entries(&[(ts, "You slash a rat for 1 point of damage.")]) {
+                t.push(e);
+            }
+        };
+        hit(&mut t, 100);
+        t.set_charmed(100, &imp, true);
+        t.set_charmed(106, &imp, false); // 6s held, one break
+        hit(&mut t, 106);
+        t.set_charmed(108, &imp, true);
+        hit(&mut t, 112); // still charmed when the fight ends
+        let enc = t.flush().expect("encounter");
+
+        let st = enc.actors.get("an imp protector").expect("pet recorded");
+        assert_eq!(st.charmed_seconds, 10, "6s + 4s still held at the end");
+        assert_eq!(st.charm_breaks, 1);
+        // 10 of a 12-second fight.
+        assert!(
+            (enc.charm_uptime() - 10.0 / 12.0).abs() < 0.01,
+            "{}",
+            enc.charm_uptime()
+        );
+    }
+
+    /// Refreshing a charm that never broke must not restart its clock.
+    #[test]
+    fn re_landing_an_unbroken_charm_does_not_reset_uptime() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        let hit = |t: &mut EncounterTracker, ts: i64| {
+            for e in &entries(&[(ts, "You slash a rat for 1 point of damage.")]) {
+                t.push(e);
+            }
+        };
+        hit(&mut t, 100);
+        t.set_charmed(100, &imp, true);
+        t.set_charmed(104, &imp, true); // refresh, no break
+        hit(&mut t, 106);
+        t.set_charmed(108, &imp, true); // refresh, no break
+        hit(&mut t, 112);
+        let enc = t.flush().expect("encounter");
+
+        let st = enc.actors.get("an imp protector").expect("pet recorded");
+        assert_eq!(st.charmed_seconds, 12, "held the whole fight");
+        assert_eq!(st.charm_breaks, 0);
+        assert!((enc.charm_uptime() - 1.0).abs() < 0.01);
     }
 
     /// A charmed mob is under a pile of your debuffs. The first of them to

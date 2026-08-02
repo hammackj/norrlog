@@ -54,6 +54,54 @@ pub struct MeterRow {
     pub pet_damage: u64,
 }
 
+/// One of your deaths, with its context.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeathReportRow {
+    pub at: i64,
+    pub killer: Option<String>,
+    pub zone: String,
+    /// The fight it happened in, so a death traces back to an encounter.
+    pub encounter_id: u64,
+    pub encounter_title: String,
+    pub damage_in_window: u64,
+    pub blows: Vec<eqlparser_core::encounter::IncomingHit>,
+}
+
+/// Everything the deaths view shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeathReport {
+    pub deaths: Vec<DeathReportRow>,
+    /// Who has killed you most often.
+    pub by_killer: Vec<(String, u32)>,
+    /// Which zones you die in.
+    pub by_zone: Vec<(String, u32)>,
+    pub total: usize,
+}
+
+/// A charm that failed to take, for the resist overlay.
+#[derive(Debug, Clone, Serialize)]
+pub struct CharmFailure {
+    pub at: i64,
+    pub target: String,
+    /// "resisted", "immune" or "unaffected".
+    pub kind: &'static str,
+    pub spell: String,
+}
+
+/// What the charm overlay shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct CharmReport {
+    /// Most recent failures first.
+    pub failures: Vec<CharmFailure>,
+    /// Creatures charmed right now.
+    pub charmed: Vec<String>,
+    /// Charm uptime for the fight in progress, 0.0–1.0.
+    pub uptime: f64,
+    pub breaks: u32,
+    /// Failures within the last minute, for an at-a-glance "it is not landing".
+    pub recent_failures: usize,
+}
+
 /// A compact view of one fight, for lists and the overlay.
 #[derive(Debug, Clone, Serialize)]
 pub struct EncounterSummary {
@@ -76,6 +124,9 @@ pub struct EncounterSummary {
     /// badly is visible, not just one that went well.
     pub your_damage_taken: u64,
     pub your_deaths: u64,
+    /// Share of the fight your charms held, 0.0–1.0.
+    pub charm_uptime: f64,
+    pub charm_breaks: u32,
     pub kills: usize,
     pub loot_count: usize,
     pub coin_copper: u64,
@@ -294,6 +345,12 @@ pub struct Snapshot {
 ///
 /// Wider than the experience window: points arrive as whole units and far less
 /// often, so a short window reads zero most of the time.
+/// How long a charm failure stays on the overlay.
+const CHARM_FAILURE_WINDOW: i64 = 300;
+/// Hard cap on retained failures, so a pathological fight cannot grow the list
+/// without bound.
+const CHARM_FAILURE_MAX: usize = 50;
+
 const AA_RATE_WINDOW: i64 = 2 * 3600;
 
 /// Wall-clock seconds since the Unix epoch.
@@ -314,6 +371,11 @@ pub struct Engine {
     lockouts: LockoutTracker,
     sky: SkyTracker,
     aa: AaCatalog,
+    /// Recent charm failures, for the resist overlay.
+    charm_failures: Vec<CharmFailure>,
+    /// The last charm we tried to land, so nameless failure lines can be
+    /// attributed to something.
+    last_charm_attempt: Option<(String, String)>,
     /// The description line awaiting its cost, so a rank keeps its text.
     aa_pending_desc: String,
     trades: TradeskillTracker,
@@ -358,6 +420,8 @@ impl Engine {
             lockouts: LockoutTracker::new(),
             sky: SkyTracker::new(),
             aa: AaCatalog::new(),
+            charm_failures: Vec::new(),
+            last_charm_attempt: None,
             aa_pending_desc: String::new(),
             trades: TradeskillTracker::new(),
             tasks: TaskTracker::new(),
@@ -461,6 +525,23 @@ impl Engine {
             Event::CastStart { source, spell, .. } if source.is_you() => {
                 self.resolver.note_cast(entry.timestamp, spell);
                 self.observe_class_spell(entry.timestamp, spell);
+                // Remember the charm being sung so a nameless failure line can
+                // be attributed. The target is unknown at cast time, so the
+                // creature currently being fought stands in for it.
+                if self.spell_is_charm(spell) {
+                    let target = self
+                        .tracker
+                        .current()
+                        .and_then(|e| {
+                            e.actors
+                                .values()
+                                .filter(|a| a.damaged_by_you && !a.charmed_by_you)
+                                .max_by_key(|a| a.damage_taken)
+                                .map(|a| a.name.clone())
+                        })
+                        .unwrap_or_else(|| "your target".to_string());
+                    self.last_charm_attempt = Some((target, spell.clone()));
+                }
                 // Drinking an experience potion is logged as casting it.
                 if eqlparser_core::experience::is_aa_potion(spell) {
                     self.exp.on_aa_potion(entry.timestamp);
@@ -504,8 +585,27 @@ impl Engine {
             Event::TaskUpdated { task } => self.tasks.on_updated(entry.timestamp, task),
             Event::EffectWoreOffTarget { spell, target } => {
                 if self.fading_effect_ends_a_charm(spell) {
-                    self.tracker.set_charmed(target, false);
+                    self.tracker.set_charmed(entry.timestamp, target, false);
                 }
+            }
+            Event::Resisted { target, spell } => {
+                // Only charm resists reach the overlay. Everything resists
+                // everything constantly; the whole value of the panel is that
+                // it stays quiet until the thing you care about fails.
+                if self.spell_is_charm(spell) {
+                    self.note_charm_failure(
+                        entry.timestamp,
+                        &target.display(&self.player),
+                        "resisted",
+                        spell,
+                    );
+                }
+            }
+            Event::CharmImmune => {
+                // The line names nobody, so the target is the one we were last
+                // trying to charm.
+                let (t, sp) = self.last_charm_attempt.clone().unwrap_or_default();
+                self.note_charm_failure(entry.timestamp, &t, "immune", &sp);
             }
             Event::EffectLandedOnTarget { target, text } => {
                 // The line names no spell, and eleven share this text — six
@@ -514,7 +614,7 @@ impl Engine {
                 // Guessing from the text alone would hand an enemy's damage to
                 // you the instant a mez broke.
                 if self.landed_effect_is_your_charm(entry.timestamp, text) {
-                    self.tracker.set_charmed(target, true);
+                    self.tracker.set_charmed(entry.timestamp, target, true);
                 }
             }
             Event::SpellSetLoaded { name } => {
@@ -817,6 +917,95 @@ impl Engine {
         self.classes.ranked_in_window(now - 24 * 3600, now)
     }
 
+    /// History worth keeping between sessions.
+    ///
+    /// Only boss kills, the fights that contained them, levels and AA are
+    /// persisted. Ordinary trash fights are deliberately left out: there are
+    /// thousands, they are re-derivable from the log, and none of them backs a
+    /// build guide. Each kill is matched to the encounter it happened in so
+    /// the stored row carries the fight's duration and your damage, which is
+    /// what per-raid averages are built from.
+    pub fn history_to_persist(
+        &self,
+    ) -> (
+        Vec<crate::store::StoredKill>,
+        Vec<crate::store::StoredEncounter>,
+        Vec<crate::store::StoredLevel>,
+        Vec<(String, u32, u32, i64)>,
+    ) {
+        let mut kills = Vec::new();
+        let mut encs = Vec::new();
+
+        for k in self.lockouts.kills() {
+            let summary = self
+                .encounter_containing(k.timestamp)
+                .map(|e| self.summarise(e, false));
+            let (duration, your_damage, your_dps) = summary
+                .as_ref()
+                .map(|s| (s.duration, s.your_damage, s.your_dps))
+                .unwrap_or((0, 0, 0.0));
+            let build = self.build_label(k.timestamp);
+            kills.push(crate::store::StoredKill {
+                timestamp: k.timestamp,
+                boss: k.boss.clone(),
+                difficulty: k.difficulty,
+                zone: k.zone.clone(),
+                solo: k.solo,
+                build: build.clone(),
+                duration,
+                your_damage,
+                your_dps,
+            });
+            if let Some(e) = summary {
+                encs.push(crate::store::StoredEncounter {
+                    start: e.start,
+                    end: e.end,
+                    title: e.title,
+                    zone: e.zone.unwrap_or_default(),
+                    duration: e.duration,
+                    your_damage: e.your_damage,
+                    your_dps: e.your_dps,
+                    total_damage: e.damage_to_enemies,
+                    kills: e.kills as u32,
+                    deaths: e.your_deaths as u32,
+                    build,
+                });
+            }
+        }
+
+        let levels = self
+            .levels_with_build()
+            .into_iter()
+            .filter(|l| l.level.is_some() && l.complete)
+            .map(|l| crate::store::StoredLevel {
+                level: l.level.unwrap_or(0),
+                started: l.started,
+                ended: l.ended.unwrap_or(0),
+                seconds: l.seconds,
+                kills: l.kills,
+                percent: l.percent,
+                build: l.build.clone(),
+                zones: serde_json::to_string(&l.zones).unwrap_or_else(|_| "[]".into()),
+            })
+            .collect();
+
+        let aa = self
+            .exp
+            .aa_purchases()
+            .into_iter()
+            .map(|p| (p.ability, p.rank, p.spent, p.last_seen))
+            .collect();
+
+        (kills, encs, levels, aa)
+    }
+
+    /// The completed encounter a timestamp falls inside, if any.
+    fn encounter_containing(&self, ts: i64) -> Option<&Encounter> {
+        self.encounters
+            .iter()
+            .find(|e| ts >= e.start && ts <= e.end + eqlparser_core::encounter::LOOT_GRACE_SECONDS)
+    }
+
     /// Which bosses each build has cleared.
     pub fn build_history(&self) -> Vec<BuildRecord> {
         self.lockouts.builds(&|ts| self.build_label(ts))
@@ -839,6 +1028,119 @@ impl Engine {
             .iter()
             .filter_map(|id| db.get(*id))
             .any(|sp| sp.is_charm)
+    }
+
+    /// Whether a spell name, with or without its rank, is a charm.
+    fn spell_is_charm(&self, spell: &str) -> bool {
+        let db = self.resolver.db();
+        db.candidates_for_name(eqlparser_core::spell::base_spell_name(spell))
+            .iter()
+            .filter_map(|id| db.get(*id))
+            .any(|sp| sp.is_charm)
+    }
+
+    fn note_charm_failure(&mut self, at: i64, target: &str, kind: &'static str, spell: &str) {
+        self.charm_failures.push(CharmFailure {
+            at,
+            target: target.to_string(),
+            kind,
+            spell: spell.to_string(),
+        });
+        // Bound the list, but do not age it here: pruning against the newest
+        // failure's own timestamp means a lone entry never expires, because
+        // nothing later ever arrives to push it out. Age is applied when the
+        // report is read, against the current time.
+        if self.charm_failures.len() > CHARM_FAILURE_MAX {
+            let excess = self.charm_failures.len() - CHARM_FAILURE_MAX;
+            self.charm_failures.drain(0..excess);
+        }
+    }
+
+    /// Your deaths, newest first, each with the blows that caused it.
+    ///
+    /// Only your own: a mob dying is a kill, and the buffer of incoming hits
+    /// only ever held damage aimed at you.
+    pub fn death_report(&self) -> DeathReport {
+        use std::collections::HashMap;
+        let mut rows: Vec<DeathReportRow> = Vec::new();
+        let mut by_killer: HashMap<String, u32> = HashMap::new();
+        let mut by_zone: HashMap<String, u32> = HashMap::new();
+
+        let all = self
+            .encounters
+            .iter()
+            .chain(self.tracker.current().into_iter());
+        for enc in all {
+            let title = self.summarise(enc, false).title;
+            for d in &enc.deaths {
+                if !self.is_player(&d.victim) {
+                    continue;
+                }
+                let zone = enc.zone.clone().unwrap_or_default();
+                *by_killer
+                    .entry(d.killer.clone().unwrap_or_else(|| "unknown".into()))
+                    .or_default() += 1;
+                *by_zone.entry(zone.clone()).or_default() += 1;
+                rows.push(DeathReportRow {
+                    at: d.timestamp,
+                    killer: d.killer.clone(),
+                    zone,
+                    encounter_id: enc.id,
+                    encounter_title: title.clone(),
+                    damage_in_window: d.damage_in_window,
+                    blows: d.final_blows.clone(),
+                });
+            }
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.at));
+
+        let mut by_killer: Vec<(String, u32)> = by_killer.into_iter().collect();
+        by_killer.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut by_zone: Vec<(String, u32)> = by_zone.into_iter().collect();
+        by_zone.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        DeathReport {
+            total: rows.len(),
+            deaths: rows,
+            by_killer,
+            by_zone,
+        }
+    }
+
+    /// Whether a display name refers to the logging character.
+    fn is_player(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case(&self.player) || name.eq_ignore_ascii_case("you")
+    }
+
+    /// Charm state and recent failures.
+    pub fn charm_report(&self) -> CharmReport {
+        let now = self.now();
+        let cur = self.tracker.current();
+        // Aged here rather than on insert: the overlay must go quiet on its
+        // own after a fight, not sit showing a resist from hours ago because
+        // it happened to be the last one.
+        let mut failures: Vec<CharmFailure> = self
+            .charm_failures
+            .iter()
+            .filter(|f| now - f.at <= CHARM_FAILURE_WINDOW)
+            .cloned()
+            .collect();
+        failures.reverse();
+        CharmReport {
+            recent_failures: failures.iter().filter(|f| now - f.at <= 60).count(),
+            charmed: cur
+                .map(|e| {
+                    e.actors
+                        .values()
+                        .filter(|s| s.charmed_by_you)
+                        .map(|s| s.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            uptime: cur.map(|e| e.charm_uptime()).unwrap_or(0.0),
+            breaks: cur.map(|e| e.charm_breaks()).unwrap_or(0),
+            failures,
+        }
     }
 
     /// Whether a landing on someone else was a charm you cast.
@@ -1147,6 +1449,8 @@ impl Engine {
             your_healing: you.map(|s| s.healing_done).unwrap_or(0),
             your_damage_taken: enc.your_damage_taken(),
             your_deaths: you.map(|s| s.deaths).unwrap_or(0),
+            charm_uptime: enc.charm_uptime(),
+            charm_breaks: enc.charm_breaks(),
             kills: enc
                 .deaths
                 .iter()
@@ -1445,6 +1749,38 @@ mod tests {
             .expect("row exists");
         assert!(!mobs.is_pet, "a mez must not be read as a charm");
         assert_eq!(mobs.pet_damage, 0);
+    }
+
+    /// A resist that is not a charm must never reach the charm overlay, and a
+    /// charm resist must age out on its own rather than sitting there.
+    #[test]
+    fn the_charm_overlay_shows_only_charm_failures_and_forgets_them() {
+        let mut e = Engine::new("Tharn".to_string(), charm_db());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash Innoruuk for 100 points of damage.",
+                // A mez resisting is not a charm failure.
+                "[Tue Jul 28 14:00:02 2026] Innoruuk resisted your Crission's Pixie Strike!",
+                // A charm resisting is, and the rank suffix must not hide it.
+                "[Tue Jul 28 14:00:04 2026] Innoruuk resisted your Solon's Bewitching Bravura V!",
+            ],
+        );
+        let r = e.charm_report();
+        assert_eq!(r.failures.len(), 1, "only the charm: {:?}", r.failures);
+        assert_eq!(r.failures[0].kind, "resisted");
+        assert_eq!(r.failures[0].target, "Innoruuk");
+
+        // Long after the fight, the panel must be empty rather than showing a
+        // stale resist as though it had just happened.
+        feed(
+            &mut e,
+            &["[Tue Jul 28 16:00:00 2026] You slash a rat for 1 point of damage."],
+        );
+        assert!(
+            e.charm_report().failures.is_empty(),
+            "failures must age out"
+        );
     }
 
     /// The UIs style charmed pets from `is_pet`; if the meter stops carrying

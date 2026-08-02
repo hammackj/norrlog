@@ -19,6 +19,8 @@ use tokio::sync::broadcast;
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
+    /// Durable history; absent when the database could not be opened.
+    pub store: Option<Arc<Mutex<crate::store::Store>>>,
     /// The engine, locked briefly for detail queries. The follower thread holds
     /// this while ingesting a batch of lines.
     pub engine: Arc<Mutex<Engine>>,
@@ -45,6 +47,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tradeskills", get(tradeskills))
         .route("/api/tasks", get(tasks).post(define_task))
         .route("/api/builds", get(builds))
+        .route("/api/history", get(history))
+        .route("/api/export", get(export))
+        .route("/api/charm", get(charm))
+        .route("/api/deaths", get(deaths))
         .route("/api/aa", get(aa))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/incoming", get(incoming))
@@ -275,6 +281,173 @@ async fn define_task(
     (StatusCode::OK, "ok").into_response()
 }
 
+#[derive(Debug, Deserialize)]
+struct ExportQuery {
+    /// "md" (default) or "csv".
+    #[serde(default)]
+    format: Option<String>,
+    /// Restrict to one build, e.g. "WAR/DRU/BRD".
+    #[serde(default)]
+    build: Option<String>,
+}
+
+/// Raid statistics for writing a build guide.
+///
+/// Served from the durable store rather than the live engine, so it covers
+/// every log file ever parsed rather than just the one being followed — which
+/// is the whole point of writing a guide from it.
+async fn export(State(s): State<AppState>, Query(q): Query<ExportQuery>) -> Response {
+    let Some(store) = &s.store else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "history database unavailable").into_response();
+    };
+    let stats = {
+        let st = store.lock().unwrap();
+        match st.raid_stats() {
+            Ok(v) => v,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    };
+    let stats: Vec<_> = match &q.build {
+        Some(b) if !b.is_empty() => stats.into_iter().filter(|r| &r.build == b).collect(),
+        _ => stats,
+    };
+
+    let csv = q.format.as_deref() == Some("csv");
+    let body = if csv {
+        render_export_csv(&stats)
+    } else {
+        render_export_markdown(&stats)
+    };
+    let ctype = if csv { "text/csv" } else { "text/markdown" };
+    let name = if csv { "raids.csv" } else { "raids.md" };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, format!("{ctype}; charset=utf-8")),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `1h02m03s`, or `—` when there is no timing to report.
+fn hms(seconds: f64) -> String {
+    if seconds <= 0.0 {
+        return "—".to_string();
+    }
+    let s = seconds.round() as i64;
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m{sec:02}s")
+    } else {
+        format!("{m}m{sec:02}s")
+    }
+}
+
+fn render_export_markdown(stats: &[crate::store::RaidStat]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    out.push_str("# Raid history\n\n");
+    if stats.is_empty() {
+        out.push_str("No boss kills recorded yet.\n");
+        return out;
+    }
+
+    // Grouped by build, because a guide is written about one loadout.
+    let mut builds: Vec<&str> = stats.iter().map(|r| r.build.as_str()).collect();
+    builds.sort_unstable();
+    builds.dedup();
+
+    for build in builds {
+        let rows: Vec<_> = stats.iter().filter(|r| r.build == build).collect();
+        let total: u32 = rows.iter().map(|r| r.kills).sum();
+        let label = if build.is_empty() { "unknown build" } else { build };
+        let _ = writeln!(out, "## {label}\n");
+        let _ = writeln!(out, "{total} boss kills across {} entries.\n", rows.len());
+        out.push_str("| Boss | Diff | Kills | Avg time | Best time | Avg DPS | Best DPS |\n");
+        out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+        for r in rows {
+            let _ = writeln!(
+                out,
+                "| {} | d{} | {} | {} | {} | {:.0} | {:.0} |",
+                r.boss,
+                r.difficulty,
+                r.kills,
+                hms(r.avg_seconds),
+                hms(r.best_seconds as f64),
+                r.avg_dps,
+                r.best_dps,
+            );
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "_DPS is your own damage; charmed-pet damage is tracked separately. \
+         Timing and DPS averages exclude kills whose fight could not be bounded._\n",
+    );
+    out
+}
+
+fn render_export_csv(stats: &[crate::store::RaidStat]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    out.push_str("build,boss,difficulty,kills,avg_seconds,best_seconds,avg_dps,best_dps,first_kill,last_kill\n");
+    for r in stats {
+        // Boss names contain no commas today, but quoting costs nothing and
+        // stops a future one silently shifting every column.
+        let _ = writeln!(
+            out,
+            "\"{}\",\"{}\",{},{},{:.0},{},{:.1},{:.1},{},{}",
+            r.build, r.boss, r.difficulty, r.kills, r.avg_seconds, r.best_seconds, r.avg_dps,
+            r.best_dps, r.first_kill, r.last_kill
+        );
+    }
+    out
+}
+
+/// Durable history: everything kept across log files.
+///
+/// Distinct from `/api/builds` and `/api/lockouts`, which only ever see the
+/// log currently being followed. This is the one that survives a rotation.
+async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
+    let Some(store) = &s.store else {
+        return Json(serde_json::json!({
+            "available": false,
+            "reason": "history database could not be opened",
+        }));
+    };
+    let st = store.lock().unwrap();
+    let kills = st.kills().unwrap_or_default();
+    let levels = st.levels().unwrap_or_default();
+    let sources = st.sources().unwrap_or_default();
+    let (nk, ne, nl) = st.counts().unwrap_or((0, 0, 0));
+    Json(serde_json::json!({
+        "available": true,
+        "kills": kills,
+        "levels": levels,
+        "sources": sources.iter().map(|(p, seen, bytes)| serde_json::json!({
+            "path": p, "last_seen": seen, "bytes": bytes,
+        })).collect::<Vec<_>>(),
+        "counts": { "kills": nk, "encounters": ne, "levels": nl },
+    }))
+}
+
+/// Your deaths, with what killed you.
+async fn deaths(State(s): State<AppState>) -> Json<crate::engine::DeathReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.death_report())
+}
+
+/// Charm state and recent charm failures, for the resist overlay.
+async fn charm(State(s): State<AppState>) -> Json<crate::engine::CharmReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.charm_report())
+}
+
 /// The AA catalogue read from `/alt list`.
 async fn aa(State(s): State<AppState>) -> Json<eqlparser_core::aa::AaReport> {
     let engine = s.engine.lock().unwrap();
@@ -381,6 +554,7 @@ mod tests {
         let snap = engine.snapshot(50);
         let (tx, _) = broadcast::channel(4);
         AppState {
+            store: None,
             engine: Arc::new(Mutex::new(engine)),
             snapshot: Arc::new(RwLock::new(snap)),
             updates: tx,

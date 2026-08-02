@@ -340,3 +340,15 @@ body {
 .panel:hover .head::after {
   opacity: 0.6;
 }
+
+/* A charm that failed. Red rather than the neutral row tint: this is the one
+   thing on the overlay that wants to interrupt you. */
+.tag.fail {
+  background: rgba(255, 123, 114, 0.28);
+  color: var(--enemy);
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 5px;
+  vertical-align: middle;
+}

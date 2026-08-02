@@ -63,6 +63,9 @@
     debuffs: document.getElementById("debuffs"),
     buffPanel: document.getElementById("buff-panel"),
     buffs: document.getElementById("buffs"),
+    charmPanel: document.getElementById("charm-panel"),
+    charmMeta: document.getElementById("charm-meta"),
+    charmRows: document.getElementById("charm-rows"),
     skyPanel: document.getElementById("sky-panel"),
     skyMeta: document.getElementById("sky-meta"),
     skyRows: document.getElementById("sky-rows"),
@@ -76,6 +79,68 @@
   if (!opt.panels.includes("auras")) el.auraPanel.classList.add("hidden");
   if (!opt.panels.includes("debuffs")) el.debuffPanel.classList.add("hidden");
   if (!opt.panels.includes("buffs")) el.buffPanel.classList.add("hidden");
+
+  /* Charm resists.
+   *
+   * Its own panel so it can live in its own window, positioned away from the
+   * meter — a charm that fails is something you react to immediately, and it
+   * belongs where your eyes already are, not buried in a stack of panels.
+   *
+   * Polled on a short interval rather than pushed: a resist matters within a
+   * second or two, and the payload is tiny.
+   *
+   * Unlike the other panels this one stays visible while a charm is held, so
+   * the uptime figure is always readable; it hides only when there is neither
+   * a charm nor a recent failure to report. */
+  const CHARM_POLL_MS = 1000;
+
+  async function pollCharm() {
+    if (!opt.panels.includes("charm")) return;
+    try {
+      const r = await fetch("/api/charm");
+      if (!r.ok) return;
+      const d = await r.json();
+      const idle = !d.charmed.length && !d.failures.length;
+      el.charmPanel.classList.toggle("hidden", idle);
+      if (idle) return;
+
+      el.charmMeta.innerHTML = d.charmed.length
+        ? `<b>${(d.uptime * 100).toFixed(0)}%</b> uptime${
+            d.breaks ? ` · ${d.breaks} break${d.breaks === 1 ? "" : "s"}` : ""
+          }`
+        : `<span class="offline">no charm</span>`;
+
+      const held = d.charmed
+        .map(
+          (n) => `<div class="row pet" style="--share:100%">
+            <span class="name">${esc(n)}</span>
+            <span class="nums"><span class="dmg">charmed</span></span>
+          </div>`
+        )
+        .join("");
+
+      const fails = d.failures
+        .slice(0, opt.rows)
+        .map((f) => {
+          const ago = Math.max(0, Math.round(Date.now() / 1000 - f.at));
+          return `<div class="row enemy" style="--share:100%">
+            <span class="name">${esc(f.target)}
+              <span class="tag fail">${esc(f.kind)}</span></span>
+            <span class="nums"><span class="dmg">${ago}s ago</span></span>
+          </div>`;
+        })
+        .join("");
+
+      el.charmRows.innerHTML = held + fails;
+    } catch (e) {
+      /* daemon busy; try again next tick */
+    }
+  }
+
+  if (opt.panels.includes("charm")) {
+    pollCharm();
+    setInterval(pollCharm, CHARM_POLL_MS);
+  }
 
   /* Sky turn-ins.
    *

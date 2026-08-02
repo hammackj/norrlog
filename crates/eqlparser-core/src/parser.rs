@@ -85,6 +85,8 @@ enum RuleId {
     PetAttack,
     EffectWoreOffTarget,
     EffectLandedOnTarget,
+    CharmImmune,
+    TargetUnaffected,
     AbilityCooldown,
     ItemProc,
     EmoteWince,
@@ -309,6 +311,11 @@ static RULES: &[(RuleId, &str)] = &[
     // against what you actually cast. Listed here rather than as an emote
     // because it is the only signal that a charm took hold: the pet only
     // announces itself when ordered to attack, which routinely never happens.
+    // Charm refused outright rather than resisted. Rare but decisive: no
+    // amount of resinging will land it.
+    (RuleId::CharmImmune, r"^This NPC cannot be charmed\.$"),
+    // The generic "it did nothing" reply, seen when a spell fails to take.
+    (RuleId::TargetUnaffected, r"^Your target looks unaffected\.$"),
     (
         RuleId::EffectLandedOnTarget,
         r"^(?P<target>.+?)(?P<text>'s eyes glaze over)\.$",
@@ -875,6 +882,8 @@ impl Parser {
                     pet: self.actor(g("pet").unwrap_or_default()),
                     target: self.actor(g("target").unwrap_or_default()),
                 },
+                RuleId::CharmImmune => Event::CharmImmune,
+                RuleId::TargetUnaffected => Event::TargetUnaffected,
                 RuleId::EffectLandedOnTarget => Event::EffectLandedOnTarget {
                     target: self.actor(g("target").unwrap_or_default()),
                     text: format!("{}.", g("text").unwrap_or_default()),
