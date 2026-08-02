@@ -184,10 +184,39 @@ async fn encounter_detail(State(s): State<AppState>, AxPath(id): AxPath<u64>) ->
     }
 }
 
-async fn loot(State(s): State<AppState>) -> Json<serde_json::Value> {
+#[derive(Debug, Deserialize)]
+struct LootQuery {
+    /// Restrict to the current play session.
+    ///
+    /// Taken as a string rather than a bool so `session=1` works as well as
+    /// `session=true`. A strict bool rejects the whole request for a URL a
+    /// person would reasonably type, and the other overlay options here
+    /// already use `1`.
+    #[serde(default)]
+    session: Option<String>,
+}
+
+impl LootQuery {
+    fn session(&self) -> bool {
+        matches!(
+            self.session.as_deref(),
+            Some("1") | Some("true") | Some("yes") | Some("")
+        )
+    }
+}
+
+async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<serde_json::Value> {
     let engine = s.engine.lock().unwrap();
-    let tally = engine.loot_tally();
-    Json(serde_json::json!({ "total": tally.len(), "items": tally }))
+    let start = engine.session_start();
+    let tally = engine.loot_tally_since(q.session().then_some(start));
+    Json(serde_json::json!({
+        "total": tally.len(),
+        "items": tally,
+        // Always reported, so the UI can label the session without a second
+        // request and can say when it began even while showing everything.
+        "session_start": start,
+        "session_coin_copper": engine.session_coin(),
+    }))
 }
 
 /// Level-progression analysis: per-level history, best zones, best mobs.
@@ -637,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn loot_endpoint_aggregates() {
         let s = state_with(SAMPLE);
-        let Json(v) = loot(State(s)).await;
+        let Json(v) = loot(State(s), Query(LootQuery { session: None })).await;
         assert_eq!(v["total"], 1);
         assert_eq!(v["items"][0]["item"], "Mummy Wrap");
     }

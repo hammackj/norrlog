@@ -346,6 +346,14 @@ pub struct Snapshot {
 /// Wider than the experience window: points arrive as whole units and far less
 /// often, so a short window reads zero most of the time.
 /// How long a charm failure stays on the overlay.
+/// A gap in the log longer than this starts a new play session.
+///
+/// Chosen against the real thing: the log's quiet stretches are either a few
+/// minutes (afk, zoning, sorting bags) or hours (logged off overnight). Thirty
+/// minutes sits in the empty space between those, and splits five days into
+/// fourteen sessions that line up with when the character was actually played.
+const SESSION_GAP_SECONDS: i64 = 30 * 60;
+
 const CHARM_FAILURE_WINDOW: i64 = 300;
 /// Hard cap on retained failures, so a pathological fight cannot grow the list
 /// without bound.
@@ -399,6 +407,8 @@ pub struct Engine {
     all_loot: Vec<eqlparser_core::encounter::LootRecord>,
     player: String,
     last_timestamp: i64,
+    /// When the current play session began.
+    session_start: i64,
     /// Difference between log time and system time, learned once we are
     /// following the file live.
     ///
@@ -431,6 +441,7 @@ impl Engine {
             all_loot: Vec::new(),
             player,
             last_timestamp: 0,
+            session_start: 0,
             clock_offset: None,
             live: false,
         };
@@ -502,6 +513,14 @@ impl Engine {
     }
 
     fn push_entry(&mut self, entry: LogEntry) {
+        // A long silence means the character was logged off. Detected from the
+        // log's own clock rather than the daemon's uptime, so restarting the
+        // app mid-session does not look like a new one.
+        if self.last_timestamp > 0 && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS {
+            self.session_start = entry.timestamp;
+        } else if self.session_start == 0 {
+            self.session_start = entry.timestamp;
+        }
         self.last_timestamp = entry.timestamp;
         // Keep the log/system clock relationship current while following live;
         // see `calibrate_clock` for why once-at-startup is not enough.
@@ -1372,12 +1391,36 @@ impl Engine {
         self.encounters.iter().find(|e| e.id == id)
     }
 
+    pub fn session_start(&self) -> i64 {
+        self.session_start
+    }
+
+    /// Coin taken from corpses during the current session.
+    pub fn session_coin(&self) -> u64 {
+        self.encounters
+            .iter()
+            .filter(|e| e.start >= self.session_start)
+            .map(|e| e.coin_copper)
+            .sum()
+    }
+
     /// Aggregate every looted item across the log, most recent first.
     pub fn loot_tally(&self) -> Vec<LootTally> {
+        self.loot_tally_since(None)
+    }
+
+    /// Aggregate looted items, most recent first.
+    ///
+    /// `since` bounds it to one play session; `None` covers the whole log.
+    pub fn loot_tally_since(&self, since: Option<i64>) -> Vec<LootTally> {
         use std::collections::HashMap;
         let mut map: HashMap<String, LootTally> = HashMap::new();
         {
-            for l in &self.all_loot {
+            for l in self
+                .all_loot
+                .iter()
+                .filter(|l| since.is_none_or(|s| l.timestamp >= s))
+            {
                 let t = map.entry(l.item.clone()).or_insert_with(|| LootTally {
                     item: l.item.clone(),
                     count: 0,
