@@ -138,10 +138,49 @@ pub struct ComponentUse {
     pub last_used: i64,
 }
 
+/// One skill point, with what earned it.
+///
+/// Kept individually rather than only as a running total so a skill can be
+/// read back as a history — which recipe carried you across which stretch —
+/// instead of a single number that says nothing about how you got there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillUpEvent {
+    pub at: i64,
+    /// The value the skill reached.
+    pub value: u32,
+    /// The item being combined, when one could be matched.
+    pub item: Option<String>,
+    /// Bought from a trainer rather than earned.
+    pub trained: bool,
+}
+
+/// A contiguous stretch of a skill raised by one recipe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSegment {
+    pub skill: String,
+    /// The item, or `None` for a stretch that could not be attributed.
+    pub item: Option<String>,
+    pub trained: bool,
+    /// The skill value on entering the stretch, and on leaving it.
+    ///
+    /// `from` is one below the first point gained, so a run that took you to
+    /// 31 through 92 reads 30 -> 92: the level you were at when you started.
+    pub from: u32,
+    pub to: u32,
+    pub ups: u32,
+    /// Attempts at this item within the stretch, and how many worked.
+    pub attempts: u32,
+    pub successes: u32,
+    pub started: i64,
+    pub ended: i64,
+}
+
 /// Everything the tradeskill tab shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeskillReport {
     pub skills: Vec<SkillProgress>,
+    /// Per-skill history, oldest first.
+    pub segments: Vec<SkillSegment>,
     pub crafts: Vec<CraftRecord>,
     pub components: Vec<ComponentUse>,
     pub recipes_learned: Vec<String>,
@@ -164,6 +203,10 @@ pub struct TradeskillTracker {
     components: HashMap<String, ComponentUse>,
     recipes: Vec<String>,
     pending: Option<PendingCraft>,
+    /// Every skill point in order, per skill.
+    timeline: HashMap<String, Vec<SkillUpEvent>>,
+    /// Every combine attempt, for counting effort within a stretch.
+    attempts: Vec<(i64, String, bool)>,
     /// Learned item -> tradeskill, from combines that did produce a skill-up.
     item_skill: HashMap<String, String>,
     /// Mappings declared rather than inferred. A skill-up that merely happens
@@ -180,6 +223,8 @@ impl Default for TradeskillTracker {
 impl TradeskillTracker {
     pub fn new() -> Self {
         let mut t = TradeskillTracker {
+            timeline: HashMap::new(),
+            attempts: Vec::new(),
             skills: HashMap::new(),
             crafts: HashMap::new(),
             components: HashMap::new(),
@@ -228,6 +273,7 @@ impl TradeskillTracker {
         if e.skill.is_none() {
             e.skill = known;
         }
+        self.attempts.push((timestamp, key.clone(), success));
         // Hold it briefly: a skill-up arriving next names the tradeskill.
         self.pending = Some(PendingCraft {
             at: timestamp,
@@ -245,11 +291,21 @@ impl TradeskillTracker {
         if !is_tradeskill(skill) {
             return;
         }
-        if let Some(e) = self.skills.get_mut(&skill.to_lowercase()) {
+        let key = skill.to_lowercase();
+        if let Some(e) = self.skills.get_mut(&key) {
             // Cannot exceed the ups actually seen: a trainer line without a
             // matching skill-up would otherwise push practice below zero.
             if e.trained < e.ups {
                 e.trained += 1;
+            }
+        }
+        // The confirmation follows the point, so the most recent one not yet
+        // marked is the point that was bought. Any recipe credited to it was
+        // coincidence — a combine that happened to be nearby.
+        if let Some(events) = self.timeline.get_mut(&key) {
+            if let Some(last) = events.iter_mut().rev().find(|e| !e.trained) {
+                last.trained = true;
+                last.item = None;
             }
         }
     }
@@ -275,19 +331,51 @@ impl TradeskillTracker {
         e.ups += 1;
         e.last_up = timestamp;
 
+        let mut credited: Option<String> = None;
+
         // Name the tradeskill of the combine that just happened, and remember
         // the association for future attempts at the same item.
         if let Some(p) = self.pending.clone() {
-            // A declared mapping is authoritative; an adjacent skill-up may
-            // simply belong to a different combine done around the same time.
-            if timestamp - p.at <= SKILL_ATTRIBUTION_WINDOW && !self.declared.contains(&p.item) {
-                self.item_skill.insert(p.item.clone(), skill.to_string());
-                if let Some(c) = self.crafts.get_mut(&p.item) {
-                    c.skill = Some(skill.to_string());
-                    c.skill_ups += 1;
+            if timestamp - p.at <= SKILL_ATTRIBUTION_WINDOW {
+                let declared = self.declared.contains(&p.item);
+                // A declared mapping is authoritative: an adjacent skill-up
+                // may belong to a different combine done around the same
+                // time, and must not relabel it.
+                if !declared {
+                    self.item_skill.insert(p.item.clone(), skill.to_string());
+                    if let Some(c) = self.crafts.get_mut(&p.item) {
+                        c.skill = Some(skill.to_string());
+                    }
+                }
+                // Crediting is a separate question from labelling. A declared
+                // recipe still earns its skill-ups — it simply only accepts
+                // ones in the skill it was declared to belong to, so a nearby
+                // point in an unrelated skill cannot be credited to it.
+                let belongs = !declared
+                    || self
+                        .item_skill
+                        .get(&p.item)
+                        .is_some_and(|s| s.eq_ignore_ascii_case(skill));
+                if belongs {
+                    // Carry the display name, not the lookup key: this ends up
+                    // in front of the user.
+                    if let Some(c) = self.crafts.get_mut(&p.item) {
+                        c.skill_ups += 1;
+                        credited = Some(c.item.clone());
+                    }
                 }
             }
         }
+
+        self.timeline
+            .entry(skill.to_lowercase())
+            .or_default()
+            .push(SkillUpEvent {
+                at: timestamp,
+                value,
+                item: credited,
+                trained: false,
+            });
     }
 
     /// Record a component consumed by a combine.
@@ -313,6 +401,72 @@ impl TradeskillTracker {
     }
 
     /// Build the report, newest activity first.
+    /// Collapse a skill's point history into stretches, one per recipe.
+    ///
+    /// Consecutive points earned on the same recipe become a single stretch,
+    /// so alternating between two recipes produces alternating stretches
+    /// rather than one merged blur — which is the honest reading, since the
+    /// order you did them in is what the ranges mean.
+    ///
+    /// Attempts are counted from the combine log within the stretch's own time
+    /// span, so effort is measured over the period the stretch covers rather
+    /// than across the whole log.
+    fn segments_for(&self, key: &str, name: &str) -> Vec<SkillSegment> {
+        let Some(events) = self.timeline.get(key) else {
+            return Vec::new();
+        };
+        let mut out: Vec<SkillSegment> = Vec::new();
+        for e in events {
+            let same = out.last().is_some_and(|last: &SkillSegment| {
+                last.item == e.item && last.trained == e.trained
+            });
+            if same {
+                let last = out.last_mut().unwrap();
+                last.to = e.value;
+                last.ups += 1;
+                last.ended = e.at;
+            } else {
+                out.push(SkillSegment {
+                    skill: name.to_string(),
+                    item: e.item.clone(),
+                    trained: e.trained,
+                    // One below the first point gained: the level you were at
+                    // on starting, which is how a range reads naturally.
+                    from: e.value.saturating_sub(1),
+                    to: e.value,
+                    ups: 1,
+                    attempts: 0,
+                    successes: 0,
+                    started: e.at,
+                    ended: e.at,
+                });
+            }
+        }
+
+        // Effort is counted over the interval a stretch *covers*, not the span
+        // between its first and last skill-up: the combine that earns a point
+        // happens before the point is announced, so the attempt that started a
+        // stretch always falls outside it. Each stretch therefore takes
+        // everything since the previous one ended, which partitions the log
+        // without gaps or double counting.
+        let mut since = i64::MIN;
+        for seg in out.iter_mut() {
+            let until = seg.ended;
+            if let Some(item) = seg.item.as_ref().map(|i| i.to_lowercase()) {
+                for (at, name, success) in &self.attempts {
+                    if name == &item && *at > since && *at <= until {
+                        seg.attempts += 1;
+                        if *success {
+                            seg.successes += 1;
+                        }
+                    }
+                }
+            }
+            since = until;
+        }
+        out
+    }
+
     pub fn report(&self) -> TradeskillReport {
         let mut skills: Vec<SkillProgress> = self.skills.values().cloned().collect();
         skills.sort_by_key(|s| std::cmp::Reverse(s.current));
@@ -334,9 +488,16 @@ impl TradeskillTracker {
         let mut components: Vec<ComponentUse> = self.components.values().cloned().collect();
         components.sort_by_key(|c| std::cmp::Reverse(c.used));
 
+        let segments: Vec<SkillSegment> = self
+            .skills
+            .iter()
+            .flat_map(|(key, p)| self.segments_for(key, &p.skill))
+            .collect();
+
         TradeskillReport {
             total_successes: crafts.iter().map(|c| c.successes).sum(),
             total_failures: crafts.iter().map(|c| c.failures).sum(),
+            segments,
             skills,
             crafts,
             components,
@@ -348,6 +509,64 @@ impl TradeskillTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The question a skill history answers: which recipe carried me across
+    /// which stretch.
+    #[test]
+    fn segments_collapse_consecutive_points_on_one_recipe() {
+        let mut t = TradeskillTracker::new();
+        for (i, ts) in [100i64, 110, 120].iter().enumerate() {
+            t.on_craft(*ts, "Banded Gorget", true);
+            t.on_skill_up(ts + 1, "Blacksmithing", 31 + i as u32);
+        }
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1, "one recipe, one stretch: {segs:?}");
+        let s = &segs[0];
+        assert_eq!(s.item.as_deref(), Some("Banded Gorget"));
+        assert_eq!((s.from, s.to), (30, 33), "entered at 30, left at 33");
+        assert_eq!(s.ups, 3);
+        assert_eq!(s.attempts, 3);
+        assert_eq!(s.successes, 3);
+    }
+
+    /// Alternating recipes must read as alternating stretches — merging them
+    /// would invent a range that never happened.
+    #[test]
+    fn switching_recipe_starts_a_new_segment() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Banded Gorget", true);
+        t.on_skill_up(101, "Blacksmithing", 31);
+        t.on_craft(200, "Sheet Metal", false);
+        t.on_skill_up(201, "Blacksmithing", 32);
+        t.on_craft(300, "Banded Gorget", true);
+        t.on_skill_up(301, "Blacksmithing", 33);
+
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0].item.as_deref(), Some("Banded Gorget"));
+        assert_eq!(segs[1].item.as_deref(), Some("Sheet Metal"));
+        assert_eq!(segs[2].item.as_deref(), Some("Banded Gorget"));
+        // A failed combine still skills you up, and still counts as effort.
+        assert_eq!(segs[1].attempts, 1);
+        assert_eq!(segs[1].successes, 0);
+    }
+
+    /// Points bought from a trainer form their own stretch, and carry no
+    /// recipe even if a combine happened to be nearby.
+    #[test]
+    fn trained_points_form_their_own_segment() {
+        let mut t = TradeskillTracker::new();
+        t.on_skill_up(100, "Pottery", 3);
+        t.on_trained("Pottery");
+        t.on_skill_up(110, "Pottery", 4);
+        t.on_trained("Pottery");
+
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].trained);
+        assert_eq!(segs[0].item, None);
+        assert_eq!((segs[0].from, segs[0].to), (2, 4));
+    }
 
     /// A point bought from a trainer is progress you paid for, not progress
     /// you made — counting it as crafting misdescribes how the skill rose.

@@ -721,7 +721,6 @@ impl EncounterTracker {
                 let ability_name = ability.clone().unwrap_or_else(|| kind_label(*kind).to_string());
                 let ability_label = ability_name.clone();
                 let mut incoming: Option<IncomingHit> = None;
-                let mut tgt_is_you = false;
                 let src_is_you = source.is_you();
                 {
                     let s = enc.entry(source, &player);
@@ -769,8 +768,7 @@ impl EncounterTracker {
                     if src_is_you {
                         t.damaged_by_you = true;
                     }
-                    tgt_is_you = target.is_you();
-                    if tgt_is_you {
+                    if target.is_you() {
                         incoming = Some(IncomingHit {
                             at: entry.timestamp,
                             source: source_name,
@@ -786,7 +784,6 @@ impl EncounterTracker {
                     let cutoff = entry.timestamp - DEATH_WINDOW;
                     self.recent_incoming.retain(|h| h.at >= cutoff);
                 }
-                let _ = tgt_is_you;
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
             }
