@@ -675,6 +675,11 @@ impl Engine {
                     .on_ability_spent(entry.timestamp, ability, *rank, *cost)
             }
             Event::Death { victim, killer } => {
+                // Your own death strips your buffs. The client logs no fade
+                // lines for it, so this is the only chance to notice.
+                if victim.is_you() {
+                    self.resolver.clear_on_death();
+                }
                 // Credit is by *participation*, not the killing blow. The game
                 // attributes the final hit to whoever landed it, which for a
                 // charming class is routinely your own charmed pet:

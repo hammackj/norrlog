@@ -916,6 +916,22 @@ impl SpellResolver {
         self.active.retain(|b| b.expires.is_none_or(|e| e > now));
     }
 
+    /// Drop every buff, because you died.
+    ///
+    /// Death strips buffs, but the client says nothing when it happens — no
+    /// fade lines follow a death, verified across all 37 in a real log. So the
+    /// death itself is the only signal, and without acting on it a permanent
+    /// buff never comes off: Firefist and Thorncoat carry duration formula 50,
+    /// so they would sit on the overlay claiming five days remaining through
+    /// every death for the rest of the session.
+    ///
+    /// Everything goes, not just the permanent ones. Death takes timed buffs
+    /// too, and anything still genuinely running re-announces itself quickly —
+    /// auras re-pulse within a tick or two of standing up.
+    pub fn clear_on_death(&mut self) {
+        self.active.clear();
+    }
+
     /// Whether an effect is one of *your* auras.
     ///
     /// Pulsing alone is not enough: hostile spells land on you repeatedly too —
@@ -1143,6 +1159,33 @@ mod tests {
         assert_eq!(base_spell_name("V"), "V");
         // Nor is a real word ending the name.
         assert_eq!(base_spell_name("Shield of Thorns"), "Shield of Thorns");
+    }
+
+    /// Death strips buffs and the client says nothing, so a permanent buff
+    /// would otherwise sit on the overlay for the rest of the session.
+    #[test]
+    fn death_clears_buffs_including_permanent_ones() {
+        let mut db_spells = HashMap::new();
+        // Formula 50 is the "permanent" form Firefist and Thorncoat carry.
+        db_spells.insert(254, spell(254, "Firefist", "Your fist bursts into flame.", "gone", 50, 0));
+        db_spells.insert(
+            423,
+            spell(423, "Skin like Nature", "Your skin hardens.", "gone2", 3, 720),
+        );
+        let mut r = SpellResolver::new(SpellDb::from_spells(db_spells), 50);
+
+        r.resolve_landing(1000, "Your fist bursts into flame.");
+        r.resolve_landing(1000, "Your skin hardens.");
+        assert_eq!(r.active_buffs(1000).len(), 2);
+        // A day later the timed one has lapsed and the "permanent" one has
+        // not: formula 50 is 432,000 seconds, which outlasts any session.
+        assert_eq!(r.active_buffs(1000 + 86_400).len(), 1);
+
+        r.clear_on_death();
+        assert!(
+            r.active_buffs(1000).is_empty(),
+            "death must take everything, permanent included"
+        );
     }
 
     /// Candidates that are merely different ranks of one spell are not really
