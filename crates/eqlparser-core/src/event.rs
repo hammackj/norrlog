@@ -257,6 +257,12 @@ pub enum Event {
     Experience { percent: f64 },
     /// Faction adjustment.
     Faction { faction: String, adjustment: Option<i64> },
+    /// A private message, in either direction.
+    ///
+    /// Distinct from [`Event::Chat`] because a conversation needs both ends:
+    /// channel chat has a speaker and nothing else, while a tell has a
+    /// counterpart, and which of the two is you decides the direction.
+    Tell { from: Actor, to: Actor, message: String },
     /// Player chat on any channel.
     Chat {
         speaker: Actor,

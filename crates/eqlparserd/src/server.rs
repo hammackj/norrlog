@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/export", get(export))
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
+        .route("/api/tells", get(tells))
         .route("/api/aa", get(aa))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/incoming", get(incoming))
@@ -463,6 +464,12 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
         })).collect::<Vec<_>>(),
         "counts": { "kills": nk, "encounters": ne, "levels": nl },
     }))
+}
+
+/// Private conversations, threaded by correspondent.
+async fn tells(State(s): State<AppState>) -> Json<eqlparser_core::tells::TellReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.tell_report())
 }
 
 /// Your deaths, with what killed you.

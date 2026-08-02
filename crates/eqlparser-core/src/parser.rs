@@ -56,6 +56,7 @@ enum RuleId {
     FactionCapped,
     ChatChannel,
     ChatTellYou,
+    ChatTellByYou,
     ChatSays,
     GroupJoined,
     GroupLeft,
@@ -280,6 +281,14 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::ChatTellYou,
         r"^(?P<src>.+?) tells you, '(?P<msg>.*)'$",
+    ),
+    // "You told Exit, 'war 2hander'"
+    //
+    // The other half of a conversation. Without it a thread reads as though
+    // the other person were talking to themselves.
+    (
+        RuleId::ChatTellByYou,
+        r"^You told (?P<tgt>[^,]+), '(?P<msg>.*)'$",
     ),
     (
         RuleId::ChatSays,
@@ -800,9 +809,14 @@ impl Parser {
                     channel: g("chan").unwrap_or_default().to_string(),
                     message: g("msg").unwrap_or_default().to_string(),
                 },
-                RuleId::ChatTellYou => Event::Chat {
-                    speaker: self.actor(g("src").unwrap_or_default()),
-                    channel: "tell".to_string(),
+                RuleId::ChatTellYou => Event::Tell {
+                    from: self.actor(g("src").unwrap_or_default()),
+                    to: Actor::You,
+                    message: g("msg").unwrap_or_default().to_string(),
+                },
+                RuleId::ChatTellByYou => Event::Tell {
+                    from: Actor::You,
+                    to: self.actor(g("tgt").unwrap_or_default()),
                     message: g("msg").unwrap_or_default().to_string(),
                 },
                 RuleId::ChatSays => Event::Chat {

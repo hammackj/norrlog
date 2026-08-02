@@ -18,6 +18,7 @@ pub mod parser;
 pub mod skyquest;
 pub mod spell;
 pub mod task;
+pub mod tells;
 pub mod tradeskill;
 
 pub use class::{Class, ClassDetector, ClassScore};

@@ -12,6 +12,7 @@ use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
 use eqlparser_core::task::{TaskDef, TaskReport, TaskTracker};
+use eqlparser_core::tells::{TellReport, TellTracker};
 use eqlparser_core::tradeskill::{TradeskillReport, TradeskillTracker};
 use eqlparser_core::spell::{BuffMark, SpellDb, SpellResolver};
 use eqlparser_core::{Event, LogEntry, Parser, SpellbookChangeKind};
@@ -379,6 +380,7 @@ pub struct Engine {
     lockouts: LockoutTracker,
     sky: SkyTracker,
     aa: AaCatalog,
+    tells: TellTracker,
     /// Recent charm failures, for the resist overlay.
     charm_failures: Vec<CharmFailure>,
     /// The last charm we tried to land, so nameless failure lines can be
@@ -430,6 +432,7 @@ impl Engine {
             lockouts: LockoutTracker::new(),
             sky: SkyTracker::new(),
             aa: AaCatalog::new(),
+            tells: TellTracker::new(),
             charm_failures: Vec::new(),
             last_charm_attempt: None,
             aa_pending_desc: String::new(),
@@ -641,6 +644,13 @@ impl Engine {
                 if self.landed_effect_is_your_charm(entry.timestamp, text) {
                     self.tracker.set_charmed(entry.timestamp, target, true);
                 }
+            }
+            Event::Tell { from, to, message } => {
+                // The counterpart is whichever end is not you.
+                let outgoing = from.is_you();
+                let other = if outgoing { to } else { from };
+                self.tells
+                    .on_tell(entry.timestamp, &other.display(&self.player), outgoing, message);
             }
             Event::TradeOffer { item, quantity, .. } => self.sky.on_offer(item, *quantity),
             Event::TradeComplete { npc } => self.sky.on_trade_complete(entry.timestamp, npc),
@@ -1205,6 +1215,11 @@ impl Engine {
             .map(|p| (p.ability.to_lowercase(), (p.rank, p.spent)))
             .collect();
         self.aa.report(&owned)
+    }
+
+    /// Private conversations, threaded by correspondent.
+    pub fn tell_report(&self) -> TellReport {
+        self.tells.report()
     }
 
     /// Plane of Sky quest progress, flagged against the character's classes.
