@@ -16,10 +16,20 @@
 //!
 //! # Counting
 //!
-//! Counts are loots seen in the log, not current inventory: the client never
-//! reports a turn-in, so an item handed in still counts here. Anything
-//! claiming otherwise would be a guess. Saying the trigger phrase is recorded
-//! separately, which is the closest thing to a turn-in marker that exists.
+//! Counts are what you have looted minus what you have handed in. Turn-ins
+//! *are* logged, as a run of offers closed by a trade:
+//!
+//! ```text
+//! You offered 1 Efreeti Scimitar to Strandar Pinemist.
+//! You offered 1 Storm Sky Opal to Strandar Pinemist.
+//! You offered 1 Wind Rune Izah to Strandar Pinemist.
+//! You complete the trade with Strandar Pinemist.
+//! ```
+//!
+//! Offers only count once the trade closes — an offer with no completion is a
+//! trade backed out of, and consuming those items would report you as poorer
+//! than you are. A completed trade whose items satisfy one of the giver's
+//! quests also records that quest as turned in.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -68,6 +78,10 @@ pub struct SkyItemProgress {
     pub source: Option<String>,
     /// Times this item has been looted in the log.
     pub looted: u32,
+    /// Times it has been handed to an NPC.
+    pub turned_in: u32,
+    /// Looted minus handed in — what you should actually be holding.
+    pub held: u32,
     pub have: bool,
 }
 
@@ -93,6 +107,11 @@ pub struct SkyQuestProgress {
     pub relevant: bool,
     /// Times the reward item has been looted.
     pub rewards_received: u32,
+    /// Times this quest's requirements have been handed to its giver.
+    pub completed: u32,
+    pub last_completed: Option<i64>,
+    /// What the giver has said, for writing the quest up later.
+    pub giver_text: Vec<GiverLine>,
 }
 
 /// Everything the Sky view shows.
@@ -109,6 +128,15 @@ pub struct SkyReport {
     pub unmatched_runes: Vec<String>,
 }
 
+/// A line a quest giver said.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GiverLine {
+    pub at: i64,
+    pub text: String,
+    /// `[bracketed keywords]` offered — the branch points of the conversation.
+    pub keywords: Vec<String>,
+}
+
 /// Tracks Sky quest progress from loot and say-channel chat.
 #[derive(Debug, Default)]
 pub struct SkyTracker {
@@ -117,6 +145,18 @@ pub struct SkyTracker {
     looted: HashMap<String, u32>,
     /// Lowercased phrase to when it was last said.
     said: HashMap<String, i64>,
+    /// Lowercased item name to how many have been handed over.
+    turned_in: HashMap<String, u32>,
+    /// Offers awaiting the line that closes the trade.
+    pending_offers: Vec<(String, u64)>,
+    /// Quest name to (times completed, last completion).
+    completions: HashMap<String, (u32, i64)>,
+    /// Lowercased giver name to what they have told you.
+    ///
+    /// The quest text is the part a written guide needs, and it exists only
+    /// while you are standing in front of the NPC — hailing them is the only
+    /// way it ever reaches the log.
+    giver_text: HashMap<String, Vec<GiverLine>>,
 }
 
 impl SkyTracker {
@@ -148,6 +188,74 @@ impl SkyTracker {
         *self.looted.entry(item.to_lowercase()).or_insert(0) += quantity.max(1) as u32;
     }
 
+    /// Note an item offered to an NPC.
+    ///
+    /// Held rather than consumed: the trade may still be cancelled, and
+    /// deducting an item that never left your bags would under-report what you
+    /// are holding.
+    pub fn on_offer(&mut self, item: &str, quantity: u64) {
+        self.pending_offers
+            .push((item.to_lowercase(), quantity.max(1)));
+    }
+
+    /// Note that a trade closed, consuming everything offered into it.
+    ///
+    /// If the items satisfy one of `npc`'s quests, that quest is recorded as
+    /// turned in — matching on the giver as well as the items, so handing the
+    /// same rune to a different class's NPC cannot be read as your completion.
+    pub fn on_trade_complete(&mut self, timestamp: i64, npc: &str) {
+        let offered: Vec<(String, u64)> = std::mem::take(&mut self.pending_offers);
+        if offered.is_empty() {
+            return;
+        }
+        for (item, qty) in &offered {
+            *self.turned_in.entry(item.clone()).or_insert(0) += *qty as u32;
+        }
+
+        let names: std::collections::BTreeSet<&str> =
+            offered.iter().map(|(i, _)| i.as_str()).collect();
+        let matched = self.defs.iter().find(|d| {
+            d.giver.eq_ignore_ascii_case(npc)
+                && d.required()
+                    .iter()
+                    .all(|i| names.contains(i.name.to_lowercase().as_str()))
+        });
+        if let Some(d) = matched {
+            let e = self.completions.entry(d.name.clone()).or_insert((0, 0));
+            e.0 += 1;
+            e.1 = timestamp;
+        }
+    }
+
+    /// Note a line spoken by an NPC.
+    ///
+    /// Kept only for known quest givers: everything else on the say channel is
+    /// other players and passing NPCs, and storing it would bury the text that
+    /// matters. Repeats are dropped, so re-hailing does not duplicate.
+    pub fn on_giver_line(&mut self, timestamp: i64, speaker: &str, text: &str) {
+        let key = speaker.to_lowercase();
+        if !self.defs.iter().any(|d| d.giver.eq_ignore_ascii_case(speaker)) {
+            return;
+        }
+        let lines = self.giver_text.entry(key).or_default();
+        if lines.iter().any(|l| l.text == text) {
+            return;
+        }
+        lines.push(GiverLine {
+            at: timestamp,
+            text: text.to_string(),
+            keywords: extract_sky_keywords(text),
+        });
+    }
+
+    /// Everything a giver has told you, oldest first.
+    pub fn giver_lines(&self, giver: &str) -> Vec<GiverLine> {
+        self.giver_text
+            .get(&giver.to_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Note something you said, which may be a quest trigger phrase.
     ///
     /// Matched as the whole utterance rather than a substring: the phrases are
@@ -174,12 +282,17 @@ impl SkyTracker {
                     .required()
                     .into_iter()
                     .map(|i| {
-                        let looted = *self.looted.get(&i.name.to_lowercase()).unwrap_or(&0);
+                        let key = i.name.to_lowercase();
+                        let looted = *self.looted.get(&key).unwrap_or(&0);
+                        let turned_in = *self.turned_in.get(&key).unwrap_or(&0);
+                        let held = looted.saturating_sub(turned_in);
                         SkyItemProgress {
                             name: i.name,
                             source: i.source,
                             looted,
-                            have: looted > 0,
+                            turned_in,
+                            held,
+                            have: held > 0,
                         }
                     })
                     .collect();
@@ -191,6 +304,13 @@ impl SkyTracker {
                     have_count,
                     last_started: self.said.get(&d.phrase.to_lowercase()).copied(),
                     rewards_received: *self.looted.get(&d.reward.to_lowercase()).unwrap_or(&0),
+                    completed: self.completions.get(&d.name).map(|c| c.0).unwrap_or(0),
+                    last_completed: self.completions.get(&d.name).map(|c| c.1),
+                    giver_text: self
+                        .giver_text
+                        .get(&d.giver.to_lowercase())
+                        .cloned()
+                        .unwrap_or_default(),
                     name: d.name.clone(),
                     class: d.class.clone(),
                     giver: d.giver.clone(),
@@ -237,6 +357,22 @@ impl SkyTracker {
             unmatched_runes,
         }
     }
+}
+
+/// Pull `[bracketed keywords]` out of a giver's line.
+fn extract_sky_keywords(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        let kw = after[..close].trim();
+        if !kw.is_empty() {
+            out.push(kw.to_string());
+        }
+        rest = &after[close + 1..];
+    }
+    out
 }
 
 /// The transcribed quest tables, shipped so a fresh install is useful.
@@ -531,6 +667,73 @@ mod tests {
             4,
             "Paladin has four quests, not six"
         );
+    }
+
+    /// A completed turn-in consumes the items and records the quest.
+    #[test]
+    fn a_completed_trade_consumes_items_and_records_the_quest() {
+        let mut t = SkyTracker::new();
+        for i in ["Wind Rune Izah", "Storm Sky Opal", "Efreeti Scimitar"] {
+            t.on_loot(i, 1);
+        }
+        let me = ["Druid".to_string()];
+        assert_eq!(t.report(&me).ready, 1, "ready before handing in");
+
+        for i in ["Efreeti Scimitar", "Storm Sky Opal", "Wind Rune Izah"] {
+            t.on_offer(i, 1);
+        }
+        t.on_trade_complete(5000, "Strandar Pinemist");
+
+        let r = t.report(&me);
+        let q = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Druid Test of Nature")
+            .unwrap();
+        assert_eq!(q.completed, 1);
+        assert_eq!(q.last_completed, Some(5000));
+        assert_eq!(q.have_count, 0, "the items were handed over");
+        assert!(q.items.iter().all(|i| i.turned_in == 1 && i.held == 0));
+        assert_eq!(r.ready, 0, "no longer ready — you gave them away");
+    }
+
+    /// A trade backed out of must not consume anything.
+    #[test]
+    fn offers_without_a_completed_trade_are_not_consumed() {
+        let mut t = SkyTracker::new();
+        t.on_loot("Wind Rune Izah", 1);
+        t.on_offer("Wind Rune Izah", 1);
+        // No completion line: the window was closed.
+        let r = t.report(&["Druid".to_string()]);
+        let rune = r
+            .quests
+            .iter()
+            .flat_map(|q| q.items.iter())
+            .find(|i| i.name == "Wind Rune Izah")
+            .unwrap();
+        assert_eq!(rune.held, 1, "still yours until the trade closes");
+        assert_eq!(rune.turned_in, 0);
+    }
+
+    /// Handing a rune to another class's NPC is not your completion.
+    #[test]
+    fn a_trade_with_the_wrong_giver_completes_nothing() {
+        let mut t = SkyTracker::new();
+        for i in ["Wind Rune Izah", "Storm Sky Opal", "Efreeti Scimitar"] {
+            t.on_loot(i, 1);
+            t.on_offer(i, 1);
+        }
+        t.on_trade_complete(5000, "Torgon Blademaster");
+        let r = t.report(&[]);
+        assert!(r.quests.iter().all(|q| q.completed == 0));
+        // The items still left your bags, whoever took them.
+        let rune = r
+            .quests
+            .iter()
+            .flat_map(|q| q.items.iter())
+            .find(|i| i.name == "Wind Rune Izah")
+            .unwrap();
+        assert_eq!(rune.held, 0);
     }
 
     /// Different classes share trigger phrases; the class filter is what stops

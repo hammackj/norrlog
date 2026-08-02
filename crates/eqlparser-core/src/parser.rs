@@ -85,6 +85,8 @@ enum RuleId {
     PetAttack,
     EffectWoreOffTarget,
     EffectLandedOnTarget,
+    TradeOffer,
+    TradeComplete,
     SkillTrained,
     CharmImmune,
     TargetUnaffected,
@@ -292,6 +294,19 @@ static RULES: &[(RuleId, &str)] = &[
         r"^(?P<who>.+?) ha(?:s|ve) left the group\.$",
     ),
     // ---- Charm / pets -------------------------------------------------------
+    // "You offered 1 Efreeti Scimitar to Strandar Pinemist."
+    // "You complete the trade with Strandar Pinemist."
+    //
+    // A quest turn-in. The offers arrive first and the trade closes them, so
+    // an offer that is never completed is a trade backed out of.
+    (
+        RuleId::TradeOffer,
+        r"^You offered (?P<qty>\d+) (?P<item>.+?) to (?P<npc>.+?)\.$",
+    ),
+    (
+        RuleId::TradeComplete,
+        r"^You complete the trade with (?P<npc>.+?)\.$",
+    ),
     // "Guntrik told you, 'You have increased your skill in Pottery.'"
     //
     // A skill point bought from an NPC trainer, not earned by doing the thing.
@@ -892,6 +907,14 @@ impl Parser {
                 RuleId::PetAttack => Event::PetAttack {
                     pet: self.actor(g("pet").unwrap_or_default()),
                     target: self.actor(g("target").unwrap_or_default()),
+                },
+                RuleId::TradeOffer => Event::TradeOffer {
+                    quantity: num("qty"),
+                    item: g("item").unwrap_or_default().to_string(),
+                    npc: g("npc").unwrap_or_default().to_string(),
+                },
+                RuleId::TradeComplete => Event::TradeComplete {
+                    npc: g("npc").unwrap_or_default().to_string(),
                 },
                 RuleId::SkillTrained => Event::SkillTrained {
                     trainer: g("trainer").unwrap_or_default().to_string(),

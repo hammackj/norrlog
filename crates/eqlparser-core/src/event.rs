@@ -293,6 +293,10 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// An item handed to an NPC. Several may precede one [`Event::TradeComplete`].
+    TradeOffer { quantity: u64, item: String, npc: String },
+    /// The trade was accepted, consuming everything offered.
+    TradeComplete { npc: String },
     /// A skill point bought from an NPC trainer rather than earned by use.
     SkillTrained { trainer: String, skill: String },
     /// The target cannot be charmed at all. Names nothing — the client says

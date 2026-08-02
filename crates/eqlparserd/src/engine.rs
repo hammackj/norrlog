@@ -578,6 +578,12 @@ impl Engine {
                     // own utterance starts one.
                     if speaker.is_you() {
                         self.sky.on_say(entry.timestamp, message);
+                    } else {
+                        self.sky.on_giver_line(
+                            entry.timestamp,
+                            &speaker.display(&self.player),
+                            message,
+                        );
                     }
                 }
             }
@@ -617,6 +623,8 @@ impl Engine {
                     self.tracker.set_charmed(entry.timestamp, target, true);
                 }
             }
+            Event::TradeOffer { item, quantity, .. } => self.sky.on_offer(item, *quantity),
+            Event::TradeComplete { npc } => self.sky.on_trade_complete(entry.timestamp, npc),
             Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
