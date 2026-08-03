@@ -9,7 +9,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxPath, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -52,6 +52,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
         .route("/api/tells", get(tells))
+        .route("/api/npcs", get(npcs))
+        .route("/api/quests", get(quests).post(put_quest))
+        .route("/api/quests/delete", post(delete_quest))
+        .route("/api/quests/export", get(export_quests))
         .route("/api/aa", get(aa))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/wiki", get(wiki))
@@ -477,6 +481,140 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
         })).collect::<Vec<_>>(),
         "counts": { "kills": nk, "encounters": ne, "levels": nl },
     }))
+}
+
+/// Captured NPC interactions, the raw material for a quest write-up.
+async fn npcs(State(s): State<AppState>) -> Json<eqlparser_core::npc::NpcReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.npc_report())
+}
+
+/// The quest database.
+async fn quests(State(s): State<AppState>) -> Json<serde_json::Value> {
+    let Some(store) = &s.store else {
+        return Json(serde_json::json!({ "available": false, "quests": [] }));
+    };
+    let st = store.lock().unwrap();
+    Json(serde_json::json!({
+        "available": true,
+        "quests": st.quests().unwrap_or_default(),
+    }))
+}
+
+/// Create or replace one quest.
+async fn put_quest(
+    State(s): State<AppState>,
+    Json(mut q): Json<crate::store::QuestRecord>,
+) -> Response {
+    if q.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "a quest needs a name").into_response();
+    }
+    let Some(store) = &s.store else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no quest database").into_response();
+    };
+    q.updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    match store.lock().unwrap().put_quest(&q) {
+        Ok(()) => (StatusCode::OK, "ok").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NameBody {
+    name: String,
+}
+
+async fn delete_quest(State(s): State<AppState>, Json(b): Json<NameBody>) -> Response {
+    let Some(store) = &s.store else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no quest database").into_response();
+    };
+    match store.lock().unwrap().delete_quest(&b.name) {
+        Ok(true) => (StatusCode::OK, "deleted").into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "no such quest").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// The quest database as Markdown, for pasting into a written guide.
+async fn export_quests(State(s): State<AppState>) -> Response {
+    let Some(store) = &s.store else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no quest database").into_response();
+    };
+    let quests = store.lock().unwrap().quests().unwrap_or_default();
+    let body = render_quests_markdown(&quests);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"quests.md\"".to_string(),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn render_quests_markdown(quests: &[crate::store::QuestRecord]) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("# Quests\n\n");
+    if quests.is_empty() {
+        out.push_str("Nothing recorded yet.\n");
+        return out;
+    }
+    for q in quests {
+        let _ = writeln!(out, "## {}\n", q.name);
+        let mut meta: Vec<String> = Vec::new();
+        if !q.giver.is_empty() {
+            meta.push(format!("**Giver:** {}", q.giver));
+        }
+        if !q.zone.is_empty() {
+            meta.push(format!("**Zone:** {}", q.zone));
+        }
+        if !q.classes.is_empty() {
+            meta.push(format!("**Classes:** {}", q.classes.join(", ")));
+        }
+        if !meta.is_empty() {
+            let _ = writeln!(out, "{}\n", meta.join(" · "));
+        }
+        if !q.start.is_empty() {
+            let _ = writeln!(out, "**How to start:** {}\n", q.start);
+        }
+        if !q.steps.is_empty() {
+            out.push_str("### Steps\n\n");
+            for (i, st) in q.steps.iter().enumerate() {
+                let _ = writeln!(out, "{}. {}", i + 1, st);
+            }
+            out.push('\n');
+        }
+        if !q.items.is_empty() {
+            out.push_str("### Items\n\n");
+            for it in &q.items {
+                let _ = writeln!(out, "- {it}");
+            }
+            out.push('\n');
+        }
+        if !q.reward.is_empty() {
+            let _ = writeln!(out, "**Reward:** {}\n", q.reward);
+        }
+        if !q.notes.is_empty() {
+            let _ = writeln!(out, "{}\n", q.notes);
+        }
+        if !q.dialogue.is_empty() {
+            // Verbatim and blockquoted: the exact words are the part a written
+            // guide cannot reconstruct later.
+            out.push_str("### Quest text\n\n");
+            for l in &q.dialogue {
+                let _ = writeln!(out, "> **{}:** {}\n", l.speaker, l.text);
+            }
+        }
+        out.push_str("---\n\n");
+    }
+    out
 }
 
 /// Private conversations, threaded by correspondent.

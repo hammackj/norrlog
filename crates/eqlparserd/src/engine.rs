@@ -10,6 +10,7 @@ use eqlparser_core::encounter::{Encounter, EncounterTracker};
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
 use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
+use eqlparser_core::npc::{NpcReport, NpcTracker};
 use eqlparser_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
 use eqlparser_core::task::{TaskDef, TaskReport, TaskTracker};
 use eqlparser_core::tells::{TellReport, TellTracker};
@@ -381,6 +382,7 @@ pub struct Engine {
     sky: SkyTracker,
     aa: AaCatalog,
     tells: TellTracker,
+    npcs: NpcTracker,
     /// Recent charm failures, for the resist overlay.
     charm_failures: Vec<CharmFailure>,
     /// The last charm we tried to land, so nameless failure lines can be
@@ -435,6 +437,7 @@ impl Engine {
             sky: SkyTracker::new(),
             aa: AaCatalog::new(),
             tells: TellTracker::new(),
+            npcs: NpcTracker::new(),
             charm_failures: Vec::new(),
             last_charm_attempt: None,
             aa_pending_desc: String::new(),
@@ -608,7 +611,13 @@ impl Engine {
                     // own utterance starts one.
                     if speaker.is_you() {
                         self.sky.on_say(entry.timestamp, message);
+                        self.npcs.on_your_say(entry.timestamp, message);
                     } else {
+                        self.npcs.on_npc_line(
+                            entry.timestamp,
+                            &speaker.display(&self.player),
+                            message,
+                        );
                         self.sky.on_giver_line(
                             entry.timestamp,
                             &speaker.display(&self.player),
@@ -664,8 +673,19 @@ impl Engine {
                 self.tells
                     .on_tell(entry.timestamp, &other.display(&self.player), outgoing, message);
             }
-            Event::TradeOffer { item, quantity, .. } => self.sky.on_offer(item, *quantity),
-            Event::TradeComplete { npc } => self.sky.on_trade_complete(entry.timestamp, npc),
+            Event::TradeOffer { item, quantity, .. } => {
+                self.sky.on_offer(item, *quantity);
+                self.npcs.on_offer(item, *quantity);
+            }
+            Event::TradeComplete { npc } => {
+                self.sky.on_trade_complete(entry.timestamp, npc);
+                self.npcs.on_trade_complete(entry.timestamp, npc);
+            }
+            Event::Faction { faction, adjustment } => {
+                if let Some(adj) = adjustment {
+                    self.npcs.on_faction(entry.timestamp, faction, *adj);
+                }
+            }
             Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
@@ -764,6 +784,7 @@ impl Engine {
                 // than drop them we simply let them expire naturally.
                 self.resolver.expire(entry.timestamp);
                 self.exp.on_zone(entry.timestamp, zone);
+                self.npcs.on_zone(zone);
             }
             Event::Unknown => {
                 // Effect flavour text is only recognisable via the spell
@@ -1233,6 +1254,11 @@ impl Engine {
             .map(|p| (p.ability.to_lowercase(), (p.rank, p.spent)))
             .collect();
         self.aa.report(&owned)
+    }
+
+    /// Captured NPC interactions, for writing quests up.
+    pub fn npc_report(&self) -> NpcReport {
+        self.npcs.report()
     }
 
     /// Private conversations, threaded by correspondent.

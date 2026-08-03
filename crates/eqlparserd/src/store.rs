@@ -91,6 +91,55 @@ pub struct RaidStat {
     pub last_kill: i64,
 }
 
+/// One quest, as written up for a guide.
+///
+/// Deliberately loose. This is reference material a person authors, not
+/// something derived from the log: half the fields are prose, the shape
+/// changes as more is learned about a quest, and a rigid schema would fight
+/// that. Stored as JSON against the name so the structure can grow without a
+/// migration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QuestRecord {
+    pub name: String,
+    #[serde(default)]
+    pub giver: String,
+    #[serde(default)]
+    pub zone: String,
+    /// Classes it applies to. Empty means any.
+    #[serde(default)]
+    pub classes: Vec<String>,
+    /// How to start it — the hail, the keyword, the prerequisite.
+    #[serde(default)]
+    pub start: String,
+    #[serde(default)]
+    pub steps: Vec<String>,
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub reward: String,
+    #[serde(default)]
+    pub notes: String,
+    /// Quest text captured from the log, verbatim.
+    #[serde(default)]
+    pub dialogue: Vec<QuestLine>,
+    /// "unknown", "in progress" or "done".
+    #[serde(default)]
+    pub status: String,
+    /// Where the record came from: "manual", "task" or "sky".
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub updated: i64,
+}
+
+/// A line of captured quest text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QuestLine {
+    pub at: i64,
+    pub speaker: String,
+    pub text: String,
+}
+
 /// The persistent history database.
 pub struct Store {
     conn: Connection,
@@ -173,6 +222,15 @@ impl Store {
                 spent   INTEGER NOT NULL DEFAULT 0,
                 at      INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (ability, rank)
+            );
+
+            -- Hand-authored quest write-ups. JSON rather than columns: the
+            -- content is prose and its shape changes as a quest is
+            -- understood, which a fixed schema would only get in the way of.
+            CREATE TABLE IF NOT EXISTS quests (
+                name    TEXT PRIMARY KEY,
+                data    TEXT NOT NULL,
+                updated INTEGER NOT NULL DEFAULT 0
             );
 
             -- Which log files have been seen, purely so the UI can say what
@@ -275,6 +333,56 @@ impl Store {
         }
         tx.commit()?;
         Ok(purchases.len())
+    }
+
+    /// Write a quest, replacing any existing record of the same name.
+    pub fn put_quest(&mut self, q: &QuestRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO quests (name, data, updated) VALUES (?1,?2,?3)",
+            params![q.name, serde_json::to_string(q)?, q.updated],
+        )?;
+        Ok(())
+    }
+
+    /// Add a quest only if it is not already there.
+    ///
+    /// Used by the importer, so re-importing never overwrites what someone has
+    /// since written. Returns whether it was inserted.
+    pub fn add_quest_if_new(&mut self, q: &QuestRecord) -> Result<bool> {
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO quests (name, data, updated) VALUES (?1,?2,?3)",
+            params![q.name, serde_json::to_string(q)?, q.updated],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn quests(&self) -> Result<Vec<QuestRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM quests ORDER BY name ASC")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .iter()
+            .filter_map(|d| serde_json::from_str(d).ok())
+            .collect())
+    }
+
+    pub fn quest(&self, name: &str) -> Result<Option<QuestRecord>> {
+        let mut stmt = self.conn.prepare("SELECT data FROM quests WHERE name = ?1")?;
+        let mut rows = stmt.query_map([name], |r| r.get::<_, String>(0))?;
+        match rows.next() {
+            Some(Ok(d)) => Ok(serde_json::from_str(&d).ok()),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn delete_quest(&mut self, name: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM quests WHERE name = ?1", params![name])?;
+        Ok(n > 0)
     }
 
     pub fn note_source(&mut self, path: &str, bytes: u64, now: i64) -> Result<()> {

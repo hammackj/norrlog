@@ -14,6 +14,7 @@ pub mod encounter;
 pub mod event;
 pub mod experience;
 pub mod lockout;
+pub mod npc;
 pub mod parser;
 pub mod skyquest;
 pub mod spell;
