@@ -657,8 +657,14 @@ async fn wiki() -> Response {
 
 /// Plane of Sky quest progress.
 async fn sky(State(s): State<AppState>) -> Json<eqlparser_core::skyquest::SkyReport> {
-    let engine = s.engine.lock().unwrap();
-    Json(engine.sky_report())
+    let mut report = { s.engine.lock().unwrap().sky_report() };
+    // History spans every log ever parsed; the tracker only knows this one.
+    if let Some(store) = &s.store {
+        if let Ok(stored) = store.lock().unwrap().sky_turnin_counts() {
+            Engine::apply_stored_turn_ins(&mut report, &stored);
+        }
+    }
+    Json(report)
 }
 
 /// Add or replace one Sky quest, for classes not in the built-in table.

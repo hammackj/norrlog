@@ -224,6 +224,14 @@ impl Store {
                 PRIMARY KEY (ability, rank)
             );
 
+            -- Sky quest turn-ins. Keyed by quest and time so re-parsing a log
+            -- is idempotent, and so the count survives the log rotating away.
+            CREATE TABLE IF NOT EXISTS sky_turnins (
+                quest TEXT    NOT NULL,
+                at    INTEGER NOT NULL,
+                PRIMARY KEY (quest, at)
+            );
+
             -- Hand-authored quest write-ups. JSON rather than columns: the
             -- content is prose and its shape changes as a quest is
             -- understood, which a fixed schema would only get in the way of.
@@ -333,6 +341,32 @@ impl Store {
         }
         tx.commit()?;
         Ok(purchases.len())
+    }
+
+    /// Record Sky turn-ins. Existing (quest, time) pairs are left alone.
+    pub fn put_sky_turnins(&mut self, rows: &[(String, i64)]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO sky_turnins (quest, at) VALUES (?1,?2)")?;
+            for (quest, at) in rows {
+                stmt.execute(params![quest, at])?;
+            }
+        }
+        tx.commit()?;
+        Ok(rows.len())
+    }
+
+    /// Turn-ins per quest, as (count, most recent), across every log ever
+    /// parsed.
+    pub fn sky_turnin_counts(&self) -> Result<Vec<(String, u32, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT quest, COUNT(*), MAX(at) FROM sky_turnins GROUP BY quest",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Write a quest, replacing any existing record of the same name.

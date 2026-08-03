@@ -1267,6 +1267,28 @@ impl Engine {
     }
 
     /// Plane of Sky quest progress, flagged against the character's classes.
+    /// Sky turn-ins seen in this log, for the history database.
+    pub fn sky_turn_ins(&self) -> Vec<(String, i64)> {
+        self.sky.turn_in_log()
+    }
+
+    /// Fold stored turn-in counts into a report.
+    ///
+    /// The tracker only knows the log in front of it. Counts kept in history
+    /// span every log ever parsed, so where history knows more it wins — a
+    /// quest turned in five times last week should not read as new because
+    /// the log rotated.
+    pub fn apply_stored_turn_ins(report: &mut SkyReport, stored: &[(String, u32, i64)]) {
+        for q in report.quests.iter_mut() {
+            if let Some((_, count, last)) = stored.iter().find(|(n, _, _)| n == &q.name) {
+                if *count > q.completed {
+                    q.completed = *count;
+                    q.last_completed = Some(*last);
+                }
+            }
+        }
+    }
+
     pub fn sky_report(&self) -> SkyReport {
         let now = self.current_class_names();
         // Every class ever put in a loadout, so a respec does not hide the

@@ -210,6 +210,8 @@ pub struct SkyTracker {
     pending_offers: Vec<(String, u64)>,
     /// Quest name to (times completed, last completion).
     completions: HashMap<String, (u32, i64)>,
+    /// Quest name to every turn-in time, so the record can outlive the log.
+    turn_in_times: HashMap<String, Vec<i64>>,
     /// Lowercased boss name to (kills, last kill).
     boss_kills: HashMap<String, (u32, i64)>,
     /// Lowercased giver name to what they have told you.
@@ -238,6 +240,14 @@ impl SkyTracker {
             Some(existing) => *existing = def,
             None => self.defs.push(def),
         }
+    }
+
+    /// Every turn-in seen, as (quest, when), for persisting.
+    pub fn turn_in_log(&self) -> Vec<(String, i64)> {
+        self.turn_in_times
+            .iter()
+            .flat_map(|(q, ts)| ts.iter().map(move |t| (q.clone(), *t)))
+            .collect()
     }
 
     pub fn definitions(&self) -> &[SkyQuestDef] {
@@ -300,9 +310,14 @@ impl SkyTracker {
                     .all(|i| names.contains(i.name.to_lowercase().as_str()))
         });
         if let Some(d) = matched {
-            let e = self.completions.entry(d.name.clone()).or_insert((0, 0));
+            let name = d.name.clone();
+            let e = self.completions.entry(name.clone()).or_insert((0, 0));
             e.0 += 1;
             e.1 = timestamp;
+            let ts = self.turn_in_times.entry(name).or_default();
+            if !ts.contains(&timestamp) {
+                ts.push(timestamp);
+            }
         }
     }
 
@@ -962,6 +977,23 @@ mod tests {
         assert_eq!(q.have_count, 0, "the items were handed over");
         assert!(q.items.iter().all(|i| i.turned_in == 1 && i.held == 0));
         assert_eq!(r.ready, 0, "no longer ready — you gave them away");
+    }
+
+    /// Turn-ins are logged individually so the count can outlive the log.
+    #[test]
+    fn every_turn_in_is_recorded_for_history() {
+        let mut t = SkyTracker::new();
+        for at in [1000i64, 2000] {
+            for i in ["Wind Rune Izah", "Storm Sky Opal", "Efreeti Scimitar"] {
+                t.on_loot(i, 1);
+                t.on_offer(i, 1);
+            }
+            t.on_trade_complete(at, "Strandar Pinemist");
+        }
+        let log = t.turn_in_log();
+        assert_eq!(log.len(), 2);
+        assert!(log.iter().all(|(n, _)| n == "Druid Test of Nature"));
+        assert_eq!(t.report(&[]).quests.iter().find(|q| q.name == "Druid Test of Nature").unwrap().completed, 2);
     }
 
     /// A trade backed out of must not consume anything.
