@@ -752,6 +752,12 @@ impl Engine {
                     // Lets a following "task has been updated" say which step.
                     self.tasks.on_kill(entry.timestamp, &name);
                 }
+                // Sky island nameds are counted regardless of who landed the
+                // blow, on the same participation basis as everything else.
+                if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
+                    self.sky
+                        .on_kill(entry.timestamp, &victim.display(&self.player));
+                }
             }
             Event::ZoneChange { zone } => {
                 // Most buffs do not survive a zone line in practice, but rather

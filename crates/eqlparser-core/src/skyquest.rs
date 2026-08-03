@@ -131,10 +131,60 @@ pub struct SkyReport {
     pub ready: usize,
     /// How many quests belong to the character's own classes.
     pub relevant_count: usize,
+    /// The islands, with what has been killed on each.
+    pub islands: Vec<IslandProgress>,
     /// Sky items looted that no defined quest asks for. Surfaced rather than
     /// dropped: an unrecognised drop usually means a quest we have not
     /// transcribed yet.
     pub unmatched_runes: Vec<String>,
+}
+
+/// The islands of the Plane of Sky and the nameds that hold them.
+///
+/// The island codes are the shorthand the quest tables use — `3-Gorga` is
+/// Gorgalosk's island — so counting these kills says directly which quest
+/// items you are in a position to farm.
+///
+/// Layout is from the wiki, which is reliable about where things are even
+/// though its quest pages describe a different server's requirements. Names
+/// are the exact ones the log writes.
+///
+/// Bee Island carries several nameds rather than one, so they are listed and
+/// counted separately: merging them would invent a single boss that does not
+/// exist. Trash sharing a boss's root name is deliberately excluded —
+/// `a gorgalask` is not `Gorgalosk`, and only the latter drops the island's
+/// quest item.
+pub const SKY_ISLANDS: &[(&str, &str, &[&str])] = &[
+    ("1", "Fairy Island", &["Thunder Spirit Princess"]),
+    ("1.5", "Noble Island", &["Noble Dojorn", "Overseer of Air"]),
+    ("2-PoS", "Azarack Island", &["Protector of Sky"]),
+    ("3-Gorga", "Harpy Island", &["Gorgalosk"]),
+    ("4-KoS", "Pegasus Island", &["Keeper of Souls"]),
+    ("5-SL", "Spiroc Island", &["The Spiroc Lord", "The Spiroc Guardian"]),
+    ("6-BZ", "Bee Island", &["Bazzt Zzzt", "Bzzazzt", "Bazzzazzt", "Bizazzt", "Bzzzt"]),
+    ("7-SotS", "Drake Island", &["Sister of the Spire", "Replica of the Wyrm Queen"]),
+    ("8-EoV", "Veeshan Island", &["Eye of Veeshan"]),
+];
+
+/// Kills of one named.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BossKills {
+    pub boss: String,
+    pub kills: u32,
+    pub last: Option<i64>,
+}
+
+/// An island and what has been killed on it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IslandProgress {
+    /// The shorthand the quest tables use, e.g. `3-Gorga`.
+    pub code: String,
+    pub name: String,
+    pub bosses: Vec<BossKills>,
+    pub kills: u32,
+    pub last: Option<i64>,
+    /// Quest items sourced here that you still need, across every class.
+    pub items_wanted: u32,
 }
 
 /// A line a quest giver said.
@@ -160,6 +210,8 @@ pub struct SkyTracker {
     pending_offers: Vec<(String, u64)>,
     /// Quest name to (times completed, last completion).
     completions: HashMap<String, (u32, i64)>,
+    /// Lowercased boss name to (kills, last kill).
+    boss_kills: HashMap<String, (u32, i64)>,
     /// Lowercased giver name to what they have told you.
     ///
     /// The quest text is the part a written guide needs, and it exists only
@@ -190,6 +242,24 @@ impl SkyTracker {
 
     pub fn definitions(&self) -> &[SkyQuestDef] {
         &self.defs
+    }
+
+    /// Note a kill, counting it if it was one of the island nameds.
+    ///
+    /// Matched on the exact name the log writes. Trash often shares a boss's
+    /// root — `a gorgalask` against `Gorgalosk` — and a loose match would
+    /// report island clears that never happened.
+    pub fn on_kill(&mut self, timestamp: i64, victim: &str) {
+        let v = boss_key(victim);
+        let known = SKY_ISLANDS
+            .iter()
+            .any(|(_, _, bosses)| bosses.iter().any(|b| boss_key(b) == v));
+        if !known {
+            return;
+        }
+        let e = self.boss_kills.entry(v).or_insert((0, 0));
+        e.0 += 1;
+        e.1 = e.1.max(timestamp);
     }
 
     /// Note an item entering your inventory.
@@ -380,13 +450,68 @@ impl SkyTracker {
             .cloned()
             .collect();
 
+        // An island is worth visiting for the items still missing from
+        // quests you can see — counted across the same set the view shows, so
+        // the number matches what is on screen.
+        let mut wanted: HashMap<String, u32> = HashMap::new();
+        for q in quests.iter().filter(|q| q.relevant && !q.complete) {
+            for i in q.items.iter().filter(|i| !i.have) {
+                if let Some(src) = &i.source {
+                    *wanted.entry(src.to_lowercase()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let islands: Vec<IslandProgress> = SKY_ISLANDS
+            .iter()
+            .map(|(code, name, bosses)| {
+                let bosses: Vec<BossKills> = bosses
+                    .iter()
+                    .map(|b| {
+                        let k = self.boss_kills.get(&boss_key(b));
+                        BossKills {
+                            boss: b.to_string(),
+                            kills: k.map(|x| x.0).unwrap_or(0),
+                            last: k.map(|x| x.1),
+                        }
+                    })
+                    .collect();
+                IslandProgress {
+                    code: code.to_string(),
+                    name: name.to_string(),
+                    kills: bosses.iter().map(|b| b.kills).sum(),
+                    last: bosses.iter().filter_map(|b| b.last).max(),
+                    items_wanted: *wanted.get(&code.to_lowercase()).unwrap_or(&0),
+                    bosses,
+                }
+            })
+            .collect();
+
         SkyReport {
+            islands,
             ready: quests.iter().filter(|q| q.complete && q.relevant).count(),
             relevant_count: quests.iter().filter(|q| q.relevant).count(),
             quests,
             unmatched_runes,
         }
     }
+}
+
+/// Normalise a creature name for matching.
+///
+/// The client is inconsistent about leading articles — it writes
+/// `a thunder spirit princess` for a named the wiki calls
+/// `Thunder Spirit Princess` — so the article is dropped on both sides. This
+/// stays safe against trash lookalikes because they differ in the *name*, not
+/// the article: `a gorgalask` and `Gorgalosk` remain distinct.
+fn boss_key(name: &str) -> String {
+    let n = name.trim().to_lowercase();
+    for article in ["a ", "an ", "the "] {
+        if let Some(rest) = n.strip_prefix(article) {
+            return rest.to_string();
+        }
+    }
+    n
 }
 
 /// Pull `[bracketed keywords]` out of a giver's line.
@@ -749,6 +874,66 @@ mod tests {
         assert_eq!(nature.have_count, 0, "items were handed over");
         assert!(nature.relevant, "completed quests stay visible");
         assert!(!nature.current_class);
+    }
+
+    /// Trash often shares a named's root. Only the named counts — it is the
+    /// one that drops the island's quest item.
+    #[test]
+    fn island_kills_count_only_the_named() {
+        let mut t = SkyTracker::new();
+        t.on_kill(100, "Gorgalosk");
+        t.on_kill(200, "a gorgalask");
+        t.on_kill(300, "A GORGALOSK");
+
+        let r = t.report(&[]);
+        let harpy = r.islands.iter().find(|i| i.code == "3-Gorga").unwrap();
+        assert_eq!(harpy.kills, 2, "both spellings of the named, not the trash");
+        assert_eq!(harpy.last, Some(300));
+    }
+
+    /// The client writes some nameds with a leading article and the wiki does
+    /// not; the article must not hide the kill.
+    #[test]
+    fn a_leading_article_does_not_hide_a_named() {
+        let mut t = SkyTracker::new();
+        t.on_kill(100, "a thunder spirit princess");
+        t.on_kill(200, "A thunder spirit princess");
+        let r = t.report(&[]);
+        let fairy = r.islands.iter().find(|i| i.code == "1").unwrap();
+        assert_eq!(fairy.kills, 2);
+    }
+
+    /// Bee Island holds several nameds; merging them would invent a boss that
+    /// does not exist.
+    #[test]
+    fn an_island_with_several_nameds_counts_them_separately() {
+        let mut t = SkyTracker::new();
+        t.on_kill(100, "Bazzt Zzzt");
+        t.on_kill(200, "Bzzazzt");
+        t.on_kill(300, "Bzzazzt");
+
+        let r = t.report(&[]);
+        let bee = r.islands.iter().find(|i| i.code == "6-BZ").unwrap();
+        assert_eq!(bee.kills, 3, "three kills across the island");
+        let by = |n: &str| bee.bosses.iter().find(|b| b.boss == n).unwrap().kills;
+        assert_eq!(by("Bazzt Zzzt"), 1);
+        assert_eq!(by("Bzzazzt"), 2);
+        assert_eq!(bee.last, Some(300));
+    }
+
+    /// An island is worth visiting for what it still owes you.
+    #[test]
+    fn an_island_reports_how_many_wanted_items_it_sources() {
+        let mut t = SkyTracker::new();
+        // Warrior Test of Skill wants Azure Ring (3-Gorga); hold only the rune.
+        t.on_loot("Wind Rune Neza", 1);
+        let r = t.report(&["Warrior".to_string()]);
+        let harpy = r.islands.iter().find(|i| i.code == "3-Gorga").unwrap();
+        assert!(harpy.items_wanted >= 1, "Azure Ring is still needed there");
+
+        // Nothing is wanted from an island whose quests are all complete or
+        // belong to classes not shown.
+        assert!(r.islands.iter().all(|i| i.items_wanted <= 6));
     }
 
     /// A completed turn-in consumes the items and records the quest.
