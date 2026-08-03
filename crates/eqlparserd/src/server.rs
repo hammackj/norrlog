@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tells", get(tells))
         .route("/api/aa", get(aa))
         .route("/api/sky", get(sky).post(define_sky_quest))
+        .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
         .route("/api/buff-marks", get(get_marks).post(set_mark))
         .route("/ws", get(ws_upgrade))
@@ -66,6 +67,18 @@ pub fn router(state: AppState) -> Router {
 
 /// Assets are embedded so the binary runs from anywhere, including when
 /// launched as a child process by Electron with an arbitrary CWD.
+/// Item reference data imported from eqlwiki.com by `tools/import-wiki.py`.
+///
+/// Embedded rather than fetched: the daemon does no network I/O, so the data
+/// is as available offline as the rest of the app and cannot fail mid-session.
+/// Re-run the importer to refresh it.
+///
+/// Only *item* pages are used. The wiki's quest pages describe classic
+/// EverQuest — different givers, different requirements — while this server
+/// runs its own variant, verified against what the quest NPCs actually say
+/// in-game. Item stats and icons match; quest structure does not.
+const WIKI_ITEMS: &str = include_str!("../assets/wiki-items.json");
+
 const OVERLAY_HTML: &str = include_str!("../assets/overlay.html");
 const OVERLAY_CSS: &str = include_str!("../assets/overlay.css");
 const OVERLAY_JS: &str = include_str!("../assets/overlay.js");
@@ -488,6 +501,20 @@ async fn charm(State(s): State<AppState>) -> Json<crate::engine::CharmReport> {
 async fn aa(State(s): State<AppState>) -> Json<eqlparser_core::aa::AaReport> {
     let engine = s.engine.lock().unwrap();
     Json(engine.aa_report())
+}
+
+/// Item reference data: name, stats, icon and a link back to the wiki.
+///
+/// Served as one map rather than folded into the Sky payload, so rewards and
+/// quest items share a single lookup and the quest response stays about
+/// progress.
+async fn wiki() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        WIKI_ITEMS,
+    )
+        .into_response()
 }
 
 /// Plane of Sky quest progress.
