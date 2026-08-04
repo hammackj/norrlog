@@ -179,7 +179,9 @@ impl NpcTracker {
             return;
         }
 
-        let Some((key, _)) = self.focus.clone() else { return };
+        let Some((key, _)) = self.focus.clone() else {
+            return;
+        };
         if !self.is_engaged(&key, timestamp) {
             return;
         }
@@ -314,9 +316,17 @@ mod tests {
         let mut t = NpcTracker::new();
         t.on_zone("Timorous Deep");
         t.on_your_say(100, "Hail, Crusader Iktra");
-        t.on_npc_line(101, "Crusader Iktra", "Hail yourself. I could use some [supplies].");
+        t.on_npc_line(
+            101,
+            "Crusader Iktra",
+            "Hail yourself. I could use some [supplies].",
+        );
         t.on_your_say(120, "supplies");
-        t.on_npc_line(121, "Crusader Iktra", "Bring me bits of metal, in batches of four.");
+        t.on_npc_line(
+            121,
+            "Crusader Iktra",
+            "Bring me bits of metal, in batches of four.",
+        );
         t.on_faction(200, "New Sebilisian Expedition", 10);
         t.on_faction(200, "New Sebilisian Expedition", 10);
         t.on_trade_complete(201, "Crusader Iktra");
@@ -331,7 +341,10 @@ mod tests {
         assert_eq!(n.keywords, vec!["supplies"]);
         assert_eq!(n.turn_ins.len(), 1);
         // Faction is summed: a guide wants "20", not two tens.
-        assert_eq!(n.turn_ins[0].faction, vec![("New Sebilisian Expedition".into(), 20)]);
+        assert_eq!(
+            n.turn_ins[0].faction,
+            vec![("New Sebilisian Expedition".into(), 20)]
+        );
     }
 
     /// A busy quest NPC answers everyone in earshot. Only the replies that
@@ -340,7 +353,11 @@ mod tests {
     fn lines_aimed_at_other_players_are_marked_not_yours() {
         let mut t = NpcTracker::new();
         t.on_your_say(100, "Hail, Crusader Iktra");
-        t.on_npc_line(100, "Crusader Iktra", "Hail yourself. I could use some [supplies].");
+        t.on_npc_line(
+            100,
+            "Crusader Iktra",
+            "Hail yourself. I could use some [supplies].",
+        );
         // Another player's turn-in, well after anything you said.
         t.on_npc_line(140, "Crusader Iktra", "Thank you, Hotdogs. This will help.");
         t.on_your_say(160, "supplies");
@@ -365,7 +382,11 @@ mod tests {
         let mut t = NpcTracker::new();
         t.on_your_say(100, "Hail, Crusader Iktra");
         t.on_npc_line(100, "Crusader Iktra", "I could use some [supplies].");
-        t.on_npc_line(200, "Crusader Iktra", "Ask me about [something else] entirely.");
+        t.on_npc_line(
+            200,
+            "Crusader Iktra",
+            "Ask me about [something else] entirely.",
+        );
         assert_eq!(t.report().npcs[0].keywords, vec!["supplies"]);
     }
 

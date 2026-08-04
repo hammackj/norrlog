@@ -160,9 +160,21 @@ pub const SKY_ISLANDS: &[(&str, &str, &[&str])] = &[
     ("2-PoS", "Azarack Island", &["Protector of Sky"]),
     ("3-Gorga", "Harpy Island", &["Gorgalosk"]),
     ("4-KoS", "Pegasus Island", &["Keeper of Souls"]),
-    ("5-SL", "Spiroc Island", &["The Spiroc Lord", "The Spiroc Guardian"]),
-    ("6-BZ", "Bee Island", &["Bazzt Zzzt", "Bzzazzt", "Bazzzazzt", "Bizazzt", "Bzzzt"]),
-    ("7-SotS", "Drake Island", &["Sister of the Spire", "Replica of the Wyrm Queen"]),
+    (
+        "5-SL",
+        "Spiroc Island",
+        &["The Spiroc Lord", "The Spiroc Guardian"],
+    ),
+    (
+        "6-BZ",
+        "Bee Island",
+        &["Bazzt Zzzt", "Bzzazzt", "Bazzzazzt", "Bizazzt", "Bzzzt"],
+    ),
+    (
+        "7-SotS",
+        "Drake Island",
+        &["Sister of the Spire", "Replica of the Wyrm Queen"],
+    ),
     ("8-EoV", "Veeshan Island", &["Eye of Veeshan"]),
 ];
 
@@ -328,7 +340,11 @@ impl SkyTracker {
     /// matters. Repeats are dropped, so re-hailing does not duplicate.
     pub fn on_giver_line(&mut self, timestamp: i64, speaker: &str, text: &str) {
         let key = speaker.to_lowercase();
-        if !self.defs.iter().any(|d| d.giver.eq_ignore_ascii_case(speaker)) {
+        if !self
+            .defs
+            .iter()
+            .any(|d| d.giver.eq_ignore_ascii_case(speaker))
+        {
             return;
         }
         let lines = self.giver_text.entry(key).or_default();
@@ -584,211 +600,893 @@ pub fn seed_quests() -> Vec<SkyQuestDef> {
 
     vec![
         // ---- Warrior (Torgon Blademaster) ----
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Skill", "skill", "Wind Rune Neza",
-            &[("Azure Ring", "3-Gorga")], "Azure Ruby Ring"),
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Strength", "strength", "Wind Rune Azia",
-            &[("Stone Amulet", "4-KoS")], "Runed Wind Amulet"),
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Force", "force", "Wind Rune Beza",
-            &[("Spiroc Air Totem", "5-SL")], "Pauldrons of the Blue Sky"),
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Think", "think", "Wind Rune Fana",
-            &[("Wind Tablet", "6-BZ"), ("Efreeti Belt", "")], "Belt of the Four Winds"),
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Smash", "smash", "Wind Rune Jaka",
-            &[("Djinni War Blade", "7-SotS"), ("Gem of Invigoration", "7-Trash")], "Dagas"),
-        q("Warrior", "Torgon Blademaster", "Warrior Test of Bash", "bash", "Wind Rune Dena",
-            &[("Ethereal Emerald", "8-EoV"), ("Efreeti Battle Axe", "")], "Fangol"),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Skill",
+            "skill",
+            "Wind Rune Neza",
+            &[("Azure Ring", "3-Gorga")],
+            "Azure Ruby Ring",
+        ),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Strength",
+            "strength",
+            "Wind Rune Azia",
+            &[("Stone Amulet", "4-KoS")],
+            "Runed Wind Amulet",
+        ),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Force",
+            "force",
+            "Wind Rune Beza",
+            &[("Spiroc Air Totem", "5-SL")],
+            "Pauldrons of the Blue Sky",
+        ),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Think",
+            "think",
+            "Wind Rune Fana",
+            &[("Wind Tablet", "6-BZ"), ("Efreeti Belt", "")],
+            "Belt of the Four Winds",
+        ),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Smash",
+            "smash",
+            "Wind Rune Jaka",
+            &[
+                ("Djinni War Blade", "7-SotS"),
+                ("Gem of Invigoration", "7-Trash"),
+            ],
+            "Dagas",
+        ),
+        q(
+            "Warrior",
+            "Torgon Blademaster",
+            "Warrior Test of Bash",
+            "bash",
+            "Wind Rune Dena",
+            &[("Ethereal Emerald", "8-EoV"), ("Efreeti Battle Axe", "")],
+            "Fangol",
+        ),
         // ---- Wizard (Wizard Schrock) ----
-        q("Wizard", "Wizard Schrock", "Wizard Test of Concentration", "concentration", "Wind Rune Dena",
-            &[("Grey Damask Cloak", "3-Gorga")], "Augmentor's Mask"),
-        q("Wizard", "Wizard Schrock", "Wizard Test of Focus", "focus", "Wind Rune Fana",
-            &[("Woven Skull Cap", "4-KoS")], "Al`Kabor's Cap of Binding"),
-        q("Wizard", "Wizard Schrock", "Wizard Test of Meditation", "meditation", "Wind Rune Geza",
-            &[("High Quality Raiment", "5-SL")], "Raiment of Thunder"),
-        q("Wizard", "Wizard Schrock", "Wizard Test of Conception", "conception", "Wind Rune Izah",
-            &[("Box of Winds", "6-BZ"), ("Efreeti Statuette", "")], "Solidate Mithril Ring"),
-        q("Wizard", "Wizard Schrock", "Wizard Test of Visualization", "visualization", "Wind Rune Jaka",
-            &[("Amethyst Amulet", "7-SotS")], "Amulet of the Void"),
-        q("Wizard", "Wizard Schrock", "Wizard Test of Preparation", "preparation", "Wind Rune Caza",
-            &[("Large Sky Lapis", "8-EoV"), ("Efreeti War Staff", "")], "Nargon's Staff"),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Concentration",
+            "concentration",
+            "Wind Rune Dena",
+            &[("Grey Damask Cloak", "3-Gorga")],
+            "Augmentor's Mask",
+        ),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Focus",
+            "focus",
+            "Wind Rune Fana",
+            &[("Woven Skull Cap", "4-KoS")],
+            "Al`Kabor's Cap of Binding",
+        ),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Meditation",
+            "meditation",
+            "Wind Rune Geza",
+            &[("High Quality Raiment", "5-SL")],
+            "Raiment of Thunder",
+        ),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Conception",
+            "conception",
+            "Wind Rune Izah",
+            &[("Box of Winds", "6-BZ"), ("Efreeti Statuette", "")],
+            "Solidate Mithril Ring",
+        ),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Visualization",
+            "visualization",
+            "Wind Rune Jaka",
+            &[("Amethyst Amulet", "7-SotS")],
+            "Amulet of the Void",
+        ),
+        q(
+            "Wizard",
+            "Wizard Schrock",
+            "Wizard Test of Preparation",
+            "preparation",
+            "Wind Rune Caza",
+            &[("Large Sky Lapis", "8-EoV"), ("Efreeti War Staff", "")],
+            "Nargon's Staff",
+        ),
         // ---- Bard (Cilin Spellsinger) ----
-        q("Bard", "Cilin Spellsinger", "Bard Test of Tone", "tone", "Wind Rune Meda",
-            &[("Light Woolen Mask", "3-Gorga")], "Mask of Song"),
-        q("Bard", "Cilin Spellsinger", "Bard Test of Voice", "voice", "Wind Rune Kala",
-            &[("Light Woolen Mantle", "4-KoS")], "Mantle of the Songweaver"),
-        q("Bard", "Cilin Spellsinger", "Bard Test of Pitch", "pitch", "Wind Rune Azia",
-            &[("Crude Wooden Flute", "5-SL")], "Ervaj's Flute of Flight"),
-        q("Bard", "Cilin Spellsinger", "Bard Test of Wind", "wind", "Wind Rune Caza",
-            &[("Amulet of Woven Hair", "6-BZ")], "Fae Amulet"),
-        q("Bard", "Cilin Spellsinger", "Bard Test of Brass", "brass", "Wind Rune Fana",
-            &[("Glowing Diamond", "7-SotS"), ("Efreeti War Horn", "")], "Denon's Horn of Disaster"),
-        q("Bard", "Cilin Spellsinger", "Bard Test of Harmony", "harmony", "Wind Rune Heda",
-            &[("Nebulous Diamond", "8-EoV"), ("Efreeti War Spear", "")], "Harmonic Spear"),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Tone",
+            "tone",
+            "Wind Rune Meda",
+            &[("Light Woolen Mask", "3-Gorga")],
+            "Mask of Song",
+        ),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Voice",
+            "voice",
+            "Wind Rune Kala",
+            &[("Light Woolen Mantle", "4-KoS")],
+            "Mantle of the Songweaver",
+        ),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Pitch",
+            "pitch",
+            "Wind Rune Azia",
+            &[("Crude Wooden Flute", "5-SL")],
+            "Ervaj's Flute of Flight",
+        ),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Wind",
+            "wind",
+            "Wind Rune Caza",
+            &[("Amulet of Woven Hair", "6-BZ")],
+            "Fae Amulet",
+        ),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Brass",
+            "brass",
+            "Wind Rune Fana",
+            &[("Glowing Diamond", "7-SotS"), ("Efreeti War Horn", "")],
+            "Denon's Horn of Disaster",
+        ),
+        q(
+            "Bard",
+            "Cilin Spellsinger",
+            "Bard Test of Harmony",
+            "harmony",
+            "Wind Rune Heda",
+            &[("Nebulous Diamond", "8-EoV"), ("Efreeti War Spear", "")],
+            "Harmonic Spear",
+        ),
         // ---- Beastlord (Animist Kratho) ----
-        q("Beastlord", "Animist Kratho", "Beastlord Test of Aviak", "aviak", "Wind Rune Beza",
-            &[("Spiroc Elder's Totem", "5-SL")], "Spiroc Beak Earcuff"),
-        q("Beastlord", "Animist Kratho", "Beastlord Test of Azarack", "azarack", "Wind Rune Heda",
-            &[("Azarack Skin", "2-PoS")], "Azarack Skin Wristwraps"),
-        q("Beastlord", "Animist Kratho", "Beastlord Test of Claw", "claw", "Wind Rune Izah",
-            &[("Sphinx Claw", "7-SotS"), ("Mithril Bands", "8-EoV"), ("Brass Knuckles", "")], "Windhowl, Spirit Render"),
-        q("Beastlord", "Animist Kratho", "Beastlord Test of Harpy", "harpy", "Wind Rune Kala",
-            &[("Leather Cord", "3-Gorga")], "Griffin-Hide Armguards"),
-        q("Beastlord", "Animist Kratho", "Beastlord Test of Wind", "wind", "Wind Rune Geza",
-            &[("Silken Wrap", "6-BZ")], "Diaphonous Waistband"),
+        q(
+            "Beastlord",
+            "Animist Kratho",
+            "Beastlord Test of Aviak",
+            "aviak",
+            "Wind Rune Beza",
+            &[("Spiroc Elder's Totem", "5-SL")],
+            "Spiroc Beak Earcuff",
+        ),
+        q(
+            "Beastlord",
+            "Animist Kratho",
+            "Beastlord Test of Azarack",
+            "azarack",
+            "Wind Rune Heda",
+            &[("Azarack Skin", "2-PoS")],
+            "Azarack Skin Wristwraps",
+        ),
+        q(
+            "Beastlord",
+            "Animist Kratho",
+            "Beastlord Test of Claw",
+            "claw",
+            "Wind Rune Izah",
+            &[
+                ("Sphinx Claw", "7-SotS"),
+                ("Mithril Bands", "8-EoV"),
+                ("Brass Knuckles", ""),
+            ],
+            "Windhowl, Spirit Render",
+        ),
+        q(
+            "Beastlord",
+            "Animist Kratho",
+            "Beastlord Test of Harpy",
+            "harpy",
+            "Wind Rune Kala",
+            &[("Leather Cord", "3-Gorga")],
+            "Griffin-Hide Armguards",
+        ),
+        q(
+            "Beastlord",
+            "Animist Kratho",
+            "Beastlord Test of Wind",
+            "wind",
+            "Wind Rune Geza",
+            &[("Silken Wrap", "6-BZ")],
+            "Diaphonous Waistband",
+        ),
         // ---- Berserker (Stragen The Hewer) ----
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Sharpness", "sharpness", "Wind Rune Jaka",
-            &[("Djinni War Blade", "7-SotS"), ("Efreeti Standard", "")], "Skycleaver"),
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Will", "will", "Wind Rune Ena",
-            &[("Pulsating Ruby", "6-BZ")], "Molten Coil"),
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Ferocity", "ferocity", "Wind Rune Ozah",
-            &[("High Quality Raiment", "5-SL")], "Sash of Ferocity"),
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Burden", "burden", "Wind Rune Azia",
-            &[("Feathered Cape", "3-Gorga")], "Shroud of the Sky"),
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Blood", "blood", "Wind Rune Lena",
-            &[("Azarack Blood", "2-PoS")], "Blood-Drawn Runes"),
-        q("Berserker", "Stragen The Hewer", "Berserker Test of Fools Errand", "fools errand", "Wind Rune Dena",
-            &[("Jester's Mask", "4-KoS"), ("Efreeti Great Staff", "")], "Cudgel of the Fool"),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Sharpness",
+            "sharpness",
+            "Wind Rune Jaka",
+            &[("Djinni War Blade", "7-SotS"), ("Efreeti Standard", "")],
+            "Skycleaver",
+        ),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Will",
+            "will",
+            "Wind Rune Ena",
+            &[("Pulsating Ruby", "6-BZ")],
+            "Molten Coil",
+        ),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Ferocity",
+            "ferocity",
+            "Wind Rune Ozah",
+            &[("High Quality Raiment", "5-SL")],
+            "Sash of Ferocity",
+        ),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Burden",
+            "burden",
+            "Wind Rune Azia",
+            &[("Feathered Cape", "3-Gorga")],
+            "Shroud of the Sky",
+        ),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Blood",
+            "blood",
+            "Wind Rune Lena",
+            &[("Azarack Blood", "2-PoS")],
+            "Blood-Drawn Runes",
+        ),
+        q(
+            "Berserker",
+            "Stragen The Hewer",
+            "Berserker Test of Fools Errand",
+            "fools errand",
+            "Wind Rune Dena",
+            &[("Jester's Mask", "4-KoS"), ("Efreeti Great Staff", "")],
+            "Cudgel of the Fool",
+        ),
         // ---- Cleric (Josin Faithbringer) ----
-        q("Cleric", "Josin Faithbringer", "Cleric Test of Courage", "courage", "Wind Rune Lena",
-            &[("Silver Hoop", "3-Gorga")], "Truewind Earring"),
-        q("Cleric", "Josin Faithbringer", "Cleric Test of Skill", "skill", "Wind Rune Meda",
-            &[("Small Shield", "4-KoS")], "Aegis of the Wind"),
-        q("Cleric", "Josin Faithbringer", "Cleric Test of Protection", "protection", "Wind Rune Caza",
-            &[("Shiny Pauldrons", "5-SL")], "Pauldrons of Piety"),
-        q("Cleric", "Josin Faithbringer", "Cleric Test of Resolution", "resolution", "Wind Rune Neza",
-            &[("Silvered Spiroc Necklace", "6-BZ")], "Necklace of Resolution"),
-        q("Cleric", "Josin Faithbringer", "Cleric Test of Theurgy", "theurgy", "Wind Rune Kala",
-            &[("Djinni Aura", "7-SotS"), ("Efreeti Mace", "")], "Theurgist's Star"),
-        q("Cleric", "Josin Faithbringer", "Cleric Test of The Weak", "weak", "Wind Rune Ena",
-            &[("Mithril Bands", "8-EoV"), ("Efreeti Standard", "")], "Baton of the Sky"),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of Courage",
+            "courage",
+            "Wind Rune Lena",
+            &[("Silver Hoop", "3-Gorga")],
+            "Truewind Earring",
+        ),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of Skill",
+            "skill",
+            "Wind Rune Meda",
+            &[("Small Shield", "4-KoS")],
+            "Aegis of the Wind",
+        ),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of Protection",
+            "protection",
+            "Wind Rune Caza",
+            &[("Shiny Pauldrons", "5-SL")],
+            "Pauldrons of Piety",
+        ),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of Resolution",
+            "resolution",
+            "Wind Rune Neza",
+            &[("Silvered Spiroc Necklace", "6-BZ")],
+            "Necklace of Resolution",
+        ),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of Theurgy",
+            "theurgy",
+            "Wind Rune Kala",
+            &[("Djinni Aura", "7-SotS"), ("Efreeti Mace", "")],
+            "Theurgist's Star",
+        ),
+        q(
+            "Cleric",
+            "Josin Faithbringer",
+            "Cleric Test of The Weak",
+            "weak",
+            "Wind Rune Ena",
+            &[("Mithril Bands", "8-EoV"), ("Efreeti Standard", "")],
+            "Baton of the Sky",
+        ),
         // ---- Druid (Strandar Pinemist) ----
-        q("Druid", "Strandar Pinemist", "Druid Test of Wolf", "wolf", "Wind Rune Meda",
-            &[("Worn Leather Mask", "3-Gorga")], "Drake-Hide Mask"),
-        q("Druid", "Strandar Pinemist", "Druid Test of Bear", "bear", "Wind Rune Kala",
-            &[("Mantle of Woven Grass", "4-KoS")], "Nature Walker's Mantle"),
-        q("Druid", "Strandar Pinemist", "Druid Test of Tree", "tree", "Wind Rune Azia",
-            &[("Spiroc Battle Staff", "5-SL"), ("Efreeti Statuette", "")], "Shillelagh"),
-        q("Druid", "Strandar Pinemist", "Druid Test of The Bee", "bee", "Wind Rune Dena",
-            &[("Divine Honeycomb", "6-BZ")], "Honeycomb Belt"),
-        q("Druid", "Strandar Pinemist", "Druid Test of Eagle", "eagle", "Wind Rune Ena",
-            &[("Ethereal Ruby", "7-SotS"), ("Spiroc Elder's Totem", "5-SL")], "Spiroc Banisher Focus"),
-        q("Druid", "Strandar Pinemist", "Druid Test of Nature", "nature", "Wind Rune Izah",
-            &[("Storm Sky Opal", "8-EoV"), ("Efreeti Scimitar", "")], "Espri"),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of Wolf",
+            "wolf",
+            "Wind Rune Meda",
+            &[("Worn Leather Mask", "3-Gorga")],
+            "Drake-Hide Mask",
+        ),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of Bear",
+            "bear",
+            "Wind Rune Kala",
+            &[("Mantle of Woven Grass", "4-KoS")],
+            "Nature Walker's Mantle",
+        ),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of Tree",
+            "tree",
+            "Wind Rune Azia",
+            &[("Spiroc Battle Staff", "5-SL"), ("Efreeti Statuette", "")],
+            "Shillelagh",
+        ),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of The Bee",
+            "bee",
+            "Wind Rune Dena",
+            &[("Divine Honeycomb", "6-BZ")],
+            "Honeycomb Belt",
+        ),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of Eagle",
+            "eagle",
+            "Wind Rune Ena",
+            &[
+                ("Ethereal Ruby", "7-SotS"),
+                ("Spiroc Elder's Totem", "5-SL"),
+            ],
+            "Spiroc Banisher Focus",
+        ),
+        q(
+            "Druid",
+            "Strandar Pinemist",
+            "Druid Test of Nature",
+            "nature",
+            "Wind Rune Izah",
+            &[("Storm Sky Opal", "8-EoV"), ("Efreeti Scimitar", "")],
+            "Espri",
+        ),
         // ---- Enchanter (Enchanter Jolas) ----
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Illusion", "illusion", "Wind Rune Meda",
-            &[("Finely Woven Cloth Cord", "3-Gorga")], "Sphinx Hair Cord"),
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Metamorphism", "metamorphism", "Wind Rune Ozah",
-            &[("Light Cloth Mantle", "4-KoS")], "Wind Walker's Mantle"),
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Deception", "deception", "Wind Rune Beza",
-            &[("Silken Mask", "5-SL")], "Ivory Mask"),
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Disillusion", "disillusion", "Wind Rune Caza",
-            &[("Adamantium Earring", "6-BZ")], "Earring of Displacement"),
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Memorization", "memorization", "Wind Rune Fana",
-            &[("Glowing Necklace", "7-SotS")], "Necklace of Whispering Winds"),
-        q("Enchanter", "Enchanter Jolas", "Enchanter Test of Incapacitation", "incapacitation", "Wind Rune Izah",
-            &[("Large Sky Sapphire", "8-EoV"), ("Efreeti Wind Staff", "")], "Rod of the Protecting Winds"),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Illusion",
+            "illusion",
+            "Wind Rune Meda",
+            &[("Finely Woven Cloth Cord", "3-Gorga")],
+            "Sphinx Hair Cord",
+        ),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Metamorphism",
+            "metamorphism",
+            "Wind Rune Ozah",
+            &[("Light Cloth Mantle", "4-KoS")],
+            "Wind Walker's Mantle",
+        ),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Deception",
+            "deception",
+            "Wind Rune Beza",
+            &[("Silken Mask", "5-SL")],
+            "Ivory Mask",
+        ),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Disillusion",
+            "disillusion",
+            "Wind Rune Caza",
+            &[("Adamantium Earring", "6-BZ")],
+            "Earring of Displacement",
+        ),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Memorization",
+            "memorization",
+            "Wind Rune Fana",
+            &[("Glowing Necklace", "7-SotS")],
+            "Necklace of Whispering Winds",
+        ),
+        q(
+            "Enchanter",
+            "Enchanter Jolas",
+            "Enchanter Test of Incapacitation",
+            "incapacitation",
+            "Wind Rune Izah",
+            &[("Large Sky Sapphire", "8-EoV"), ("Efreeti Wind Staff", "")],
+            "Rod of the Protecting Winds",
+        ),
         // ---- Magician (Magus Frinon) ----
-        q("Magician", "Magus Frinon", "Magician Test of Clarification", "clarification", "Wind Rune Lena",
-            &[("Feathered Cape", "3-Gorga")], "Bracelet of Clarification"),
-        q("Magician", "Magus Frinon", "Magician Test of Empowerment", "empowerment", "Wind Rune Neza",
-            &[("Ceramic Mask", "4-KoS")], "Mask of Empowerment"),
-        q("Magician", "Magus Frinon", "Magician Test of Shielding", "shielding", "Wind Rune Azia",
-            &[("Golden Coffer", "5-SL")], "Gold White Pendant"),
-        q("Magician", "Magus Frinon", "Magician Test of Summoning", "summoning", "Wind Rune Dena",
-            &[("Large Diamond", "6-BZ")], "Drake-Hide Amice"),
-        q("Magician", "Magus Frinon", "Magician Test of Interpretation", "interpretation", "Wind Rune Ena",
-            &[("Golden Efreeti Ring", "7-SotS")], "Duennan Shielding Ring"),
-        q("Magician", "Magus Frinon", "Magician Test of Gesticulation", "gesticulation", "Wind Rune Jaka",
-            &[("Hazy Opal", "8-EoV"), ("Efreeti Magi Staff", "")], "Staff of The Magister"),
-        q("Magician", "Magus Frinon", "Magician Test of Displacement", "displacement", "Wind Rune Heda",
-            &[("Crown Of Elemental Mastery", "7-Trash"), ("Large Opal", "8-EoV"), ("Djinni Stave", "7-SotS")], "Staff of Elemental Mastery: Air"),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Clarification",
+            "clarification",
+            "Wind Rune Lena",
+            &[("Feathered Cape", "3-Gorga")],
+            "Bracelet of Clarification",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Empowerment",
+            "empowerment",
+            "Wind Rune Neza",
+            &[("Ceramic Mask", "4-KoS")],
+            "Mask of Empowerment",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Shielding",
+            "shielding",
+            "Wind Rune Azia",
+            &[("Golden Coffer", "5-SL")],
+            "Gold White Pendant",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Summoning",
+            "summoning",
+            "Wind Rune Dena",
+            &[("Large Diamond", "6-BZ")],
+            "Drake-Hide Amice",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Interpretation",
+            "interpretation",
+            "Wind Rune Ena",
+            &[("Golden Efreeti Ring", "7-SotS")],
+            "Duennan Shielding Ring",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Gesticulation",
+            "gesticulation",
+            "Wind Rune Jaka",
+            &[("Hazy Opal", "8-EoV"), ("Efreeti Magi Staff", "")],
+            "Staff of The Magister",
+        ),
+        q(
+            "Magician",
+            "Magus Frinon",
+            "Magician Test of Displacement",
+            "displacement",
+            "Wind Rune Heda",
+            &[
+                ("Crown Of Elemental Mastery", "7-Trash"),
+                ("Large Opal", "8-EoV"),
+                ("Djinni Stave", "7-SotS"),
+            ],
+            "Staff of Elemental Mastery: Air",
+        ),
         // ---- Monk (Holwin) ----
-        q("Monk", "Holwin", "Monk Test of Strength", "strength", "Wind Rune Caza",
-            &[("Silken Strands", "3-Gorga")], "Back Straps of Mastery"),
-        q("Monk", "Holwin", "Monk Test of Sight", "sight", "Wind Rune Geza",
-            &[("Cracked Leather Eyepatch", "4-KoS")], "Ton Po's Eye Patch"),
-        q("Monk", "Holwin", "Monk Test of Speed", "speed", "Wind Rune Jaka",
-            &[("Dove Slippers", "5-SL")], "Sandals of Alacrity"),
-        q("Monk", "Holwin", "Monk Test of Tears", "tears", "Wind Rune Beza",
-            &[("Silken Wrap", "6-BZ")], "Ton Po's Shoulder Wraps"),
-        q("Monk", "Holwin", "Monk Test of Fists", "fists", "Wind Rune Neza",
-            &[("Nebulous Sapphire", "7-SotS"), ("Brass Knuckles", "")], "Wu's Fist of Mastery"),
-        q("Monk", "Holwin", "Monk Test of Tranquility", "tranquility", "Wind Rune Lena",
-            &[("Tear of Quellious", "8-EoV")], "Golden Sash of Tranquility"),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Strength",
+            "strength",
+            "Wind Rune Caza",
+            &[("Silken Strands", "3-Gorga")],
+            "Back Straps of Mastery",
+        ),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Sight",
+            "sight",
+            "Wind Rune Geza",
+            &[("Cracked Leather Eyepatch", "4-KoS")],
+            "Ton Po's Eye Patch",
+        ),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Speed",
+            "speed",
+            "Wind Rune Jaka",
+            &[("Dove Slippers", "5-SL")],
+            "Sandals of Alacrity",
+        ),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Tears",
+            "tears",
+            "Wind Rune Beza",
+            &[("Silken Wrap", "6-BZ")],
+            "Ton Po's Shoulder Wraps",
+        ),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Fists",
+            "fists",
+            "Wind Rune Neza",
+            &[("Nebulous Sapphire", "7-SotS"), ("Brass Knuckles", "")],
+            "Wu's Fist of Mastery",
+        ),
+        q(
+            "Monk",
+            "Holwin",
+            "Monk Test of Tranquility",
+            "tranquility",
+            "Wind Rune Lena",
+            &[("Tear of Quellious", "8-EoV")],
+            "Golden Sash of Tranquility",
+        ),
         // ---- Necromancer (Drakis Bloodcaster) ----
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Flight", "flight", "Wind Rune Lena",
-            &[("Griffon's Beak", "3-Gorga")], "Bloody Griffon-Hide Wrist Guard"),
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Power", "power", "Wind Rune Neza",
-            &[("Black Silk Cape", "4-KoS")], "Cloak of Spiroc Feathers"),
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Mind", "mind", "Wind Rune Ozah",
-            &[("Fine Cloth Raiment", "5-SL")], "Bloodsoaked Raiment"),
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Heart", "heart", "Wind Rune Azia",
-            &[("Pulsating Ruby", "6-BZ")], "Sphinx Heart Amulet"),
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Finger", "finger", "Wind Rune Caza",
-            &[("Ring of Veeshan", "7-SotS")], "Band of Wailing Winds"),
-        q("Necromancer", "Drakis Bloodcaster", "Necromancer Test of Hands", "hands", "Wind Rune Fana",
-            &[("Gorgon Head", "3-Gorga"), ("Efreeti Great Staff", "")], "Gorgon Head Staff"),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Flight",
+            "flight",
+            "Wind Rune Lena",
+            &[("Griffon's Beak", "3-Gorga")],
+            "Bloody Griffon-Hide Wrist Guard",
+        ),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Power",
+            "power",
+            "Wind Rune Neza",
+            &[("Black Silk Cape", "4-KoS")],
+            "Cloak of Spiroc Feathers",
+        ),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Mind",
+            "mind",
+            "Wind Rune Ozah",
+            &[("Fine Cloth Raiment", "5-SL")],
+            "Bloodsoaked Raiment",
+        ),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Heart",
+            "heart",
+            "Wind Rune Azia",
+            &[("Pulsating Ruby", "6-BZ")],
+            "Sphinx Heart Amulet",
+        ),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Finger",
+            "finger",
+            "Wind Rune Caza",
+            &[("Ring of Veeshan", "7-SotS")],
+            "Band of Wailing Winds",
+        ),
+        q(
+            "Necromancer",
+            "Drakis Bloodcaster",
+            "Necromancer Test of Hands",
+            "hands",
+            "Wind Rune Fana",
+            &[("Gorgon Head", "3-Gorga"), ("Efreeti Great Staff", "")],
+            "Gorgon Head Staff",
+        ),
         // ---- Paladin (Dason Goldblade) ----
-        q("Paladin", "Dason Goldblade", "Paladin Test of Spirit", "spirit", "Wind Rune Lena",
-            &[("Ivory Sky Diamond", "5-SL")], "Girdle of Faith"),
-        q("Paladin", "Dason Goldblade", "Paladin Test of Sacrifice", "sacrifice", "Wind Rune Ozah",
-            &[("Bixie Sword Blade", "6-BZ")], "Aldryn, Blade of the Ocean"),
-        q("Paladin", "Dason Goldblade", "Paladin Test of Love", "love", "Wind Rune Geza",
-            &[("Golden Hilt", "7"), ("Sphinx Claw", "7-SotS")], "Thelvorn, Blade of Light"),
-        q("Paladin", "Dason Goldblade", "Paladin Test of Compassion", "compassion", "Wind Rune Izah",
-            &[("Large Sky Diamond", "8-EoV"), ("Efreeti Zweihander", "")], "Truvinan"),
+        q(
+            "Paladin",
+            "Dason Goldblade",
+            "Paladin Test of Spirit",
+            "spirit",
+            "Wind Rune Lena",
+            &[("Ivory Sky Diamond", "5-SL")],
+            "Girdle of Faith",
+        ),
+        q(
+            "Paladin",
+            "Dason Goldblade",
+            "Paladin Test of Sacrifice",
+            "sacrifice",
+            "Wind Rune Ozah",
+            &[("Bixie Sword Blade", "6-BZ")],
+            "Aldryn, Blade of the Ocean",
+        ),
+        q(
+            "Paladin",
+            "Dason Goldblade",
+            "Paladin Test of Love",
+            "love",
+            "Wind Rune Geza",
+            &[("Golden Hilt", "7"), ("Sphinx Claw", "7-SotS")],
+            "Thelvorn, Blade of Light",
+        ),
+        q(
+            "Paladin",
+            "Dason Goldblade",
+            "Paladin Test of Compassion",
+            "compassion",
+            "Wind Rune Izah",
+            &[("Large Sky Diamond", "8-EoV"), ("Efreeti Zweihander", "")],
+            "Truvinan",
+        ),
         // ---- Ranger (Ranger Spirit) ----
-        q("Ranger", "Ranger Spirit", "Ranger Test of Body", "body", "Wind Rune Meda",
-            &[("Griffon Talon", "3-Gorga")], "Griffon Talon Necklace"),
-        q("Ranger", "Ranger Spirit", "Ranger Test of Defense", "defense", "Wind Rune Neza",
-            &[("Fine Velvet Cloak", "4-KoS")], "Dark Cloak of the Sky"),
-        q("Ranger", "Ranger Spirit", "Ranger Test of The Earth", "elemental earth", "Wind Rune Kala",
-            &[("Spiroc Earth Totem", "5-SL")], "Earthshaker's Mantle"),
-        q("Ranger", "Ranger Spirit", "Ranger Test of Thunder", "elemental thunder", "Wind Rune Azia",
-            &[("White Gold Earring", "6-BZ")], "Thunderforged Earring"),
-        q("Ranger", "Ranger Spirit", "Ranger Test of Blade", "blade", "Wind Rune Ena",
-            &[("Circlet of Brambles", "7-SotS"), ("Efreeti Long Sword", "")], "Arydryidriyorn"),
-        q("Ranger", "Ranger Spirit", "Ranger Test of Ranged Attack", "ranged attack", "Wind Rune Heda",
-            &[("Shimmering Pearl", "8-EoV"), ("Efreeti War Bow", "")], "Windstriker"),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of Body",
+            "body",
+            "Wind Rune Meda",
+            &[("Griffon Talon", "3-Gorga")],
+            "Griffon Talon Necklace",
+        ),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of Defense",
+            "defense",
+            "Wind Rune Neza",
+            &[("Fine Velvet Cloak", "4-KoS")],
+            "Dark Cloak of the Sky",
+        ),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of The Earth",
+            "elemental earth",
+            "Wind Rune Kala",
+            &[("Spiroc Earth Totem", "5-SL")],
+            "Earthshaker's Mantle",
+        ),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of Thunder",
+            "elemental thunder",
+            "Wind Rune Azia",
+            &[("White Gold Earring", "6-BZ")],
+            "Thunderforged Earring",
+        ),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of Blade",
+            "blade",
+            "Wind Rune Ena",
+            &[
+                ("Circlet of Brambles", "7-SotS"),
+                ("Efreeti Long Sword", ""),
+            ],
+            "Arydryidriyorn",
+        ),
+        q(
+            "Ranger",
+            "Ranger Spirit",
+            "Ranger Test of Ranged Attack",
+            "ranged attack",
+            "Wind Rune Heda",
+            &[("Shimmering Pearl", "8-EoV"), ("Efreeti War Bow", "")],
+            "Windstriker",
+        ),
         // ---- Rogue (Thalik Silenthand) ----
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Thievery", "thievery", "Wind Rune Ozah",
-            &[("Inlaid Choker", "3-Gorga")], "Wispy Choker of Vigor"),
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Trickery", "trickery", "Wind Rune Izah",
-            &[("Sphinxian Circlet", "7-SotS")], "Renard's Belt of Quickness"),
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Silence", "silence", "Wind Rune Ena",
-            &[("Spiroc Sky Totem", "5-SL")], "Griffon Wing Spauldors"),
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Cunning", "cunning", "Wind Rune Dena",
-            &[("Jester's Mask", "4-KoS")], "Crystal Mask"),
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Stealth", "stealth", "Wind Rune Geza",
-            &[("Fine Wool Cloak", "6-BZ")], "Scintillating Bracer of Protection"),
-        q("Rogue", "Thalik Silenthand", "Rogue Test of Deception", "deception", "Wind Rune Jaka",
-            &[("Bixie Stinger", "6-BZ"), ("Bloodsky Sapphire", "8-EoV")], "Thornstinger"),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Thievery",
+            "thievery",
+            "Wind Rune Ozah",
+            &[("Inlaid Choker", "3-Gorga")],
+            "Wispy Choker of Vigor",
+        ),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Trickery",
+            "trickery",
+            "Wind Rune Izah",
+            &[("Sphinxian Circlet", "7-SotS")],
+            "Renard's Belt of Quickness",
+        ),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Silence",
+            "silence",
+            "Wind Rune Ena",
+            &[("Spiroc Sky Totem", "5-SL")],
+            "Griffon Wing Spauldors",
+        ),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Cunning",
+            "cunning",
+            "Wind Rune Dena",
+            &[("Jester's Mask", "4-KoS")],
+            "Crystal Mask",
+        ),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Stealth",
+            "stealth",
+            "Wind Rune Geza",
+            &[("Fine Wool Cloak", "6-BZ")],
+            "Scintillating Bracer of Protection",
+        ),
+        q(
+            "Rogue",
+            "Thalik Silenthand",
+            "Rogue Test of Deception",
+            "deception",
+            "Wind Rune Jaka",
+            &[("Bixie Stinger", "6-BZ"), ("Bloodsky Sapphire", "8-EoV")],
+            "Thornstinger",
+        ),
         // ---- Shadow Knight (Sarkis Ebonblade) ----
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Bash", "bash", "Wind Rune Ozah",
-            &[("Finely Crafted Amulet", "3-Gorga")], "Amulet of the Sphinx Eye"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Smash", "smash", "Wind Rune Beza",
-            &[("Silvery Ring", "4-KoS")], "Crimson Ring of the Djinni"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Slash", "slash", "Wind Rune Dena",
-            &[("Finely Woven Cloth Belt", "5-SL")], "Pegasus-Hide Belt"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Disempowerment", "disempowerment", "Wind Rune Fana",
-            &[("Rusted Pauldrons", "6-BZ")], "Blood Sky Face Plate"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Envenoming", "envenoming", "Wind Rune Heda",
-            &[("Efreeti War Shield", "")], "Obtenebrate Mithril Guard"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Raising of the Dead", "raising of the dead", "Wind Rune Izah",
-            &[("Sphinxian Ring", "7-SotS"), ("Fae Pauldrons", "8-EoV")], "Pearlescent Pauldrons"),
-        q("Shadow Knight", "Sarkis Ebonblade", "Shadow Knight Test of Necropotence", "necropotence", "Wind Rune Kala",
-            &[("Blood Sky Ruby", "8-EoV"), ("Efreeti War Axe", "")], "Khyldorn the Blood Drinker"),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Bash",
+            "bash",
+            "Wind Rune Ozah",
+            &[("Finely Crafted Amulet", "3-Gorga")],
+            "Amulet of the Sphinx Eye",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Smash",
+            "smash",
+            "Wind Rune Beza",
+            &[("Silvery Ring", "4-KoS")],
+            "Crimson Ring of the Djinni",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Slash",
+            "slash",
+            "Wind Rune Dena",
+            &[("Finely Woven Cloth Belt", "5-SL")],
+            "Pegasus-Hide Belt",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Disempowerment",
+            "disempowerment",
+            "Wind Rune Fana",
+            &[("Rusted Pauldrons", "6-BZ")],
+            "Blood Sky Face Plate",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Envenoming",
+            "envenoming",
+            "Wind Rune Heda",
+            &[("Efreeti War Shield", "")],
+            "Obtenebrate Mithril Guard",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Raising of the Dead",
+            "raising of the dead",
+            "Wind Rune Izah",
+            &[("Sphinxian Ring", "7-SotS"), ("Fae Pauldrons", "8-EoV")],
+            "Pearlescent Pauldrons",
+        ),
+        q(
+            "Shadow Knight",
+            "Sarkis Ebonblade",
+            "Shadow Knight Test of Necropotence",
+            "necropotence",
+            "Wind Rune Kala",
+            &[("Blood Sky Ruby", "8-EoV"), ("Efreeti War Axe", "")],
+            "Khyldorn the Blood Drinker",
+        ),
         // ---- Shaman (Medicine Man Veetra) ----
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of Might", "might", "Wind Rune Meda",
-            &[("Leather Cord", "3-Gorga")], "Amulet of the Fang"),
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of Health", "health", "Wind Rune Kala",
-            &[("Ceremonial Belt", "5-SL")], "Bracelet of the Spirits"),
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of Sight", "sight", "Wind Rune Beza",
-            &[("Light Damask Mantle", "5-SL")], "Fairy-Hide Mantle"),
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of Shrink", "shrink", "Wind Rune Ena",
-            &[("Corrosive Venom", "6-BZ"), ("Efreeti War Club", "")], "Warhammer of the Wind"),
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of Snake", "snake", "Wind Rune Heda",
-            &[("Bixie Essence", "6"), ("Spiritualist`s Ring", "7-SotS")], "Vermilion Sky Ring"),
-        q("Shaman", "Medicine Man Veetra", "Shaman Test of The Witch Doctor", "witch doctor", "Wind Rune Geza",
-            &[("Symbol of Veeshan", "8-EoV"), ("Efreeti War Maul", "")], "Garduk"),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of Might",
+            "might",
+            "Wind Rune Meda",
+            &[("Leather Cord", "3-Gorga")],
+            "Amulet of the Fang",
+        ),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of Health",
+            "health",
+            "Wind Rune Kala",
+            &[("Ceremonial Belt", "5-SL")],
+            "Bracelet of the Spirits",
+        ),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of Sight",
+            "sight",
+            "Wind Rune Beza",
+            &[("Light Damask Mantle", "5-SL")],
+            "Fairy-Hide Mantle",
+        ),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of Shrink",
+            "shrink",
+            "Wind Rune Ena",
+            &[("Corrosive Venom", "6-BZ"), ("Efreeti War Club", "")],
+            "Warhammer of the Wind",
+        ),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of Snake",
+            "snake",
+            "Wind Rune Heda",
+            &[("Bixie Essence", "6"), ("Spiritualist`s Ring", "7-SotS")],
+            "Vermilion Sky Ring",
+        ),
+        q(
+            "Shaman",
+            "Medicine Man Veetra",
+            "Shaman Test of The Witch Doctor",
+            "witch doctor",
+            "Wind Rune Geza",
+            &[("Symbol of Veeshan", "8-EoV"), ("Efreeti War Maul", "")],
+            "Garduk",
+        ),
     ]
 }
 
@@ -849,13 +1547,21 @@ mod tests {
         let played = ["Shaman".into(), "Warrior".into(), "Druid".into()];
         let r = t.report_for(&now, &played);
 
-        let wolf = r.quests.iter().find(|q| q.name == "Druid Test of Wolf").unwrap();
+        let wolf = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Druid Test of Wolf")
+            .unwrap();
         assert!(wolf.relevant, "a class you played stays in view");
         assert!(!wolf.current_class, "but it is not one you play now");
 
         // A class never played stays hidden, even holding a shared rune of
         // theirs — Wind Rune Meda is also the Cleric's and the Ranger's.
-        let cleric = r.quests.iter().find(|q| q.name == "Cleric Test of Skill").unwrap();
+        let cleric = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Cleric Test of Skill")
+            .unwrap();
         assert!(!cleric.relevant, "a shared rune is not a reason to show it");
     }
 
@@ -869,9 +1575,14 @@ mod tests {
         let me = ["Druid".to_string()];
         let r = t.report_for(&me, &me);
         assert_eq!(
-            r.relevant_count, 6,
+            r.relevant_count,
+            6,
             "only the Druid six: {:?}",
-            r.quests.iter().filter(|q| q.relevant).map(|q| &q.name).collect::<Vec<_>>()
+            r.quests
+                .iter()
+                .filter(|q| q.relevant)
+                .map(|q| &q.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -885,7 +1596,11 @@ mod tests {
         }
         t.on_trade_complete(5000, "Strandar Pinemist");
         let r = t.report_for(&["Shaman".to_string()], &["Shaman".to_string()]);
-        let nature = r.quests.iter().find(|q| q.name == "Druid Test of Nature").unwrap();
+        let nature = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Druid Test of Nature")
+            .unwrap();
         assert_eq!(nature.have_count, 0, "items were handed over");
         assert!(nature.relevant, "completed quests stay visible");
         assert!(!nature.current_class);
@@ -993,7 +1708,15 @@ mod tests {
         let log = t.turn_in_log();
         assert_eq!(log.len(), 2);
         assert!(log.iter().all(|(n, _)| n == "Druid Test of Nature"));
-        assert_eq!(t.report(&[]).quests.iter().find(|q| q.name == "Druid Test of Nature").unwrap().completed, 2);
+        assert_eq!(
+            t.report(&[])
+                .quests
+                .iter()
+                .find(|q| q.name == "Druid Test of Nature")
+                .unwrap()
+                .completed,
+            2
+        );
     }
 
     /// A trade backed out of must not consume anything.
@@ -1043,8 +1766,16 @@ mod tests {
         t.on_say(100, "skill"); // Warrior *and* Cleric answer to this
         let r = t.report(&["Warrior".to_string()]);
 
-        let war = r.quests.iter().find(|q| q.name == "Warrior Test of Skill").unwrap();
-        let cle = r.quests.iter().find(|q| q.name == "Cleric Test of Skill").unwrap();
+        let war = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Skill")
+            .unwrap();
+        let cle = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Cleric Test of Skill")
+            .unwrap();
         assert!(war.relevant);
         assert!(!cle.relevant, "Cleric quest is not yours");
         assert!(war.last_started.is_some() && cle.last_started.is_some());
@@ -1066,7 +1797,11 @@ mod tests {
     fn the_rune_counts_as_a_required_item() {
         let t = SkyTracker::new();
         let r = t.report(&[]);
-        let skill = r.quests.iter().find(|q| q.name == "Warrior Test of Skill").unwrap();
+        let skill = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Skill")
+            .unwrap();
         assert_eq!(skill.items.len(), 2, "rune plus one drop");
         assert!(skill.items.iter().any(|i| i.name == "Wind Rune Neza"));
     }
@@ -1080,7 +1815,10 @@ mod tests {
         t.on_loot("wind rune neza", 1); // case-insensitive
         let r = t.report(&me);
         assert_eq!(r.ready, 1);
-        assert_eq!(r.quests[0].name, "Warrior Test of Skill", "ready quest leads");
+        assert_eq!(
+            r.quests[0].name, "Warrior Test of Skill",
+            "ready quest leads"
+        );
     }
 
     /// Ordered by what is still missing, so the quest you can finish soonest
@@ -1119,7 +1857,11 @@ mod tests {
         t.on_loot("Wind Rune Jaka", 1);
         t.on_loot("Djinni War Blade", 1);
         let r = t.report(&[]);
-        let smash = r.quests.iter().find(|q| q.name == "Warrior Test of Smash").unwrap();
+        let smash = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Smash")
+            .unwrap();
         assert_eq!(smash.have_count, 2);
         assert_eq!(smash.need_count, 1);
         assert!(!smash.complete);
@@ -1137,10 +1879,18 @@ mod tests {
     fn only_the_exact_phrase_marks_a_quest_started() {
         let mut t = SkyTracker::new();
         t.on_say(500, "I have no skill at this");
-        assert!(t.report(&[]).quests.iter().all(|q| q.last_started.is_none()));
+        assert!(t
+            .report(&[])
+            .quests
+            .iter()
+            .all(|q| q.last_started.is_none()));
         t.on_say(900, "Skill");
         let r = t.report(&[]);
-        let skill = r.quests.iter().find(|q| q.name == "Warrior Test of Skill").unwrap();
+        let skill = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Skill")
+            .unwrap();
         assert_eq!(skill.last_started, Some(900));
     }
 

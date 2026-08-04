@@ -211,12 +211,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Feed a spell the character is known to own into the class detector.
-fn observe_spell(
-    classes: &mut ClassDetector,
-    db: &SpellDb,
-    timestamp: i64,
-    spell_name: &str,
-) {
+fn observe_spell(classes: &mut ClassDetector, db: &SpellDb, timestamp: i64, spell_name: &str) {
     if let Some(levels) = db.class_levels_for_name(spell_name) {
         classes.observe_spell(timestamp, spell_name, &levels);
     }

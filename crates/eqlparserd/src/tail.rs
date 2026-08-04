@@ -189,7 +189,10 @@ mod tests {
         assert_eq!(got, vec!["one", "two"]);
 
         // Append and poll again; only the new line should arrive.
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "three").unwrap();
         got.clear();
         f.read_available(|l| got.push(l.to_string())).unwrap();
@@ -206,7 +209,11 @@ mod tests {
         let mut f = Follower::open(&path).unwrap();
         let mut got = Vec::new();
         f.read_available(|l| got.push(l.to_string())).unwrap();
-        assert_eq!(got, vec!["alpha", "beta"], "carriage returns must be trimmed");
+        assert_eq!(
+            got,
+            vec!["alpha", "beta"],
+            "carriage returns must be trimmed"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -223,7 +230,10 @@ mod tests {
         assert_eq!(got, vec!["complete"], "partial tail must be withheld");
 
         // Finish the line.
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "tial").unwrap();
         got.clear();
         f.read_available(|l| got.push(l.to_string())).unwrap();
@@ -246,7 +256,11 @@ mod tests {
         std::fs::write(&path, "fresh\n").unwrap();
         got.clear();
         f.read_available(|l| got.push(l.to_string())).unwrap();
-        assert_eq!(got, vec!["fresh"], "truncation should rewind, not seek past EOF");
+        assert_eq!(
+            got,
+            vec!["fresh"],
+            "truncation should rewind, not seek past EOF"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -193,8 +193,11 @@ impl ActorStats {
 
     /// Abilities ordered by damage contributed, highest first.
     pub fn abilities_by_damage(&self) -> Vec<(&str, &AbilityStats)> {
-        let mut v: Vec<(&str, &AbilityStats)> =
-            self.by_ability.iter().map(|(k, s)| (k.as_str(), s)).collect();
+        let mut v: Vec<(&str, &AbilityStats)> = self
+            .by_ability
+            .iter()
+            .map(|(k, s)| (k.as_str(), s))
+            .collect();
         v.sort_by_key(|(_, s)| std::cmp::Reverse(s.total));
         v
     }
@@ -331,9 +334,7 @@ impl LootFate {
         match d {
             D::Kept => (LootFate::Kept, None, None),
             D::Sold(c) => (LootFate::Sold, None, Some(c.as_copper())),
-            D::Stored { destination } => {
-                (LootFate::Stored, Some(destination.clone()), None)
-            }
+            D::Stored { destination } => (LootFate::Stored, Some(destination.clone()), None),
             D::Transmuted { into } => (LootFate::Transmuted, Some(into.clone()), None),
         }
     }
@@ -535,7 +536,8 @@ impl Encounter {
             .iter()
             .filter_map(|d| {
                 let s = self.actors.get(&d.victim.to_lowercase())?;
-                s.damaged_by_you.then_some((d.victim.as_str(), s.damage_taken))
+                s.damaged_by_you
+                    .then_some((d.victim.as_str(), s.damage_taken))
             })
             .collect();
         // Deduplicate repeated names (several identical trash mobs) so the
@@ -718,7 +720,9 @@ impl EncounterTracker {
                 let src_charmed = self.charmed.contains(&source.key());
                 let enc = self.current.as_mut().unwrap();
 
-                let ability_name = ability.clone().unwrap_or_else(|| kind_label(*kind).to_string());
+                let ability_name = ability
+                    .clone()
+                    .unwrap_or_else(|| kind_label(*kind).to_string());
                 let ability_label = ability_name.clone();
                 let mut incoming: Option<IncomingHit> = None;
                 let src_is_you = source.is_you();
@@ -764,7 +768,9 @@ impl EncounterTracker {
                         .entry(ability_in)
                         .or_default()
                         .record_hit(*amount, crit);
-                    *t.damage_taken_by_source.entry(source_name.clone()).or_default() += *amount;
+                    *t.damage_taken_by_source
+                        .entry(source_name.clone())
+                        .or_default() += *amount;
                     if src_is_you {
                         t.damaged_by_you = true;
                     }
@@ -832,9 +838,9 @@ impl EncounterTracker {
                 let src_is_you = source.is_you();
                 // Unnamed heals still need a bucket, or a healer's breakdown
                 // silently loses everything the client did not name.
-                let spell_name = spell
-                    .clone()
-                    .unwrap_or_else(|| if *over_time { "heal over time" } else { "heal" }.to_string());
+                let spell_name = spell.clone().unwrap_or_else(|| {
+                    if *over_time { "heal over time" } else { "heal" }.to_string()
+                });
                 {
                     let s = enc.entry(source, &player);
                     s.healing_done += *amount;
@@ -1068,9 +1074,18 @@ mod tests {
     fn damage_split_by_kind_and_ability() {
         let encs = run(&[
             (100, "You slash a lesser mummy for 100 points of damage."),
-            (101, "You hit a lesser mummy for 40 points of magic damage by Shallow Breath."),
-            (102, "A lesser mummy has taken 30 damage from your Drifting Death IV."),
-            (103, "A lesser mummy is pierced by YOUR thorns for 10 points of non-melee damage."),
+            (
+                101,
+                "You hit a lesser mummy for 40 points of magic damage by Shallow Breath.",
+            ),
+            (
+                102,
+                "A lesser mummy has taken 30 damage from your Drifting Death IV.",
+            ),
+            (
+                103,
+                "A lesser mummy is pierced by YOUR thorns for 10 points of non-melee damage.",
+            ),
             (104, "You have slain a lesser mummy!"),
         ]);
         let you = encs[0].actors.get("you").unwrap();
@@ -1091,11 +1106,23 @@ mod tests {
             (100, "You slash a mob for 100 points of damage. (Critical)"),
             (101, "You slash a mob for 50 points of damage."),
             // Dot: 2 ticks, 1 crit => 50%.
-            (102, "A mob has taken 30 damage from your Drifting Death IV. (Critical)"),
-            (103, "A mob has taken 20 damage from your Drifting Death IV."),
+            (
+                102,
+                "A mob has taken 30 damage from your Drifting Death IV. (Critical)",
+            ),
+            (
+                103,
+                "A mob has taken 20 damage from your Drifting Death IV.",
+            ),
             // Damage shield: never crits.
-            (104, "A mob is pierced by YOUR thorns for 10 points of non-melee damage."),
-            (105, "A mob is pierced by YOUR thorns for 10 points of non-melee damage."),
+            (
+                104,
+                "A mob is pierced by YOUR thorns for 10 points of non-melee damage.",
+            ),
+            (
+                105,
+                "A mob is pierced by YOUR thorns for 10 points of non-melee damage.",
+            ),
             (106, "You have slain a mob!"),
         ]);
         let you = encs[0].actors.get("you").unwrap();
@@ -1120,7 +1147,10 @@ mod tests {
     #[test]
     fn crits_and_misses_feed_rates() {
         let encs = run(&[
-            (100, "You slash a lesser mummy for 100 points of damage. (Critical)"),
+            (
+                100,
+                "You slash a lesser mummy for 100 points of damage. (Critical)",
+            ),
             (101, "You slash a lesser mummy for 50 points of damage."),
             (102, "You try to slash a lesser mummy, but miss!"),
             (103, "You have slain a lesser mummy!"),
@@ -1155,8 +1185,14 @@ mod tests {
     fn charmed_pet_damage_counts_toward_the_enemy() {
         let encs = run(&[
             (100, "You slash a fire giant for 100 points of damage."),
-            (101, "An imp protector told you, 'Attacking a fire giant Master.'"),
-            (102, "An imp protector slashes a fire giant for 400 points of damage."),
+            (
+                101,
+                "An imp protector told you, 'Attacking a fire giant Master.'",
+            ),
+            (
+                102,
+                "An imp protector slashes a fire giant for 400 points of damage.",
+            ),
             (103, "A fire giant hits YOU for 50 points of damage."),
         ]);
         let e = &encs[0];
@@ -1176,8 +1212,14 @@ mod tests {
             (100, "You slash a giant for 10 points of damage."),
             (101, "A giant hits YOU for 200 points of damage."),
             (102, "A giant hits YOU for 100 points of damage."),
-            (103, "a giant hit you for 60 points of fire damage by Draught of Fire."),
-            (104, "You have taken 20 damage from Choking by a thunder spirit."),
+            (
+                103,
+                "a giant hit you for 60 points of fire damage by Draught of Fire.",
+            ),
+            (
+                104,
+                "You have taken 20 damage from Choking by a thunder spirit.",
+            ),
             (105, "A thunder spirit hits YOU for 30 points of damage."),
             (106, "A giant tries to hit YOU, but misses!"),
         ]);
@@ -1212,7 +1254,10 @@ mod tests {
         let encs = run(&[
             (100, "You slash a giant for 10 points of damage."),
             (101, "A giant hits YOU for 100 points of damage."),
-            (102, "a giant hit you for 50 points of fire damage by Draught of Fire."),
+            (
+                102,
+                "a giant hit you for 50 points of fire damage by Draught of Fire.",
+            ),
         ]);
         let you = encs[0].actors.get("you").unwrap();
         let by_src = you.incoming_by_source();
@@ -1257,7 +1302,10 @@ mod tests {
             (100, "You healed Tharn for 500 hit points by Healing Water."),
             (200, "You healed Tharn for 500 hit points by Healing Water."),
         ]);
-        assert!(encs.is_empty(), "out-of-combat healing must not create fights");
+        assert!(
+            encs.is_empty(),
+            "out-of-combat healing must not create fights"
+        );
     }
 
     #[test]
@@ -1266,7 +1314,10 @@ mod tests {
             (100, "You slash a mob for 10 points of damage."),
             (101, "You healed Tharn for 300 hit points by Healing Water."),
             (102, "You healed Tharn for 200 hit points by Healing Water."),
-            (103, "You healed Tharn over time for 50 hit points by Blooming Heal."),
+            (
+                103,
+                "You healed Tharn over time for 50 hit points by Blooming Heal.",
+            ),
             (104, "You healed Tharn for 25 hit points."),
         ]);
         let you = encs[0].actors.get("you").unwrap();
@@ -1305,17 +1356,29 @@ mod tests {
     fn pure_healer_still_counts_as_active() {
         let encs = run(&[
             (100, "You slash a mob for 10 points of damage."),
-            (101, "Cleric healed Tharn for 400 hit points by Superior Healing."),
+            (
+                101,
+                "Cleric healed Tharn for 400 hit points by Superior Healing.",
+            ),
         ]);
         let cleric = encs[0].actors.get("cleric").unwrap();
         assert_eq!(cleric.damage_done, 0);
-        assert!(cleric.is_active(), "a healer with no damage is still active");
         assert!(
-            encs[0].active_actors().iter().any(|(_, s)| s.name == "Cleric"),
+            cleric.is_active(),
+            "a healer with no damage is still active"
+        );
+        assert!(
+            encs[0]
+                .active_actors()
+                .iter()
+                .any(|(_, s)| s.name == "Cleric"),
             "healer must appear among active actors"
         );
         assert!(
-            !encs[0].damage_ranking().iter().any(|(_, s)| s.name == "Cleric"),
+            !encs[0]
+                .damage_ranking()
+                .iter()
+                .any(|(_, s)| s.name == "Cleric"),
             "but not in the damage meter"
         );
         assert_eq!(encs[0].healing_ranking()[0].1.name, "Cleric");
@@ -1340,8 +1403,14 @@ mod tests {
         let encs = run(&[
             (100, "You slash Lord Nagafen for 10 points of damage."),
             (101, "You have slain Lord Nagafen!"),
-            (102, "You receive 12 platinum, 3 silver and 4 copper from the corpse."),
-            (103, "--You have looted a Cloak of Flames +3 from Lord Nagafen's corpse.--"),
+            (
+                102,
+                "You receive 12 platinum, 3 silver and 4 copper from the corpse.",
+            ),
+            (
+                103,
+                "--You have looted a Cloak of Flames +3 from Lord Nagafen's corpse.--",
+            ),
         ]);
         assert_eq!(encs.len(), 1);
         assert_eq!(encs[0].coin_copper, 12_034);
@@ -1372,7 +1441,10 @@ mod tests {
     #[test]
     fn title_names_the_toughest_kill_not_the_first() {
         let encs = run(&[
-            (100, "You slash a fire giant warrior for 500 points of damage."),
+            (
+                100,
+                "You slash a fire giant warrior for 500 points of damage.",
+            ),
             (101, "You have slain a fire giant warrior!"),
             (102, "You slash Lord Nagafen for 9000 points of damage."),
             (103, "You have slain Lord Nagafen!"),
@@ -1388,7 +1460,11 @@ mod tests {
             (102, "You slash a rat for 10 points of damage."),
             (103, "You have slain a rat!"),
         ]);
-        assert_eq!(encs[0].title(), "a rat", "identical mobs should not inflate the count");
+        assert_eq!(
+            encs[0].title(),
+            "a rat",
+            "identical mobs should not inflate the count"
+        );
     }
 
     #[test]
@@ -1421,9 +1497,18 @@ mod tests {
     #[test]
     fn charmed_pet_damage_is_credited_to_you() {
         let encs = run(&[
-            (100, "You slash a fire giant warrior for 100 points of damage."),
-            (101, "An imp protector told you, 'Attacking a fire giant warrior Master.'"),
-            (102, "An imp protector slashes a fire giant warrior for 400 points of damage."),
+            (
+                100,
+                "You slash a fire giant warrior for 100 points of damage.",
+            ),
+            (
+                101,
+                "An imp protector told you, 'Attacking a fire giant warrior Master.'",
+            ),
+            (
+                102,
+                "An imp protector slashes a fire giant warrior for 400 points of damage.",
+            ),
             (103, "You have slain a fire giant warrior!"),
         ]);
         let e = &encs[0];
@@ -1443,7 +1528,10 @@ mod tests {
             // The imp is a hostile mob first.
             (100, "An imp protector hits YOU for 50 points of damage."),
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
-            (102, "An imp protector slashes a rat for 30 points of damage."),
+            (
+                102,
+                "An imp protector slashes a rat for 30 points of damage.",
+            ),
             (103, "You slash a rat for 1 point of damage."),
         ]);
         let imp = encs[0].actors.get("an imp protector").unwrap();
@@ -1464,7 +1552,10 @@ mod tests {
         let before = entries(&[
             (100, "You slash a rat for 1 point of damage."),
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
-            (102, "An imp protector slashes a rat for 30 points of damage."),
+            (
+                102,
+                "An imp protector slashes a rat for 30 points of damage.",
+            ),
         ]);
         for e in &before {
             t.push(e);
@@ -1595,9 +1686,18 @@ mod tests {
         let encs = run(&[
             (100, "You slash a rat for 1 point of damage."),
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
-            (102, "An imp protector slashes a rat for 30 points of damage."),
-            (103, "Your Chords of Dissonance spell has worn off of an imp protector."),
-            (104, "An imp protector slashes a rat for 70 points of damage."),
+            (
+                102,
+                "An imp protector slashes a rat for 30 points of damage.",
+            ),
+            (
+                103,
+                "Your Chords of Dissonance spell has worn off of an imp protector.",
+            ),
+            (
+                104,
+                "An imp protector slashes a rat for 70 points of damage.",
+            ),
         ]);
         let imp = encs[0].actors.get("an imp protector").unwrap();
         assert_eq!(
@@ -1614,7 +1714,10 @@ mod tests {
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
             // Long gap splits the encounter; the charm is still up.
             (500, "You slash a bat for 1 point of damage."),
-            (501, "An imp protector slashes a bat for 200 points of damage."),
+            (
+                501,
+                "An imp protector slashes a bat for 200 points of damage.",
+            ),
         ]);
         assert_eq!(encs.len(), 2);
         assert_eq!(
@@ -1638,6 +1741,10 @@ mod tests {
             .keys()
             .filter(|k| k.contains("mummy"))
             .collect();
-        assert_eq!(mummy_entries.len(), 1, "case variants must fold: {mummy_entries:?}");
+        assert_eq!(
+            mummy_entries.len(),
+            1,
+            "case variants must fold: {mummy_entries:?}"
+        );
     }
 }

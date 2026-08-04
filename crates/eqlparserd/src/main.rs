@@ -110,22 +110,46 @@ async fn main() -> anyhow::Result<()> {
     let cfg = parse_args();
     let log_path = resolve_log(&cfg)?;
 
-    let player = Parser::player_from_filename(&log_path.to_string_lossy())
-        .unwrap_or_else(|| "You".to_string());
+    // The filename is the only place the character and server appear; history
+    // is keyed on both so an alt or a second server keeps its own records.
+    let (player, server) = Parser::identity_from_filename(&log_path.to_string_lossy())
+        .unwrap_or_else(|| ("You".to_string(), String::new()));
     eprintln!(
-        "[eqlparserd] following {} (character: {player})",
-        log_path.display()
+        "[eqlparserd] following {} (character: {player}, server: {})",
+        log_path.display(),
+        if server.is_empty() {
+            "unknown"
+        } else {
+            &server
+        }
     );
 
     let spell_db = Engine::load_spell_db(cfg.game_dir.as_deref());
-    let engine = Engine::new(player, spell_db);
+    let engine = Engine::new(player.clone(), spell_db);
 
     // History outlives any one log file. Opened before the follower starts so
     // the first flush after catch-up has somewhere to go.
-    let history = match store::Store::open(&history_path()) {
+    let history = match store::Store::open_as(&history_path(), &player, &server) {
         Ok(s) => {
             if let Ok((k, e, l)) = s.counts() {
-                eprintln!("[eqlparserd] history: {k} boss kills, {e} raid fights, {l} levels");
+                eprintln!(
+                    "[eqlparserd] history for {player}: {k} boss kills, {e} raid fights, {l} levels"
+                );
+            }
+            if let Ok(all) = s.characters() {
+                if all.len() > 1 {
+                    let others: Vec<String> = all
+                        .iter()
+                        .filter(|(c, sv, _)| c != &player || sv != &server)
+                        .map(|(c, sv, n)| format!("{c} on {sv} ({n} kills)"))
+                        .collect();
+                    if !others.is_empty() {
+                        eprintln!(
+                            "[eqlparserd] other characters on file: {}",
+                            others.join(", ")
+                        );
+                    }
+                }
             }
             Some(Arc::new(Mutex::new(s)))
         }
@@ -136,7 +160,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let engine = Arc::new(Mutex::new(engine));
-    let snapshot = Arc::new(RwLock::new(engine.lock().unwrap().snapshot(SNAPSHOT_RECENT)));
+    let snapshot = Arc::new(RwLock::new(
+        engine.lock().unwrap().snapshot(SNAPSHOT_RECENT),
+    ));
     let (updates, _) = broadcast::channel(64);
 
     spawn_follower(

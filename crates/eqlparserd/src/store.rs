@@ -18,9 +18,16 @@
 //! produces the same rows; parsing a longer version of it adds the new ones.
 //! There is no offset state to get wrong.
 //!
-//! The natural keys assume one character per database, which is how the daemon
-//! runs: a log file names its character, and a different character is a
-//! different history.
+//! # Whose history
+//!
+//! Every per-character table is keyed on `(character, server, …)`. The client
+//! names its logs `eqlog_<Character>_<server>.txt`, which is the only place
+//! either appears — nothing inside a log says which server it came from.
+//!
+//! Without that, following an alt's log would merge their kills, levels and
+//! turn-ins into the same rows as the main's, with nothing left to tell them
+//! apart afterwards. Quest write-ups are deliberately *not* scoped: a guide to
+//! a quest is true whoever is reading it.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -143,11 +150,16 @@ pub struct QuestLine {
 /// The persistent history database.
 pub struct Store {
     conn: Connection,
+    /// Whose history is being read and written.
+    character: String,
+    server: String,
 }
 
 impl Store {
-    /// Open (creating if needed) the history database.
-    pub fn open(path: &Path) -> Result<Store> {
+    /// Open (creating if needed) the history database, scoped to one character
+    /// on one server. There is no unscoped open: every read and write has to
+    /// say whose it is, or an alt's records merge into the main's.
+    pub fn open_as(path: &Path, character: &str, server: &str) -> Result<Store> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -156,18 +168,145 @@ impl Store {
         // trickles; WAL keeps those writes from blocking API reads.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let s = Store { conn };
+        let mut s = Store {
+            conn,
+            character: character.to_string(),
+            server: server.to_string(),
+        };
         s.migrate()?;
+        s.add_identity_columns()?;
         Ok(s)
     }
 
     /// An in-memory database, for tests.
     pub fn in_memory() -> Result<Store> {
-        let s = Store {
+        let mut s = Store {
             conn: Connection::open_in_memory()?,
+            character: "Test".to_string(),
+            server: "test".to_string(),
         };
         s.migrate()?;
+        s.add_identity_columns()?;
         Ok(s)
+    }
+
+    /// Add character and server to the per-character tables, once.
+    ///
+    /// Existing rows predate the distinction and can only have come from the
+    /// log in front of us, so they are backfilled with the current identity.
+    /// SQLite cannot alter a primary key in place, so each table is rebuilt;
+    /// `INSERT OR IGNORE` into the new shape keeps that safe to re-run.
+    fn add_identity_columns(&mut self) -> Result<()> {
+        let already: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('boss_kills') WHERE name='character'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if already {
+            return Ok(());
+        }
+
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "
+            CREATE TABLE boss_kills_v2 (
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                timestamp INTEGER NOT NULL, boss TEXT NOT NULL,
+                difficulty INTEGER NOT NULL, zone TEXT NOT NULL DEFAULT '',
+                solo INTEGER NOT NULL DEFAULT 0, build TEXT NOT NULL DEFAULT '',
+                duration INTEGER NOT NULL DEFAULT 0,
+                your_damage INTEGER NOT NULL DEFAULT 0,
+                your_dps REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (character, server, timestamp, boss)
+            );
+            CREATE TABLE encounters_v2 (
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                start INTEGER NOT NULL, end INTEGER NOT NULL, title TEXT NOT NULL,
+                zone TEXT NOT NULL DEFAULT '', duration INTEGER NOT NULL DEFAULT 0,
+                your_damage INTEGER NOT NULL DEFAULT 0, your_dps REAL NOT NULL DEFAULT 0,
+                total_damage INTEGER NOT NULL DEFAULT 0, kills INTEGER NOT NULL DEFAULT 0,
+                deaths INTEGER NOT NULL DEFAULT 0, build TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (character, server, start, title)
+            );
+            CREATE TABLE levels_v2 (
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                level INTEGER NOT NULL, started INTEGER NOT NULL,
+                ended INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 0,
+                kills INTEGER NOT NULL DEFAULT 0, percent REAL NOT NULL DEFAULT 0,
+                build TEXT NOT NULL DEFAULT '', zones TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (character, server, level, started)
+            );
+            CREATE TABLE aa_purchases_v2 (
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                ability TEXT NOT NULL, rank INTEGER NOT NULL,
+                spent INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (character, server, ability, rank)
+            );
+            CREATE TABLE sky_turnins_v2 (
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                quest TEXT NOT NULL, at INTEGER NOT NULL,
+                PRIMARY KEY (character, server, quest, at)
+            );
+            ",
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO boss_kills_v2
+             SELECT ?1, ?2, timestamp, boss, difficulty, zone, solo, build, duration,
+                    your_damage, your_dps FROM boss_kills",
+            params![c, sv],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO encounters_v2
+             SELECT ?1, ?2, start, end, title, zone, duration, your_damage, your_dps,
+                    total_damage, kills, deaths, build FROM encounters",
+            params![c, sv],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO levels_v2
+             SELECT ?1, ?2, level, started, ended, seconds, kills, percent, build, zones
+             FROM levels",
+            params![c, sv],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO aa_purchases_v2
+             SELECT ?1, ?2, ability, rank, spent, at FROM aa_purchases",
+            params![c, sv],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO sky_turnins_v2 SELECT ?1, ?2, quest, at FROM sky_turnins",
+            params![c, sv],
+        )?;
+        tx.execute_batch(
+            "
+            DROP TABLE boss_kills;   ALTER TABLE boss_kills_v2   RENAME TO boss_kills;
+            DROP TABLE encounters;   ALTER TABLE encounters_v2   RENAME TO encounters;
+            DROP TABLE levels;       ALTER TABLE levels_v2       RENAME TO levels;
+            DROP TABLE aa_purchases; ALTER TABLE aa_purchases_v2 RENAME TO aa_purchases;
+            DROP TABLE sky_turnins;  ALTER TABLE sky_turnins_v2  RENAME TO sky_turnins;
+            CREATE INDEX IF NOT EXISTS boss_kills_who ON boss_kills(character, server);
+            CREATE INDEX IF NOT EXISTS encounters_who ON encounters(character, server);
+            ",
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Who this store is reading and writing as.
+    pub fn identity(&self) -> (&str, &str) {
+        (&self.character, &self.server)
+    }
+
+    /// Characters seen in the history, as (character, server, boss kills).
+    pub fn characters(&self) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT character, server, COUNT(*) FROM boss_kills
+             GROUP BY character, server ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     fn migrate(&self) -> Result<()> {
@@ -257,15 +396,18 @@ impl Store {
     /// Record boss kills. Existing rows are replaced, so a re-parse that now
     /// knows more (a build label, a matched encounter) improves them.
     pub fn put_kills(&mut self, kills: &[StoredKill]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO boss_kills
-                 (timestamp, boss, difficulty, zone, solo, build, duration, your_damage, your_dps)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                 (character, server, timestamp, boss, difficulty, zone, solo, build, duration, your_damage, your_dps)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             )?;
             for k in kills {
                 stmt.execute(params![
+                    c,
+                    sv,
                     k.timestamp,
                     k.boss,
                     k.difficulty,
@@ -283,15 +425,18 @@ impl Store {
     }
 
     pub fn put_encounters(&mut self, encs: &[StoredEncounter]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO encounters
-                 (start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 (character, server, start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             )?;
             for e in encs {
                 stmt.execute(params![
+                    c,
+                    sv,
                     e.start,
                     e.end,
                     e.title,
@@ -311,16 +456,18 @@ impl Store {
     }
 
     pub fn put_levels(&mut self, levels: &[StoredLevel]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO levels
-                 (level, started, ended, seconds, kills, percent, build, zones)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                 (character, server, level, started, ended, seconds, kills, percent, build, zones)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             )?;
             for l in levels {
                 stmt.execute(params![
-                    l.level, l.started, l.ended, l.seconds, l.kills, l.percent, l.build, l.zones
+                    c, sv, l.level, l.started, l.ended, l.seconds, l.kills, l.percent, l.build,
+                    l.zones
                 ])?;
             }
         }
@@ -329,14 +476,15 @@ impl Store {
     }
 
     pub fn put_aa(&mut self, purchases: &[(String, u32, u32, i64)]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO aa_purchases (ability, rank, spent, at)
-                 VALUES (?1,?2,?3,?4)",
+                "INSERT OR REPLACE INTO aa_purchases (character, server, ability, rank, spent, at)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
             )?;
             for (ability, rank, spent, at) in purchases {
-                stmt.execute(params![ability, rank, spent, at])?;
+                stmt.execute(params![c, sv, ability, rank, spent, at])?;
             }
         }
         tx.commit()?;
@@ -345,12 +493,15 @@ impl Store {
 
     /// Record Sky turn-ins. Existing (quest, time) pairs are left alone.
     pub fn put_sky_turnins(&mut self, rows: &[(String, i64)]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
-            let mut stmt =
-                tx.prepare("INSERT OR IGNORE INTO sky_turnins (quest, at) VALUES (?1,?2)")?;
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO sky_turnins (character, server, quest, at)
+                 VALUES (?1,?2,?3,?4)",
+            )?;
             for (quest, at) in rows {
-                stmt.execute(params![quest, at])?;
+                stmt.execute(params![c, sv, quest, at])?;
             }
         }
         tx.commit()?;
@@ -361,10 +512,13 @@ impl Store {
     /// parsed.
     pub fn sky_turnin_counts(&self) -> Result<Vec<(String, u32, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT quest, COUNT(*), MAX(at) FROM sky_turnins GROUP BY quest",
+            "SELECT quest, COUNT(*), MAX(at) FROM sky_turnins
+             WHERE character = ?1 AND server = ?2 GROUP BY quest",
         )?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map(params![self.character, self.server], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -404,7 +558,9 @@ impl Store {
     }
 
     pub fn quest(&self, name: &str) -> Result<Option<QuestRecord>> {
-        let mut stmt = self.conn.prepare("SELECT data FROM quests WHERE name = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM quests WHERE name = ?1")?;
         let mut rows = stmt.query_map([name], |r| r.get::<_, String>(0))?;
         match rows.next() {
             Some(Ok(d)) => Ok(serde_json::from_str(&d).ok()),
@@ -441,10 +597,11 @@ impl Store {
     pub fn kills(&self) -> Result<Vec<StoredKill>> {
         let mut stmt = self.conn.prepare(
             "SELECT timestamp, boss, difficulty, zone, solo, build, duration, your_damage, your_dps
-             FROM boss_kills ORDER BY timestamp DESC",
+             FROM boss_kills WHERE character = ?1 AND server = ?2
+             ORDER BY timestamp DESC",
         )?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![self.character, self.server], |r| {
                 Ok(StoredKill {
                     timestamp: r.get(0)?,
                     boss: r.get(1)?,
@@ -464,10 +621,10 @@ impl Store {
     pub fn levels(&self) -> Result<Vec<StoredLevel>> {
         let mut stmt = self.conn.prepare(
             "SELECT level, started, ended, seconds, kills, percent, build, zones
-             FROM levels ORDER BY level ASC",
+             FROM levels WHERE character = ?1 AND server = ?2 ORDER BY level ASC",
         )?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![self.character, self.server], |r| {
                 Ok(StoredLevel {
                     level: r.get(0)?,
                     started: r.get(1)?,
@@ -487,24 +644,28 @@ impl Store {
     pub fn encounters_named(&self, like: &str) -> Result<Vec<StoredEncounter>> {
         let mut stmt = self.conn.prepare(
             "SELECT start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build
-             FROM encounters WHERE title LIKE ?1 ORDER BY start ASC",
+             FROM encounters WHERE character = ?1 AND server = ?2 AND title LIKE ?3
+             ORDER BY start ASC",
         )?;
         let rows = stmt
-            .query_map([format!("%{like}%")], |r| {
-                Ok(StoredEncounter {
-                    start: r.get(0)?,
-                    end: r.get(1)?,
-                    title: r.get(2)?,
-                    zone: r.get(3)?,
-                    duration: r.get(4)?,
-                    your_damage: r.get::<_, i64>(5)? as u64,
-                    your_dps: r.get(6)?,
-                    total_damage: r.get::<_, i64>(7)? as u64,
-                    kills: r.get(8)?,
-                    deaths: r.get(9)?,
-                    build: r.get(10)?,
-                })
-            })?
+            .query_map(
+                params![self.character, self.server, format!("%{like}%")],
+                |r| {
+                    Ok(StoredEncounter {
+                        start: r.get(0)?,
+                        end: r.get(1)?,
+                        title: r.get(2)?,
+                        zone: r.get(3)?,
+                        duration: r.get(4)?,
+                        your_damage: r.get::<_, i64>(5)? as u64,
+                        your_dps: r.get(6)?,
+                        total_damage: r.get::<_, i64>(7)? as u64,
+                        kills: r.get(8)?,
+                        deaths: r.get(9)?,
+                        build: r.get(10)?,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -522,12 +683,12 @@ impl Store {
                     AVG(NULLIF(your_dps, 0)),
                     MAX(your_dps),
                     MIN(timestamp), MAX(timestamp)
-             FROM boss_kills
+             FROM boss_kills WHERE character = ?1 AND server = ?2
              GROUP BY boss, difficulty, build
              ORDER BY boss ASC, difficulty DESC, build ASC",
         )?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![self.character, self.server], |r| {
                 Ok(RaidStat {
                     boss: r.get(0)?,
                     difficulty: r.get(1)?,
@@ -546,15 +707,22 @@ impl Store {
     }
 
     pub fn counts(&self) -> Result<(i64, i64, i64)> {
-        let k: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM boss_kills", [], |r| r.get(0))?;
-        let e: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM encounters", [], |r| r.get(0))?;
-        let l: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM levels", [], |r| r.get(0))?;
+        let who = params![self.character, self.server];
+        let k: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM boss_kills WHERE character = ?1 AND server = ?2",
+            who,
+            |r| r.get(0),
+        )?;
+        let e: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM encounters WHERE character = ?1 AND server = ?2",
+            who,
+            |r| r.get(0),
+        )?;
+        let l: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM levels WHERE character = ?1 AND server = ?2",
+            who,
+            |r| r.get(0),
+        )?;
         Ok((k, e, l))
     }
 }
@@ -581,8 +749,10 @@ mod tests {
     #[test]
     fn writing_the_same_kill_twice_stores_it_once() {
         let mut s = Store::in_memory().unwrap();
-        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")]).unwrap();
-        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")]).unwrap();
+        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")])
+            .unwrap();
+        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")])
+            .unwrap();
         assert_eq!(s.kills().unwrap().len(), 1);
         assert_eq!(s.counts().unwrap().0, 1);
     }
@@ -593,7 +763,8 @@ mod tests {
     fn a_later_parse_replaces_a_row_with_better_information() {
         let mut s = Store::in_memory().unwrap();
         s.put_kills(&[kill(1000, "Lord Nagafen", "")]).unwrap();
-        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")]).unwrap();
+        s.put_kills(&[kill(1000, "Lord Nagafen", "WAR/DRU/BRD")])
+            .unwrap();
         let k = s.kills().unwrap();
         assert_eq!(k.len(), 1);
         assert_eq!(k[0].build, "WAR/DRU/BRD");
@@ -603,11 +774,8 @@ mod tests {
     #[test]
     fn kills_at_the_same_instant_are_kept_apart_by_name() {
         let mut s = Store::in_memory().unwrap();
-        s.put_kills(&[
-            kill(1000, "Lord Nagafen", "x"),
-            kill(1000, "Lady Vox", "x"),
-        ])
-        .unwrap();
+        s.put_kills(&[kill(1000, "Lord Nagafen", "x"), kill(1000, "Lady Vox", "x")])
+            .unwrap();
         assert_eq!(s.kills().unwrap().len(), 2);
     }
 
@@ -617,11 +785,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("history.db");
         {
-            let mut s = Store::open(&path).unwrap();
-            s.put_kills(&[kill(1000, "Cazic-Thule", "WAR/DRU/BRD")]).unwrap();
+            let mut s = Store::open_as(&path, "Tharn", "freeport").unwrap();
+            s.put_kills(&[kill(1000, "Cazic-Thule", "WAR/DRU/BRD")])
+                .unwrap();
         }
-        let s = Store::open(&path).unwrap();
+        let s = Store::open_as(&path, "Tharn", "freeport").unwrap();
         assert_eq!(s.kills().unwrap()[0].boss, "Cazic-Thule");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two characters sharing one database must not share one history.
+    #[test]
+    fn characters_do_not_see_each_others_history() {
+        let dir = std::env::temp_dir().join("eqlparser-identity-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("history.db");
+
+        let mut a = Store::open_as(&path, "Tharn", "freeport").unwrap();
+        a.put_kills(&[StoredKill {
+            timestamp: 100,
+            boss: "Innoruuk".into(),
+            difficulty: 4,
+            zone: "Plane of Hate".into(),
+            solo: false,
+            build: "WAR/BRD/DRU".into(),
+            duration: 300,
+            your_damage: 24_274,
+            your_dps: 80.9,
+        }])
+        .unwrap();
+        a.put_sky_turnins(&[("Nature".to_string(), 100)]).unwrap();
+        drop(a);
+
+        let mut b = Store::open_as(&path, "Alt", "freeport").unwrap();
+        assert_eq!(b.kills().unwrap().len(), 0, "an alt starts empty");
+        assert_eq!(b.sky_turnin_counts().unwrap().len(), 0);
+        b.put_kills(&[StoredKill {
+            timestamp: 200,
+            boss: "Cazic Thule".into(),
+            difficulty: 1,
+            zone: "Plane of Fear".into(),
+            solo: true,
+            build: "ROG".into(),
+            duration: 60,
+            your_damage: 10,
+            your_dps: 1.0,
+        }])
+        .unwrap();
+        // Same character name on a different server is a different character.
+        let c = Store::open_as(&path, "Tharn", "other").unwrap();
+        assert_eq!(c.kills().unwrap().len(), 0);
+        drop(b);
+        drop(c);
+
+        let a = Store::open_as(&path, "Tharn", "freeport").unwrap();
+        let kills = a.kills().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0].boss, "Innoruuk");
+        assert_eq!(a.counts().unwrap().0, 1);
+        assert_eq!(a.sky_turnin_counts().unwrap().len(), 1);
+
+        let mut seen = a.characters().unwrap();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("Alt".to_string(), "freeport".to_string(), 1),
+                ("Tharn".to_string(), "freeport".to_string(), 1),
+            ]
+        );
+        drop(a);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

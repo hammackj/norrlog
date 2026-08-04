@@ -48,7 +48,11 @@ pub const TRACKED_BOSSES: &[(&str, &[&str])] = &[
     // The log writes the full title, "Innoruuk, the Prince of Hate".
     (
         "Innoruuk",
-        &["innoruuk", "innoruuk, the prince of hate", "the prince of hate"],
+        &[
+            "innoruuk",
+            "innoruuk, the prince of hate",
+            "the prince of hate",
+        ],
     ),
 ];
 
@@ -248,11 +252,7 @@ impl LockoutTracker {
             .into_iter()
             .map(|(build, clears)| {
                 let mut clears: Vec<BuildClear> = clears.into_values().collect();
-                clears.sort_by(|a, b| {
-                    b.difficulty
-                        .cmp(&a.difficulty)
-                        .then(a.boss.cmp(&b.boss))
-                });
+                clears.sort_by(|a, b| b.difficulty.cmp(&a.difficulty).then(a.boss.cmp(&b.boss)));
                 BuildRecord {
                     total_kills: clears.iter().map(|c| c.kills).sum(),
                     first_kill: clears.iter().map(|c| c.first).min().unwrap_or(0),
@@ -414,7 +414,11 @@ mod tests {
     fn a_kill_marks_both_lockouts() {
         let mut t = LockoutTracker::new();
         let killed_at = TUE + 3 * DAY + 12 * 3600; // Friday lunchtime
-        assert!(t.on_kill(killed_at, "Lord Nagafen", Some("Nagafen's Lair - Solo 3 (Fused)")));
+        assert!(t.on_kill(
+            killed_at,
+            "Lord Nagafen",
+            Some("Nagafen's Lair - Solo 3 (Fused)")
+        ));
 
         let r = t.report(killed_at + 3600);
         let cell = r
@@ -440,17 +444,29 @@ mod tests {
     fn daily_resets_before_the_weekly_does() {
         let mut t = LockoutTracker::new();
         let killed_at = TUE + 12 * 3600; // Tuesday midday
-        t.on_kill(killed_at, "Master Yael", Some("The Ruins of Old Paineel - Solo"));
+        t.on_kill(
+            killed_at,
+            "Master Yael",
+            Some("The Ruins of Old Paineel - Solo"),
+        );
 
         // Next day: daily has rolled over, weekly has not.
         let r = t.report(TUE + DAY + 12 * 3600);
-        let cell = r.cells.iter().find(|c| c.boss == "Master Yael" && c.difficulty == 0).unwrap();
+        let cell = r
+            .cells
+            .iter()
+            .find(|c| c.boss == "Master Yael" && c.difficulty == 0)
+            .unwrap();
         assert!(cell.weekly_done, "weekly holds until the next Tuesday");
         assert!(!cell.daily_done, "daily should have reset overnight");
 
         // Following Tuesday: both clear.
         let r2 = t.report(TUE + 7 * DAY + 3600);
-        let cell2 = r2.cells.iter().find(|c| c.boss == "Master Yael" && c.difficulty == 0).unwrap();
+        let cell2 = r2
+            .cells
+            .iter()
+            .find(|c| c.boss == "Master Yael" && c.difficulty == 0)
+            .unwrap();
         assert!(!cell2.weekly_done);
         assert!(!cell2.daily_done);
     }
@@ -467,10 +483,22 @@ mod tests {
     #[test]
     fn kills_are_grouped_by_the_build_that_made_them() {
         let mut t = LockoutTracker::new();
-        t.on_kill(TUE, "Lord Nagafen", Some("Nagafen's Lair - Solo 4 (Refined)"));
-        t.on_kill(TUE + 100, "Master Yael", Some("The Ruins of Old Paineel - Solo"));
+        t.on_kill(
+            TUE,
+            "Lord Nagafen",
+            Some("Nagafen's Lair - Solo 4 (Refined)"),
+        );
+        t.on_kill(
+            TUE + 100,
+            "Master Yael",
+            Some("The Ruins of Old Paineel - Solo"),
+        );
         // An older build, earlier.
-        t.on_kill(TUE - 500_000, "Cazic-Thule", Some("The Plane of Fear - Solo"));
+        t.on_kill(
+            TUE - 500_000,
+            "Cazic-Thule",
+            Some("The Plane of Fear - Solo"),
+        );
 
         let label = |ts: i64| {
             if ts < TUE - 1000 {
@@ -509,7 +537,10 @@ mod tests {
     fn grid_covers_every_boss_and_difficulty() {
         let t = LockoutTracker::new();
         let r = t.report(TUE);
-        assert_eq!(r.total_cells, TRACKED_BOSSES.len() * (MAX_DIFFICULTY as usize + 1));
+        assert_eq!(
+            r.total_cells,
+            TRACKED_BOSSES.len() * (MAX_DIFFICULTY as usize + 1)
+        );
         assert_eq!(r.weekly_cleared, 0);
         assert_eq!(r.bosses.len(), 5);
     }

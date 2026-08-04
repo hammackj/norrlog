@@ -255,7 +255,11 @@ impl TaskTracker {
     pub fn on_assigned(&mut self, timestamp: i64, name: &str) {
         let key = name.to_lowercase();
         let weekly = key.contains("weekly");
-        let steps = self.defs.get(&key).map(|d| d.steps.clone()).unwrap_or_default();
+        let steps = self
+            .defs
+            .get(&key)
+            .map(|d| d.steps.clone())
+            .unwrap_or_default();
         let kept_dialogue = self
             .tasks
             .get(&key)
@@ -278,7 +282,11 @@ impl TaskTracker {
     pub fn on_updated(&mut self, timestamp: i64, name: &str) {
         let key = name.to_lowercase();
         let weekly = key.contains("weekly");
-        let defs = self.defs.get(&key).map(|d| d.steps.clone()).unwrap_or_default();
+        let defs = self
+            .defs
+            .get(&key)
+            .map(|d| d.steps.clone())
+            .unwrap_or_default();
 
         // Prefer a recent kill that matches a listed objective; fall back to
         // the most recent kill of any kind, which is still the best guess at
@@ -326,7 +334,11 @@ impl TaskTracker {
     /// long silence it still holds lines far too old to be related.
     fn absorb_dialogue(rec: &mut TaskRecord, recent: &[DialogueLine], now: i64) {
         for d in recent.iter().filter(|d| now - d.at <= DIALOGUE_WINDOW) {
-            if !rec.dialogue.iter().any(|x| x.at == d.at && x.text == d.text) {
+            if !rec
+                .dialogue
+                .iter()
+                .any(|x| x.at == d.at && x.text == d.text)
+            {
                 rec.dialogue.push(d.clone());
             }
         }
@@ -358,12 +370,10 @@ impl TaskTracker {
 fn match_step(steps: &[TaskStepDef], killed: &str) -> Option<usize> {
     let k = killed.to_lowercase();
     steps.iter().position(|s| {
-        s.kill_target
-            .as_ref()
-            .is_some_and(|t| {
-                let t = t.to_lowercase();
-                k == t || k.contains(&t) || t.contains(&k)
-            })
+        s.kill_target.as_ref().is_some_and(|t| {
+            let t = t.to_lowercase();
+            k == t || k.contains(&t) || t.contains(&k)
+        })
     })
 }
 
@@ -425,7 +435,11 @@ mod tests {
         let task = &t.report().tasks[0];
         assert_eq!(task.steps_done(), 1);
         assert_eq!(task.completions[0].step_index, Some(1), "the Innoruuk step");
-        assert_eq!(task.step_states(), vec![false, true], "Cazic still outstanding");
+        assert_eq!(
+            task.step_states(),
+            vec![false, true],
+            "Cazic still outstanding"
+        );
         assert_eq!(task.unidentified(), 0);
     }
 

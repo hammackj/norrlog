@@ -133,7 +133,10 @@ impl Class {
     /// True for classes that cast no spells at all, and so can only ever be
     /// detected from skills.
     pub fn is_pure_melee(self) -> bool {
-        matches!(self, Class::Warrior | Class::Rogue | Class::Monk | Class::Berserker)
+        matches!(
+            self,
+            Class::Warrior | Class::Rogue | Class::Monk | Class::Berserker
+        )
     }
 }
 
@@ -261,7 +264,12 @@ impl ClassDetector {
     /// Weight is inversely proportional to how many classes can cast it, so a
     /// single-class spell is decisive while a spell everyone gets barely moves
     /// the needle.
-    pub fn observe_spell(&mut self, timestamp: i64, spell_name: &str, class_levels: &[u8; CLASS_COUNT]) {
+    pub fn observe_spell(
+        &mut self,
+        timestamp: i64,
+        spell_name: &str,
+        class_levels: &[u8; CLASS_COUNT],
+    ) {
         let casters: Vec<usize> = (0..CLASS_COUNT)
             .filter(|i| class_levels[*i] != CLASS_CANNOT_CAST)
             .collect();
@@ -366,7 +374,11 @@ impl ClassDetector {
         let mut totals = [0.0f32; CLASS_COUNT];
         let mut reasons: Vec<Vec<String>> = vec![Vec::new(); CLASS_COUNT];
 
-        for e in self.evidence.iter().filter(|e| e.timestamp >= from && e.timestamp <= to) {
+        for e in self
+            .evidence
+            .iter()
+            .filter(|e| e.timestamp >= from && e.timestamp <= to)
+        {
             let i = e.class.index();
             totals[i] += e.weight;
             if !reasons[i].contains(&e.reason) && reasons[i].len() < 8 {
@@ -384,7 +396,11 @@ impl ClassDetector {
                 top_reasons: reasons[i].clone(),
             })
             .collect();
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         out
     }
 
@@ -403,9 +419,15 @@ impl ClassDetector {
         let mut totals = [0.0f32; CLASS_COUNT];
         let mut reasons: Vec<std::collections::BTreeMap<String, f32>> =
             vec![Default::default(); CLASS_COUNT];
-        for e in self.evidence.iter().filter(|e| e.timestamp >= from && e.timestamp <= to) {
+        for e in self
+            .evidence
+            .iter()
+            .filter(|e| e.timestamp >= from && e.timestamp <= to)
+        {
             totals[e.class.index()] += e.weight;
-            *reasons[e.class.index()].entry(e.reason.clone()).or_insert(0.0) += e.weight;
+            *reasons[e.class.index()]
+                .entry(e.reason.clone())
+                .or_insert(0.0) += e.weight;
         }
         let mut out: Vec<ClassTally> = (0..CLASS_COUNT)
             .filter(|i| totals[*i] > 0.0)
@@ -415,7 +437,11 @@ impl ClassDetector {
                 reasons: std::mem::take(&mut reasons[i]),
             })
             .collect();
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         out
     }
 
@@ -533,7 +559,8 @@ impl ClassDetector {
                     ClassScore {
                         class: *c,
                         score: t.map(|t| t.score).unwrap_or(0.0),
-                        share: t.map(|t| if total > 0.0 { t.score / total } else { 0.0 })
+                        share: t
+                            .map(|t| if total > 0.0 { t.score / total } else { 0.0 })
                             .unwrap_or(0.0),
                         top_reasons: t
                             .map(|t| t.reasons.keys().take(8).cloned().collect())
@@ -625,7 +652,10 @@ mod tests {
             .iter()
             .map(|c| c.class.abbrev())
             .collect();
-        assert!(then.contains(&"DRU"), "history must not be rewritten: {then:?}");
+        assert!(
+            then.contains(&"DRU"),
+            "history must not be rewritten: {then:?}"
+        );
         assert!(!then.contains(&"SHM"));
     }
 
@@ -662,14 +692,25 @@ mod tests {
         let mut d = ClassDetector::new();
         // Heavy caster evidence, plus the shadow class it drags along.
         for t in 0..40 {
-            d.observe_spell(t, "Chloroplast", &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]));
+            d.observe_spell(
+                t,
+                "Chloroplast",
+                &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]),
+            );
             d.observe_spell(t, "Chords of Dissonance", &levels(&[(Class::Bard, 10)]));
             d.observe_spell(t, "Efflorescing Heal", &levels(&[(Class::Druid, 20)]));
         }
         d.observe_spell_set(50, "WAR / BRD / DRU - Buffs");
 
-        let trio: Vec<&str> = d.current_trio(100, 3600).iter().map(|c| c.class.abbrev()).collect();
-        assert!(trio.contains(&"WAR"), "set name should carry Warrior: {trio:?}");
+        let trio: Vec<&str> = d
+            .current_trio(100, 3600)
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
+        assert!(
+            trio.contains(&"WAR"),
+            "set name should carry Warrior: {trio:?}"
+        );
         assert!(trio.contains(&"BRD"));
         assert!(trio.contains(&"DRU"));
     }
@@ -685,7 +726,11 @@ mod tests {
             .flat_map(|c| c.top_reasons.clone())
             .collect();
         let unique: std::collections::BTreeSet<&String> = reasons.iter().collect();
-        assert_eq!(unique.len(), 3, "one distinct reason per class: {reasons:?}");
+        assert_eq!(
+            unique.len(),
+            3,
+            "one distinct reason per class: {reasons:?}"
+        );
     }
 
     /// Suffixes people append to set names must not be read as classes.
@@ -693,7 +738,11 @@ mod tests {
     fn only_exact_class_abbreviations_count_in_a_set_name() {
         let mut d = ClassDetector::new();
         d.observe_spell_set(0, "WAR / BRD / DRU - Naggy");
-        let got: Vec<&str> = d.ranked_all_time().iter().map(|c| c.class.abbrev()).collect();
+        let got: Vec<&str> = d
+            .ranked_all_time()
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
         assert_eq!(got.len(), 3, "got {got:?}");
     }
 
@@ -710,10 +759,18 @@ mod tests {
         for t in 0..500 {
             d.observe_spell(t, "Origin", &universal);
         }
-        assert_eq!(d.evidence_count(), 0, "universal ability recorded as evidence");
+        assert_eq!(
+            d.evidence_count(),
+            0,
+            "universal ability recorded as evidence"
+        );
 
         // A spell a handful of classes share is still evidence.
-        d.observe_spell(1, "Superior Healing", &levels(&[(Class::Cleric, 20), (Class::Druid, 25)]));
+        d.observe_spell(
+            1,
+            "Superior Healing",
+            &levels(&[(Class::Cleric, 20), (Class::Druid, 25)]),
+        );
         assert_eq!(d.evidence_count(), 2);
     }
 
@@ -724,8 +781,16 @@ mod tests {
         let mut d = ClassDetector::new();
         // Two spells both classes share, several times over.
         for t in 0..8 {
-            d.observe_spell(t, "Chloroplast", &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]));
-            d.observe_spell(t, "Shield of Thorns", &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]));
+            d.observe_spell(
+                t,
+                "Chloroplast",
+                &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]),
+            );
+            d.observe_spell(
+                t,
+                "Shield of Thorns",
+                &levels(&[(Class::Druid, 20), (Class::Ranger, 30)]),
+            );
         }
         // Druid-only spells: the reason Druid outranks its own shadow.
         for t in 0..8 {
@@ -739,9 +804,16 @@ mod tests {
         d.observe_skill(1, "Taunt");
         d.observe_skill(2, "Disarm");
 
-        let trio: Vec<&str> = d.current_trio(100, 3600).iter().map(|c| c.class.abbrev()).collect();
+        let trio: Vec<&str> = d
+            .current_trio(100, 3600)
+            .iter()
+            .map(|c| c.class.abbrev())
+            .collect();
         assert!(trio.contains(&"WAR"), "expected WAR in {trio:?}");
-        assert!(!trio.contains(&"RNG"), "RNG adds nothing Druid does not explain: {trio:?}");
+        assert!(
+            !trio.contains(&"RNG"),
+            "RNG adds nothing Druid does not explain: {trio:?}"
+        );
     }
 
     #[test]
@@ -778,7 +850,11 @@ mod tests {
         d.observe_spell(100, "Gate", &shared);
         d.observe_spell(100, "Chords of Dissonance", &levels(&[(Class::Bard, 2)]));
         let r = d.ranked_all_time();
-        assert_eq!(r[0].class, Class::Bard, "exclusive spell should outrank shared");
+        assert_eq!(
+            r[0].class,
+            Class::Bard,
+            "exclusive spell should outrank shared"
+        );
         assert!(r[0].score > r[1].score * 3.0);
     }
 
@@ -814,7 +890,11 @@ mod tests {
         d.observe_skill(500_000, "Taunt");
         d.observe_skill(500_100, "Singing");
         d.observe_skill(500_200, "Stringed Instruments");
-        d.observe_spell(500_300, "Chords of Dissonance", &levels(&[(Class::Bard, 2)]));
+        d.observe_spell(
+            500_300,
+            "Chords of Dissonance",
+            &levels(&[(Class::Bard, 2)]),
+        );
         d.observe_spell(500_400, "Thorncoat", &levels(&[(Class::Druid, 20)]));
         d.observe_spell(500_500, "Chloroplast", &levels(&[(Class::Druid, 30)]));
 

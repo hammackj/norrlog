@@ -5,17 +5,17 @@
 //! touches a parser or tracker directly; it reads a cheap clone of the latest
 //! snapshot. That keeps request handling lock-free apart from a brief read.
 
+use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::class::{ClassDetector, ClassScore};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
-use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::npc::{NpcReport, NpcTracker};
 use eqlparser_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
+use eqlparser_core::spell::{BuffMark, SpellDb, SpellResolver};
 use eqlparser_core::task::{TaskDef, TaskReport, TaskTracker};
 use eqlparser_core::tells::{TellReport, TellTracker};
 use eqlparser_core::tradeskill::{TradeskillReport, TradeskillTracker};
-use eqlparser_core::spell::{BuffMark, SpellDb, SpellResolver};
 use eqlparser_core::{Event, LogEntry, Parser, SpellbookChangeKind};
 use serde::Serialize;
 use std::path::Path;
@@ -590,15 +590,20 @@ impl Engine {
                 self.classes.observe_skill(entry.timestamp, skill);
                 self.trades.on_skill_up(entry.timestamp, skill, *value);
             }
-            Event::Craft { item, success } => {
-                self.trades.on_craft(entry.timestamp, item, *success)
-            }
-            Event::ComponentConsumed { item, quantity, remaining } => {
-                self.trades
-                    .on_component(entry.timestamp, item, *quantity, Some(*remaining))
-            }
+            Event::Craft { item, success } => self.trades.on_craft(entry.timestamp, item, *success),
+            Event::ComponentConsumed {
+                item,
+                quantity,
+                remaining,
+            } => self
+                .trades
+                .on_component(entry.timestamp, item, *quantity, Some(*remaining)),
             Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
-            Event::Chat { speaker, channel, message } => {
+            Event::Chat {
+                speaker,
+                channel,
+                message,
+            } => {
                 // Quest text arrives as ordinary say-channel chat; other
                 // channels are player conversation and would only be noise.
                 if channel.eq_ignore_ascii_case("say") || channel.eq_ignore_ascii_case("says") {
@@ -670,8 +675,12 @@ impl Engine {
                 // The counterpart is whichever end is not you.
                 let outgoing = from.is_you();
                 let other = if outgoing { to } else { from };
-                self.tells
-                    .on_tell(entry.timestamp, &other.display(&self.player), outgoing, message);
+                self.tells.on_tell(
+                    entry.timestamp,
+                    &other.display(&self.player),
+                    outgoing,
+                    message,
+                );
             }
             Event::TradeOffer { item, quantity, .. } => {
                 self.sky.on_offer(item, *quantity);
@@ -681,7 +690,10 @@ impl Engine {
                 self.sky.on_trade_complete(entry.timestamp, npc);
                 self.npcs.on_trade_complete(entry.timestamp, npc);
             }
-            Event::Faction { faction, adjustment } => {
+            Event::Faction {
+                faction,
+                adjustment,
+            } => {
                 if let Some(adj) = adjustment {
                     self.npcs.on_faction(entry.timestamp, faction, *adj);
                 }
@@ -701,9 +713,7 @@ impl Engine {
                 let desc = std::mem::take(&mut self.aa_pending_desc);
                 self.aa.on_cost(*cost, &desc);
             }
-            Event::AchievementEarned { name } => {
-                self.tasks.on_achievement(entry.timestamp, name)
-            }
+            Event::AchievementEarned { name } => self.tasks.on_achievement(entry.timestamp, name),
             Event::LevelUp { level } => {
                 self.resolver.set_level(*level);
                 self.exp.on_level_up(entry.timestamp, *level);
@@ -738,12 +748,16 @@ impl Engine {
                 self.all_loot.push(record);
             }
             Event::AbilityPointsGained { points, unspent } => {
-                self.exp.on_ability_points(entry.timestamp, *points, *unspent)
-            }
-            Event::AbilityPointsSpent { ability, rank, cost } => {
                 self.exp
-                    .on_ability_spent(entry.timestamp, ability, *rank, *cost)
+                    .on_ability_points(entry.timestamp, *points, *unspent)
             }
+            Event::AbilityPointsSpent {
+                ability,
+                rank,
+                cost,
+            } => self
+                .exp
+                .on_ability_spent(entry.timestamp, ability, *rank, *cost),
             Event::Death { victim, killer } => {
                 // Your own death strips your buffs. The client logs no fade
                 // lines for it, so this is the only chance to notice.
@@ -820,8 +834,8 @@ impl Engine {
         if matches!(entry.event, Event::Loot { .. }) && self.tracker.current().is_none() {
             if let Some(rec) = self.all_loot.last().cloned() {
                 if let Some(last) = self.encounters.last_mut() {
-                    let within_grace = rec.timestamp - last.end
-                        <= eqlparser_core::encounter::LOOT_GRACE_SECONDS;
+                    let within_grace =
+                        rec.timestamp - last.end <= eqlparser_core::encounter::LOOT_GRACE_SECONDS;
                     let already = last
                         .loot
                         .iter()
@@ -860,14 +874,13 @@ impl Engine {
     /// Where declarations are stored between runs.
     fn marks_path() -> Option<std::path::PathBuf> {
         let home = std::env::var_os("HOME")?;
-        Some(
-            std::path::PathBuf::from(home)
-                .join(".config/eqlparser/buff-marks.json"),
-        )
+        Some(std::path::PathBuf::from(home).join(".config/eqlparser/buff-marks.json"))
     }
 
     fn save_marks(&self) {
-        let Some(path) = Self::marks_path() else { return };
+        let Some(path) = Self::marks_path() else {
+            return;
+        };
         let map: std::collections::BTreeMap<String, BuffMark> =
             self.resolver.marks().into_iter().collect();
         if let Some(dir) = path.parent() {
@@ -879,8 +892,12 @@ impl Engine {
     }
 
     fn load_marks(&mut self) {
-        let Some(path) = Self::marks_path() else { return };
-        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let Some(path) = Self::marks_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
         let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, BuffMark>>(&text)
         else {
             eprintln!("[eqlparserd] buff-marks.json is unreadable; ignoring it");
@@ -915,7 +932,9 @@ impl Engine {
         };
 
         for e in selected {
-            let Some(you) = e.actors.get("you") else { continue };
+            let Some(you) = e.actors.get("you") else {
+                continue;
+            };
             r.total += you.damage_taken;
             r.hits_taken += you.damage_taken_hits();
             r.attacks_missed += you.attacks_missed;
@@ -949,7 +968,11 @@ impl Engine {
                     total: t,
                     hits,
                     max,
-                    avg: if hits > 0 { t as f64 / hits as f64 } else { 0.0 },
+                    avg: if hits > 0 {
+                        t as f64 / hits as f64
+                    } else {
+                        0.0
+                    },
                     share: t as f64 / total,
                 })
                 .collect();
@@ -1346,7 +1369,9 @@ impl Engine {
         };
         match serde_json::from_str::<Vec<SkyQuestDef>>(&text) {
             Ok(defs) => self.sky.set_definitions(defs),
-            Err(_) => eprintln!("[eqlparserd] sky-quests.json is unreadable; using the built-in table"),
+            Err(_) => {
+                eprintln!("[eqlparserd] sky-quests.json is unreadable; using the built-in table")
+            }
         }
     }
 
@@ -1372,7 +1397,9 @@ impl Engine {
     }
 
     fn save_task_defs(&self) {
-        let Some(path) = Self::task_defs_path() else { return };
+        let Some(path) = Self::task_defs_path() else {
+            return;
+        };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -1382,7 +1409,9 @@ impl Engine {
     }
 
     fn load_task_defs(&mut self) {
-        let Some(path) = Self::task_defs_path() else { return };
+        let Some(path) = Self::task_defs_path() else {
+            return;
+        };
         let defs: Vec<TaskDef> = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str(&text) {
                 Ok(d) => d,
@@ -1424,7 +1453,9 @@ impl Engine {
             .iter()
             .cloned()
             .map(|mut r| {
-                let mid = r.ended.map_or(r.started, |e| r.started + (e - r.started) / 2);
+                let mid = r
+                    .ended
+                    .map_or(r.started, |e| r.started + (e - r.started) / 2);
                 r.build = self.build_label(mid);
                 r
             })
@@ -1616,7 +1647,11 @@ impl Engine {
                 .count(),
             loot_count: enc.loot.len(),
             coin_copper: enc.coin_copper,
-            meter: if with_meter { self.meter_for(enc) } else { Vec::new() },
+            meter: if with_meter {
+                self.meter_for(enc)
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -1659,9 +1694,24 @@ impl Engine {
             beneficial: b.beneficial,
             name: b.name,
         };
-        let buffs = self.resolver.active_buffs(now).into_iter().map(to_info).collect();
-        let auras = self.resolver.active_auras(now).into_iter().map(to_info).collect();
-        let debuffs = self.resolver.active_debuffs(now).into_iter().map(to_info).collect();
+        let buffs = self
+            .resolver
+            .active_buffs(now)
+            .into_iter()
+            .map(to_info)
+            .collect();
+        let auras = self
+            .resolver
+            .active_auras(now)
+            .into_iter()
+            .map(to_info)
+            .collect();
+        let debuffs = self
+            .resolver
+            .active_debuffs(now)
+            .into_iter()
+            .map(to_info)
+            .collect();
 
         // Include the fight in progress. Counting only completed encounters
         // leaves every headline figure frozen for the whole of a long boss
@@ -1802,7 +1852,10 @@ mod tests {
             ],
         );
         let s = e.snapshot(5);
-        assert_eq!(s.totals.your_damage, 507, "closed 500 + open 7, counted once each");
+        assert_eq!(
+            s.totals.your_damage, 507,
+            "closed 500 + open 7, counted once each"
+        );
         assert_eq!(s.totals.encounters, 2);
     }
 
@@ -1834,8 +1887,8 @@ mod tests {
     /// A database with one charm song and one mez song that share a landing
     /// phrase — the exact ambiguity the real data contains.
     fn charm_db() -> SpellDb {
-        use eqlparser_core::spell::Spell;
         use eqlparser_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT};
+        use eqlparser_core::spell::Spell;
         let mk = |id: u32, name: &str, is_charm: bool| Spell {
             id,
             name: name.into(),
@@ -1955,7 +2008,10 @@ mod tests {
             &["[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage."],
         );
         let opened = e.session_start();
-        feed(&mut e, &["[Tue Jul 28 14:00:05 2026] Welcome to EverQuest Legends!"]);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:05 2026] Welcome to EverQuest Legends!"],
+        );
         assert_eq!(e.session_start(), opened + 5, "the logon moves it");
     }
 
@@ -1964,7 +2020,10 @@ mod tests {
     #[test]
     fn a_quick_relog_starts_a_new_session() {
         let mut e = engine();
-        feed(&mut e, &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"]);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"],
+        );
         let first = e.session_start();
         feed(
             &mut e,
@@ -1998,7 +2057,10 @@ mod tests {
     #[test]
     fn after_a_logon_a_quiet_stretch_does_not_split_the_session() {
         let mut e = engine();
-        feed(&mut e, &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"]);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] Welcome to EverQuest Legends!"],
+        );
         let logon = e.session_start();
         feed(
             &mut e,
@@ -2070,7 +2132,10 @@ mod tests {
             .find(|r| r.name.eq_ignore_ascii_case("an imp protector"))
             .expect("pet row");
         assert!(imp.is_pet);
-        assert!(!imp.is_enemy, "charm should override the enemy classification");
+        assert!(
+            !imp.is_enemy,
+            "charm should override the enemy classification"
+        );
     }
 
     #[test]
@@ -2095,7 +2160,10 @@ mod tests {
         assert_eq!(you.damage_taken, 400);
         assert_eq!(you.healing_received, 500);
         // Shares are per-metric, so each panel's bars are scaled correctly.
-        assert!((you.heal_share - 1.0).abs() < 1e-9, "you did all the healing");
+        assert!(
+            (you.heal_share - 1.0).abs() < 1e-9,
+            "you did all the healing"
+        );
         // 500 damage was absorbed in total: 400 by you, 100 by the giant.
         assert!(
             (you.taken_share - 0.8).abs() < 1e-9,

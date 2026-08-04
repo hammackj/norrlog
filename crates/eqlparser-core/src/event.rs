@@ -26,7 +26,9 @@ impl Actor {
     pub fn parse(raw: &str) -> Actor {
         let t = raw.trim();
         match t {
-            "You" | "YOU" | "you" | "Your" | "YOUR" | "your" | "yourself" | "YOURSELF" => Actor::You,
+            "You" | "YOU" | "you" | "Your" | "YOUR" | "your" | "yourself" | "YOURSELF" => {
+                Actor::You
+            }
             _ => Actor::Named(clean_name(t)),
         }
     }
@@ -215,7 +217,10 @@ pub enum Event {
         over_time: bool,
     },
     /// Something died. `killer` is absent when the log does not name one.
-    Death { victim: Actor, killer: Option<Actor> },
+    Death {
+        victim: Actor,
+        killer: Option<Actor>,
+    },
     /// An item entered your possession.
     Loot {
         item: String,
@@ -256,13 +261,20 @@ pub enum Event {
     /// Experience gained, as a percentage of the current level.
     Experience { percent: f64 },
     /// Faction adjustment.
-    Faction { faction: String, adjustment: Option<i64> },
+    Faction {
+        faction: String,
+        adjustment: Option<i64>,
+    },
     /// A private message, in either direction.
     ///
     /// Distinct from [`Event::Chat`] because a conversation needs both ends:
     /// channel chat has a speaker and nothing else, while a tell has a
     /// counterpart, and which of the two is you decides the direction.
-    Tell { from: Actor, to: Actor, message: String },
+    Tell {
+        from: Actor,
+        to: Actor,
+        message: String,
+    },
     /// Player chat on any channel.
     Chat {
         speaker: Actor,
@@ -302,7 +314,11 @@ pub enum Event {
     /// The character logged in. Starts a play session.
     LoggedOn,
     /// An item handed to an NPC. Several may precede one [`Event::TradeComplete`].
-    TradeOffer { quantity: u64, item: String, npc: String },
+    TradeOffer {
+        quantity: u64,
+        item: String,
+        npc: String,
+    },
     /// The trade was accepted, consuming everything offered.
     TradeComplete { npc: String },
     /// A skill point bought from an NPC trainer rather than earned by use.
@@ -435,12 +451,18 @@ mod tests {
     fn actor_folds_self_references() {
         assert_eq!(Actor::parse("YOU"), Actor::You);
         assert_eq!(Actor::parse("your"), Actor::You);
-        assert_eq!(Actor::parse("Lord Nagafen"), Actor::Named("Lord Nagafen".into()));
+        assert_eq!(
+            Actor::parse("Lord Nagafen"),
+            Actor::Named("Lord Nagafen".into())
+        );
     }
 
     #[test]
     fn actor_key_folds_article_case() {
-        assert_eq!(Actor::parse("A lesser mummy").key(), Actor::parse("a lesser mummy").key());
+        assert_eq!(
+            Actor::parse("A lesser mummy").key(),
+            Actor::parse("a lesser mummy").key()
+        );
     }
 
     #[test]

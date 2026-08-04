@@ -315,7 +315,11 @@ impl ExpTracker {
                 percent: *p,
             })
             .collect();
-        v.sort_by(|a, b| b.percent.partial_cmp(&a.percent).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            b.percent
+                .partial_cmp(&a.percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         v
     }
 
@@ -558,7 +562,11 @@ impl ExpTracker {
     /// and far less often, so a 30-minute view is usually just zero.
     pub fn aa_per_hour(&self, now: i64, window_seconds: i64) -> f64 {
         let cutoff = now - window_seconds;
-        let recent: Vec<&(i64, u32)> = self.aa_events.iter().filter(|(t, _)| *t >= cutoff).collect();
+        let recent: Vec<&(i64, u32)> = self
+            .aa_events
+            .iter()
+            .filter(|(t, _)| *t >= cutoff)
+            .collect();
         if recent.is_empty() {
             return 0.0;
         }
@@ -878,7 +886,10 @@ mod tests {
         assert_eq!(t.kills_total(), 2);
         assert_eq!(t.kills_without_exp(), 1);
         assert_eq!(t.current_record().kills, 1, "only rewarded kills count");
-        assert!(t.mobs_by_exp_per_kill(1).iter().all(|m| m.name != "a grey rat"));
+        assert!(t
+            .mobs_by_exp_per_kill(1)
+            .iter()
+            .all(|m| m.name != "a grey rat"));
     }
 
     #[test]
@@ -999,7 +1010,11 @@ mod tests {
         t.on_ability_points(0, 6, 6);
         t.on_ability_spent(100, "Jam Fest", 1, 4);
         assert_eq!(t.aa_unspent(), 2, "balance must drop as points are spent");
-        assert_eq!(t.aa_spent_total(), 4, "every purchase counts toward the total");
+        assert_eq!(
+            t.aa_spent_total(),
+            4,
+            "every purchase counts toward the total"
+        );
         assert_eq!(t.aa_earned(), 6, "earned is unaffected by spending");
         // Never underflow, even if a purchase predates the balance we saw.
         t.on_ability_spent(200, "Something", 1, 99);
@@ -1161,7 +1176,10 @@ mod tests {
         t.on_ability_points(4000, 1, 4);
 
         let zones = t.zones_by_aa_rate(0);
-        let guk = zones.iter().find(|z| z.name == "The Ruins of Old Guk").unwrap();
+        let guk = zones
+            .iter()
+            .find(|z| z.name == "The Ruins of Old Guk")
+            .unwrap();
         assert_eq!(guk.aa, 3);
         assert!((guk.aa_per_hour() - 3.0).abs() < 0.01);
     }

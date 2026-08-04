@@ -277,10 +277,7 @@ impl SpellDb {
             if let Some(t) = &s.fades {
                 by_fades.entry(t.clone()).or_default().push(s.id);
             }
-            by_name
-                .entry(s.name.to_lowercase())
-                .or_default()
-                .push(s.id);
+            by_name.entry(s.name.to_lowercase()).or_default().push(s.id);
         }
 
         SpellDb {
@@ -370,9 +367,8 @@ impl SpellDb {
                     is_charm: f
                         .get(F_EFFECTS)
                         .map(|e| {
-                            e.split('$').any(|slot| {
-                                slot.split('|').nth(1) == Some(SPA_CHARM)
-                            })
+                            e.split('$')
+                                .any(|slot| slot.split('|').nth(1) == Some(SPA_CHARM))
                         })
                         .unwrap_or(false),
                     linked: f
@@ -843,7 +839,11 @@ impl SpellResolver {
         // hold. `Form of the Great Wolf` is the wolf illusion plus
         // `Illusion Benefit Dena`, the stats that come with it. Following the
         // link is the only way the second one can be known about.
-        let linked: Vec<u32> = self.db.get(chosen).map(|s| s.linked.clone()).unwrap_or_default();
+        let linked: Vec<u32> = self
+            .db
+            .get(chosen)
+            .map(|s| s.linked.clone())
+            .unwrap_or_default();
         for id in linked {
             // Confidence is inherited: the link is certain, so a companion
             // buff is exactly as trustworthy as the landing that implied it.
@@ -905,9 +905,11 @@ impl SpellResolver {
         // 4. All candidates are ranks of the same spell: name is certain.
         let first_name = self.db.get(candidates[0]).map(|s| s.name.to_lowercase());
         let all_same_name = first_name.as_ref().is_some_and(|n| {
-            candidates
-                .iter()
-                .all(|id| self.db.get(*id).is_some_and(|s| &s.name.to_lowercase() == n))
+            candidates.iter().all(|id| {
+                self.db
+                    .get(*id)
+                    .is_some_and(|s| &s.name.to_lowercase() == n)
+            })
         });
         let fallback = candidates.iter().copied().min().unwrap_or(candidates[0]);
         if all_same_name {
@@ -1092,7 +1094,10 @@ mod tests {
             if let Some(t) = &s.fades {
                 db.by_fades.entry(t.clone()).or_default().push(s.id);
             }
-            db.by_name.entry(s.name.to_lowercase()).or_default().push(s.id);
+            db.by_name
+                .entry(s.name.to_lowercase())
+                .or_default()
+                .push(s.id);
             db.spells.insert(s.id, s);
         }
         db
@@ -1128,7 +1133,14 @@ mod tests {
 
     #[test]
     fn unique_landing_text_resolves_with_full_confidence() {
-        let db = db_with(vec![spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360)]);
+        let db = db_with(vec![spell(
+            1,
+            "Spirit of Wolf",
+            "Your feet move faster.",
+            "You slow down.",
+            3,
+            360,
+        )]);
         let mut r = SpellResolver::new(db, 50);
         assert_eq!(r.resolve_landing(1000, "Your feet move faster."), Some(1));
         let buffs = r.active_buffs(1000);
@@ -1142,23 +1154,56 @@ mod tests {
     #[test]
     fn ambiguous_landing_disambiguated_by_recent_cast() {
         let db = db_with(vec![
-            spell(1, "Minor Healing", "Your wounds begin to heal.", "Your wounds stop healing.", 10, 100),
-            spell(2, "Celestial Cleansing", "Your wounds begin to heal.", "Your wounds stop healing.", 10, 200),
+            spell(
+                1,
+                "Minor Healing",
+                "Your wounds begin to heal.",
+                "Your wounds stop healing.",
+                10,
+                100,
+            ),
+            spell(
+                2,
+                "Celestial Cleansing",
+                "Your wounds begin to heal.",
+                "Your wounds stop healing.",
+                10,
+                200,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.note_cast(995, "Celestial Cleansing");
-        assert_eq!(r.resolve_landing(1000, "Your wounds begin to heal."), Some(2));
+        assert_eq!(
+            r.resolve_landing(1000, "Your wounds begin to heal."),
+            Some(2)
+        );
         assert_eq!(r.active_buffs(1000)[0].confidence, 0.95);
     }
 
     #[test]
     fn ambiguous_landing_without_context_is_low_confidence() {
         let db = db_with(vec![
-            spell(7, "Minor Healing", "Your wounds begin to heal.", "Your wounds stop healing.", 10, 100),
-            spell(694, "Pact", "Your wounds begin to heal.", "Your pact has faded.", 10, 200),
+            spell(
+                7,
+                "Minor Healing",
+                "Your wounds begin to heal.",
+                "Your wounds stop healing.",
+                10,
+                100,
+            ),
+            spell(
+                694,
+                "Pact",
+                "Your wounds begin to heal.",
+                "Your pact has faded.",
+                10,
+                200,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
-        let id = r.resolve_landing(1000, "Your wounds begin to heal.").unwrap();
+        let id = r
+            .resolve_landing(1000, "Your wounds begin to heal.")
+            .unwrap();
         assert_eq!(id, 7, "should fall back to the lowest id");
         assert!(r.active_buffs(1000)[0].confidence < 0.5);
     }
@@ -1169,16 +1214,35 @@ mod tests {
     #[test]
     fn repertoire_resolves_pulses_long_after_the_cast() {
         let db = db_with(vec![
-            spell(1, "Item Benefit: Jonthan's Whistling Warsong", "You whistle an ancient warsong.", "You stop whistling.", 5, 2),
-            spell(2, "Jonthan's Whistling Warsong", "You whistle an ancient warsong.", "You stop whistling.", 5, 2),
+            spell(
+                1,
+                "Item Benefit: Jonthan's Whistling Warsong",
+                "You whistle an ancient warsong.",
+                "You stop whistling.",
+                5,
+                2,
+            ),
+            spell(
+                2,
+                "Jonthan's Whistling Warsong",
+                "You whistle an ancient warsong.",
+                "You stop whistling.",
+                5,
+                2,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.note_cast(1000, "Jonthan's Whistling Warsong");
-        assert_eq!(r.resolve_landing(1001, "You whistle an ancient warsong."), Some(2));
+        assert_eq!(
+            r.resolve_landing(1001, "You whistle an ancient warsong."),
+            Some(2)
+        );
 
         // Thousands of seconds later, far outside the cast window, the pulse
         // must still resolve to the song the character actually sings.
-        let id = r.resolve_landing(99_000, "You whistle an ancient warsong.").unwrap();
+        let id = r
+            .resolve_landing(99_000, "You whistle an ancient warsong.")
+            .unwrap();
         assert_eq!(id, 2, "repertoire should outlive the cast window");
         let buff = r.active_buffs(99_000).into_iter().next().unwrap();
         assert!(buff.confidence >= 0.9, "confidence was {}", buff.confidence);
@@ -1192,7 +1256,10 @@ mod tests {
             "Solon's Bewitching Bravura",
             "Solon's Bewitching Bravura V"
         ));
-        assert!(same_spell("Tuyen's Chant of Frost IV", "Tuyen's Chant of Frost"));
+        assert!(same_spell(
+            "Tuyen's Chant of Frost IV",
+            "Tuyen's Chant of Frost"
+        ));
         assert!(same_spell("Forest's Renewal 3", "Forest's Renewal"));
         // Different spells must still not collide.
         assert!(!same_spell("Chloroplast", "Chords of Dissonance"));
@@ -1209,7 +1276,14 @@ mod tests {
     fn a_linked_spell_is_activated_alongside_its_parent() {
         let mut m = HashMap::new();
         // The illusion: permanent, and it applies the stat buff.
-        let mut wolf = spell(427, "Form of the Great Wolf", "You are now a wolf.", "You are no longer a wolf.", 50, 0);
+        let mut wolf = spell(
+            427,
+            "Form of the Great Wolf",
+            "You are now a wolf.",
+            "You are no longer a wolf.",
+            50,
+            0,
+        );
         wolf.linked = vec![40593];
         m.insert(427, wolf);
         // The companion: a real duration, and no text anywhere.
@@ -1221,7 +1295,11 @@ mod tests {
         let mut r = SpellResolver::new(SpellDb::from_spells(m), 50);
         r.resolve_landing(1000, "You are now a wolf.");
 
-        let names: Vec<String> = r.active_buffs(1000).iter().map(|b| b.name.clone()).collect();
+        let names: Vec<String> = r
+            .active_buffs(1000)
+            .iter()
+            .map(|b| b.name.clone())
+            .collect();
         assert!(names.contains(&"Form of the Great Wolf".to_string()));
         assert!(
             names.contains(&"Illusion Benefit Dena".to_string()),
@@ -1234,7 +1312,10 @@ mod tests {
             .into_iter()
             .find(|b| b.name == "Illusion Benefit Dena")
             .unwrap();
-        assert!(benefit.expires.is_some(), "the companion is timed, not permanent");
+        assert!(
+            benefit.expires.is_some(),
+            "the companion is timed, not permanent"
+        );
     }
 
     /// Death strips buffs and the client says nothing, so a permanent buff
@@ -1243,10 +1324,27 @@ mod tests {
     fn death_clears_buffs_including_permanent_ones() {
         let mut db_spells = HashMap::new();
         // Formula 50 is the "permanent" form Firefist and Thorncoat carry.
-        db_spells.insert(254, spell(254, "Firefist", "Your fist bursts into flame.", "gone", 50, 0));
+        db_spells.insert(
+            254,
+            spell(
+                254,
+                "Firefist",
+                "Your fist bursts into flame.",
+                "gone",
+                50,
+                0,
+            ),
+        );
         db_spells.insert(
             423,
-            spell(423, "Skin like Nature", "Your skin hardens.", "gone2", 3, 720),
+            spell(
+                423,
+                "Skin like Nature",
+                "Your skin hardens.",
+                "gone2",
+                3,
+                720,
+            ),
         );
         let mut r = SpellResolver::new(SpellDb::from_spells(db_spells), 50);
 
@@ -1269,8 +1367,22 @@ mod tests {
     #[test]
     fn same_name_ranks_report_high_confidence() {
         let db = db_with(vec![
-            spell(10, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
-            spell(20, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
+            spell(
+                10,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
+            spell(
+                20,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.resolve_landing(1000, "Your feet move faster.");
@@ -1294,7 +1406,10 @@ mod tests {
         let id = r.resolve_landing(1000, "Text.").unwrap();
         assert_eq!(id, 2, "repertoire should still identify the spell");
         let c = r.active_buffs(1000)[0].confidence;
-        assert!((0.85..0.95).contains(&c), "expected repertoire confidence, got {c}");
+        assert!(
+            (0.85..0.95).contains(&c),
+            "expected repertoire confidence, got {c}"
+        );
     }
 
     /// A fresh cast must outrank repertoire when the two disagree.
@@ -1317,8 +1432,22 @@ mod tests {
     #[test]
     fn a_fade_of_an_active_buff_is_not_read_as_a_landing() {
         let db = db_with(vec![
-            spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
-            debuff(2, "Languid Pace", "You slow down.", "You speed back up.", 3, 100),
+            spell(
+                1,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
+            debuff(
+                2,
+                "Languid Pace",
+                "You slow down.",
+                "You speed back up.",
+                3,
+                100,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.note_known_spell("Languid Pace"); // in the spellbook, so repertoire would favour it
@@ -1343,18 +1472,43 @@ mod tests {
     #[test]
     fn the_same_text_still_lands_when_nothing_is_active() {
         let db = db_with(vec![
-            spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
-            debuff(2, "Languid Pace", "You slow down.", "You speed back up.", 3, 100),
+            spell(
+                1,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
+            debuff(
+                2,
+                "Languid Pace",
+                "You slow down.",
+                "You speed back up.",
+                3,
+                100,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         assert!(!r.is_fade_of_active("You slow down."));
         r.resolve_landing(1000, "You slow down.");
-        assert_eq!(r.active_debuffs(1000).len(), 1, "a real snare still registers");
+        assert_eq!(
+            r.active_debuffs(1000).len(),
+            1,
+            "a real snare still registers"
+        );
     }
 
     #[test]
     fn fade_text_removes_active_buff() {
-        let db = db_with(vec![spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360)]);
+        let db = db_with(vec![spell(
+            1,
+            "Spirit of Wolf",
+            "Your feet move faster.",
+            "You slow down.",
+            3,
+            360,
+        )]);
         let mut r = SpellResolver::new(db, 50);
         r.resolve_landing(1000, "Your feet move faster.");
         assert_eq!(r.active_buffs(1000).len(), 1);
@@ -1442,7 +1596,14 @@ mod tests {
     fn auras_are_excluded_from_the_timed_buff_list() {
         let db = db_with(vec![
             spell(1, "Warsong", "You whistle.", "You stop.", 5, 2),
-            spell(2, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
+            spell(
+                2,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.note_known_spell("Warsong");
@@ -1521,9 +1682,30 @@ mod tests {
     #[test]
     fn debuffs_are_reported_separately_from_buffs() {
         let db = db_with(vec![
-            spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360),
-            debuff(2, "Dooming Darkness", "You are covered in darkness.", "The darkness fades.", 3, 100),
-            debuff(3, "Shadow Vortex", "A vortex of shadows surrounds you.", "The vortex fades.", 3, 100),
+            spell(
+                1,
+                "Spirit of Wolf",
+                "Your feet move faster.",
+                "You slow down.",
+                3,
+                360,
+            ),
+            debuff(
+                2,
+                "Dooming Darkness",
+                "You are covered in darkness.",
+                "The darkness fades.",
+                3,
+                100,
+            ),
+            debuff(
+                3,
+                "Shadow Vortex",
+                "A vortex of shadows surrounds you.",
+                "The vortex fades.",
+                3,
+                100,
+            ),
         ]);
         let mut r = SpellResolver::new(db, 50);
         r.resolve_landing(1000, "Your feet move faster.");
@@ -1573,9 +1755,23 @@ mod tests {
     /// The category comes from the game's own data, not from the name.
     #[test]
     fn effect_category_distinguishes_heals_from_buffs() {
-        let mut heal = spell(1, "Efflorescing Heal", "The heal effloresces.", "It fades.", 10, 100);
+        let mut heal = spell(
+            1,
+            "Efflorescing Heal",
+            "The heal effloresces.",
+            "It fades.",
+            10,
+            100,
+        );
         heal.category_id = 5;
-        let mut buff = spell(2, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360);
+        let mut buff = spell(
+            2,
+            "Spirit of Wolf",
+            "Your feet move faster.",
+            "You slow down.",
+            3,
+            360,
+        );
         buff.category_id = 1;
         assert_eq!(heal.category(), EffectCategory::Heal);
         assert_eq!(buff.category(), EffectCategory::Buff);
@@ -1584,7 +1780,10 @@ mod tests {
         r.resolve_landing(1000, "The heal effloresces.");
         r.resolve_landing(1000, "Your feet move faster.");
         let buffs = r.active_buffs(1000);
-        let h = buffs.iter().find(|b| b.name == "Efflorescing Heal").unwrap();
+        let h = buffs
+            .iter()
+            .find(|b| b.name == "Efflorescing Heal")
+            .unwrap();
         let w = buffs.iter().find(|b| b.name == "Spirit of Wolf").unwrap();
         assert_eq!(h.category, EffectCategory::Heal);
         assert_eq!(w.category, EffectCategory::Buff);
@@ -1605,20 +1804,35 @@ mod tests {
 
         // One landing, no pulse history at all.
         r.resolve_landing(1000, "You whistle an ancient warsong.");
-        assert_eq!(r.active_auras(1000).len(), 1, "marked aura from the first land");
+        assert_eq!(
+            r.active_auras(1000).len(),
+            1,
+            "marked aura from the first land"
+        );
         assert!(r.active_buffs(1000).is_empty(), "and not among timed buffs");
     }
 
     /// A mark applies to something already active, not only to future lands.
     #[test]
     fn marking_reclassifies_an_active_buff() {
-        let db = db_with(vec![spell(1, "Some Song", "It begins.", "It ends.", 3, 100)]);
+        let db = db_with(vec![spell(
+            1,
+            "Some Song",
+            "It begins.",
+            "It ends.",
+            3,
+            100,
+        )]);
         let mut r = SpellResolver::new(db, 50);
         r.resolve_landing(1000, "It begins.");
         assert_eq!(r.active_buffs(1000).len(), 1);
 
         r.set_mark("Some Song", Some(BuffMark::Aura));
-        assert_eq!(r.active_auras(1000).len(), 1, "moves without waiting to re-land");
+        assert_eq!(
+            r.active_auras(1000).len(),
+            1,
+            "moves without waiting to re-land"
+        );
         assert!(r.active_buffs(1000).is_empty());
     }
 
@@ -1636,7 +1850,14 @@ mod tests {
     /// Clearing a mark hands classification back to detection.
     #[test]
     fn clearing_a_mark_restores_detection() {
-        let db = db_with(vec![spell(1, "Some Song", "It begins.", "It ends.", 3, 100)]);
+        let db = db_with(vec![spell(
+            1,
+            "Some Song",
+            "It begins.",
+            "It ends.",
+            3,
+            100,
+        )]);
         let mut r = SpellResolver::new(db, 50);
         r.set_mark("Some Song", Some(BuffMark::Aura));
         r.resolve_landing(1000, "It begins.");
@@ -1658,13 +1879,23 @@ mod tests {
         for i in 0..10 {
             r.resolve_landing(1000 + i * 6, "Tick.");
         }
-        assert!(r.active_auras(1060).is_empty(), "declaration wins over pulsing");
+        assert!(
+            r.active_auras(1060).is_empty(),
+            "declaration wins over pulsing"
+        );
         assert_eq!(r.active_buffs(1060).len(), 1);
     }
 
     #[test]
     fn recast_refreshes_rather_than_stacks() {
-        let db = db_with(vec![spell(1, "Spirit of Wolf", "Your feet move faster.", "You slow down.", 3, 360)]);
+        let db = db_with(vec![spell(
+            1,
+            "Spirit of Wolf",
+            "Your feet move faster.",
+            "You slow down.",
+            3,
+            360,
+        )]);
         let mut r = SpellResolver::new(db, 50);
         r.resolve_landing(1000, "Your feet move faster.");
         r.resolve_landing(1500, "Your feet move faster.");

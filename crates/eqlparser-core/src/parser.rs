@@ -209,7 +209,10 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::SlainByOther,
         r"^(?P<victim>.+?) has been slain by (?P<killer>.+?)!$",
     ),
-    (RuleId::YouWereSlain, r"^You have been slain by (?P<killer>.+?)!$"),
+    (
+        RuleId::YouWereSlain,
+        r"^You have been slain by (?P<killer>.+?)!$",
+    ),
     // ---- Loot ---------------------------------------------------------------
     // "--You have looted a Selo`s Drums of the March +3 from Lord Nagafen's corpse.--"
     (
@@ -250,13 +253,22 @@ static RULES: &[(RuleId, &str)] = &[
     ),
     // ---- World / progression ------------------------------------------------
     (RuleId::ZoneEntered, r"^You have entered (?P<zone>.+?)\.$"),
-    (RuleId::CastStartYou, r"^You begin casting (?P<spell>.+?)\.$"),
-    (RuleId::SingStartYou, r"^You begin singing (?P<spell>.+?)\.$"),
+    (
+        RuleId::CastStartYou,
+        r"^You begin casting (?P<spell>.+?)\.$",
+    ),
+    (
+        RuleId::SingStartYou,
+        r"^You begin singing (?P<spell>.+?)\.$",
+    ),
     (
         RuleId::CastStartOther,
         r"^(?P<src>.+?) begins (?:casting|singing) (?P<spell>.+?)\.$",
     ),
-    (RuleId::MelodyInterrupted, r"^Your melody has been interrupted!$"),
+    (
+        RuleId::MelodyInterrupted,
+        r"^Your melody has been interrupted!$",
+    ),
     (
         RuleId::SpellInterrupted,
         r"^Your (?:spell is interrupted|casting has been interrupted)\.?!?$",
@@ -358,7 +370,10 @@ static RULES: &[(RuleId, &str)] = &[
     // amount of resinging will land it.
     (RuleId::CharmImmune, r"^This NPC cannot be charmed\.$"),
     // The generic "it did nothing" reply, seen when a spell fails to take.
-    (RuleId::TargetUnaffected, r"^Your target looks unaffected\.$"),
+    (
+        RuleId::TargetUnaffected,
+        r"^Your target looks unaffected\.$",
+    ),
     (
         RuleId::EffectLandedOnTarget,
         r"^(?P<target>.+?)(?P<text>'s eyes glaze over)\.$",
@@ -461,10 +476,7 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::AbilityListDescription,
         r"^Description: (?P<text>.*)$",
     ),
-    (
-        RuleId::AbilityListCost,
-        r"^Cost per Level: (?P<cost>\d+)$",
-    ),
+    (RuleId::AbilityListCost, r"^Cost per Level: (?P<cost>\d+)$"),
     // "You have gained a level! Welcome to level 42!"
     (
         RuleId::LevelUp,
@@ -522,11 +534,52 @@ static COMPILED: LazyLock<Compiled> = LazyLock::new(|| {
 /// third-person rule would match any sentence shaped
 /// "<x> <word> <y> for <n> points of damage."
 const MELEE_VERBS: &[&str] = &[
-    "hit", "hits", "slash", "slashes", "kick", "kicks", "bash", "bashes", "cleave", "cleaves",
-    "crush", "crushes", "pierce", "pierces", "punch", "punches", "bite", "bites", "claw", "claws",
-    "slice", "slices", "sting", "stings", "maul", "mauls", "gore", "gores", "smash", "smashes",
-    "rend", "rends", "burn", "burns", "shoot", "shoots", "strike", "strikes", "backstab",
-    "backstabs", "frenzy", "frenzies", "slam", "slams", "tail rake", "tail rakes",
+    "hit",
+    "hits",
+    "slash",
+    "slashes",
+    "kick",
+    "kicks",
+    "bash",
+    "bashes",
+    "cleave",
+    "cleaves",
+    "crush",
+    "crushes",
+    "pierce",
+    "pierces",
+    "punch",
+    "punches",
+    "bite",
+    "bites",
+    "claw",
+    "claws",
+    "slice",
+    "slices",
+    "sting",
+    "stings",
+    "maul",
+    "mauls",
+    "gore",
+    "gores",
+    "smash",
+    "smashes",
+    "rend",
+    "rends",
+    "burn",
+    "burns",
+    "shoot",
+    "shoots",
+    "strike",
+    "strikes",
+    "backstab",
+    "backstabs",
+    "frenzy",
+    "frenzies",
+    "slam",
+    "slams",
+    "tail rake",
+    "tail rakes",
 ];
 
 /// Fold the inflected avoidance verbs onto a single lowercase stem so
@@ -567,15 +620,24 @@ impl Parser {
     /// Infer the character name from an EverQuest log filename, which follows
     /// the convention `eqlog_<Character>_<server>.txt`.
     pub fn player_from_filename(path: &str) -> Option<String> {
-        let base = path.rsplit('/').next()?;
+        Self::identity_from_filename(path).map(|(name, _)| name)
+    }
+
+    /// The character and server a log belongs to.
+    ///
+    /// The client names its logs `eqlog_<Character>_<server>.txt`, which is
+    /// the only place either appears — nothing inside the file states which
+    /// server it came from. History is keyed on both, so an alt or a second
+    /// server does not silently merge into the same records.
+    pub fn identity_from_filename(path: &str) -> Option<(String, String)> {
+        let base = path.rsplit(['/', '\\']).next()?;
         let rest = base.strip_prefix("eqlog_")?;
-        let mut parts = rest.split('_');
-        let name = parts.next()?;
+        let rest = rest.strip_suffix(".txt").unwrap_or(rest);
+        let (name, server) = rest.split_once('_')?;
         if name.is_empty() {
-            None
-        } else {
-            Some(name.to_string())
+            return None;
         }
+        Some((name.to_string(), server.to_string()))
     }
 
     pub fn player(&self) -> &str {
@@ -739,25 +801,19 @@ impl Parser {
                 },
                 RuleId::LootMarked | RuleId::LootPlain => Event::Loot {
                     item: g("item").unwrap_or_default().to_string(),
-                    quantity: g("qty")
-                        .and_then(|q| q.trim().parse().ok())
-                        .unwrap_or(1),
+                    quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
                     source: g("corpse").map(|c| self.actor(c)),
                     disposition: LootDisposition::Kept,
                 },
                 RuleId::LootSold => Event::Loot {
                     item: g("item").unwrap_or_default().to_string(),
-                    quantity: g("qty")
-                        .and_then(|q| q.trim().parse().ok())
-                        .unwrap_or(1),
+                    quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
                     source: g("corpse").map(|c| self.actor(c)),
                     disposition: LootDisposition::Sold(Coin::parse(g("coin").unwrap_or_default())),
                 },
                 RuleId::LootStored => Event::Loot {
                     item: g("item").unwrap_or_default().to_string(),
-                    quantity: g("qty")
-                        .and_then(|q| q.trim().parse().ok())
-                        .unwrap_or(1),
+                    quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
                     source: g("corpse").map(|c| self.actor(c)),
                     disposition: LootDisposition::Stored {
                         destination: g("dest").unwrap_or_default().to_string(),
@@ -765,9 +821,7 @@ impl Parser {
                 },
                 RuleId::LootTransmute => Event::Loot {
                     item: g("item").unwrap_or_default().to_string(),
-                    quantity: g("qty")
-                        .and_then(|q| q.trim().parse().ok())
-                        .unwrap_or(1),
+                    quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
                     source: g("corpse").map(|c| self.actor(c)),
                     disposition: LootDisposition::Transmuted {
                         into: g("into").unwrap_or_default().to_string(),
@@ -845,7 +899,11 @@ impl Parser {
                 },
                 RuleId::AbilityPointsGained => Event::AbilityPointsGained {
                     // The "an ability point" wording carries no number.
-                    points: if g("points").is_some() { num("points") as u32 } else { 1 },
+                    points: if g("points").is_some() {
+                        num("points") as u32
+                    } else {
+                        1
+                    },
                     unspent: num("unspent") as u32,
                 },
                 RuleId::AbilityFirstRank => Event::AbilityPointsSpent {
@@ -1070,6 +1128,18 @@ mod tests {
             Some("Tharn")
         );
         assert_eq!(Parser::player_from_filename("notalog.txt"), None);
+
+        // Character and server both, since history is keyed on the pair.
+        assert_eq!(
+            Parser::identity_from_filename("/logs/eqlog_Tharn_freeport.txt"),
+            Some(("Tharn".to_string(), "freeport".to_string()))
+        );
+        // A server name containing an underscore stays whole.
+        assert_eq!(
+            Parser::identity_from_filename("eqlog_Alt_test_server.txt"),
+            Some(("Alt".to_string(), "test_server".to_string()))
+        );
+        assert_eq!(Parser::identity_from_filename("eqlog_NoServer.txt"), None);
     }
 
     #[test]
@@ -1099,7 +1169,14 @@ mod tests {
     #[test]
     fn melee_singular_point_is_handled() {
         let e = p().parse_body("Jaranab pierces a lesser mummy for 1 point of damage.");
-        assert!(matches!(e, Event::Damage { amount: 1, kind: DamageKind::Melee, .. }));
+        assert!(matches!(
+            e,
+            Event::Damage {
+                amount: 1,
+                kind: DamageKind::Melee,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1107,7 +1184,10 @@ mod tests {
         let e = p().parse_body("A giant fire beetle bites YOU for 2 points of damage. (Riposte)");
         match e {
             Event::Damage {
-                source, target, flags, ..
+                source,
+                target,
+                flags,
+                ..
             } => {
                 assert_eq!(source, Actor::Named("A giant fire beetle".into()));
                 assert_eq!(target, Actor::You);
@@ -1120,7 +1200,8 @@ mod tests {
 
     #[test]
     fn spell_damage_beats_melee_rule() {
-        let e = p().parse_body("You hit a lesser mummy for 4 points of magic damage by Shallow Breath.");
+        let e = p()
+            .parse_body("You hit a lesser mummy for 4 points of magic damage by Shallow Breath.");
         match e {
             Event::Damage {
                 kind,
@@ -1158,8 +1239,15 @@ mod tests {
             other => panic!("expected a critical dot tick, got {other:?}"),
         }
 
-        match p().parse_body("You hit a mummy for 40 points of magic damage by Shallow Breath. (Critical)") {
-            Event::Damage { amount, kind, flags, .. } => {
+        match p().parse_body(
+            "You hit a mummy for 40 points of magic damage by Shallow Breath. (Critical)",
+        ) {
+            Event::Damage {
+                amount,
+                kind,
+                flags,
+                ..
+            } => {
                 assert_eq!(amount, 40);
                 assert_eq!(kind, DamageKind::DirectSpell);
                 assert!(flags.is_crit());
@@ -1168,7 +1256,9 @@ mod tests {
         }
 
         // A dot cast by someone else, also critting.
-        match p().parse_body("A rat has taken 8 damage from Clinging Darkness by Sticky. (Critical)") {
+        match p()
+            .parse_body("A rat has taken 8 damage from Clinging Darkness by Sticky. (Critical)")
+        {
             Event::Damage { source, flags, .. } => {
                 assert_eq!(source, Actor::Named("Sticky".into()));
                 assert!(flags.is_crit());
@@ -1179,10 +1269,14 @@ mod tests {
 
     #[test]
     fn dot_tick_yours_attributes_to_you() {
-        let e = p().parse_body("An imp protector has taken 37 damage from your Chords of Dissonance III.");
+        let e = p()
+            .parse_body("An imp protector has taken 37 damage from your Chords of Dissonance III.");
         match e {
             Event::Damage {
-                source, kind, ability, ..
+                source,
+                kind,
+                ability,
+                ..
             } => {
                 assert_eq!(source, Actor::You);
                 assert_eq!(kind, DamageKind::DamageOverTime);
@@ -1194,10 +1288,14 @@ mod tests {
 
     #[test]
     fn dot_tick_by_other_caster() {
-        let e = p().parse_body("A young kodiak has taken 8 damage from Clinging Darkness by Sticky.");
+        let e =
+            p().parse_body("A young kodiak has taken 8 damage from Clinging Darkness by Sticky.");
         match e {
             Event::Damage {
-                source, target, ability, ..
+                source,
+                target,
+                ability,
+                ..
             } => {
                 assert_eq!(source, Actor::Named("Sticky".into()));
                 assert_eq!(target, Actor::Named("A young kodiak".into()));
@@ -1226,7 +1324,10 @@ mod tests {
         );
         match e {
             Event::Damage {
-                source, kind, amount, ..
+                source,
+                kind,
+                amount,
+                ..
             } => {
                 assert_eq!(source, Actor::You);
                 assert_eq!(kind, DamageKind::DamageShield);
@@ -1243,7 +1344,10 @@ mod tests {
         );
         match e {
             Event::Damage {
-                source, target, kind, ..
+                source,
+                target,
+                kind,
+                ..
             } => {
                 assert_eq!(target, Actor::You);
                 assert_eq!(source, Actor::Named("a lava guardian".into()));
@@ -1257,7 +1361,10 @@ mod tests {
     fn miss_forms() {
         assert!(matches!(
             p().parse_body("You try to slash an imp protector, but miss!"),
-            Event::Miss { source: Actor::You, .. }
+            Event::Miss {
+                source: Actor::You,
+                ..
+            }
         ));
         match p().parse_body("A giant fire beetle tries to bite Jabarab, but misses! (Riposte)") {
             Event::Miss { flags, target, .. } => {
@@ -1270,7 +1377,8 @@ mod tests {
 
     #[test]
     fn heal_reflexive_targets_the_healer() {
-        let e = p().parse_body("Persephone healed herself for 4 hit points by Blessing of the Knight.");
+        let e =
+            p().parse_body("Persephone healed herself for 4 hit points by Blessing of the Knight.");
         match e {
             Event::Heal {
                 source,
@@ -1291,10 +1399,14 @@ mod tests {
 
     #[test]
     fn heal_over_time_flagged() {
-        let e = p().parse_body("You healed Tharn over time for 153 hit points by Efflorescing Heal.");
+        let e =
+            p().parse_body("You healed Tharn over time for 153 hit points by Efflorescing Heal.");
         match e {
             Event::Heal {
-                over_time, amount, spell, ..
+                over_time,
+                amount,
+                spell,
+                ..
             } => {
                 assert!(over_time);
                 assert_eq!(amount, 153);
@@ -1320,7 +1432,10 @@ mod tests {
     fn deaths_all_three_forms() {
         assert!(matches!(
             p().parse_body("You have slain a decaying skeleton!"),
-            Event::Death { killer: Some(Actor::You), .. }
+            Event::Death {
+                killer: Some(Actor::You),
+                ..
+            }
         ));
         match p().parse_body("Orc pawn has been slain by Reklar!") {
             Event::Death { victim, killer } => {
@@ -1432,8 +1547,13 @@ mod tests {
     /// The client reports zero-value auto-sales as "for free".
     #[test]
     fn sold_for_free_parses_as_zero_coin() {
-        match p().parse_body("You looted a Rusty Dagger from a rat's corpse and sold it for free.") {
-            Event::Loot { disposition, source, .. } => {
+        match p().parse_body("You looted a Rusty Dagger from a rat's corpse and sold it for free.")
+        {
+            Event::Loot {
+                disposition,
+                source,
+                ..
+            } => {
                 assert_eq!(disposition, LootDisposition::Sold(Coin::default()));
                 assert_eq!(source, Some(Actor::Named("a rat".into())));
             }
@@ -1536,7 +1656,10 @@ mod tests {
             assert!(
                 !matches!(
                     e,
-                    Event::Damage { .. } | Event::Miss { .. } | Event::Heal { .. } | Event::Death { .. }
+                    Event::Damage { .. }
+                        | Event::Miss { .. }
+                        | Event::Heal { .. }
+                        | Event::Death { .. }
                 ),
                 "line {line:?} must not be scored as combat, got {e:?}"
             );
@@ -1561,7 +1684,9 @@ mod tests {
 
     #[test]
     fn ability_points_gained_both_wordings() {
-        match p().parse_body("You have gained 2 ability point(s)!  You now have 5 ability point(s).") {
+        match p()
+            .parse_body("You have gained 2 ability point(s)!  You now have 5 ability point(s).")
+        {
             Event::AbilityPointsGained { points, unspent } => {
                 assert_eq!(points, 2);
                 assert_eq!(unspent, 5);
@@ -1592,10 +1717,19 @@ mod tests {
             }
             other => panic!("expected AA purchase, got {other:?}"),
         }
-        match p().parse_body("You have improved Symphonic Aura: Enabled 2 at a cost of 0 ability points.") {
-            Event::AbilityPointsSpent { ability, rank, cost } => {
+        match p().parse_body(
+            "You have improved Symphonic Aura: Enabled 2 at a cost of 0 ability points.",
+        ) {
+            Event::AbilityPointsSpent {
+                ability,
+                rank,
+                cost,
+            } => {
                 assert_eq!(ability, "Symphonic Aura: Enabled");
-                assert_eq!(rank, 2, "trailing digits are the rank, not part of the name");
+                assert_eq!(
+                    rank, 2,
+                    "trailing digits are the rank, not part of the name"
+                );
                 assert_eq!(cost, 0);
             }
             other => panic!("expected AA purchase, got {other:?}"),
@@ -1610,7 +1744,9 @@ mod tests {
             Event::AbilityPointsGained { .. }
         ));
         assert!(matches!(
-            p().parse_body("You have gained the ability \"Banestrike\" at a cost of 0 ability points."),
+            p().parse_body(
+                "You have gained the ability \"Banestrike\" at a cost of 0 ability points."
+            ),
             Event::AbilityPointsSpent { .. }
         ));
     }

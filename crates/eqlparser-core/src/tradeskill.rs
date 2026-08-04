@@ -256,14 +256,17 @@ impl TradeskillTracker {
     pub fn on_craft(&mut self, timestamp: i64, item: &str, success: bool) {
         let key = item.to_lowercase();
         let known = self.item_skill.get(&key).cloned();
-        let e = self.crafts.entry(key.clone()).or_insert_with(|| CraftRecord {
-            item: item.to_string(),
-            skill: None,
-            successes: 0,
-            failures: 0,
-            last_attempt: timestamp,
-            skill_ups: 0,
-        });
+        let e = self
+            .crafts
+            .entry(key.clone())
+            .or_insert_with(|| CraftRecord {
+                item: item.to_string(),
+                skill: None,
+                successes: 0,
+                failures: 0,
+                last_attempt: timestamp,
+                skill_ups: 0,
+            });
         if success {
             e.successes += 1;
         } else {

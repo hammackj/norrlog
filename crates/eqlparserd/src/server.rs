@@ -105,7 +105,11 @@ async fn overlay_page() -> Response {
 }
 
 async fn overlay_css() -> Response {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], OVERLAY_CSS).into_response()
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        OVERLAY_CSS,
+    )
+        .into_response()
 }
 
 async fn overlay_js() -> Response {
@@ -140,7 +144,10 @@ struct ListQuery {
 }
 
 /// The historical browser: filter and page through every parsed encounter.
-async fn encounters(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<serde_json::Value> {
+async fn encounters(
+    State(s): State<AppState>,
+    Query(q): Query<ListQuery>,
+) -> Json<serde_json::Value> {
     let engine = s.engine.lock().unwrap();
     let search = q.search.map(|v| v.to_lowercase());
     let zone = q.zone.map(|v| v.to_lowercase());
@@ -249,9 +256,7 @@ async fn experience(State(s): State<AppState>) -> Json<crate::engine::Experience
 }
 
 /// Weekly/daily boss lockouts, as a boss x difficulty grid.
-async fn lockouts(
-    State(s): State<AppState>,
-) -> Json<eqlparser_core::lockout::LockoutReport> {
+async fn lockouts(State(s): State<AppState>) -> Json<eqlparser_core::lockout::LockoutReport> {
     let engine = s.engine.lock().unwrap();
     let now = engine.now();
     Json(engine.lockout_report(now))
@@ -349,7 +354,11 @@ struct ExportQuery {
 /// is the whole point of writing a guide from it.
 async fn export(State(s): State<AppState>, Query(q): Query<ExportQuery>) -> Response {
     let Some(store) = &s.store else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "history database unavailable").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "history database unavailable",
+        )
+            .into_response();
     };
     let stats = {
         let st = store.lock().unwrap();
@@ -416,7 +425,11 @@ fn render_export_markdown(stats: &[crate::store::RaidStat]) -> String {
     for build in builds {
         let rows: Vec<_> = stats.iter().filter(|r| r.build == build).collect();
         let total: u32 = rows.iter().map(|r| r.kills).sum();
-        let label = if build.is_empty() { "unknown build" } else { build };
+        let label = if build.is_empty() {
+            "unknown build"
+        } else {
+            build
+        };
         let _ = writeln!(out, "## {label}\n");
         let _ = writeln!(out, "{total} boss kills across {} entries.\n", rows.len());
         out.push_str("| Boss | Diff | Kills | Avg time | Best time | Avg DPS | Best DPS |\n");
@@ -453,8 +466,16 @@ fn render_export_csv(stats: &[crate::store::RaidStat]) -> String {
         let _ = writeln!(
             out,
             "\"{}\",\"{}\",{},{},{:.0},{},{:.1},{:.1},{},{}",
-            r.build, r.boss, r.difficulty, r.kills, r.avg_seconds, r.best_seconds, r.avg_dps,
-            r.best_dps, r.first_kill, r.last_kill
+            r.build,
+            r.boss,
+            r.difficulty,
+            r.kills,
+            r.avg_seconds,
+            r.best_seconds,
+            r.avg_dps,
+            r.best_dps,
+            r.first_kill,
+            r.last_kill
         );
     }
     out
@@ -487,12 +508,14 @@ async fn logs(State(s): State<AppState>) -> Json<serde_json::Value> {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
+                // The client names the file after the character and server,
+                // which is the only place the daemon learns either from.
+                let ident = eqlparser_core::Parser::identity_from_filename(&name);
                 out.push(serde_json::json!({
                     "path": path.to_string_lossy(),
                     "name": name,
-                    // The client names the file after the character, which is
-                    // the only place the daemon learns it from too.
-                    "character": eqlparser_core::Parser::player_from_filename(&name),
+                    "character": ident.as_ref().map(|(c, _)| c.clone()),
+                    "server": ident.as_ref().map(|(_, sv)| sv.clone()),
                     "bytes": md.as_ref().map(|m| m.len()).unwrap_or(0),
                     "modified": modified,
                     "current": path == s.log_path,
@@ -503,9 +526,30 @@ async fn logs(State(s): State<AppState>) -> Json<serde_json::Value> {
     // Most recently written first: the one you just played is the one you
     // most likely want.
     out.sort_by(|a, b| b["modified"].as_i64().cmp(&a["modified"].as_i64()));
+    // Who the history already holds records for, so switching logs shows what
+    // is kept separately rather than implying one merged pile.
+    let (mut known, mut following) = (Vec::new(), serde_json::Value::Null);
+    if let Some(store) = &s.store {
+        if let Ok(store) = store.lock() {
+            let (c, sv) = store.identity();
+            following = serde_json::json!({"character": c, "server": sv});
+            if let Ok(rows) = store.characters() {
+                known = rows
+                    .into_iter()
+                    .map(|(c, sv, n)| {
+                        serde_json::json!({
+                            "character": c, "server": sv, "kills": n,
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
     Json(serde_json::json!({
         "dir": dir.map(|d| d.to_string_lossy().to_string()),
         "current": s.log_path.to_string_lossy(),
+        "following": following,
+        "characters": known,
         "logs": out,
     }))
 }
@@ -602,7 +646,10 @@ async fn export_quests(State(s): State<AppState>) -> Response {
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+            (
+                header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8".to_string(),
+            ),
             (
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"quests.md\"".to_string(),
@@ -732,9 +779,7 @@ async fn define_sky_quest(
 }
 
 /// Which bosses each class build has cleared.
-async fn builds(
-    State(s): State<AppState>,
-) -> Json<Vec<eqlparser_core::lockout::BuildRecord>> {
+async fn builds(State(s): State<AppState>) -> Json<Vec<eqlparser_core::lockout::BuildRecord>> {
     let engine = s.engine.lock().unwrap();
     Json(engine.build_history())
 }
@@ -848,10 +893,18 @@ mod tests {
     #[tokio::test]
     async fn encounters_endpoint_is_newest_first() {
         let s = state_with(SAMPLE);
-        let Json(v) = encounters(State(s), Query(ListQuery {
-            limit: None, offset: None, search: None, zone: None,
-            since: None, until: None, min_duration: None,
-        }))
+        let Json(v) = encounters(
+            State(s),
+            Query(ListQuery {
+                limit: None,
+                offset: None,
+                search: None,
+                zone: None,
+                since: None,
+                until: None,
+                min_duration: None,
+            }),
+        )
         .await;
         assert_eq!(v["total"], 2);
         let list = v["encounters"].as_array().unwrap();
@@ -861,10 +914,18 @@ mod tests {
     #[tokio::test]
     async fn encounters_endpoint_filters_by_search() {
         let s = state_with(SAMPLE);
-        let Json(v) = encounters(State(s), Query(ListQuery {
-            limit: None, offset: None, search: Some("mummy".into()), zone: None,
-            since: None, until: None, min_duration: None,
-        }))
+        let Json(v) = encounters(
+            State(s),
+            Query(ListQuery {
+                limit: None,
+                offset: None,
+                search: Some("mummy".into()),
+                zone: None,
+                since: None,
+                until: None,
+                min_duration: None,
+            }),
+        )
         .await;
         assert_eq!(v["total"], 1);
         assert_eq!(v["encounters"][0]["title"], "a lesser mummy");
@@ -873,10 +934,18 @@ mod tests {
     #[tokio::test]
     async fn encounters_endpoint_paginates() {
         let s = state_with(SAMPLE);
-        let Json(v) = encounters(State(s), Query(ListQuery {
-            limit: Some(1), offset: Some(1), search: None, zone: None,
-            since: None, until: None, min_duration: None,
-        }))
+        let Json(v) = encounters(
+            State(s),
+            Query(ListQuery {
+                limit: Some(1),
+                offset: Some(1),
+                search: None,
+                zone: None,
+                since: None,
+                until: None,
+                min_duration: None,
+            }),
+        )
         .await;
         assert_eq!(v["total"], 2, "total counts all matches, not the page");
         assert_eq!(v["encounters"].as_array().unwrap().len(), 1);

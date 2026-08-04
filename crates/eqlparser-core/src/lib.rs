@@ -24,11 +24,11 @@ pub mod tradeskill;
 
 pub use class::{Class, ClassDetector, ClassScore};
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
-pub use experience::{ExpSource, ExpTracker, LevelRecord};
-pub use lockout::{BossKill, LockoutReport, LockoutTracker};
 pub use event::{
     Actor, Coin, DamageKind, Event, Flags, LogEntry, LootDisposition, SpellbookChangeKind,
 };
+pub use experience::{ExpSource, ExpTracker, LevelRecord};
+pub use lockout::{BossKill, LockoutReport, LockoutTracker};
 pub use parser::Parser;
 pub use spell::{ActiveBuff, Spell, SpellDb, SpellResolver};
 pub use task::{TaskReport, TaskTracker};

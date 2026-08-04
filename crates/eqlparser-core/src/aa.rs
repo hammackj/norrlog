@@ -120,7 +120,9 @@ impl AaCatalog {
 
     /// Note the `Cost per Level: N` line that closes an entry.
     pub fn on_cost(&mut self, cost: u32, description: &str) {
-        let Some((id, _)) = self.open.take() else { return };
+        let Some((id, _)) = self.open.take() else {
+            return;
+        };
         let ranks = self.pending.entry(id).or_default();
         ranks.push(AaRank {
             rank: ranks.len() as u32 + 1,
@@ -189,7 +191,11 @@ impl AaCatalog {
             let b_done = b.cost_to_finish == Some(0);
             a_done
                 .cmp(&b_done)
-                .then(a.cost_to_finish.unwrap_or(u32::MAX).cmp(&b.cost_to_finish.unwrap_or(u32::MAX)))
+                .then(
+                    a.cost_to_finish
+                        .unwrap_or(u32::MAX)
+                        .cmp(&b.cost_to_finish.unwrap_or(u32::MAX)),
+                )
                 .then(a.name.cmp(&b.name))
         });
 
@@ -247,7 +253,10 @@ mod tests {
         assert_eq!(r.abilities.len(), 1);
         let d = &r.abilities[0];
         assert_eq!(d.ranks.len(), 3);
-        assert_eq!(d.ranks.iter().map(|x| x.cost).collect::<Vec<_>>(), vec![2, 4, 6]);
+        assert_eq!(
+            d.ranks.iter().map(|x| x.cost).collect::<Vec<_>>(),
+            vec![2, 4, 6]
+        );
         assert_eq!(d.owned_rank, 2);
         // Only rank 3 is left, at 6 points.
         assert_eq!(d.cost_to_finish, Some(6));
@@ -259,11 +268,17 @@ mod tests {
     #[test]
     fn owning_past_the_listed_ladder_is_flagged_not_reported_as_complete() {
         let mut c = AaCatalog::new();
-        feed(&mut c, &[(434, "Steadfast Will", 6), (434, "Steadfast Will", 3)]);
+        feed(
+            &mut c,
+            &[(434, "Steadfast Will", 6), (434, "Steadfast Will", 3)],
+        );
         let r = c.report(&owned(&[("Steadfast Will", 6, 16)]));
         let s = &r.abilities[0];
         assert!(s.truncated, "rank 6 owned but only 2 ranks listed");
-        assert_eq!(s.cost_to_finish, None, "no honest answer from a cut-short ladder");
+        assert_eq!(
+            s.cost_to_finish, None,
+            "no honest answer from a cut-short ladder"
+        );
     }
 
     /// Two dumps must not double the ladder.
@@ -281,7 +296,10 @@ mod tests {
     fn a_longer_ladder_replaces_a_shorter_one_and_not_the_reverse() {
         let mut c = AaCatalog::new();
         feed(&mut c, &[(1, "Innate Eminence", 3)]);
-        feed(&mut c, &[(1, "Innate Eminence", 3), (1, "Innate Eminence", 5)]);
+        feed(
+            &mut c,
+            &[(1, "Innate Eminence", 3), (1, "Innate Eminence", 5)],
+        );
         assert_eq!(c.report(&owned(&[])).abilities[0].ranks.len(), 2);
         feed(&mut c, &[(1, "Innate Eminence", 3)]);
         assert_eq!(
@@ -306,7 +324,10 @@ mod tests {
     fn abilities_bought_but_never_described_are_listed() {
         let mut c = AaCatalog::new();
         feed(&mut c, &[(40, "Combat Fury", 2)]);
-        let r = c.report(&owned(&[("Combat Fury", 1, 2), ("Symphonic Aura: Disabled", 3, 0)]));
+        let r = c.report(&owned(&[
+            ("Combat Fury", 1, 2),
+            ("Symphonic Aura: Disabled", 3, 0),
+        ]));
         assert_eq!(r.undescribed, vec!["symphonic aura: disabled"]);
     }
 
@@ -315,10 +336,7 @@ mod tests {
     #[test]
     fn finished_abilities_sort_below_unfinished_ones() {
         let mut c = AaCatalog::new();
-        feed(
-            &mut c,
-            &[(1, "Done", 5), (2, "Cheap", 1), (3, "Dear", 9)],
-        );
+        feed(&mut c, &[(1, "Done", 5), (2, "Cheap", 1), (3, "Dear", 9)]);
         let r = c.report(&owned(&[("Done", 1, 5)]));
         let names: Vec<&str> = r.abilities.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["Cheap", "Dear", "Done"]);
