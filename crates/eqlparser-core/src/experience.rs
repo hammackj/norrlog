@@ -167,6 +167,20 @@ pub struct AaPurchase {
     /// Total points sunk into this ability across every rank seen.
     pub spent: u32,
     pub last_seen: i64,
+    /// Ranks below the one held whose purchase never appeared in the log.
+    ///
+    /// Holding rank 4 means ranks 1 to 3 were bought, whether or not this log
+    /// saw it happen. Each one here is a purchase that certainly occurred and
+    /// certainly is not counted in `spent`.
+    #[serde(default)]
+    pub unlogged_ranks: Vec<u32>,
+    /// The most those unlogged ranks can have cost.
+    ///
+    /// Rank costs within an ability never decrease, so a missing rank cost no
+    /// more than the cheapest rank seen above it. That bounds the gap without
+    /// inventing a figure — the exact cost is not recoverable, only stated.
+    #[serde(default)]
+    pub unlogged_cost_max: u32,
 }
 
 /// The most recent kill and whether it has already been counted.
@@ -216,6 +230,8 @@ pub struct ExpTracker {
     aa_events: Vec<(i64, u32)>,
     /// Purchases, keyed by lowercased ability name.
     aa_spent: HashMap<String, AaPurchase>,
+    /// Rank to cost, per ability, for every purchase the log actually showed.
+    aa_ranks_seen: HashMap<String, std::collections::BTreeMap<u32, u32>>,
     /// Experience potions consumed.
     aa_potions_used: u32,
     /// When the last potion took effect.
@@ -277,6 +293,7 @@ impl ExpTracker {
             aa_unspent: 0,
             aa_events: Vec::new(),
             aa_spent: HashMap::new(),
+            aa_ranks_seen: HashMap::new(),
             aa_potions_used: 0,
             last_potion_at: None,
             aa_gains_doubled: 0,
@@ -451,7 +468,13 @@ impl ExpTracker {
                 rank: 0,
                 spent: 0,
                 last_seen: timestamp,
+                unlogged_ranks: Vec::new(),
+                unlogged_cost_max: 0,
             });
+        self.aa_ranks_seen
+            .entry(ability.to_lowercase())
+            .or_default()
+            .insert(rank, cost);
         e.rank = e.rank.max(rank);
         e.spent += cost;
         e.last_seen = timestamp;
@@ -549,9 +572,61 @@ impl ExpTracker {
         self.aa_spent.values().map(|p| p.spent).sum()
     }
 
+    /// Ranks held whose purchase this log never recorded, and the most they
+    /// can have cost. The lower bound is zero: some ranks genuinely are free.
+    pub fn aa_unlogged(&self) -> (Vec<AaPurchase>, u32) {
+        let mut v: Vec<AaPurchase> = self
+            .aa_purchases()
+            .into_iter()
+            .filter(|p| !p.unlogged_ranks.is_empty())
+            .collect();
+        v.sort_by(|a, b| b.unlogged_cost_max.cmp(&a.unlogged_cost_max));
+        let bound = v.iter().map(|p| p.unlogged_cost_max).sum();
+        (v, bound)
+    }
+
+    /// Ranks held but never seen bought, and what they can have cost at most.
+    ///
+    /// Toggle abilities are skipped. The client models a toggle as two
+    /// abilities whose ranks interleave — "Symphonic Aura: Enabled" holding the
+    /// odd ranks and ": Disabled" the even ones — so each looks to be missing
+    /// every other rank when nothing is missing at all.
+    fn unlogged_for(&self, key: &str, held: u32) -> (Vec<u32>, u32) {
+        if key.contains(": enabled") || key.contains(": disabled") {
+            return (Vec::new(), 0);
+        }
+        let Some(seen) = self.aa_ranks_seen.get(key) else {
+            return (Vec::new(), 0);
+        };
+        let missing: Vec<u32> = (1..=held).filter(|r| !seen.contains_key(r)).collect();
+        // Costs never fall as rank rises, so the cheapest rank seen above a
+        // missing one is a ceiling on it.
+        let bound = missing
+            .iter()
+            .map(|m| {
+                seen.range((m + 1)..)
+                    .map(|(_, c)| *c)
+                    .min()
+                    .unwrap_or_default()
+            })
+            .sum();
+        (missing, bound)
+    }
+
     /// Points spent, highest first.
     pub fn aa_purchases(&self) -> Vec<AaPurchase> {
-        let mut v: Vec<AaPurchase> = self.aa_spent.values().cloned().collect();
+        let mut v: Vec<AaPurchase> = self
+            .aa_spent
+            .iter()
+            .map(|(key, p)| {
+                let (unlogged_ranks, unlogged_cost_max) = self.unlogged_for(key, p.rank);
+                AaPurchase {
+                    unlogged_ranks,
+                    unlogged_cost_max,
+                    ..p.clone()
+                }
+            })
+            .collect();
         v.sort_by(|a, b| b.spent.cmp(&a.spent).then(b.last_seen.cmp(&a.last_seen)));
         v
     }

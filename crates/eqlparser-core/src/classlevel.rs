@@ -144,6 +144,8 @@ pub struct ClassLevelTracker {
     pending: Vec<(i64, u32, Vec<Class>)>,
     /// Guard against `record` and `resolve_pending` calling each other.
     resolving: bool,
+    /// Levels the player gave, with when they gave them.
+    stated: std::collections::HashMap<Class, (u32, i64)>,
     /// When the loadout was last observed to change.
     loadout_changed_at: i64,
     last_loadout: Vec<Class>,
@@ -170,6 +172,7 @@ impl ClassLevelTracker {
     /// three. It is not frozen afterwards, though: the class carries on
     /// levelling, and highest-wins lets it.
     pub fn set_stated(&mut self, class: Class, level: u32, at: i64) {
+        self.stated.insert(class, (level, at));
         self.levels.insert(class, (level, LevelSource::Stated, at));
         self.resolve_pending();
     }
@@ -184,6 +187,17 @@ impl ClassLevelTracker {
     /// level-8 warrior looks like a plausible earner of a level-11 gain. Source
     /// is kept for display, and breaks ties at equal levels.
     fn record(&mut self, class: Class, level: u32, source: LevelSource, at: i64) {
+        // A statement describes the character now, so it overrules anything
+        // inferred from earlier in the log. Without this, stating one class's
+        // level can retroactively sharpen attribution back through history and
+        // credit levels to a class that was sitting at 10 the whole time.
+        // Evidence from after the statement still counts: the class kept
+        // playing.
+        if let Some((stated, said_at)) = self.stated.get(&class) {
+            if at < *said_at && level > *stated {
+                return;
+            }
+        }
         match self.levels.get(&class) {
             Some((lv, _, _)) if *lv > level => {}
             Some((lv, have, _)) if *lv == level && *have >= source => {}
@@ -526,6 +540,22 @@ mod tests {
         assert_eq!(t.level_of(Class::Shaman), Some(28));
         // And the sole uncapped class takes the next level.
         assert_eq!(t.on_level_up(300, 29, &load), Some(Class::Shaman));
+    }
+
+    /// Stating a level describes the character now. Log lines from before the
+    /// statement must not push it back up — that is how an enchanter parked at
+    /// 10 acquired a level of 12 from an ambiguous early gain.
+    #[test]
+    fn a_statement_overrules_older_evidence_but_not_newer() {
+        let mut t = ClassLevelTracker::new();
+        let load = [Class::Warrior, Class::Enchanter];
+        t.set_stated(Class::Enchanter, 10, 1000);
+        // Replaying history cannot raise it.
+        t.on_who(500, 12, &load);
+        assert_eq!(t.level_of(Class::Enchanter), Some(10));
+        // Playing on afterwards can.
+        t.on_who(2000, 14, &load);
+        assert_eq!(t.level_of(Class::Enchanter), Some(14));
     }
 
     /// A gain to N belongs to whoever was at N-1, which pins it even when

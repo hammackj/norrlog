@@ -178,6 +178,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => eprintln!("[eqlparserd] could not read stated class levels: {e}"),
             }
+            if let Ok(Some(spent)) = store.stated("aa_spent") {
+                engine.set_stated_aa_spent(spent as u32);
+            }
         }
     }
 

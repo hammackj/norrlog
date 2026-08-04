@@ -331,8 +331,13 @@
   function renderXp(snap) {
     const x = snap.exp;
     if (!x) return;
+    // The effective level and the class earning it. Classes level separately,
+    // so "level 13" on a loadout whose lowest class is 28 is the berserker
+    // that was put away hours ago.
     const lvl = snap.level || 0;
-    el.xpTitle.textContent = `Level ${lvl}`;
+    el.xpTitle.textContent = snap.levelling
+      ? `Level ${lvl} (${snap.levelling})`
+      : `Level ${lvl}`;
     const bits = [];
     if (x.rate_per_hour > 0) bits.push(`<b>${x.rate_per_hour.toFixed(1)}</b> %/hr`);
     if (x.aa_per_hour > 0) bits.push(`<b>${x.aa_per_hour.toFixed(1)}</b> AA/hr`);

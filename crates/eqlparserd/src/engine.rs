@@ -243,10 +243,20 @@ pub struct ExperienceReport {
     /// Alternate advancement ("ability points" in this client).
     pub aa_earned: u32,
     pub aa_unspent: u32,
+    /// Points spent. The player's own figure when they have given one,
+    /// otherwise what the log accounts for.
+    pub aa_spent: u32,
     /// Points spent on purchases visible in the log. A floor on the
     /// character's lifetime spend: ranks bought before logging began cannot
     /// be seen, so this reads low by exactly that amount.
-    pub aa_spent: u32,
+    pub aa_spent_tracked: u32,
+    /// The gap between the two — ranks that predate this log. Constant on any
+    /// given character, so once it is known the total stops drifting.
+    pub aa_spent_untracked: u32,
+    /// Ranks the character demonstrably holds but was never seen buying.
+    pub aa_unlogged: Vec<eqlparser_core::experience::AaPurchase>,
+    /// The most those ranks can have cost, which bounds the gap above.
+    pub aa_unlogged_cost_max: u32,
     /// Recent rate, over `aa_window_seconds`.
     pub aa_per_hour: f64,
     pub aa_window_seconds: i64,
@@ -322,7 +332,13 @@ pub struct ExpSummary {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     pub player: String,
+    /// The character's effective level — the lowest class in the loadout,
+    /// which is what `/who` reports. The last level-up message is no use here:
+    /// it names no class, so after a swap it keeps reporting the level of the
+    /// class that left.
     pub level: u32,
+    /// The class earning experience, when it can be pinned down.
+    pub levelling: Option<String>,
     pub zone: Option<String>,
     pub classes: Vec<ClassInfo>,
     /// The fight in progress, if any.
@@ -379,6 +395,8 @@ pub struct Engine {
     classes: ClassDetector,
     /// Per-class levels, which the single reported level cannot express.
     class_levels: eqlparser_core::classlevel::ClassLevelTracker,
+    /// Lifetime points spent, as read off the character sheet by the player.
+    aa_spent_stated: Option<u32>,
     exp: ExpTracker,
     lockouts: LockoutTracker,
     sky: SkyTracker,
@@ -435,6 +453,7 @@ impl Engine {
             resolver: SpellResolver::new(spell_db, 1),
             classes: ClassDetector::new(),
             class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
+            aa_spent_stated: None,
             exp: ExpTracker::new(),
             lockouts: LockoutTracker::new(),
             sky: SkyTracker::new(),
@@ -1061,6 +1080,11 @@ impl Engine {
         trio
     }
 
+    /// The lifetime spend the player read off their character sheet.
+    pub fn set_stated_aa_spent(&mut self, spent: u32) {
+        self.aa_spent_stated = Some(spent);
+    }
+
     /// Apply levels the player entered, from the history database.
     pub fn set_stated_level(&mut self, class: eqlparser_core::class::Class, level: u32, at: i64) {
         self.class_levels.set_stated(class, level, at);
@@ -1532,9 +1556,21 @@ impl Engine {
             // A zone visited only briefly yields a rate built on noise.
             best_zones: self.exp.zones_by_rate(10 * 60),
             best_mobs: self.exp.mobs_by_exp_per_kill(5),
-            aa_earned: self.exp.aa_earned(),
+            // Earned is short by the same ranks spent before the log began, so
+            // it follows the stated total rather than drifting from it.
+            aa_earned: match self.aa_spent_stated {
+                Some(spent) => spent + self.exp.aa_unspent(),
+                None => self.exp.aa_earned(),
+            },
             aa_unspent: self.exp.aa_unspent(),
-            aa_spent: self.exp.aa_spent_total(),
+            aa_spent: self.aa_spent_stated.unwrap_or(self.exp.aa_spent_total()),
+            aa_spent_tracked: self.exp.aa_spent_total(),
+            aa_spent_untracked: self
+                .aa_spent_stated
+                .unwrap_or_default()
+                .saturating_sub(self.exp.aa_spent_total()),
+            aa_unlogged: self.exp.aa_unlogged().0,
+            aa_unlogged_cost_max: self.exp.aa_unlogged().1,
             aa_per_hour: self.exp.aa_per_hour(now, AA_RATE_WINDOW),
             aa_window_seconds: AA_RATE_WINDOW,
             aa_lifetime_per_hour: self.exp.aa_lifetime_per_hour(),
@@ -1809,7 +1845,11 @@ impl Engine {
 
         Snapshot {
             player: self.player.clone(),
-            level: self.resolver.level(),
+            level: {
+                let r = self.class_level_report();
+                r.effective.unwrap_or_else(|| self.resolver.level())
+            },
+            levelling: self.class_level_report().levelling,
             zone: self.tracker.current_zone().map(str::to_string),
             classes,
             current: self.tracker.current().map(|e| self.summarise(e, true)),
@@ -1822,7 +1862,12 @@ impl Engine {
                 kills: self.exp.current_record().kills,
                 rate_per_hour: self.exp.current_rate_per_hour(now),
                 seconds_to_next_level: self.exp.seconds_to_next_level(now),
-                aa_earned: self.exp.aa_earned(),
+                // Same correction as the full report: earned is short by the
+                // ranks bought before the log, so it follows the stated total.
+                aa_earned: match self.aa_spent_stated {
+                    Some(spent) => spent + self.exp.aa_unspent(),
+                    None => self.exp.aa_earned(),
+                },
                 aa_unspent: self.exp.aa_unspent(),
                 aa_per_hour: self.exp.aa_per_hour(now, AA_RATE_WINDOW),
                 aa_potion_charges: self.exp.aa_potion_charges(),
