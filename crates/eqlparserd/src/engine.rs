@@ -322,6 +322,10 @@ pub struct ExpSummary {
     pub seconds_to_next_level: Option<i64>,
     pub aa_earned: u32,
     pub aa_unspent: u32,
+    /// Lifetime points spent. Shown rather than earned, because spent and
+    /// unspent are the pair the character sheet shows and so the pair the
+    /// player can check at a glance.
+    pub aa_spent: u32,
     pub aa_per_hour: f64,
     /// Doubled awards remaining from experience potions.
     pub aa_potion_charges: u32,
@@ -1868,6 +1872,7 @@ impl Engine {
                     Some(spent) => spent + self.exp.aa_unspent(),
                     None => self.exp.aa_earned(),
                 },
+                aa_spent: self.aa_spent_stated.unwrap_or(self.exp.aa_spent_total()),
                 aa_unspent: self.exp.aa_unspent(),
                 aa_per_hour: self.exp.aa_per_hour(now, AA_RATE_WINDOW),
                 aa_potion_charges: self.exp.aa_potion_charges(),

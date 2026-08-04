@@ -354,7 +354,7 @@
         <span class="name">AA</span>
         <span class="nums">
           <span class="dmg">${x.aa_unspent} unspent</span>
-          <span class="dps">${x.aa_earned}</span>
+          <span class="dps">${x.aa_spent} spent</span>
         </span></div>
       ${potionRow(x)}`;
   }
