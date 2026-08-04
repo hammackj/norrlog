@@ -26,12 +26,19 @@ pub const MAX_DIFFICULTY: u8 = 4;
 /// resets weekly on Tuesdays.
 pub const WEEKLY_RESET_WEEKDAY: u8 = 2; // 1 = Monday ... 7 = Sunday
 
-/// Hour of day both lockouts reset at.
+/// Hour of day both lockouts reset at, on the player's clock.
 ///
-/// **Assumed midnight.** The log gives no reset message to derive this from, so
-/// if the server actually rolls over at some other hour this is the single
-/// value to change.
-pub const RESET_HOUR: i64 = 0;
+/// The log carries no reset message, so this cannot be derived — it was read
+/// off the in-game timer instead: at 01:10 on Tuesday 4 August 2026 the client
+/// gave the weekly reset as 8h50m away, putting it at 10:00 local (15:00 UTC).
+///
+/// Local rather than UTC because the server keeps US time and shifts with US
+/// daylight saving, as does this machine; a fixed UTC hour would be an hour out
+/// for half the year. A player in another DST regime would need this adjusted.
+///
+/// Midnight was the previous assumption, and it made the whole grid clear ten
+/// hours early — bosses read as available while their loot was still locked.
+pub const RESET_HOUR: i64 = 10;
 
 /// Seconds in a day.
 const DAY: i64 = 86_400;
@@ -346,6 +353,11 @@ mod tests {
     /// 2026-07-28T00:00:00Z — a Tuesday, the day the game launched.
     const TUE: i64 = 1_785_196_800;
 
+    /// The reset instant itself: Tuesday at [`RESET_HOUR`], which is where a
+    /// lockout period actually begins. Tuesday *midnight* still belongs to the
+    /// week before.
+    const TUE_RESET: i64 = TUE + RESET_HOUR * 3600;
+
     #[test]
     fn difficulty_parses_from_the_zone_name() {
         assert_eq!(difficulty_of("Nagafen's Lair - Solo"), 0);
@@ -392,22 +404,36 @@ mod tests {
 
     #[test]
     fn week_starts_on_the_reset_tuesday() {
-        // Midweek Friday resolves back to Tuesday.
+        // Midweek Friday resolves back to Tuesday's reset.
         let fri = TUE + 3 * DAY + 15 * 3600;
-        assert_eq!(week_start(fri), TUE);
-        // Tuesday itself is its own week start.
-        assert_eq!(week_start(TUE + 3600), TUE);
+        assert_eq!(week_start(fri), TUE_RESET);
+        // The reset instant is its own week start.
+        assert_eq!(week_start(TUE_RESET), TUE_RESET);
+        assert_eq!(week_start(TUE_RESET + 3600), TUE_RESET);
         // The following Monday still belongs to that week.
-        assert_eq!(week_start(TUE + 6 * DAY), TUE);
-        // The next Tuesday starts a new one.
-        assert_eq!(week_start(TUE + 7 * DAY), TUE + 7 * DAY);
+        assert_eq!(week_start(TUE + 6 * DAY), TUE_RESET);
+        // The next Tuesday's reset starts a new one.
+        assert_eq!(week_start(TUE_RESET + 7 * DAY), TUE_RESET + 7 * DAY);
+    }
+
+    /// The hours before the reset on reset day are the *end* of the old week,
+    /// not the start of the new one. Getting this backwards cleared the grid
+    /// ten hours early, showing bosses as lootable while they were still
+    /// locked.
+    #[test]
+    fn tuesday_before_the_reset_is_still_last_week() {
+        assert_eq!(week_start(TUE + 3600), TUE_RESET - 7 * DAY);
+        assert_eq!(week_start(TUE_RESET - 1), TUE_RESET - 7 * DAY);
     }
 
     #[test]
     fn day_start_is_the_preceding_reset_hour() {
         let mid_afternoon = TUE + 15 * 3600;
-        assert_eq!(day_start(mid_afternoon), TUE);
-        assert_eq!(day_start(TUE + DAY + 60), TUE + DAY);
+        assert_eq!(day_start(mid_afternoon), TUE_RESET);
+        assert_eq!(day_start(TUE_RESET + DAY + 60), TUE_RESET + DAY);
+        // Early morning belongs to the day before, which is the whole point of
+        // a reset hour that is not midnight.
+        assert_eq!(day_start(TUE + 3600), TUE_RESET - DAY);
     }
 
     #[test]
@@ -460,8 +486,21 @@ mod tests {
         assert!(cell.weekly_done, "weekly holds until the next Tuesday");
         assert!(!cell.daily_done, "daily should have reset overnight");
 
-        // Following Tuesday: both clear.
-        let r2 = t.report(TUE + 7 * DAY + 3600);
+        // The following Tuesday morning, still before the reset hour, the
+        // weekly is very much not clear yet.
+        let early = t.report(TUE_RESET + 7 * DAY - 3600);
+        assert!(
+            early
+                .cells
+                .iter()
+                .find(|c| c.boss == "Master Yael" && c.difficulty == 0)
+                .unwrap()
+                .weekly_done,
+            "an hour before the reset the lockout still holds"
+        );
+
+        // After the reset hour: both clear.
+        let r2 = t.report(TUE_RESET + 7 * DAY + 3600);
         let cell2 = r2
             .cells
             .iter()
