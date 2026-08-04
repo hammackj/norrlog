@@ -22,12 +22,20 @@
 //! the game's own answer rather than an inference. It costs a keystroke, so it
 //! is rare — worth using whenever it appears, not something to depend on.
 //!
-//! The single number it shows is the **primary** class's level, the one listed
-//! first. That is what reconciles the two things the log does: another
-//! player's row went 49 to 50 across two days on an unchanged loadout, while
-//! this character's level-up messages dropped from 50 to 11 twice. One number
-//! per character cannot do both; the primary's level rising while a
-//! newly-added class levels separately does.
+//! The single number it shows is the **lowest** class's level — the character's
+//! effective level, gated by the weakest of the three. Observed outright:
+//!
+//! ```text
+//! [Tue Aug 04 16:03:50 2026] [28 WAR/BRD/SHM] Tharn (Iksar)
+//! ```
+//!
+//! with the warrior and bard both capped at 50 and the shaman at 28. It is not
+//! the primary class's level, which was the first guess and which this row
+//! disproves. Other players' rows agree: one went 49 to 50 across two days on
+//! an unchanged loadout, which is the lowest class finishing, not the first.
+//!
+//! That makes a `/who` row a floor for every class in the loadout, and exact
+//! for whichever is lowest.
 //!
 //! **Class proficiency achievements.** `Druid's Combat Proficiency, Level 50`
 //! names a class and a level outright. This matters more than it looks: 50 is
@@ -109,6 +117,9 @@ pub struct ClassLevelReport {
     /// True when the loadout changed more recently than any level evidence, so
     /// the displayed level may be stale.
     pub needs_who: bool,
+    /// The character's effective level: the lowest in the loadout, which is
+    /// what `/who` reports and what the game gates content on.
+    pub effective: Option<u32>,
     /// Level-ups seen but not attributable to a class.
     pub unattributed: usize,
 }
@@ -208,13 +219,15 @@ impl ClassLevelTracker {
 
     /// A `/who` row for the player: level and loadout, straight from the game.
     ///
-    /// The level is recorded against the **first** class listed, the primary.
-    /// Attributing it to all three would cap a level-13 berserker the moment
-    /// the player typed `/who` on a loadout carrying two fifties.
+    /// Being the lowest class's level, it is a floor for the whole loadout:
+    /// nothing in it is below that number. Recorded against every class, which
+    /// with the highest-wins rule does exactly the right thing — a capped class
+    /// is untouched, and the class actually sitting at that level is set
+    /// precisely, because for it the floor *is* its level.
     pub fn on_who(&mut self, at: i64, level: u32, classes: &[Class]) {
         self.note_loadout(at, classes);
-        if let Some(primary) = classes.first() {
-            self.record(*primary, level, LevelSource::Who, at);
+        for c in classes {
+            self.record(*c, level, LevelSource::Who, at);
         }
     }
 
@@ -334,8 +347,14 @@ impl ClassLevelTracker {
         // Unresolved level-ups are the sharpest signal: levels demonstrably
         // happened and there is no way to say whose. One /who names the
         // primary, which is usually enough to settle all of them at once.
+        // Only level-ups from the current loadout count. Ambiguities left over
+        // from months ago are not something a /who now can settle, and nagging
+        // about them forever would train the player to ignore the prompt.
+        let stale_pending = self.pending.iter().any(|(at, _, l)| {
+            *at >= self.loadout_changed_at && l.iter().any(|c| loadout.contains(c))
+        });
         let needs_who = !unknown.is_empty()
-            || !self.pending.is_empty()
+            || stale_pending
             || (self.loadout_changed_at > 0 && last_evidence < self.loadout_changed_at);
 
         ClassLevelReport {
@@ -343,6 +362,7 @@ impl ClassLevelTracker {
             classes,
             unknown,
             needs_who,
+            effective: loadout.iter().filter_map(|c| self.level_of(*c)).min(),
             unattributed: self.pending.len(),
         }
     }
@@ -407,20 +427,35 @@ mod tests {
         assert_eq!(t.on_achievement(100, "Smithing (50)"), None);
     }
 
-    /// A level-50 /who row on a loadout carrying a level-13 berserker must not
-    /// mark the berserker capped.
+    /// The row that settled what the number means: "[28 WAR/BRD/SHM]" with two
+    /// classes capped. It names the shaman's level, and must not touch theirs.
     #[test]
-    fn who_does_not_cap_a_class_known_to_be_low() {
+    fn who_names_the_lowest_class_not_the_first() {
         let mut t = ClassLevelTracker::new();
-        let load = [Class::Warrior, Class::Druid, Class::Berserker];
-        t.on_who(90, 50, &load);
-        t.on_achievement(100, "Druid's Combat Proficiency, Level 50");
-        assert_eq!(t.on_level_up(120, 13, &load), Some(Class::Berserker));
-        // Typing /who again while the berserker is 13 must not cap it.
-        t.on_who(130, 50, &load);
-        assert_eq!(t.level_of(Class::Berserker), Some(13));
-        assert_eq!(t.level_of(Class::Druid), Some(50));
+        let load = [Class::Warrior, Class::Bard, Class::Shaman];
+        t.on_achievement(100, "Warrior's Combat Proficiency, Level 50");
+        t.on_achievement(110, "Bard's Casting Proficiency, Level 50");
+        t.on_who(120, 28, &load);
+        assert_eq!(t.level_of(Class::Shaman), Some(28));
+        assert_eq!(t.level_of(Class::Warrior), Some(50), "not demoted to 28");
+        assert_eq!(t.level_of(Class::Bard), Some(50));
+        assert_eq!(t.report(&load, &[]).levelling.as_deref(), Some("SHM"));
+    }
+
+    /// With nothing known, the number is only a floor — it says the lowest is
+    /// 8, not that both are.
+    #[test]
+    fn who_with_nothing_known_records_a_floor() {
+        let mut t = ClassLevelTracker::new();
+        let load = [Class::Warrior, Class::Enchanter];
+        t.on_who(100, 8, &load);
+        assert_eq!(t.level_of(Class::Warrior), Some(8));
+        assert_eq!(t.level_of(Class::Enchanter), Some(8));
+        // And a later row does not drag a class back down.
+        t.on_achievement(200, "Warrior's Combat Proficiency, Level 50");
+        t.on_who(300, 12, &load);
         assert_eq!(t.level_of(Class::Warrior), Some(50));
+        assert_eq!(t.level_of(Class::Enchanter), Some(12));
     }
 
     /// Two classes could have earned it, so neither is credited. A wrong
@@ -437,36 +472,35 @@ mod tests {
         assert!(t.report(&load, &[]).needs_who);
     }
 
-    /// The case this character actually presents: the only /who is from the
-    /// first day and says the warrior is 8. Every later level-up then looks
-    /// like it could be the warrior's, and nothing can be attributed — until
-    /// one fresh /who says 50, at which point the backlog resolves at once.
+    /// Levels that could not be attributed when they happened are kept, and
+    /// settled the moment later evidence rules the other candidates out.
     #[test]
-    fn a_stale_who_is_overtaken_and_the_backlog_resolves() {
+    fn evidence_resolves_a_backlog_retrospectively() {
         let mut t = ClassLevelTracker::new();
-        let load = [Class::Warrior, Class::Druid, Class::Berserker];
-        t.on_who(100, 8, &load); // day one, warrior really was 8
-        t.on_achievement(200, "Druid's Combat Proficiency, Level 50");
+        let load = [Class::Warrior, Class::Bard, Class::Shaman];
+        t.note_loadout(100, &load);
+        assert_eq!(t.on_level_up(200, 11, &load), None, "any of the three");
+        assert_eq!(t.on_level_up(210, 12, &load), None);
+        assert_eq!(t.unattributed(), 2);
 
-        // The berserker levels, but a level-8 warrior is a plausible earner.
-        assert_eq!(t.on_level_up(300, 11, &load), None);
-        assert_eq!(t.on_level_up(310, 12, &load), None);
-        assert_eq!(t.on_level_up(320, 13, &load), None);
-        assert_eq!(t.unattributed(), 3);
-        assert!(t.report(&load, &[]).needs_who);
+        t.on_achievement(300, "Warrior's Combat Proficiency, Level 50");
+        assert_eq!(t.unattributed(), 2, "two candidates left");
+        t.on_achievement(310, "Bard's Casting Proficiency, Level 50");
 
-        // One /who, six days later.
-        t.on_who(400, 50, &load);
-        assert_eq!(t.level_of(Class::Warrior), Some(50), "levels only go up");
-        assert_eq!(
-            t.level_of(Class::Berserker),
-            Some(13),
-            "the backlog attributes retrospectively"
-        );
+        assert_eq!(t.level_of(Class::Shaman), Some(12));
         assert_eq!(t.unattributed(), 0);
-        let r = t.report(&load, &[]);
-        assert!(!r.needs_who);
-        assert_eq!(r.levelling.as_deref(), Some("BER"));
+        assert_eq!(t.report(&load, &[]).levelling.as_deref(), Some("SHM"));
+    }
+
+    /// A floor from day one must not survive as the answer.
+    #[test]
+    fn a_later_who_raises_a_stale_floor() {
+        let mut t = ClassLevelTracker::new();
+        t.on_who(100, 8, &[Class::Warrior, Class::Enchanter]);
+        assert_eq!(t.level_of(Class::Warrior), Some(8));
+        t.on_who(200, 28, &[Class::Warrior, Class::Bard, Class::Shaman]);
+        assert_eq!(t.level_of(Class::Warrior), Some(28), "floor raised");
+        assert_eq!(t.level_of(Class::Enchanter), Some(8), "not in the loadout");
     }
 
     /// A stronger source is never undone by a weaker one.
