@@ -19,6 +19,9 @@ use tokio::sync::broadcast;
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
+    /// The log being followed, and the directory to look for others in.
+    pub log_path: std::path::PathBuf,
+    pub logs_dir: Option<std::path::PathBuf>,
     /// Durable history; absent when the database could not be opened.
     pub store: Option<Arc<Mutex<crate::store::Store>>>,
     /// The engine, locked briefly for detail queries. The follower thread holds
@@ -48,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", get(tasks).post(define_task))
         .route("/api/builds", get(builds))
         .route("/api/history", get(history))
+        .route("/api/logs", get(logs))
         .route("/api/export", get(export))
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
@@ -456,6 +460,56 @@ fn render_export_csv(stats: &[crate::store::RaidStat]) -> String {
     out
 }
 
+/// The log files available to follow.
+///
+/// Listed from the directory of the log currently being followed, so it works
+/// whether the daemon was pointed at a file or a directory. Only `eqlog_*.txt`
+/// counts: the client writes several other files into the same folder and none
+/// of them are combat logs.
+async fn logs(State(s): State<AppState>) -> Json<serde_json::Value> {
+    let dir = s
+        .logs_dir
+        .clone()
+        .or_else(|| s.log_path.parent().map(|p| p.to_path_buf()));
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    if let Some(dir) = &dir {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let path = e.path();
+                let name = e.file_name().to_string_lossy().to_string();
+                if !(name.starts_with("eqlog_") && name.ends_with(".txt")) {
+                    continue;
+                }
+                let md = e.metadata().ok();
+                let modified = md
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                out.push(serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "name": name,
+                    // The client names the file after the character, which is
+                    // the only place the daemon learns it from too.
+                    "character": eqlparser_core::Parser::player_from_filename(&name),
+                    "bytes": md.as_ref().map(|m| m.len()).unwrap_or(0),
+                    "modified": modified,
+                    "current": path == s.log_path,
+                }));
+            }
+        }
+    }
+    // Most recently written first: the one you just played is the one you
+    // most likely want.
+    out.sort_by(|a, b| b["modified"].as_i64().cmp(&a["modified"].as_i64()));
+    Json(serde_json::json!({
+        "dir": dir.map(|d| d.to_string_lossy().to_string()),
+        "current": s.log_path.to_string_lossy(),
+        "logs": out,
+    }))
+}
+
 /// Durable history: everything kept across log files.
 ///
 /// Distinct from `/api/builds` and `/api/lockouts`, which only ever see the
@@ -762,6 +816,8 @@ mod tests {
         let (tx, _) = broadcast::channel(4);
         AppState {
             store: None,
+            log_path: std::path::PathBuf::from("eqlog_Test_freeport.txt"),
+            logs_dir: None,
             engine: Arc::new(Mutex::new(engine)),
             snapshot: Arc::new(RwLock::new(snap)),
             updates: tx,

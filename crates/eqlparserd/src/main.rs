@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
     let (updates, _) = broadcast::channel(64);
 
     spawn_follower(
-        log_path,
+        log_path.clone(),
         Arc::clone(&engine),
         Arc::clone(&snapshot),
         updates.clone(),
@@ -148,6 +148,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let state = AppState {
+        log_path: log_path.clone(),
+        logs_dir: cfg.logs_dir.clone(),
         engine,
         snapshot,
         updates,
