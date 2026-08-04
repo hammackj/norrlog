@@ -159,6 +159,28 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Levels the player entered by hand, applied before the log is read so the
+    // parse can raise them but never start from scratch. A class that capped
+    // before this log began has nothing in it to say so.
+    let mut engine = engine;
+    if let Some(store) = &history {
+        if let Ok(store) = store.lock() {
+            match store.class_levels() {
+                Ok(rows) => {
+                    for (abbrev, level, at) in rows {
+                        if let Some(class) = eqlparser_core::class::parse_class_list(&abbrev)
+                            .into_iter()
+                            .next()
+                        {
+                            engine.set_stated_level(class, level, at);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[eqlparserd] could not read stated class levels: {e}"),
+            }
+        }
+    }
+
     let engine = Arc::new(Mutex::new(engine));
     let snapshot = Arc::new(RwLock::new(
         engine.lock().unwrap().snapshot(SNAPSHOT_RECENT),

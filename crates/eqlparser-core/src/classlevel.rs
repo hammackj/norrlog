@@ -58,33 +58,42 @@ use std::collections::HashMap;
 /// The level cap. A class here stops emitting level-up messages entirely.
 pub const LEVEL_CAP: u32 = 50;
 
-/// Level a class starts at when swapped into a loadout.
+/// Level every class sits at until it is played.
 ///
-/// Both classes added on this character reported their first gain as 11, so
-/// they entered at 10 rather than 1. Deliberately not applied as a default: a
-/// class with no evidence is reported as unknown, because a level assumed onto
-/// a class is sticky, and it also makes that class look like a candidate for
-/// every later level-up and so destroys the attribution of the class actually
-/// being played.
+/// Confirmed by the player against their own character sheet: the five classes
+/// they have levelled read 50/50/50/28/13 and "everything else is level 10".
+/// It matches the log too — both classes swapped in reported their first gain
+/// as 11, so they entered at 10 rather than 1.
+///
+/// It applies to a class that has not been played. A character's *first* class
+/// does start lower — this one's warrior was 8 on day one — so levels below 10
+/// early in a character's life are floored here. Not worth handling: those
+/// levels are long gone by the time anyone runs a parser over the log.
 pub const STARTING_LEVEL: u32 = 10;
 
 /// How a class's level came to be known, worst to best.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LevelSource {
+    /// The level every class holds until it is played.
+    Baseline,
     /// A level-up message attributed to this class as the only candidate.
     LevelUp,
     /// A class proficiency achievement naming the class and level.
     Achievement,
     /// A `/who` row for the player.
     Who,
+    /// Entered by the player, who can read their own character sheet.
+    Stated,
 }
 
 impl LevelSource {
     pub fn label(self) -> &'static str {
         match self {
+            LevelSource::Baseline => "unplayed",
             LevelSource::LevelUp => "levelled",
             LevelSource::Achievement => "achievement",
             LevelSource::Who => "/who",
+            LevelSource::Stated => "stated",
         }
     }
 }
@@ -142,7 +151,27 @@ pub struct ClassLevelTracker {
 
 impl ClassLevelTracker {
     pub fn new() -> Self {
-        Self::default()
+        let mut t = Self::default();
+        // Every class starts known, not unknown: an unplayed class is level 10,
+        // which is a fact rather than a guess. It also sharpens attribution —
+        // a gain to 11 belongs to whichever class is sitting at 10.
+        for c in (0..crate::class::CLASS_COUNT).filter_map(Class::from_index) {
+            t.levels
+                .insert(c, (STARTING_LEVEL, LevelSource::Baseline, 0));
+        }
+        t
+    }
+
+    /// A level the player entered by hand.
+    ///
+    /// The strongest thing available at the moment it is given — some facts the
+    /// log simply cannot supply, since a class that capped before logging began
+    /// emits no level-up and never will, and `/who` only reports the lowest of
+    /// three. It is not frozen afterwards, though: the class carries on
+    /// levelling, and highest-wins lets it.
+    pub fn set_stated(&mut self, class: Class, level: u32, at: i64) {
+        self.levels.insert(class, (level, LevelSource::Stated, at));
+        self.resolve_pending();
     }
 
     /// Record a level, keeping the highest seen.
@@ -197,24 +226,35 @@ impl ClassLevelTracker {
 
     /// The sole class in a loadout that could have earned a level.
     ///
-    /// Anything at the cap is out — it cannot gain a level. Anything already
-    /// recorded at or above this level is out too: a level-11 gain cannot
-    /// belong to the class sitting at 50.
+    /// Levels arrive one at a time, so the class that just reached `level` was
+    /// sitting at `level - 1`. That is far sharper than "anything below" — on
+    /// a loadout of two fifties and a fresh class it identifies the earner
+    /// outright — and it is what keeps a level-9 gain in an early log from
+    /// being credited to whichever class happened to share the loadout.
+    ///
+    /// Falls back to the looser test when nothing sits at `level - 1`, which
+    /// happens when a class was levelling before the log began.
     fn only_candidate(&self, level: u32, loadout: &[Class]) -> Option<Class> {
-        let mut found = None;
-        for c in loadout {
-            let eligible = match self.level_of(*c) {
+        let exact: Vec<Class> = loadout
+            .iter()
+            .copied()
+            .filter(|c| self.level_of(*c) == level.checked_sub(1))
+            .collect();
+        if exact.len() == 1 {
+            return Some(exact[0]);
+        }
+        if !exact.is_empty() {
+            return None;
+        }
+        let loose: Vec<Class> = loadout
+            .iter()
+            .copied()
+            .filter(|c| match self.level_of(*c) {
                 Some(l) => l < LEVEL_CAP && l < level,
                 None => true,
-            };
-            if eligible {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(*c);
-            }
-        }
-        found
+            })
+            .collect();
+        (loose.len() == 1).then(|| loose[0])
     }
 
     /// A `/who` row for the player: level and loadout, straight from the game.
@@ -316,7 +356,11 @@ impl ClassLevelTracker {
         let mut classes: Vec<ClassLevel> = self
             .levels
             .iter()
-            .filter(|(c, _)| played.is_empty() || played.contains(c) || loadout.contains(c))
+            .filter(|(c, (_, source, _))| {
+                *source != LevelSource::Baseline
+                    && (played.is_empty() || played.contains(c) || loadout.contains(c))
+                    || loadout.contains(c)
+            })
             .map(|(c, (level, source, at))| ClassLevel {
                 class: *c,
                 abbrev: c.abbrev().to_string(),
@@ -330,9 +374,15 @@ impl ClassLevelTracker {
             .collect();
         classes.sort_by(|a, b| b.level.cmp(&a.level).then(a.abbrev.cmp(&b.abbrev)));
 
+        // "Unknown" now means never played rather than never seen, since every
+        // class carries the baseline.
         let unknown: Vec<String> = loadout
             .iter()
-            .filter(|c| !self.levels.contains_key(c))
+            .filter(|c| {
+                self.levels
+                    .get(c)
+                    .is_none_or(|(_, s, _)| *s == LevelSource::Baseline)
+            })
             .map(|c| c.abbrev().to_string())
             .collect();
 
@@ -448,14 +498,50 @@ mod tests {
     fn who_with_nothing_known_records_a_floor() {
         let mut t = ClassLevelTracker::new();
         let load = [Class::Warrior, Class::Enchanter];
-        t.on_who(100, 8, &load);
-        assert_eq!(t.level_of(Class::Warrior), Some(8));
-        assert_eq!(t.level_of(Class::Enchanter), Some(8));
+        t.on_who(100, 14, &load);
+        assert_eq!(t.level_of(Class::Warrior), Some(14));
+        assert_eq!(t.level_of(Class::Enchanter), Some(14));
         // And a later row does not drag a class back down.
         t.on_achievement(200, "Warrior's Combat Proficiency, Level 50");
-        t.on_who(300, 12, &load);
+        t.on_who(300, 16, &load);
         assert_eq!(t.level_of(Class::Warrior), Some(50));
-        assert_eq!(t.level_of(Class::Enchanter), Some(12));
+        assert_eq!(t.level_of(Class::Enchanter), Some(16));
+    }
+
+    /// What the player reads off their own character sheet is final: the log
+    /// cannot state the level of a class that capped before logging began, and
+    /// /who only ever reports the lowest of three.
+    #[test]
+    fn a_stated_level_beats_every_inference() {
+        let mut t = ClassLevelTracker::new();
+        let load = [Class::Warrior, Class::Bard, Class::Shaman];
+        t.set_stated(Class::Warrior, 50, 100);
+        t.set_stated(Class::Bard, 50, 100);
+        t.on_who(200, 28, &load);
+        assert_eq!(
+            t.level_of(Class::Warrior),
+            Some(50),
+            "floor cannot lower it"
+        );
+        assert_eq!(t.level_of(Class::Shaman), Some(28));
+        // And the sole uncapped class takes the next level.
+        assert_eq!(t.on_level_up(300, 29, &load), Some(Class::Shaman));
+    }
+
+    /// A gain to N belongs to whoever was at N-1, which pins it even when
+    /// several classes are below the cap.
+    #[test]
+    fn a_level_up_goes_to_the_class_one_below_it() {
+        let mut t = ClassLevelTracker::new();
+        let load = [Class::Warrior, Class::Bard, Class::Berserker];
+        t.set_stated(Class::Warrior, 50, 0);
+        t.set_stated(Class::Bard, 22, 0);
+        // The berserker is on the baseline 10, so 11 is unambiguously its.
+        assert_eq!(t.on_level_up(100, 11, &load), Some(Class::Berserker));
+        // And 23 is unambiguously the bard's, though both are below the cap.
+        assert_eq!(t.on_level_up(200, 23, &load), Some(Class::Bard));
+        assert_eq!(t.level_of(Class::Berserker), Some(11));
+        assert_eq!(t.level_of(Class::Bard), Some(23));
     }
 
     /// Two classes could have earned it, so neither is credited. A wrong
@@ -465,11 +551,15 @@ mod tests {
         let mut t = ClassLevelTracker::new();
         let load = [Class::Warrior, Class::Rogue, Class::Monk];
         t.note_loadout(0, &load);
+        // Nothing sits at 19, and all three are plausible under the loose
+        // test, so the gain is held rather than credited to one of them.
         assert_eq!(t.on_level_up(100, 20, &load), None);
         for c in load {
-            assert_eq!(t.level_of(c), None, "unknown beats a wrong guess");
+            assert_eq!(t.level_of(c), Some(STARTING_LEVEL), "still unplayed");
         }
-        assert!(t.report(&load, &[]).needs_who);
+        let r = t.report(&load, &[]);
+        assert!(r.needs_who);
+        assert_eq!(r.unknown, vec!["WAR", "ROG", "MNK"]);
     }
 
     /// Levels that could not be attributed when they happened are kept, and
@@ -496,11 +586,11 @@ mod tests {
     #[test]
     fn a_later_who_raises_a_stale_floor() {
         let mut t = ClassLevelTracker::new();
-        t.on_who(100, 8, &[Class::Warrior, Class::Enchanter]);
-        assert_eq!(t.level_of(Class::Warrior), Some(8));
+        t.on_who(100, 12, &[Class::Warrior, Class::Enchanter]);
+        assert_eq!(t.level_of(Class::Warrior), Some(12));
         t.on_who(200, 28, &[Class::Warrior, Class::Bard, Class::Shaman]);
         assert_eq!(t.level_of(Class::Warrior), Some(28), "floor raised");
-        assert_eq!(t.level_of(Class::Enchanter), Some(8), "not in the loadout");
+        assert_eq!(t.level_of(Class::Enchanter), Some(12), "not in the loadout");
     }
 
     /// A stronger source is never undone by a weaker one.

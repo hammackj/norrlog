@@ -1061,6 +1061,11 @@ impl Engine {
         trio
     }
 
+    /// Apply levels the player entered, from the history database.
+    pub fn set_stated_level(&mut self, class: eqlparser_core::class::Class, level: u32, at: i64) {
+        self.class_levels.set_stated(class, level, at);
+    }
+
     /// Per-class levels, and whether a `/who` would settle anything.
     pub fn class_level_report(&self) -> eqlparser_core::classlevel::ClassLevelReport {
         self.class_levels.report(

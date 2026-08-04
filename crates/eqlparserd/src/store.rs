@@ -365,6 +365,16 @@ impl Store {
 
             -- Sky quest turn-ins. Keyed by quest and time so re-parsing a log
             -- is idempotent, and so the count survives the log rotating away.
+            -- Levels the player entered by hand. Per character and server from
+            -- the start: an alt's classes are their own.
+            CREATE TABLE IF NOT EXISTS class_levels (
+                character TEXT NOT NULL,
+                server TEXT NOT NULL,
+                class TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (character, server, class)
+            );
             CREATE TABLE IF NOT EXISTS sky_turnins (
                 quest TEXT    NOT NULL,
                 at    INTEGER NOT NULL,
@@ -514,6 +524,30 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT quest, COUNT(*), MAX(at) FROM sky_turnins
              WHERE character = ?1 AND server = ?2 GROUP BY quest",
+        )?;
+        let rows = stmt
+            .query_map(params![self.character, self.server], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Record a level the player stated for one class.
+    pub fn put_class_level(&mut self, class: &str, level: u32, at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO class_levels (character, server, class, level, at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![self.character, self.server, class, level, at],
+        )?;
+        Ok(())
+    }
+
+    /// Stated class levels, as (class abbreviation, level, when).
+    pub fn class_levels(&self) -> Result<Vec<(String, u32, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT class, level, at FROM class_levels
+             WHERE character = ?1 AND server = ?2",
         )?;
         let rows = stmt
             .query_map(params![self.character, self.server], |r| {

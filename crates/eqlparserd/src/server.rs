@@ -52,7 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/builds", get(builds))
         .route("/api/history", get(history))
         .route("/api/logs", get(logs))
-        .route("/api/class-levels", get(class_levels))
+        .route("/api/class-levels", get(class_levels).post(set_class_level))
         .route("/api/export", get(export))
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
@@ -266,6 +266,46 @@ async fn class_levels(
 ) -> Json<eqlparser_core::classlevel::ClassLevelReport> {
     let engine = s.engine.lock().unwrap();
     Json(engine.class_level_report())
+}
+
+#[derive(Debug, Deserialize)]
+struct ClassLevelBody {
+    /// Class abbreviation, e.g. "WAR".
+    class: String,
+    level: u32,
+}
+
+/// Record a level the player read off their own character sheet.
+///
+/// Persisted, because it is the answer to the cases inference cannot reach —
+/// and because retyping it after every restart would be absurd.
+async fn set_class_level(
+    State(s): State<AppState>,
+    Json(body): Json<ClassLevelBody>,
+) -> Json<serde_json::Value> {
+    let Some(class) = eqlparser_core::class::parse_class_list(&body.class)
+        .into_iter()
+        .next()
+    else {
+        return Json(serde_json::json!({"ok": false, "error": "unknown class"}));
+    };
+    if body.level == 0 || body.level > eqlparser_core::classlevel::LEVEL_CAP {
+        return Json(serde_json::json!({"ok": false, "error": "level out of range"}));
+    }
+    let at = {
+        let mut engine = s.engine.lock().unwrap();
+        let at = engine.now();
+        engine.set_stated_level(class, body.level, at);
+        at
+    };
+    if let Some(store) = &s.store {
+        if let Ok(mut store) = store.lock() {
+            if let Err(e) = store.put_class_level(class.abbrev(), body.level, at) {
+                return Json(serde_json::json!({"ok": false, "error": e.to_string()}));
+            }
+        }
+    }
+    Json(serde_json::json!({"ok": true, "class": class.abbrev(), "level": body.level}))
 }
 
 /// Weekly/daily boss lockouts, as a boss x difficulty grid.
