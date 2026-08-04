@@ -461,12 +461,17 @@ static RULES: &[(RuleId, &str)] = &[
     // are what matter, and they are always on their own lines.
     // "Spell set WAR / BRD / DRU loaded."
     // "Spell set WAR / DRU / BRD - Buffs loaded."
+    // "Spell set WAR / DRU / ZERK saved."
     // Player-authored set names, so not authoritative — but a character names
     // their spell sets after the classes they actually play, which is far
     // better evidence than inferring a class that casts nothing.
+    //
+    // Saving counts as much as loading: you save a set at the moment you have
+    // finished assembling the build, which is often before it is ever loaded.
+    // A new loadout otherwise goes unnoticed until the next zone-in.
     (
         RuleId::SpellSetLoaded,
-        r"^Spell set (?P<name>.+?) loaded\.$",
+        r"^Spell set (?P<name>.+?) (?:loaded|saved)\.$",
     ),
     (
         RuleId::AbilityListEntry,
@@ -1119,6 +1124,28 @@ mod tests {
     fn days_from_civil_matches_epoch() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+    }
+
+    /// A set is saved the moment a build is finished — often long before it is
+    /// first loaded. Both are the player naming their loadout.
+    #[test]
+    fn spell_set_saved_counts_as_much_as_loaded() {
+        let mut p = Parser::new("Tharn");
+        for (line, want) in [
+            ("Spell set WAR / DRU / ZERK saved.", "WAR / DRU / ZERK"),
+            (
+                "Spell set WAR / BRD / DRU - Eye loaded.",
+                "WAR / BRD / DRU - Eye",
+            ),
+        ] {
+            let ev = p
+                .parse_line(&format!("[Tue Aug 04 00:44:13 2026] {line}"))
+                .expect("parsed");
+            match ev.event {
+                Event::SpellSetLoaded { name } => assert_eq!(name, want),
+                other => panic!("expected a spell set, got {other:?}"),
+            }
+        }
     }
 
     #[test]

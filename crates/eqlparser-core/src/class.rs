@@ -130,6 +130,33 @@ impl Class {
         }
     }
 
+    /// Match a token from a player-written spell set name against this class.
+    ///
+    /// The canonical abbreviation is not the only thing people type. "ZERK" is
+    /// what berserkers are actually called, "SK" and "SHM"/"SHA" are ordinary
+    /// shorthand, and a set named `WAR / DRU / ZERK` would otherwise name only
+    /// two classes and be discarded as not a trio — leaving the old loadout
+    /// asserted long after it was replaced.
+    pub fn matches_token(self, token: &str) -> bool {
+        if token.eq_ignore_ascii_case(self.abbrev()) || token.eq_ignore_ascii_case(self.name()) {
+            return true;
+        }
+        // Kept deliberately short. Every alias here is a word players type for
+        // a class and nothing else; ambiguous ones are left out rather than
+        // risk a set called "Naggy - CHA buffs" naming an enchanter.
+        let aliases: &[&str] = match self {
+            Class::Berserker => &["ZERK", "ZRK"],
+            Class::ShadowKnight => &["SK", "SHK"],
+            Class::Shaman => &["SHA"],
+            Class::Magician => &["MGE"],
+            Class::Paladin => &["PLD"],
+            Class::Necromancer => &["NECRO"],
+            Class::Enchanter => &["ENCH"],
+            _ => &[],
+        };
+        aliases.iter().any(|a| token.eq_ignore_ascii_case(a))
+    }
+
     /// True for classes that cast no spells at all, and so can only ever be
     /// detected from skills.
     pub fn is_pure_melee(self) -> bool {
@@ -308,7 +335,7 @@ impl ClassDetector {
             }
             for i in 0..CLASS_COUNT {
                 let class = Class::from_index(i).unwrap();
-                if token.eq_ignore_ascii_case(class.abbrev()) && !named.contains(&class) {
+                if class.matches_token(token) && !named.contains(&class) {
                     named.push(class);
                 }
             }
@@ -323,7 +350,7 @@ impl ClassDetector {
             }
             for i in 0..CLASS_COUNT {
                 let class = Class::from_index(i).unwrap();
-                if token.eq_ignore_ascii_case(class.abbrev()) {
+                if class.matches_token(token) {
                     // The reason must name the class. Novelty is measured by
                     // shared reason strings — right for a spell two classes
                     // can cast, but backwards here: a set that names three
@@ -911,6 +938,28 @@ mod tests {
         // All-time still remembers the enchanter phase.
         let all: Vec<Class> = d.ranked_all_time().iter().map(|c| c.class).collect();
         assert!(all.contains(&Class::Enchanter));
+    }
+
+    /// "ZERK" is what a berserker is actually called; the abbreviation is BER.
+    /// Missing it left `WAR / DRU / ZERK` naming only two classes, so it was
+    /// discarded as not a trio and the previous loadout stayed asserted.
+    #[test]
+    fn zerk_names_the_berserker() {
+        let mut d = ClassDetector::new();
+        d.observe_spell_set(1000, "WAR / DRU / ZERK");
+        let trio = d.current_trio(1100, 3600);
+        let mut names: Vec<&str> = trio.iter().map(|c| c.class.abbrev()).collect();
+        names.sort();
+        assert_eq!(names, vec!["BER", "DRU", "WAR"]);
+    }
+
+    /// A set name is player prose; only whole class words count. "CHA" in a
+    /// buff set must not conjure an enchanter.
+    #[test]
+    fn set_names_do_not_match_stray_words() {
+        let mut d = ClassDetector::new();
+        d.observe_spell_set(1000, "Naggy - CHA and AGI buffs");
+        assert!(d.spell_sets.is_empty() || d.spell_sets[0].1.len() < 3);
     }
 
     #[test]
