@@ -28,17 +28,20 @@ pub const WEEKLY_RESET_WEEKDAY: u8 = 2; // 1 = Monday ... 7 = Sunday
 
 /// Hour of day both lockouts reset at, on the player's clock.
 ///
-/// The log carries no reset message, so this cannot be derived — it was read
-/// off the in-game timer instead: at 01:10 on Tuesday 4 August 2026 the client
-/// gave the weekly reset as 8h50m away, putting it at 10:00 local (15:00 UTC).
+/// The log carries no reset message, so this cannot be derived — it is read off
+/// the in-game timer. Two readings were taken and they disagreed by an hour:
+/// 8h50m remaining at 01:10 gives 10:00, while 17m remaining at 10:45 gives
+/// 11:00. The second is trusted, being a seventeen-minute estimate rather than
+/// a nine-hour one, and the app was visibly an hour ahead of the client at the
+/// time — it had already cleared the grid.
 ///
 /// Local rather than UTC because the server keeps US time and shifts with US
 /// daylight saving, as does this machine; a fixed UTC hour would be an hour out
 /// for half the year. A player in another DST regime would need this adjusted.
 ///
-/// Midnight was the previous assumption, and it made the whole grid clear ten
-/// hours early — bosses read as available while their loot was still locked.
-pub const RESET_HOUR: i64 = 10;
+/// Midnight was the original assumption, which cleared the grid eleven hours
+/// early — bosses read as available while their loot was still locked.
+pub const RESET_HOUR: i64 = 11;
 
 /// Seconds in a day.
 const DAY: i64 = 86_400;
