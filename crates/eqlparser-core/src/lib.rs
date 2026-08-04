@@ -10,6 +10,7 @@
 
 pub mod aa;
 pub mod class;
+pub mod classlevel;
 pub mod encounter;
 pub mod event;
 pub mod experience;

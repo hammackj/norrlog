@@ -61,6 +61,7 @@ enum RuleId {
     GroupJoined,
     GroupLeft,
     LevelUp,
+    WhoEntry,
     AbilityPointsGained,
     AbilityFirstRank,
     AbilityPointsSpent,
@@ -487,6 +488,20 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::LevelUp,
         r"^You have gained a level!\s*Welcome to level (?P<level>\d+)!$",
     ),
+    // "[50 WAR/BRD/SHM] Cream (Ogre) <Sparkle Motion> ZONE: The Plane of Sky (airplane)"
+    // "[10 MNK/NEC] Darmoss (Iksar)  ZONE: Befallen (befallen)"
+    //
+    // The only line in the log that states a level and a class loadout
+    // together, and for the player's own row it is the game's own answer to
+    // both. Everything else has to be inferred: level-up messages name no
+    // class, and spell set names are whatever the player typed.
+    //
+    // Guild and zone are optional — the unguilded have neither the angle
+    // brackets nor, in some client versions, the trailing zone.
+    (
+        RuleId::WhoEntry,
+        r"^\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z]+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+    ),
     // ---- Abilities / items --------------------------------------------------
     // "You can use the ability Rampage again in 8 minute(s) 54 seconds."
     (
@@ -898,6 +913,14 @@ impl Parser {
                 RuleId::GroupLeft => Event::GroupChange {
                     who: self.actor(g("who").unwrap_or_default()),
                     joined: false,
+                },
+                RuleId::WhoEntry => Event::WhoEntry {
+                    level: num("level") as u32,
+                    classes: g("classes").unwrap_or_default().to_string(),
+                    name: g("name").unwrap_or_default().to_string(),
+                    race: g("race").unwrap_or_default().to_string(),
+                    guild: g("guild").unwrap_or_default().to_string(),
+                    zone: g("zone").unwrap_or_default().trim().to_string(),
                 },
                 RuleId::LevelUp => Event::LevelUp {
                     level: num("level") as u32,

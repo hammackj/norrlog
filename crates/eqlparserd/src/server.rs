@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/builds", get(builds))
         .route("/api/history", get(history))
         .route("/api/logs", get(logs))
+        .route("/api/class-levels", get(class_levels))
         .route("/api/export", get(export))
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
@@ -253,6 +254,18 @@ async fn experience(State(s): State<AppState>) -> Json<crate::engine::Experience
     let engine = s.engine.lock().unwrap();
     let now = engine.now();
     Json(engine.experience_report(now))
+}
+
+/// What level each class in the loadout is.
+///
+/// Separate from `/api/experience`, which reports progress through whatever
+/// level the client last announced. Classes level independently here, so one
+/// number cannot describe a loadout.
+async fn class_levels(
+    State(s): State<AppState>,
+) -> Json<eqlparser_core::classlevel::ClassLevelReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.class_level_report())
 }
 
 /// Weekly/daily boss lockouts, as a boss x difficulty grid.

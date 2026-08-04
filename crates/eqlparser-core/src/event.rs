@@ -301,6 +301,18 @@ pub enum Event {
     /// The logging character gained a level. Tracked because buff durations
     /// scale with caster level.
     LevelUp { level: u32 },
+    /// One row of `/who` output: a level and a class loadout together.
+    WhoEntry {
+        level: u32,
+        /// As written, e.g. "WAR/BRD/SHM".
+        classes: String,
+        name: String,
+        race: String,
+        /// Empty when unguilded.
+        guild: String,
+        zone: String,
+    },
+
     /// An attack was actively avoided by the defender, as opposed to simply
     /// missing. Tracked separately so mitigation can be reported.
     Avoided {

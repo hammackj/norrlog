@@ -377,6 +377,8 @@ pub struct Engine {
     tracker: EncounterTracker,
     resolver: SpellResolver,
     classes: ClassDetector,
+    /// Per-class levels, which the single reported level cannot express.
+    class_levels: eqlparser_core::classlevel::ClassLevelTracker,
     exp: ExpTracker,
     lockouts: LockoutTracker,
     sky: SkyTracker,
@@ -432,6 +434,7 @@ impl Engine {
             tracker: EncounterTracker::new(&player),
             resolver: SpellResolver::new(spell_db, 1),
             classes: ClassDetector::new(),
+            class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
             exp: ExpTracker::new(),
             lockouts: LockoutTracker::new(),
             sky: SkyTracker::new(),
@@ -713,10 +716,35 @@ impl Engine {
                 let desc = std::mem::take(&mut self.aa_pending_desc);
                 self.aa.on_cost(*cost, &desc);
             }
-            Event::AchievementEarned { name } => self.tasks.on_achievement(entry.timestamp, name),
+            Event::AchievementEarned { name } => {
+                self.tasks.on_achievement(entry.timestamp, name);
+                // "Druid's Combat Proficiency, Level 50" is the only line that
+                // states a named class's level, and the only way to learn the
+                // level of a class that capped before this log began.
+                self.class_levels.on_achievement(entry.timestamp, name);
+            }
+            Event::WhoEntry {
+                level,
+                classes,
+                name,
+                ..
+            } => {
+                if name.eq_ignore_ascii_case(&self.player) {
+                    let trio = eqlparser_core::class::parse_class_list(classes);
+                    if !trio.is_empty() {
+                        self.class_levels.on_who(entry.timestamp, *level, &trio);
+                        // The game naming your own loadout beats any inference
+                        // from spell set names or cast history.
+                        self.classes.observe_who(entry.timestamp, &trio);
+                    }
+                }
+            }
             Event::LevelUp { level } => {
                 self.resolver.set_level(*level);
                 self.exp.on_level_up(entry.timestamp, *level);
+                let trio = self.current_loadout(entry.timestamp);
+                self.class_levels
+                    .on_level_up(entry.timestamp, *level, &trio);
             }
             Event::Experience { percent } => self.exp.on_experience(entry.timestamp, *percent),
             Event::CoinLoot { coin } => self.coin_from_corpses += coin.as_copper(),
@@ -1019,6 +1047,26 @@ impl Engine {
             .map(|c| c.class.abbrev())
             .collect::<Vec<_>>()
             .join("/")
+    }
+
+    /// The classes believed active at a moment, in canonical order.
+    fn current_loadout(&self, at: i64) -> Vec<eqlparser_core::class::Class> {
+        let mut trio: Vec<_> = self
+            .classes
+            .trio_around(at, 24 * 3600)
+            .into_iter()
+            .map(|c| c.class)
+            .collect();
+        trio.sort_by_key(|c| c.index());
+        trio
+    }
+
+    /// Per-class levels, and whether a `/who` would settle anything.
+    pub fn class_level_report(&self) -> eqlparser_core::classlevel::ClassLevelReport {
+        self.class_levels.report(
+            &self.current_loadout(self.now()),
+            &self.classes.classes_ever_declared(),
+        )
     }
 
     /// Every class with evidence in the last day, ranked, including the ones

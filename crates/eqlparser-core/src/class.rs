@@ -167,6 +167,15 @@ impl Class {
     }
 }
 
+/// Join classes as "WAR/BRD/SHM".
+pub fn abbrev_list(classes: &[Class]) -> String {
+    classes
+        .iter()
+        .map(|c| c.abbrev())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Skills that are strongly diagnostic of a class.
 ///
 /// Curated rather than derived: unlike spells, the game ships no machine
@@ -207,6 +216,21 @@ const SKILL_SIGNALS: &[(&str, Class, f32)] = &[
     ("Berserking", Class::Berserker, 3.0),
     ("Frenzy", Class::Berserker, 2.0),
 ];
+
+/// Parse a `/who` class list such as "WAR/BRD/SHM" into classes.
+///
+/// Order is preserved: the first entry is the primary class, which is the one
+/// the level in a `/who` row belongs to.
+pub fn parse_class_list(list: &str) -> Vec<Class> {
+    list.split('/')
+        .filter_map(|tok| {
+            let tok = tok.trim();
+            (0..CLASS_COUNT)
+                .filter_map(Class::from_index)
+                .find(|c| c.matches_token(tok))
+        })
+        .collect()
+}
 
 /// A single timestamped observation supporting a class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +389,27 @@ impl ClassDetector {
                     });
                 }
             }
+        }
+    }
+
+    /// The game's own statement of the loadout, from a `/who` row.
+    ///
+    /// Stronger than a spell set name, which is whatever the player typed and
+    /// may be months out of date, and stronger than inference from casts. It is
+    /// recorded as a spell set so it takes part in the same trio selection,
+    /// under a name that makes its origin obvious in the evidence list.
+    pub fn observe_who(&mut self, timestamp: i64, classes: &[Class]) {
+        if classes.is_empty() {
+            return;
+        }
+        self.spell_sets.push((timestamp, classes.to_vec()));
+        for class in classes {
+            self.evidence.push(ClassEvidence {
+                timestamp,
+                class: *class,
+                weight: SPELL_SET_WEIGHT,
+                reason: format!("/who: {}", abbrev_list(classes)),
+            });
         }
     }
 
