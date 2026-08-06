@@ -79,6 +79,7 @@ enum RuleId {
     CraftSuccess,
     CraftFailure,
     ComponentConsumed,
+    ItemPurchased,
     RecipeLearned,
     SongFizzle,
     SpellMemorized,
@@ -415,6 +416,13 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::ComponentConsumed,
         r"^Consumed (?P<qty>\d+) x (?P<item>.+?) \(leaving (?P<left>\d+)\) from your .+?\.$",
+    ),
+    // "You purchased 20 Water Flask from Lheron Drast for  4 platinum."
+    // Two spaces after "for" in every observed line; matched loosely in case
+    // that is an accident of the client rather than a guarantee.
+    (
+        RuleId::ItemPurchased,
+        r"^You purchased (?P<qty>\d+) (?P<item>.+?) from (?P<merchant>.+?) for\s+(?P<coin>.+?)\.$",
     ),
     (
         RuleId::RecipeLearned,
@@ -996,6 +1004,12 @@ impl Parser {
                     quantity: num("qty"),
                     remaining: num("left"),
                 },
+                RuleId::ItemPurchased => Event::ItemPurchased {
+                    item: g("item").unwrap_or_default().to_string(),
+                    quantity: num("qty"),
+                    merchant: g("merchant").unwrap_or_default().to_string(),
+                    coin: Coin::parse(g("coin").unwrap_or_default()),
+                },
                 RuleId::RecipeLearned => Event::RecipeLearned {
                     recipe: g("recipe").unwrap_or_default().to_string(),
                 },
@@ -1500,6 +1514,52 @@ mod tests {
                 assert_eq!(killer, Some(Actor::Named("a lesser mummy".into())));
             }
             other => panic!("expected death, got {other:?}"),
+        }
+    }
+
+    /// The only line that says what anything costs. Note the two spaces after
+    /// "for", which the client writes every time.
+    #[test]
+    fn purchase_captures_quantity_and_price() {
+        match p()
+            .parse_body("You purchased 20 Water Flask from Lheron Drast for  4 platinum.")
+        {
+            Event::ItemPurchased {
+                item,
+                quantity,
+                merchant,
+                coin,
+            } => {
+                assert_eq!(item, "Water Flask");
+                assert_eq!(quantity, 20);
+                assert_eq!(merchant, "Lheron Drast");
+                assert_eq!(coin.as_copper(), 4000);
+            }
+            other => panic!("expected a purchase, got {other:?}"),
+        }
+    }
+
+    /// A merchant whose name is several words, and a price in every
+    /// denomination — the shape most purchases actually take.
+    #[test]
+    fn purchase_handles_multi_word_merchant_and_mixed_coin() {
+        match p()
+            .parse_body(
+                "You purchased 1 Backpack from a clockwork merchant for  9 gold 5 silver 2 copper.",
+            )
+        {
+            Event::ItemPurchased {
+                item,
+                quantity,
+                merchant,
+                coin,
+            } => {
+                assert_eq!(item, "Backpack");
+                assert_eq!(quantity, 1);
+                assert_eq!(merchant, "a clockwork merchant");
+                assert_eq!(coin.as_copper(), 952);
+            }
+            other => panic!("expected a purchase, got {other:?}"),
         }
     }
 

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Two-line wordmark: EQL over Parser.
+
+       The name is the icon. At desktop size a glyph would be guesswork about
+       what the app "looks like"; the two words are legible at 48px and read
+       instantly in a launcher list, which is the only place this is ever seen.
+
+       Colours are the app's own: the dark card background and the amber accent
+       from app.css, so the launcher and the window agree. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1b1f27"/>
+      <stop offset="100%" stop-color="#12151b"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="url(#bg)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="43.5"
+        fill="none" stroke="#2c323d" stroke-width="3"/>
+
+  <!-- EQL: the loud half, in the accent. Tracking is wide because three
+       capitals at this size otherwise read as one blob. -->
+  <text x="128" y="122"
+        font-family="'DejaVu Sans', 'Liberation Sans', Arial, Helvetica, sans-serif"
+        font-size="76" font-weight="700" letter-spacing="4"
+        text-anchor="middle" fill="#ffc857">EQL</text>
+
+  <!-- Parser: the quiet half. Smaller and lighter so the two lines are a
+       hierarchy rather than a collision. -->
+  <text x="128" y="178"
+        font-family="'DejaVu Sans', 'Liberation Sans', Arial, Helvetica, sans-serif"
+        font-size="44" font-weight="500" letter-spacing="1"
+        text-anchor="middle" fill="#e6e9ef">Parser</text>
+
+  <!-- A meter bar, the one visual the app is actually about. -->
+  <rect x="56" y="200" width="144" height="8" rx="4" fill="#2c323d"/>
+  <rect x="56" y="200" width="96" height="8" rx="4" fill="#ffc857"/>
+</svg>

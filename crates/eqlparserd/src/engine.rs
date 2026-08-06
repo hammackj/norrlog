@@ -132,8 +132,48 @@ pub struct EncounterSummary {
     pub kills: usize,
     pub loot_count: usize,
     pub coin_copper: u64,
+    /// The class trio active when this was fought, e.g. "WAR/DRU/BRD".
+    ///
+    /// Resolved per encounter rather than looked up later: a build changes over
+    /// a character's life, so which one fought a given fight is only knowable
+    /// from its own timestamp.
+    pub build: String,
+    /// Instance tier from the zone name — 0 for open world, 4 for Refined.
+    pub difficulty: u8,
     /// Populated for the live encounter and on demand; empty in long lists.
     pub meter: Vec<MeterRow>,
+    /// Your output grouped by mechanism, populated alongside `meter`.
+    #[serde(default)]
+    pub outgoing_groups: Vec<AbilityGroup>,
+    /// What was shrugged off, populated alongside `meter`.
+    #[serde(default)]
+    pub resists: Vec<eqlparser_core::encounter::ResistTally>,
+    /// Per-creature split, populated alongside `meter`.
+    #[serde(default)]
+    pub mobs: Vec<eqlparser_core::encounter::MobBreakdown>,
+}
+
+/// Your damage under one mechanism — Spell, Melee or Other.
+#[derive(Debug, Clone, Serialize)]
+pub struct AbilityGroup {
+    pub group: String,
+    pub damage: u64,
+    /// Share of your damage in this fight, 0.0–1.0.
+    pub share: f64,
+    /// Abilities within the group, biggest first.
+    pub abilities: Vec<GroupedAbility>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupedAbility {
+    pub name: String,
+    pub damage: u64,
+    pub hits: u64,
+    pub crits: u64,
+    pub max: u64,
+    pub average: f64,
+    /// Share of its own group, so bars read within the group.
+    pub share: f64,
 }
 
 /// An active buff with its remaining time.
@@ -193,6 +233,54 @@ pub struct Totals {
     pub coin_from_sales_copper: u64,
     /// Corpse coin plus sales.
     pub coin_total_copper: u64,
+}
+
+/// Everything the log can say about one item.
+#[derive(Debug, Clone, Serialize)]
+pub struct LootDetail {
+    pub item: String,
+    /// Items received. A stack of five counts as five.
+    pub total: u64,
+    /// Times it dropped. A stack of five counts as one.
+    pub drops: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    /// Who dropped it, most drops first.
+    pub sources: Vec<LootSource>,
+    /// Where it dropped: (zone, drops).
+    pub zones: Vec<(String, u64)>,
+    pub kept: u64,
+    pub sold: u64,
+    pub stored: u64,
+    pub transmuted: u64,
+    /// Sale proceeds across every time it was auto-sold.
+    pub sold_total_copper: u64,
+    pub sales: u64,
+    pub best_sale_copper: u64,
+    /// What a merchant charged you for one, if you ever bought it. Lets a drop
+    /// be valued at replacement cost rather than only at what a vendor pays.
+    pub buy_price_copper: Option<u64>,
+    /// Stack sizes it arrived in: (size, times). Anything other than a single
+    /// `(1, n)` means the item stacks, which is worth seeing.
+    pub stacks: Vec<(u64, u64)>,
+}
+
+/// One creature's record of dropping an item.
+#[derive(Debug, Clone, Serialize)]
+pub struct LootSource {
+    pub mob: String,
+    /// Times this creature dropped it.
+    pub drops: u64,
+    /// Items received from it in total.
+    pub quantity: u64,
+    /// Times this creature died in a fight of yours — the denominator.
+    pub kills: u64,
+    /// `drops / kills`. Only meaningful with a denominator to divide by, so it
+    /// is `None` when no kill of this creature was observed, rather than a
+    /// fabricated 100%.
+    pub rate: Option<f64>,
+    pub zones: Vec<String>,
+    pub last: i64,
 }
 
 /// A looted item aggregated across the log.
@@ -624,6 +712,14 @@ impl Engine {
             } => self
                 .trades
                 .on_component(entry.timestamp, item, *quantity, Some(*remaining)),
+            Event::ItemPurchased {
+                item,
+                quantity,
+                coin,
+                ..
+            } => self
+                .trades
+                .on_purchase(entry.timestamp, item, *quantity, coin.as_copper()),
             Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
             Event::Chat {
                 speaker,
@@ -1055,7 +1151,7 @@ impl Engine {
     /// nothing — Warrior, whose skills are long since capped and therefore
     /// silent — arrives only every few hours. Too tight a window simply loses
     /// it, and a shared-spell class takes the slot instead.
-    fn build_label(&self, at: i64) -> String {
+    pub(crate) fn build_label(&self, at: i64) -> String {
         let mut trio = self.classes.trio_around(at, 24 * 3600);
         if trio.len() < 3 {
             return String::new();
@@ -1148,21 +1244,33 @@ impl Engine {
                 your_damage,
                 your_dps,
             });
-            if let Some(e) = summary {
-                encs.push(crate::store::StoredEncounter {
-                    start: e.start,
-                    end: e.end,
-                    title: e.title,
-                    zone: e.zone.unwrap_or_default(),
-                    duration: e.duration,
-                    your_damage: e.your_damage,
-                    your_dps: e.your_dps,
-                    total_damage: e.damage_to_enemies,
-                    kills: e.kills as u32,
-                    deaths: e.your_deaths as u32,
-                    build,
-                });
-            }
+        }
+
+        // Every fight, not only the ones that happened to contain a boss.
+        // Encounters used to reach the store solely as a boss kill's companion,
+        // which meant the build that fought an ordinary fight was lost on
+        // restart and none of it could be searched by class combination.
+        for e in self
+            .encounters
+            .iter()
+            .chain(self.tracker.current())
+            .filter(|e| e.is_significant())
+            .map(|e| self.summarise(e, false))
+        {
+            encs.push(crate::store::StoredEncounter {
+                start: e.start,
+                end: e.end,
+                title: e.title,
+                zone: e.zone.unwrap_or_default(),
+                duration: e.duration,
+                your_damage: e.your_damage,
+                your_dps: e.your_dps,
+                total_damage: e.damage_to_enemies,
+                kills: e.kills as u32,
+                deaths: e.your_deaths as u32,
+                build: e.build,
+                difficulty: e.difficulty,
+            });
         }
 
         let levels = self
@@ -1617,6 +1725,129 @@ impl Engine {
     /// Aggregate looted items, most recent first.
     ///
     /// `since` bounds it to one play session; `None` covers the whole log.
+    /// Everything known about one item: who dropped it, how often against how
+    /// many kills, where, and what it was worth.
+    ///
+    /// The drop rate's denominator is deaths of that creature inside your own
+    /// encounters. That is the honest denominator available — it counts corpses
+    /// you were present for, which is what a drop rate from a personal log can
+    /// mean. It is not the game's underlying loot table, and a corpse left
+    /// unlooted still counts as a kill, so a rate reads low rather than wrong.
+    pub fn loot_detail(&self, item: &str) -> Option<LootDetail> {
+        use eqlparser_core::encounter::LootFate;
+        use std::collections::HashMap;
+
+        let wanted = item.to_lowercase();
+        let drops: Vec<_> = self
+            .all_loot
+            .iter()
+            .filter(|l| l.item.to_lowercase() == wanted)
+            .collect();
+        if drops.is_empty() {
+            return None;
+        }
+
+        // Deaths per creature across every fight, built once rather than
+        // rescanned for each source.
+        let mut kills: HashMap<String, u64> = HashMap::new();
+        for enc in self.encounters.iter().chain(self.tracker.current()) {
+            for d in &enc.deaths {
+                if !d.victim.eq_ignore_ascii_case(&self.player) {
+                    *kills.entry(d.victim.to_lowercase()).or_default() += 1;
+                }
+            }
+        }
+
+        let mut by_mob: HashMap<String, LootSource> = HashMap::new();
+        let mut zones: HashMap<String, u64> = HashMap::new();
+        let mut stacks: HashMap<u64, u64> = HashMap::new();
+        let (mut kept, mut sold, mut stored, mut transmuted) = (0u64, 0u64, 0u64, 0u64);
+        let (mut sold_total, mut sales, mut best_sale) = (0u64, 0u64, 0u64);
+
+        for l in &drops {
+            *stacks.entry(l.quantity.max(1)).or_default() += 1;
+            match l.fate {
+                LootFate::Kept => kept += l.quantity,
+                LootFate::Sold => sold += l.quantity,
+                LootFate::Stored => stored += l.quantity,
+                LootFate::Transmuted => transmuted += l.quantity,
+            }
+            if let Some(c) = l.sold_for_copper {
+                sold_total += c;
+                sales += 1;
+                best_sale = best_sale.max(c);
+            }
+            let zone = self
+                .encounter_containing(l.timestamp)
+                .and_then(|e| e.zone.clone());
+            if let Some(z) = &zone {
+                *zones.entry(z.clone()).or_default() += 1;
+            }
+            if let Some(src) = &l.source {
+                let e = by_mob
+                    .entry(src.to_lowercase())
+                    .or_insert_with(|| LootSource {
+                        mob: src.clone(),
+                        drops: 0,
+                        quantity: 0,
+                        kills: 0,
+                        rate: None,
+                        zones: Vec::new(),
+                        last: 0,
+                    });
+                e.drops += 1;
+                e.quantity += l.quantity;
+                e.last = e.last.max(l.timestamp);
+                if let Some(z) = zone {
+                    if !e.zones.contains(&z) {
+                        e.zones.push(z);
+                    }
+                }
+            }
+        }
+
+        let mut sources: Vec<LootSource> = by_mob
+            .into_iter()
+            .map(|(key, mut s)| {
+                s.kills = kills.get(&key).copied().unwrap_or(0);
+                s.rate = (s.kills > 0).then(|| s.drops as f64 / s.kills as f64);
+                s.zones.sort();
+                s
+            })
+            .collect();
+        sources.sort_by(|a, b| b.drops.cmp(&a.drops).then_with(|| a.mob.cmp(&b.mob)));
+
+        let mut zones: Vec<(String, u64)> = zones.into_iter().collect();
+        zones.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut stacks: Vec<(u64, u64)> = stacks.into_iter().collect();
+        stacks.sort_by_key(|s| s.0);
+
+        Some(LootDetail {
+            item: drops[0].item.clone(),
+            total: drops.iter().map(|l| l.quantity).sum(),
+            drops: drops.len() as u64,
+            first_seen: drops.iter().map(|l| l.timestamp).min().unwrap_or(0),
+            last_seen: drops.iter().map(|l| l.timestamp).max().unwrap_or(0),
+            sources,
+            zones,
+            kept,
+            sold,
+            stored,
+            transmuted,
+            sold_total_copper: sold_total,
+            sales,
+            best_sale_copper: best_sale,
+            buy_price_copper: self
+                .trades
+                .report()
+                .prices
+                .iter()
+                .find(|p| p.item.eq_ignore_ascii_case(item))
+                .map(|p| p.unit_copper),
+            stacks,
+        })
+    }
+
     pub fn loot_tally_since(&self, since: Option<i64>) -> Vec<LootTally> {
         use std::collections::HashMap;
         let mut map: HashMap<String, LootTally> = HashMap::new();
@@ -1740,12 +1971,91 @@ impl Engine {
                 .count(),
             loot_count: enc.loot.len(),
             coin_copper: enc.coin_copper,
+            // From the fight's own midpoint: a fight that straddles a respec is
+            // labelled whichever build it mostly was, matching how levels do it.
+            build: self.build_label(enc.start + (enc.end - enc.start) / 2),
+            difficulty: enc
+                .zone
+                .as_deref()
+                .map(eqlparser_core::lockout::difficulty_of)
+                .unwrap_or(0),
             meter: if with_meter {
                 self.meter_for(enc)
             } else {
                 Vec::new()
             },
+            // These travel with the meter: they are detail-view data, and
+            // computing them for every row of a thousand-fight list would cost
+            // more than the list itself.
+            outgoing_groups: if with_meter {
+                Self::group_outgoing(enc)
+            } else {
+                Vec::new()
+            },
+            resists: if with_meter {
+                enc.resist_tallies()
+            } else {
+                Vec::new()
+            },
+            mobs: if with_meter { enc.per_mob() } else { Vec::new() },
         }
+    }
+
+    /// Split your output into Spell / Melee / Other, biggest group first and
+    /// biggest ability first within each.
+    ///
+    /// Thirty ability rows in one flat list does not answer "where is my damage
+    /// coming from"; three groups do, and the detail is still there inside them.
+    fn group_outgoing(enc: &Encounter) -> Vec<AbilityGroup> {
+        let Some(you) = enc.actors.get("you") else {
+            return Vec::new();
+        };
+        let mut groups: std::collections::HashMap<&'static str, Vec<GroupedAbility>> =
+            std::collections::HashMap::new();
+        for (name, a) in &you.by_ability {
+            if a.total == 0 {
+                continue;
+            }
+            groups
+                .entry(eqlparser_core::encounter::ability_group(&a.kind))
+                .or_default()
+                .push(GroupedAbility {
+                    name: name.clone(),
+                    damage: a.total,
+                    hits: a.hits,
+                    crits: a.crits,
+                    max: a.max,
+                    average: a.average(),
+                    share: 0.0,
+                });
+        }
+        let total: u64 = you.by_ability.values().map(|a| a.total).sum();
+        let mut out: Vec<AbilityGroup> = groups
+            .into_iter()
+            .map(|(group, mut abilities)| {
+                abilities.sort_by(|a, b| b.damage.cmp(&a.damage).then_with(|| a.name.cmp(&b.name)));
+                let damage: u64 = abilities.iter().map(|a| a.damage).sum();
+                for a in abilities.iter_mut() {
+                    a.share = if damage == 0 {
+                        0.0
+                    } else {
+                        a.damage as f64 / damage as f64
+                    };
+                }
+                AbilityGroup {
+                    group: group.to_string(),
+                    damage,
+                    share: if total == 0 {
+                        0.0
+                    } else {
+                        damage as f64 / total as f64
+                    },
+                    abilities,
+                }
+            })
+            .collect();
+        out.sort_by_key(|g| std::cmp::Reverse(g.damage));
+        out
     }
 
     /// Produce the current snapshot.

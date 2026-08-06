@@ -44,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/encounters", get(encounters))
         .route("/api/encounters/{id}", get(encounter_detail))
         .route("/api/loot", get(loot))
+        .route("/api/loot/item", get(loot_item))
         .route("/api/classes", get(classes))
         .route("/api/experience", get(experience))
         .route("/api/lockouts", get(lockouts))
@@ -55,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/class-levels", get(class_levels).post(set_class_level))
         .route("/api/aa-spent", post(set_aa_spent))
         .route("/api/export", get(export))
+        .route("/api/encounters/export", get(export_encounters))
         .route("/api/charm", get(charm))
         .route("/api/deaths", get(deaths))
         .route("/api/tells", get(tells))
@@ -143,6 +145,29 @@ struct ListQuery {
     until: Option<i64>,
     /// Drop fights shorter than this many seconds; filters out trash pulls.
     min_duration: Option<i64>,
+    /// Class trio that fought it, e.g. "WAR/DRU/BRD". Order-insensitive: the
+    /// label is canonical, but nobody types it that way.
+    build: Option<String>,
+    /// Instance tier, 0-4. "all d4 fights" is the question this answers.
+    difficulty: Option<u8>,
+}
+
+/// Compare a requested build against a canonical label, ignoring order and
+/// separators, so "brd/dru/war", "WAR DRU BRD" and "WAR/DRU/BRD" all match.
+fn build_matches(want: &str, label: &str) -> bool {
+    let norm = |s: &str| {
+        let mut parts: Vec<String> = s
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_uppercase())
+            .collect();
+        parts.sort();
+        parts
+    };
+    let (w, l) = (norm(want), norm(label));
+    // A partial request is a filter, not an equality test: "WAR" finds every
+    // build containing a warrior, which is what someone comparing builds wants.
+    !w.is_empty() && w.iter().all(|p| l.contains(p))
 }
 
 /// The historical browser: filter and page through every parsed encounter.
@@ -183,7 +208,28 @@ async fn encounters(
             if q.min_duration.is_some_and(|d| e.duration() < d) {
                 return false;
             }
+            if let Some(d) = q.difficulty {
+                let tier = e
+                    .zone
+                    .as_deref()
+                    .map(eqlparser_core::lockout::difficulty_of)
+                    .unwrap_or(0);
+                if tier != d {
+                    return false;
+                }
+            }
             true
+        })
+        // Build last and separately: resolving it means scanning class evidence
+        // around the fight, which is far dearer than any other test here, so it
+        // only runs on what survived them.
+        .filter(|e| {
+            q.build.as_deref().is_none_or(|want| {
+                build_matches(
+                    want,
+                    &engine.build_label(e.start + (e.end - e.start) / 2),
+                )
+            })
         })
         .collect();
 
@@ -198,6 +244,208 @@ async fn encounters(
         .collect();
 
     Json(serde_json::json!({ "total": total, "offset": offset, "encounters": page }))
+}
+
+/// Export chosen fights as a write-up.
+///
+/// Takes the same filters as the browser plus an explicit `ids` list, so what
+/// you exported is what you were looking at. Markdown by default because the
+/// output is meant to be pasted into a guide; CSV when it is meant to be
+/// totalled up somewhere else.
+async fn export_encounters(
+    State(s): State<AppState>,
+    Query(q): Query<ExportEncountersQuery>,
+) -> Response {
+    let engine = s.engine.lock().unwrap();
+    let ids: Option<Vec<u64>> = q.ids.as_deref().map(|raw| {
+        raw.split(',')
+            .filter_map(|p| p.trim().parse::<u64>().ok())
+            .collect()
+    });
+
+    let mut chosen: Vec<_> = engine
+        .encounters()
+        .iter()
+        .filter(|e| match &ids {
+            Some(list) => list.contains(&e.id),
+            None => true,
+        })
+        .filter(|e| {
+            q.search.as_deref().is_none_or(|sc| {
+                e.title().to_lowercase().contains(&sc.to_lowercase())
+            })
+        })
+        .filter(|e| {
+            q.difficulty.is_none_or(|d| {
+                e.zone
+                    .as_deref()
+                    .map(eqlparser_core::lockout::difficulty_of)
+                    .unwrap_or(0)
+                    == d
+            })
+        })
+        .filter(|e| {
+            q.build.as_deref().is_none_or(|want| {
+                build_matches(want, &engine.build_label(e.start + (e.end - e.start) / 2))
+            })
+        })
+        .collect();
+    chosen.sort_by_key(|e| e.start);
+
+    // With the meter: an export exists to be read by someone who was not
+    // there, so the per-ability and per-creature detail is the point.
+    let full: Vec<_> = chosen.iter().map(|e| engine.summarise(e, true)).collect();
+
+    let csv = q.format.as_deref() == Some("csv");
+    let body = if csv {
+        render_encounters_csv(&full)
+    } else {
+        render_encounters_markdown(&full)
+    };
+    let (ctype, name) = if csv {
+        ("text/csv", "encounters.csv")
+    } else {
+        ("text/markdown", "encounters.md")
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, format!("{ctype}; charset=utf-8")),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportEncountersQuery {
+    /// Comma-separated encounter ids. Absent means everything the other
+    /// filters allow.
+    ids: Option<String>,
+    search: Option<String>,
+    build: Option<String>,
+    difficulty: Option<u8>,
+    format: Option<String>,
+}
+
+fn fmt_hms(seconds: i64) -> String {
+    let (m, s) = (seconds / 60, seconds % 60);
+    if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn render_encounters_markdown(encs: &[crate::engine::EncounterSummary]) -> String {
+    let mut out = String::from("# Encounters\n");
+    for e in encs {
+        let when = time::OffsetDateTime::from_unix_timestamp(e.start)
+            .map(|t| {
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}",
+                    t.year(),
+                    t.month() as u8,
+                    t.day(),
+                    t.hour(),
+                    t.minute()
+                )
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("\n## {}\n\n", e.title));
+        out.push_str(&format!(
+            "- **When** {when} · **{}**\n- **Zone** {}{}\n- **Build** {}\n",
+            fmt_hms(e.duration),
+            e.zone.as_deref().unwrap_or("unknown"),
+            if e.difficulty > 0 {
+                format!(" (d{})", e.difficulty)
+            } else {
+                String::new()
+            },
+            if e.build.is_empty() { "unknown" } else { &e.build },
+        ));
+        out.push_str(&format!(
+            "- **You** {} damage, {:.0} dps · {} taken · {} deaths\n",
+            e.your_damage, e.your_dps, e.your_damage_taken, e.your_deaths
+        ));
+        if e.kills > 0 || e.loot_count > 0 {
+            out.push_str(&format!(
+                "- **Result** {} kills, {} items\n",
+                e.kills, e.loot_count
+            ));
+        }
+
+        if !e.mobs.is_empty() {
+            out.push_str("\n### What was fought\n\n| Creature | Killed | Damage into it | Its output | Loot |\n|---|--:|--:|--:|--:|\n");
+            for m in &e.mobs {
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    m.name, m.kills, m.damage_done_to_it, m.damage_it_did, m.loot
+                ));
+            }
+        }
+
+        for g in &e.outgoing_groups {
+            out.push_str(&format!(
+                "\n### {} — {} ({:.0}% of your damage)\n\n| Ability | Damage | Hits | Crits | Max | Avg |\n|---|--:|--:|--:|--:|--:|\n",
+                g.group,
+                g.damage,
+                g.share * 100.0
+            ));
+            for a in &g.abilities {
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {:.0} |\n",
+                    a.name, a.damage, a.hits, a.crits, a.max, a.average
+                ));
+            }
+        }
+
+        if !e.resists.is_empty() {
+            out.push_str("\n### Resisted\n\n| Spell | Resisted | Landed | Rate |\n|---|--:|--:|--:|\n");
+            for r in &e.resists {
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    r.spell,
+                    r.resisted,
+                    r.landed,
+                    if r.resisted + r.landed == 0 {
+                        "—".to_string()
+                    } else {
+                        format!("{:.0}%", r.rate() * 100.0)
+                    }
+                ));
+            }
+        }
+    }
+    out
+}
+
+fn render_encounters_csv(encs: &[crate::engine::EncounterSummary]) -> String {
+    let mut out = String::from(
+        "start,title,zone,difficulty,build,duration,your_damage,your_dps,damage_taken,deaths,kills,loot\n",
+    );
+    for e in encs {
+        out.push_str(&format!(
+            "{},\"{}\",\"{}\",{},{},{},{},{:.1},{},{},{},{}\n",
+            e.start,
+            e.title.replace('"', "'"),
+            e.zone.as_deref().unwrap_or("").replace('"', "'"),
+            e.difficulty,
+            e.build,
+            e.duration,
+            e.your_damage,
+            e.your_dps,
+            e.your_damage_taken,
+            e.your_deaths,
+            e.kills,
+            e.loot_count
+        ));
+    }
+    out
 }
 
 /// Full detail for one fight, including per-actor and per-ability breakdowns.
@@ -248,6 +496,25 @@ async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<ser
         "session_start": start,
         "session_coin_copper": engine.session_coin(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct LootItemQuery {
+    item: String,
+}
+
+/// Drill into one item: which creatures dropped it, how often against how many
+/// kills, where, and what it was worth.
+///
+/// Takes the name as a query parameter rather than a path segment: item names
+/// contain slashes, apostrophes and plus signs, and routing on them means
+/// fighting the encoding for no benefit.
+async fn loot_item(State(s): State<AppState>, Query(q): Query<LootItemQuery>) -> Response {
+    let engine = s.engine.lock().unwrap();
+    match engine.loot_detail(&q.item) {
+        Some(d) => Json(d).into_response(),
+        None => (StatusCode::NOT_FOUND, "no such item in this log").into_response(),
+    }
 }
 
 /// Level-progression analysis: per-level history, best zones, best mobs.
@@ -986,6 +1253,8 @@ mod tests {
                 since: None,
                 until: None,
                 min_duration: None,
+                build: None,
+                difficulty: None,
             }),
         )
         .await;
@@ -1007,6 +1276,8 @@ mod tests {
                 since: None,
                 until: None,
                 min_duration: None,
+                build: None,
+                difficulty: None,
             }),
         )
         .await;
@@ -1027,6 +1298,8 @@ mod tests {
                 since: None,
                 until: None,
                 min_duration: None,
+                build: None,
+                difficulty: None,
             }),
         )
         .await;

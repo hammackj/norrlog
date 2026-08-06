@@ -10,6 +10,7 @@ eqlparser-core = { path = "../eqlparser-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+time = { workspace = true }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower-http = { version = "0.7.0", features = ["fs", "cors"] }

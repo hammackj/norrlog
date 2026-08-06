@@ -64,6 +64,10 @@ pub struct StoredEncounter {
     pub kills: u32,
     pub deaths: u32,
     pub build: String,
+    /// Instance tier from the zone name, so history can be filtered by it
+    /// without re-deriving it from the zone on every query.
+    #[serde(default)]
+    pub difficulty: u8,
 }
 
 /// A level, with the build that earned it.
@@ -175,6 +179,7 @@ impl Store {
         };
         s.migrate()?;
         s.add_identity_columns()?;
+        s.add_encounter_difficulty()?;
         Ok(s)
     }
 
@@ -187,7 +192,27 @@ impl Store {
         };
         s.migrate()?;
         s.add_identity_columns()?;
+        s.add_encounter_difficulty()?;
         Ok(s)
+    }
+
+    /// Add the encounter difficulty column, once.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` cannot widen a table that already exists,
+    /// so a database written before encounters carried a tier needs the column
+    /// added. Existing rows default to 0 and are corrected on the next flush,
+    /// which re-derives the tier from the zone and REPLACEs the row.
+    fn add_encounter_difficulty(&mut self) -> Result<()> {
+        let present: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('encounters') WHERE name='difficulty'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if !present {
+            self.conn
+                .execute_batch("ALTER TABLE encounters ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0")?;
+        }
+        Ok(())
     }
 
     /// Add character and server to the per-character tables, once.
@@ -339,6 +364,7 @@ impl Store {
                 kills        INTEGER NOT NULL DEFAULT 0,
                 deaths       INTEGER NOT NULL DEFAULT 0,
                 build        TEXT    NOT NULL DEFAULT '',
+                difficulty   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (start, title)
             );
             CREATE INDEX IF NOT EXISTS encounters_title ON encounters(title);
@@ -451,8 +477,8 @@ impl Store {
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO encounters
-                 (character, server, start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                 (character, server, start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build, difficulty)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             )?;
             for e in encs {
                 stmt.execute(params![
@@ -469,6 +495,7 @@ impl Store {
                     e.kills,
                     e.deaths,
                     e.build,
+                    e.difficulty,
                 ])?;
             }
         }
@@ -711,7 +738,7 @@ impl Store {
     /// Encounters matching a boss name, for per-raid averages.
     pub fn encounters_named(&self, like: &str) -> Result<Vec<StoredEncounter>> {
         let mut stmt = self.conn.prepare(
-            "SELECT start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build
+            "SELECT start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build, difficulty
              FROM encounters WHERE character = ?1 AND server = ?2 AND title LIKE ?3
              ORDER BY start ASC",
         )?;
@@ -731,6 +758,7 @@ impl Store {
                         kills: r.get(8)?,
                         deaths: r.get(9)?,
                         build: r.get(10)?,
+                        difficulty: r.get(11)?,
                     })
                 },
             )?
@@ -942,6 +970,7 @@ mod tests {
                 kills: 1,
                 deaths: 0,
                 build: "WAR/DRU/BRD".into(),
+                difficulty: 0,
             },
             StoredEncounter {
                 start: 300,
@@ -955,6 +984,7 @@ mod tests {
                 kills: 1,
                 deaths: 0,
                 build: "WAR/DRU/BRD".into(),
+                difficulty: 0,
             },
         ])
         .unwrap();

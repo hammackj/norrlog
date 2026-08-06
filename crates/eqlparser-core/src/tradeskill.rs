@@ -17,17 +17,42 @@
 //! You have become better at Alchemy! (52)
 //! ```
 //!
-//! So attribution works forwards: a combine is held briefly, and a skill-up
-//! arriving just after names its tradeskill. That association is then
-//! remembered per item, letting the many combines that yield no skill-up be
-//! attributed too. This matters because skill-ups become rare as a skill caps,
-//! which is exactly when most combines happen.
+//! but the client writes the two outcomes in *opposite orders*. A failure is
+//! announced before its skill-up; a success is announced after it:
+//!
+//! ```text
+//! You lacked the skills to fashion Potion of Accuracy.
+//! You have become better at Alchemy! (52)
+//!
+//! You have become better at Alchemy! (53)
+//! You have fashioned the items together to create something new: Potion of Accuracy.
+//! ```
+//!
+//! So attribution has to look both ways, and what identifies the combine that
+//! actually earned the point is that it shares the skill-up's *second*.
+//! Combines repeat every three seconds or so, which is close enough that a
+//! wider window reaches the neighbouring attempt instead — the previous one on
+//! a success, the next one on a failure. Measured over two characters' logs,
+//! every causal pair is same-second and no pair is one second apart, so the
+//! window is deliberately tight.
+//!
+//! Each combine earns at most one point, so a combine that has been credited is
+//! spent and cannot also be credited to the next skill-up.
+//!
+//! The association is then remembered per item, letting the many combines that
+//! yield no skill-up be attributed too. This matters because skill-ups become
+//! rare as a skill caps, which is exactly when most combines happen.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// How long after a combine a skill-up is still taken to belong to it.
-const SKILL_ATTRIBUTION_WINDOW: i64 = 5;
+/// How far from a combine a skill-up is still taken to belong to it.
+///
+/// One second, not five: combines repeat about every three seconds, so a wider
+/// window matches the neighbouring attempt rather than the causal one. Every
+/// causal pair observed is same-second; the extra second is only slack for a
+/// pair that straddles a second boundary.
+const SKILL_ATTRIBUTION_WINDOW: i64 = 1;
 
 /// Skills that are tradeskills rather than combat or utility skills.
 ///
@@ -186,6 +211,40 @@ pub struct TradeskillReport {
     pub recipes_learned: Vec<String>,
     pub total_successes: u32,
     pub total_failures: u32,
+    /// What each recipe cost per combine, as far as can be shown.
+    pub costs: Vec<RecipeCost>,
+    /// Merchant prices learned from purchases, dearest first.
+    pub prices: Vec<ItemPrice>,
+}
+
+/// The observable cost of one combine at a recipe.
+///
+/// A floor, not a total: only depot-sourced components are announced, so the
+/// components behind this figure are whatever the log happened to reveal.
+/// `costed` against `combines` is how much of the evidence it rests on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeCost {
+    pub item: String,
+    pub skill: Option<String>,
+    /// Copper per combine, from the components seen and priced.
+    pub unit_copper: u64,
+    /// Components seen going in, dearest first: (name, qty per combine, copper).
+    pub components: Vec<CostComponent>,
+    /// Combines whose components the log revealed.
+    pub costed: u64,
+    /// Combines attempted.
+    pub combines: u64,
+    /// Components seen but never bought, so not counted in `unit_copper`.
+    pub unpriced: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostComponent {
+    pub item: String,
+    /// Average number used per costed combine.
+    pub per_combine: f64,
+    /// Copper per combine for this component.
+    pub copper: u64,
 }
 
 /// A combine awaiting the skill-up that would name its tradeskill.
@@ -193,6 +252,50 @@ pub struct TradeskillReport {
 struct PendingCraft {
     at: i64,
     item: String,
+    /// Which combine this is, so several `Consumed` lines from one combine
+    /// count as one costed combine rather than several.
+    seq: u64,
+}
+
+/// What a merchant charged for an item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemPrice {
+    pub item: String,
+    /// Price of one, in copper. Prices vary by merchant and faction; this is
+    /// the most recent one paid.
+    pub unit_copper: u64,
+    pub bought: u64,
+    pub last_bought: i64,
+}
+
+/// Components observed going into one recipe.
+///
+/// Only components pulled from the depot are announced — anything taken from
+/// inventory is consumed silently — so this is always a subset of the real
+/// recipe, and there is no way to tell a complete observation from a partial
+/// one. Everything derived from it is therefore a floor, never a total.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConsumedBy {
+    /// Component key -> total quantity seen consumed.
+    pub per_combine: HashMap<String, u64>,
+    /// Combines attempted at this recipe.
+    pub combines: u64,
+    /// Combines that announced at least one component.
+    pub costed: u64,
+    /// The combine `costed` was last incremented for.
+    last_seq: Option<u64>,
+}
+
+/// A skill-up awaiting the combine that earned it.
+///
+/// The mirror of `PendingCraft`, for the success ordering: the point is
+/// announced first, so it has to wait for the combine line to name the item.
+#[derive(Debug, Clone)]
+struct PendingUp {
+    at: i64,
+    skill: String,
+    /// Where the point sits in `timeline`, so attribution can be filled in.
+    index: usize,
 }
 
 /// Accumulates tradeskill activity.
@@ -203,6 +306,17 @@ pub struct TradeskillTracker {
     components: HashMap<String, ComponentUse>,
     recipes: Vec<String>,
     pending: Option<PendingCraft>,
+    /// A point announced before the combine that earned it.
+    pending_up: Option<PendingUp>,
+    /// The most recent combine, for attributing the `Consumed` lines that
+    /// follow it. Unlike `pending` this is not spent by crediting a point.
+    last_craft: Option<PendingCraft>,
+    /// Recipe key -> components seen going into it.
+    consumed: HashMap<String, ConsumedBy>,
+    /// Item key -> what a merchant charged for it.
+    prices: HashMap<String, ItemPrice>,
+    /// Counts combines, so one combine's several `Consumed` lines are one.
+    craft_seq: u64,
     /// Every skill point in order, per skill.
     timeline: HashMap<String, Vec<SkillUpEvent>>,
     /// Every combine attempt, for counting effort within a stretch.
@@ -230,6 +344,11 @@ impl TradeskillTracker {
             components: HashMap::new(),
             recipes: Vec::new(),
             pending: None,
+            pending_up: None,
+            last_craft: None,
+            consumed: HashMap::new(),
+            prices: HashMap::new(),
+            craft_seq: 0,
             item_skill: HashMap::new(),
             declared: std::collections::HashSet::new(),
         };
@@ -277,11 +396,75 @@ impl TradeskillTracker {
             e.skill = known;
         }
         self.attempts.push((timestamp, key.clone(), success));
+
+        // Set before any early return: the `Consumed` lines that follow belong
+        // to this combine whether or not it also earned a point.
+        self.craft_seq += 1;
+        self.last_craft = Some(PendingCraft {
+            at: timestamp,
+            item: key.clone(),
+            seq: self.craft_seq,
+        });
+        self.consumed.entry(key.clone()).or_default().combines += 1;
+
+        // A point already announced is this combine's, if it is close enough:
+        // that is the success ordering, where the point precedes the line
+        // naming the item. Claiming it here spends the combine, so it is not
+        // also offered to the next skill-up.
+        if let Some(u) = self.pending_up.clone() {
+            if timestamp - u.at <= SKILL_ATTRIBUTION_WINDOW {
+                self.pending_up = None;
+                if let Some(name) = self.credit(&key, &u.skill) {
+                    if let Some(events) = self.timeline.get_mut(&u.skill.to_lowercase()) {
+                        if let Some(ev) = events.get_mut(u.index) {
+                            ev.item = Some(name);
+                        }
+                    }
+                }
+                return;
+            }
+            // Too far away to be the cause; that point stays unattributed.
+            self.pending_up = None;
+        }
+
         // Hold it briefly: a skill-up arriving next names the tradeskill.
         self.pending = Some(PendingCraft {
             at: timestamp,
             item: key,
+            seq: self.craft_seq,
         });
+    }
+
+    /// Attribute a point to a combine, returning the item's display name if the
+    /// combine earned it.
+    ///
+    /// Labelling and crediting are separate questions. A declared mapping is
+    /// authoritative — an adjacent skill-up may belong to a different combine
+    /// done around the same time and must not relabel it — but a declared
+    /// recipe still earns its own skill-ups. It simply only accepts ones in the
+    /// skill it was declared to belong to.
+    fn credit(&mut self, item_key: &str, skill: &str) -> Option<String> {
+        let declared = self.declared.contains(item_key);
+        if !declared {
+            self.item_skill
+                .insert(item_key.to_string(), skill.to_string());
+            if let Some(c) = self.crafts.get_mut(item_key) {
+                c.skill = Some(skill.to_string());
+            }
+        }
+        let belongs = !declared
+            || self
+                .item_skill
+                .get(item_key)
+                .is_some_and(|s| s.eq_ignore_ascii_case(skill));
+        if !belongs {
+            return None;
+        }
+        // Carry the display name, not the lookup key: this ends up in front of
+        // the user.
+        let c = self.crafts.get_mut(item_key)?;
+        c.skill_ups += 1;
+        Some(c.item.clone())
     }
 
     /// Record a skill-up. Ignored unless it is a tradeskill.
@@ -336,56 +519,45 @@ impl TradeskillTracker {
 
         let mut credited: Option<String> = None;
 
-        // Name the tradeskill of the combine that just happened, and remember
-        // the association for future attempts at the same item.
+        // A combine already announced is the cause when it shares this second:
+        // that is the failure ordering. Spend it, so a combine cannot be
+        // credited twice.
         if let Some(p) = self.pending.clone() {
             if timestamp - p.at <= SKILL_ATTRIBUTION_WINDOW {
-                let declared = self.declared.contains(&p.item);
-                // A declared mapping is authoritative: an adjacent skill-up
-                // may belong to a different combine done around the same
-                // time, and must not relabel it.
-                if !declared {
-                    self.item_skill.insert(p.item.clone(), skill.to_string());
-                    if let Some(c) = self.crafts.get_mut(&p.item) {
-                        c.skill = Some(skill.to_string());
-                    }
-                }
-                // Crediting is a separate question from labelling. A declared
-                // recipe still earns its skill-ups — it simply only accepts
-                // ones in the skill it was declared to belong to, so a nearby
-                // point in an unrelated skill cannot be credited to it.
-                let belongs = !declared
-                    || self
-                        .item_skill
-                        .get(&p.item)
-                        .is_some_and(|s| s.eq_ignore_ascii_case(skill));
-                if belongs {
-                    // Carry the display name, not the lookup key: this ends up
-                    // in front of the user.
-                    if let Some(c) = self.crafts.get_mut(&p.item) {
-                        c.skill_ups += 1;
-                        credited = Some(c.item.clone());
-                    }
-                }
+                self.pending = None;
+                credited = self.credit(&p.item, skill);
             }
         }
 
-        self.timeline
-            .entry(skill.to_lowercase())
-            .or_default()
-            .push(SkillUpEvent {
+        let events = self.timeline.entry(skill.to_lowercase()).or_default();
+        let index = events.len();
+        events.push(SkillUpEvent {
+            at: timestamp,
+            value,
+            item: credited.clone(),
+            trained: false,
+        });
+
+        // Nothing to credit it to yet — the success ordering announces the
+        // point first, so wait for the combine that names the item. A point
+        // still waiting when the next one arrives never found its combine.
+        self.pending_up = if credited.is_none() {
+            Some(PendingUp {
                 at: timestamp,
-                value,
-                item: credited,
-                trained: false,
-            });
+                skill: skill.to_string(),
+                index,
+            })
+        } else {
+            None
+        };
     }
 
     /// Record a component consumed by a combine.
     pub fn on_component(&mut self, timestamp: i64, item: &str, qty: u64, remaining: Option<u64>) {
+        let key = item.to_lowercase();
         let e = self
             .components
-            .entry(item.to_lowercase())
+            .entry(key.clone())
             .or_insert_with(|| ComponentUse {
                 item: item.to_string(),
                 used: 0,
@@ -395,6 +567,42 @@ impl TradeskillTracker {
         e.used += qty;
         e.remaining = remaining;
         e.last_used = timestamp;
+
+        // The client prints what a combine consumed immediately after its
+        // outcome, so the most recent combine is the one that used it. This
+        // reads `last_craft` rather than `pending` because the skill-up in
+        // between will have spent `pending` already.
+        if let Some(p) = self.last_craft.clone() {
+            if timestamp - p.at <= SKILL_ATTRIBUTION_WINDOW {
+                let c = self.consumed.entry(p.item).or_default();
+                *c.per_combine.entry(key).or_insert(0) += qty;
+                if c.last_seq != Some(p.seq) {
+                    c.last_seq = Some(p.seq);
+                    c.costed += 1;
+                }
+            }
+        }
+    }
+
+    /// Record a merchant purchase. The unit price is what makes a combine
+    /// costable; prices move with faction and merchant, so the most recent one
+    /// paid is the one used.
+    pub fn on_purchase(&mut self, timestamp: i64, item: &str, qty: u64, total_copper: u64) {
+        if qty == 0 {
+            return;
+        }
+        let e = self
+            .prices
+            .entry(item.to_lowercase())
+            .or_insert_with(|| ItemPrice {
+                item: item.to_string(),
+                unit_copper: 0,
+                bought: 0,
+                last_bought: timestamp,
+            });
+        e.unit_copper = total_copper / qty;
+        e.bought += qty;
+        e.last_bought = timestamp;
     }
 
     pub fn on_recipe_learned(&mut self, recipe: &str) {
@@ -491,6 +699,54 @@ impl TradeskillTracker {
         let mut components: Vec<ComponentUse> = self.components.values().cloned().collect();
         components.sort_by_key(|c| std::cmp::Reverse(c.used));
 
+        let mut costs: Vec<RecipeCost> = self
+            .consumed
+            .iter()
+            .filter(|(_, c)| c.costed > 0)
+            .map(|(key, c)| {
+                let mut parts: Vec<CostComponent> = Vec::new();
+                let mut unpriced: Vec<String> = Vec::new();
+                for (comp, qty) in &c.per_combine {
+                    // Per costed combine, not per attempt: the combines that
+                    // said nothing about their components cannot be averaged in
+                    // without inventing a figure for them.
+                    let per = *qty as f64 / c.costed as f64;
+                    match self.prices.get(comp) {
+                        Some(p) => parts.push(CostComponent {
+                            item: p.item.clone(),
+                            per_combine: per,
+                            copper: (per * p.unit_copper as f64).round() as u64,
+                        }),
+                        None => unpriced.push(
+                            self.components
+                                .get(comp)
+                                .map(|c| c.item.clone())
+                                .unwrap_or_else(|| comp.clone()),
+                        ),
+                    }
+                }
+                parts.sort_by_key(|p| std::cmp::Reverse(p.copper));
+                unpriced.sort();
+                RecipeCost {
+                    item: self
+                        .crafts
+                        .get(key)
+                        .map(|c| c.item.clone())
+                        .unwrap_or_else(|| key.clone()),
+                    skill: self.item_skill.get(key).cloned(),
+                    unit_copper: parts.iter().map(|p| p.copper).sum(),
+                    components: parts,
+                    costed: c.costed,
+                    combines: c.combines,
+                    unpriced,
+                }
+            })
+            .collect();
+        costs.sort_by_key(|c| std::cmp::Reverse(c.unit_copper));
+
+        let mut prices: Vec<ItemPrice> = self.prices.values().cloned().collect();
+        prices.sort_by_key(|p| std::cmp::Reverse(p.unit_copper));
+
         let segments: Vec<SkillSegment> = self
             .skills
             .iter()
@@ -505,6 +761,8 @@ impl TradeskillTracker {
             crafts,
             components,
             recipes_learned: self.recipes.clone(),
+            costs,
+            prices,
         }
     }
 }
@@ -512,6 +770,143 @@ impl TradeskillTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A combine costs what its components cost, priced from what a merchant
+    /// charged. The `Consumed` lines follow the outcome, and follow the
+    /// skill-up too when there is one — so costing cannot rely on the combine
+    /// still being pending.
+    #[test]
+    fn a_combine_costs_the_components_it_consumed() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 20, 4000); // 0.2p each
+        t.on_purchase(50, "Small Piece of Ore", 10, 2400); // 0.24p each
+
+        t.on_craft(100, "Metal Bits", false);
+        t.on_skill_up(100, "Blacksmithing", 12);
+        t.on_component(100, "Water Flask", 1, Some(99));
+        t.on_component(100, "Small Piece of Ore", 2, Some(50));
+
+        let c = t.report().costs;
+        assert_eq!(c.len(), 1, "one costable recipe: {c:?}");
+        assert_eq!(c[0].item, "Metal Bits");
+        assert_eq!(c[0].unit_copper, 200 + 480, "one flask and two ore");
+        assert_eq!(c[0].costed, 1);
+        assert_eq!(c[0].combines, 1);
+        assert!(c[0].unpriced.is_empty());
+    }
+
+    /// Components taken from inventory are never announced, so most combines
+    /// reveal nothing. Those must not be averaged in as though they were free —
+    /// the figure is per *costed* combine, and `costed` vs `combines` is what
+    /// says how much of the picture it covers.
+    #[test]
+    fn uncosted_combines_do_not_dilute_the_figure() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000); // 0.2p each
+
+        t.on_craft(100, "Sheet Metal", false);
+        t.on_component(100, "Water Flask", 1, Some(9));
+        for at in [200i64, 300, 400] {
+            t.on_craft(at, "Sheet Metal", false); // silent: from inventory
+        }
+
+        let c = &t.report().costs[0];
+        assert_eq!(c.unit_copper, 200, "still one flask per combine, not a quarter");
+        assert_eq!((c.costed, c.combines), (1, 4), "one of four revealed itself");
+    }
+
+    /// A component never bought has no price, so it cannot be counted. Saying
+    /// so is the difference between a floor and a wrong total.
+    #[test]
+    fn components_without_a_price_are_named_not_guessed() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000);
+
+        t.on_craft(100, "Tumpy Tonic", false);
+        t.on_component(100, "Water Flask", 1, Some(9));
+        t.on_component(100, "Kiola Nut", 1, Some(4)); // never bought
+
+        let c = &t.report().costs[0];
+        assert_eq!(c.unit_copper, 200, "only what has a price");
+        assert_eq!(c.unpriced, vec!["Kiola Nut".to_string()]);
+    }
+
+    /// Several `Consumed` lines are one combine, not several.
+    #[test]
+    fn one_combine_with_many_components_counts_once() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Clubmoss", 30, 3000);
+        t.on_craft(100, "Kilva's Skin of Flame", true);
+        t.on_component(100, "Clubmoss", 1, Some(29));
+        t.on_component(100, "Clubmoss", 1, Some(28));
+
+        let c = &t.report().costs[0];
+        assert_eq!(c.costed, 1, "one combine");
+        assert_eq!(c.unit_copper, 200, "two clubmoss at 100c");
+    }
+
+    /// A success is announced *after* the point it earned, so attribution has
+    /// to look forwards as well as back. The real ordering, from the log:
+    ///
+    /// ```text
+    /// You have become better at Blacksmithing! (21)
+    /// You have fashioned the items together to create something new: Sheet Metal.
+    /// ```
+    #[test]
+    fn a_point_announced_before_its_combine_is_still_attributed() {
+        let mut t = TradeskillTracker::new();
+        t.on_skill_up(100, "Blacksmithing", 21);
+        t.on_craft(100, "Sheet Metal", true);
+
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1, "one stretch: {segs:?}");
+        assert_eq!(
+            segs[0].item.as_deref(),
+            Some("Sheet Metal"),
+            "the combine that followed the point earned it"
+        );
+    }
+
+    /// The neighbouring attempt is not the cause. Combines repeat every few
+    /// seconds, so the previous one is close by but did not earn this point —
+    /// the success landing in the same second did.
+    #[test]
+    fn a_nearby_earlier_combine_does_not_steal_the_point() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Water Flask", true); // an unrelated combine moments before
+        t.on_skill_up(103, "Blacksmithing", 33);
+        t.on_craft(103, "Banded Gorget", true);
+
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1, "one stretch: {segs:?}");
+        assert_eq!(segs[0].item.as_deref(), Some("Banded Gorget"));
+    }
+
+    /// One combine, one point: a combine already credited must not also be
+    /// credited to the point that follows it.
+    #[test]
+    fn a_combine_is_credited_at_most_once() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Banded Gorget", false);
+        t.on_skill_up(100, "Blacksmithing", 31);
+        t.on_skill_up(100, "Blacksmithing", 32);
+
+        let crafts = t.report().crafts;
+        let g = crafts.iter().find(|c| c.item == "Banded Gorget").unwrap();
+        assert_eq!(g.skill_ups, 1, "one combine cannot earn two points");
+    }
+
+    /// The failure ordering — the combine is announced first — still works.
+    #[test]
+    fn a_point_announced_after_its_combine_is_attributed() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Banded Gorget", false);
+        t.on_skill_up(100, "Blacksmithing", 32);
+
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1, "one stretch: {segs:?}");
+        assert_eq!(segs[0].item.as_deref(), Some("Banded Gorget"));
+    }
 
     /// The question a skill history answers: which recipe carried me across
     /// which stretch.

@@ -40,6 +40,28 @@ pub struct AbilityStats {
     pub crits: u64,
     pub min: u64,
     pub max: u64,
+    /// The mechanism that delivered it — "melee", "spell", "dot", "damage
+    /// shield". Recorded per ability because the totals alone cannot say
+    /// whether a name is a weapon skill, a song, or thorns, and grouping
+    /// output by mechanism is the difference between a readable breakdown and
+    /// thirty undifferentiated rows.
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// Which of the three groups a mechanism belongs to.
+///
+/// Spells and songs land the same way and read as one thing to a player;
+/// weapon skills are another; thorns and damage shields are neither — they are
+/// output you did not choose to make, so lumping them into either would
+/// misrepresent both.
+pub fn ability_group(kind: &str) -> &'static str {
+    match kind {
+        "melee" => "Melee",
+        "damage shield" => "Other",
+        // "spell" and "dot" — a direct nuke and its tick are the same source.
+        _ => "Spell",
+    }
 }
 
 impl AbilityStats {
@@ -362,6 +384,52 @@ pub struct Encounter {
     pub deaths: Vec<DeathRecord>,
     pub loot: Vec<LootRecord>,
     pub coin_copper: u64,
+    /// Spells of yours that were shrugged off: target -> spell -> times.
+    ///
+    /// Kept per target as well as per spell because the two answer different
+    /// questions — whether a spell is worth casting at all, and whether one
+    /// creature in particular is resistant to it.
+    #[serde(default)]
+    pub resists: HashMap<String, HashMap<String, u64>>,
+}
+
+/// One creature's share of a fight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MobBreakdown {
+    pub name: String,
+    /// What you and yours put into it.
+    pub damage_done_to_it: u64,
+    /// What it put out, at anyone.
+    pub damage_it_did: u64,
+    /// Times it died — more than one when the same name was pulled repeatedly.
+    pub kills: u32,
+    pub loot: usize,
+    pub resists: u64,
+}
+
+/// One spell's resist record within a fight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResistTally {
+    pub spell: String,
+    pub resisted: u64,
+    /// Times the same spell did land here, when it ever did.
+    pub landed: u64,
+    /// Targets that resisted it, most resistant first.
+    pub targets: Vec<(String, u64)>,
+}
+
+impl ResistTally {
+    /// Share of attempts shrugged off. Only meaningful when the spell also
+    /// landed at least once — a spell that never landed has no denominator
+    /// beyond its own failures.
+    pub fn rate(&self) -> f64 {
+        let attempts = self.resisted + self.landed;
+        if attempts == 0 {
+            0.0
+        } else {
+            self.resisted as f64 / attempts as f64
+        }
+    }
 }
 
 impl Encounter {
@@ -562,6 +630,75 @@ impl Encounter {
 
     /// Whether anything worth reporting happened. Used to discard encounters
     /// opened by a stray miss.
+    /// What got shrugged off in this fight, most-resisted first.
+    ///
+    /// `landed` comes from your own ability breakdown, so a spell that
+    /// sometimes worked carries a real rate rather than a bare failure count.
+    pub fn resist_tallies(&self) -> Vec<ResistTally> {
+        let mut by_spell: HashMap<&str, (u64, Vec<(String, u64)>)> = HashMap::new();
+        for (target, spells) in &self.resists {
+            for (spell, n) in spells {
+                let e = by_spell.entry(spell.as_str()).or_default();
+                e.0 += n;
+                e.1.push((target.clone(), *n));
+            }
+        }
+        let yours = self.actors.get("you");
+        let mut out: Vec<ResistTally> = by_spell
+            .into_iter()
+            .map(|(spell, (resisted, mut targets))| {
+                targets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                ResistTally {
+                    landed: yours
+                        .and_then(|s| s.by_ability.get(spell))
+                        .map(|a| a.hits)
+                        .unwrap_or(0),
+                    spell: spell.to_string(),
+                    resisted,
+                    targets,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| b.resisted.cmp(&a.resisted).then_with(|| a.spell.cmp(&b.spell)));
+        out
+    }
+
+    /// Per-creature breakdown: what you fought inside this fight.
+    ///
+    /// A fight bounded by a lull can span a named and the trash that followed
+    /// it, which is honest about the combat but lumps their damage and loot
+    /// together. This splits it back out by creature without pretending they
+    /// were separate fights.
+    pub fn per_mob(&self) -> Vec<MobBreakdown> {
+        let mut out: Vec<MobBreakdown> = self
+            .actors
+            .iter()
+            .filter(|(key, s)| key.as_str() != "you" && s.damaged_by_you)
+            .map(|(_, s)| MobBreakdown {
+                name: s.name.clone(),
+                damage_done_to_it: s.damage_taken,
+                damage_it_did: s.damage_done,
+                kills: self
+                    .deaths
+                    .iter()
+                    .filter(|d| d.victim.eq_ignore_ascii_case(&s.name))
+                    .count() as u32,
+                loot: self
+                    .loot
+                    .iter()
+                    .filter(|l| {
+                        l.source
+                            .as_deref()
+                            .is_some_and(|src| src.eq_ignore_ascii_case(&s.name))
+                    })
+                    .count(),
+                resists: self.resists.get(&s.name).map(|m| m.values().sum()).unwrap_or(0),
+            })
+            .collect();
+        out.sort_by_key(|m| std::cmp::Reverse(m.damage_done_to_it));
+        out
+    }
+
     pub fn is_significant(&self) -> bool {
         self.total_damage() > 0
     }
@@ -705,6 +842,20 @@ impl EncounterTracker {
             // charm early. On one Innoruuk fight that cut a 92-second charm to
             // 14 and lost most of the pet's damage.
             Event::EffectWoreOffTarget { .. } => {}
+            // A resist is not combat activity in its own right: it neither
+            // opens a fight nor keeps a dying one alive, so it is recorded on
+            // the encounter in progress and otherwise ignored. Outside a fight
+            // there is nothing to attach it to.
+            Event::Resisted { target, spell } => {
+                if let Some(enc) = self.current.as_mut() {
+                    let who = target.display(&self.player);
+                    *enc.resists
+                        .entry(who)
+                        .or_default()
+                        .entry(spell.clone())
+                        .or_default() += 1;
+                }
+            }
             Event::Damage {
                 source,
                 target,
@@ -743,10 +894,11 @@ impl EncounterTracker {
                     if crit {
                         *s.crits_by_kind.entry(label).or_default() += 1;
                     }
-                    s.by_ability
-                        .entry(ability_name)
-                        .or_default()
-                        .record_hit(*amount, crit);
+                    let a = s.by_ability.entry(ability_name).or_default();
+                    if a.kind.is_empty() {
+                        a.kind = kind_label(*kind).to_string();
+                    }
+                    a.record_hit(*amount, crit);
                 }
                 {
                     let label = kind_label(*kind).to_string();
@@ -764,10 +916,11 @@ impl EncounterTracker {
                     let t = enc.entry(target, &player);
                     t.damage_taken += *amount;
                     *t.damage_taken_by_kind.entry(label).or_default() += *amount;
-                    t.damage_taken_by_ability
-                        .entry(ability_in)
-                        .or_default()
-                        .record_hit(*amount, crit);
+                    let ai = t.damage_taken_by_ability.entry(ability_in).or_default();
+                    if ai.kind.is_empty() {
+                        ai.kind = kind_label(*kind).to_string();
+                    }
+                    ai.record_hit(*amount, crit);
                     *t.damage_taken_by_source
                         .entry(source_name.clone())
                         .or_default() += *amount;
@@ -935,6 +1088,7 @@ impl EncounterTracker {
                 deaths: Vec::new(),
                 loot: Vec::new(),
                 coin_copper: 0,
+                resists: HashMap::new(),
             });
             self.next_id += 1;
             self.last_combat = timestamp;

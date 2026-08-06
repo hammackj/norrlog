@@ -368,6 +368,15 @@ pub enum Event {
         /// Stock left afterwards, as reported by the client.
         remaining: u64,
     },
+    /// Items bought from a merchant. The only place the log states what
+    /// anything costs, which is what makes a combine costable at all.
+    ItemPurchased {
+        item: String,
+        quantity: u64,
+        merchant: String,
+        /// Paid for the whole stack, not per unit.
+        coin: Coin,
+    },
     /// A new recipe became available.
     RecipeLearned { recipe: String },
     /// A task was assigned.
