@@ -615,11 +615,7 @@ impl ClassDetector {
     /// the difference, so this defers to it and the naming is the user's
     /// responsibility.
     fn trio_from_spell_set(&self, at: i64, window: i64) -> Option<Vec<ClassScore>> {
-        let (_, classes) = self
-            .spell_sets
-            .iter()
-            .filter(|(t, c)| c.len() == 3 && (at - t).abs() <= window)
-            .min_by_key(|(t, _)| (at - t).abs())?;
+        let classes = self.declared_trio(at, window)?;
 
         let scored = self.tally(i64::MIN, i64::MAX);
         let total: f32 = scored.iter().map(|t| t.score).sum();
@@ -641,6 +637,22 @@ impl ClassDetector {
                 })
                 .collect(),
         )
+    }
+
+    /// Just the classes a declared loadout names, with no scoring.
+    ///
+    /// [`trio_from_spell_set`](Self::trio_from_spell_set) tallies every piece
+    /// of evidence ever recorded to attach scores and reasons for display, at a
+    /// cost of a string clone per entry — tens of thousands of allocations on a
+    /// long log. Callers that only need to know *which* classes are loaded, and
+    /// there are several on hot paths (labelling each kill, and the snapshot
+    /// rebuilt four times a second), should not pay for that.
+    pub fn declared_trio(&self, at: i64, window: i64) -> Option<Vec<Class>> {
+        self.spell_sets
+            .iter()
+            .filter(|(t, c)| c.len() == 3 && (at - t).abs() <= window)
+            .min_by_key(|(t, _)| (at - t).abs())
+            .map(|(_, c)| c.clone())
     }
 
     /// The trio in effect *around* `at`, using evidence from both sides.

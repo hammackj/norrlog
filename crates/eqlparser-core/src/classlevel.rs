@@ -338,7 +338,6 @@ impl ClassLevelTracker {
             }
             self.last_loadout = sorted.clone();
         }
-        let _ = sorted;
     }
 
     pub fn level_of(&self, class: Class) -> Option<u32> {
