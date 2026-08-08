@@ -164,9 +164,130 @@ pub struct ActorStats {
     /// `damage_done` so a charmed mob's contribution can be credited to you
     /// without double counting it in the encounter total.
     pub damage_while_charmed: u64,
+    /// The player this creature fights for, when it is a pet.
+    ///
+    /// Covers your own pets and other people's. Charmed mobs of yours get an
+    /// owner too, so "whose damage is this" has one answer to look up rather
+    /// than two flags to combine.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// True when the pet was summoned rather than charmed.
+    ///
+    /// The distinction is not cosmetic: a summoned pet is yours for the whole
+    /// fight and cannot break, so counting one toward charm uptime would
+    /// report a rock-solid charm you never cast. They are indistinguishable in
+    /// the line that announces them — both say "Master" — so this is set from
+    /// the pet's name or from `/pet leader`, never from that line.
+    #[serde(default)]
+    pub summoned: bool,
+    /// True when a charm of yours was actually seen to land on this creature.
+    ///
+    /// `charmed_by_you` is the looser claim — "counts as your pet for damage
+    /// credit" — and a pet announcing itself with "Master" is enough for that.
+    /// It is not enough to call the creature charmed: a summoned pet says the
+    /// same words. Only a charm spell landing proves a charm, so only that
+    /// sets this, and only this is allowed to put the word on screen.
+    #[serde(default)]
+    pub charm_seen: bool,
+    /// True when `owner` is the logging character.
+    ///
+    /// Stored rather than compared on demand: the owner is a display name and
+    /// the places that need the answer — encounter totals, the meter — do not
+    /// carry the player's name to compare it against.
+    #[serde(default)]
+    pub owned_by_you: bool,
+}
+
+impl AbilityStats {
+    /// Fold another fight's record of the same ability into this one.
+    pub fn merge_from(&mut self, o: &AbilityStats) {
+        self.total += o.total;
+        self.hits += o.hits;
+        self.misses += o.misses;
+        self.crits += o.crits;
+        // `min` starts at zero on a record that has never landed anything, so
+        // taking the smaller of the two would lock it there forever.
+        self.min = match (self.min, o.min) {
+            (0, m) | (m, 0) => m,
+            (a, b) => a.min(b),
+        };
+        self.max = self.max.max(o.max);
+        if self.kind.is_empty() {
+            self.kind = o.kind.clone();
+        }
+    }
+}
+
+/// Sum one map of totals into another.
+fn merge_counts(into: &mut HashMap<String, u64>, from: &HashMap<String, u64>) {
+    for (k, v) in from {
+        *into.entry(k.clone()).or_default() += v;
+    }
+}
+
+/// Sum one map of ability records into another.
+fn merge_abilities(into: &mut HashMap<String, AbilityStats>, from: &HashMap<String, AbilityStats>) {
+    for (k, v) in from {
+        into.entry(k.clone()).or_default().merge_from(v);
+    }
 }
 
 impl ActorStats {
+    /// Fold this actor's part in another fight into this one.
+    ///
+    /// Used to build a whole-session meter out of the fights that make it up.
+    /// Every flag is sticky: a creature charmed in one pull and merely fought
+    /// in the next was still, at some point, charmed by you.
+    pub fn merge_from(&mut self, o: &ActorStats) {
+        self.damage_done += o.damage_done;
+        self.damage_taken += o.damage_taken;
+        self.healing_done += o.healing_done;
+        self.healing_received += o.healing_received;
+        self.hits += o.hits;
+        self.misses += o.misses;
+        self.crits += o.crits;
+        self.avoided += o.avoided;
+        self.deaths += o.deaths;
+        self.killing_blows += o.killing_blows;
+        self.attacks_missed += o.attacks_missed;
+        self.charmed_seconds += o.charmed_seconds;
+        self.charm_breaks += o.charm_breaks;
+        self.damage_while_charmed += o.damage_while_charmed;
+        self.damaged_by_you |= o.damaged_by_you;
+        self.healed_by_you |= o.healed_by_you;
+        self.charmed_by_you |= o.charmed_by_you;
+        merge_counts(&mut self.damage_by_kind, &o.damage_by_kind);
+        merge_counts(&mut self.damage_taken_by_kind, &o.damage_taken_by_kind);
+        merge_counts(&mut self.damage_taken_by_source, &o.damage_taken_by_source);
+        merge_counts(&mut self.hits_by_kind, &o.hits_by_kind);
+        merge_counts(&mut self.crits_by_kind, &o.crits_by_kind);
+        merge_abilities(&mut self.by_ability, &o.by_ability);
+        merge_abilities(&mut self.damage_taken_by_ability, &o.damage_taken_by_ability);
+        merge_abilities(&mut self.healing_by_spell, &o.healing_by_spell);
+    }
+
+    /// Whether this creature fought for you — summoned or charmed.
+    ///
+    /// `charmed_by_you` is checked as well as the owner flag so fights parsed
+    /// before pets carried an owner still count their charms.
+    pub fn is_yours(&self) -> bool {
+        self.owned_by_you || self.charmed_by_you
+    }
+
+    /// Damage this creature contributed to its owner's total.
+    ///
+    /// A summoned pet is its owner's for the whole fight, so all of its output
+    /// counts. A charmed mob is not: it was an enemy before the charm landed
+    /// and is one again the moment it breaks, so only what it dealt while held
+    /// belongs to the charmer.
+    pub fn credited_damage(&self) -> u64 {
+        if self.summoned {
+            self.damage_done
+        } else {
+            self.damage_while_charmed
+        }
+    }
+
     /// Share of landed attacks that critically hit, across all damage kinds.
     ///
     /// Prefer [`Self::crit_rate_for`] where the mechanism matters: this figure
@@ -391,6 +512,61 @@ pub struct Encounter {
     /// creature in particular is resistant to it.
     #[serde(default)]
     pub resists: HashMap<String, HashMap<String, u64>>,
+    /// Your own actions in order, for the per-skill timeline.
+    ///
+    /// Totals answer "what did I do"; only a time axis answers "when". A burn
+    /// window, a proc chain, a dot resisted halfway through a fight — all of
+    /// them are invisible in a sum and obvious in a lane.
+    ///
+    /// Yours alone. A charmed pet's damage counts toward your total but it is
+    /// not a skill you pressed, and mixing the two makes the lanes unreadable.
+    #[serde(default)]
+    pub timeline: Vec<TimelineEvent>,
+    /// Events that happened but were not recorded, because the fight ran past
+    /// [`TIMELINE_MAX`]. Reported rather than hidden: a truncated timeline that
+    /// looks complete would misread as a lull.
+    #[serde(default)]
+    pub timeline_dropped: u64,
+    /// Whether `timeline` still holds this fight's events.
+    ///
+    /// False means "no longer kept", not "nothing happened" — the engine
+    /// releases the per-event detail of older fights to bound memory.
+    #[serde(default = "yes")]
+    pub timeline_retained: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// How many of your actions one fight retains.
+///
+/// A busy fight is a few actions a second, so this covers something like
+/// twenty minutes of unbroken output — past any real encounter, and short of
+/// letting an AFK autoattack session grow without bound.
+pub const TIMELINE_MAX: usize = 4000;
+
+/// How one of your actions turned out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Hit,
+    Crit,
+    /// A swing that missed, or one the defender avoided outright.
+    Miss,
+    /// A spell shrugged off.
+    Resist,
+}
+
+/// One thing you did, and when.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEvent {
+    pub at: i64,
+    /// The spell, or the melee verb for a swing.
+    pub ability: String,
+    pub outcome: Outcome,
+    /// Zero for anything that did not land.
+    pub amount: u64,
 }
 
 /// One creature's share of a fight.
@@ -433,6 +609,58 @@ impl ResistTally {
 }
 
 impl Encounter {
+    /// Fold another fight into this one, to build a wider view.
+    ///
+    /// The result is a real encounter in every respect except time: `start`
+    /// and `end` come to span the whole run, gaps included, so its `duration`
+    /// is wall-clock and **not** a denominator for damage per second. The
+    /// caller knows how much of that span was actually spent fighting and
+    /// should divide by that instead.
+    ///
+    /// The timeline is deliberately not merged: laid end to end across an
+    /// evening's pulls it would be unreadable, and the per-fight view already
+    /// answers the question it exists for.
+    pub fn merge_from(&mut self, o: &Encounter) {
+        self.start = if self.start == 0 {
+            o.start
+        } else {
+            self.start.min(o.start)
+        };
+        self.end = self.end.max(o.end);
+        self.coin_copper += o.coin_copper;
+        self.deaths.extend(o.deaths.iter().cloned());
+        self.loot.extend(o.loot.iter().cloned());
+        for (key, stats) in &o.actors {
+            match self.actors.get_mut(key) {
+                Some(mine) => mine.merge_from(stats),
+                None => {
+                    self.actors.insert(key.clone(), stats.clone());
+                }
+            }
+        }
+        for (target, spells) in &o.resists {
+            let into = self.resists.entry(target.clone()).or_default();
+            for (spell, n) in spells {
+                *into.entry(spell.clone()).or_default() += n;
+            }
+        }
+        self.timeline_retained = false;
+    }
+
+    /// Record one of your actions on the timeline, if there is room.
+    fn note_timeline(&mut self, at: i64, ability: &str, outcome: Outcome, amount: u64) {
+        if self.timeline.len() >= TIMELINE_MAX {
+            self.timeline_dropped += 1;
+            return;
+        }
+        self.timeline.push(TimelineEvent {
+            at,
+            ability: ability.to_string(),
+            outcome,
+            amount,
+        });
+    }
+
     /// Wall-clock length. Floored at one second so a burst fight that starts
     /// and ends within the same log second cannot divide by zero.
     pub fn duration(&self) -> i64 {
@@ -501,10 +729,22 @@ impl Encounter {
         let pets: u64 = self
             .actors
             .values()
-            .filter(|s| s.charmed_by_you)
-            .map(|s| s.damage_while_charmed)
+            .filter(|s| s.is_yours())
+            .map(|s| s.credited_damage())
             .sum();
         own + pets
+    }
+
+    /// Every creature fighting for you this fight that put out damage —
+    /// charmed or summoned.
+    pub fn your_pets(&self) -> Vec<&ActorStats> {
+        let mut v: Vec<&ActorStats> = self
+            .actors
+            .values()
+            .filter(|s| s.is_yours() && s.credited_damage() > 0)
+            .collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.credited_damage()));
+        v
     }
 
     /// Actors that were under your control during this fight.
@@ -527,11 +767,17 @@ impl Encounter {
         self.actors.values().map(|s| s.charm_breaks).sum()
     }
 
+    /// Creatures actually seen to be charmed, for the charm-specific figures.
+    ///
+    /// Keyed on `charm_seen` rather than `charmed_by_you`: the looser flag is
+    /// set by a pet announcing itself, which a summoned pet does too, and
+    /// counting one of those here printed "charm held 0% of the fight" under a
+    /// fight where no charm was ever cast.
     pub fn charmed_pets(&self) -> Vec<&ActorStats> {
         let mut v: Vec<&ActorStats> = self
             .actors
             .values()
-            .filter(|s| s.charmed_by_you && s.damage_while_charmed > 0)
+            .filter(|s| s.charm_seen && s.damage_while_charmed > 0)
             .collect();
         v.sort_by_key(|s| std::cmp::Reverse(s.damage_while_charmed));
         v
@@ -705,10 +951,31 @@ impl Encounter {
 
     fn entry(&mut self, actor: &Actor, player: &str) -> &mut ActorStats {
         let key = actor.key();
-        self.actors.entry(key).or_insert_with(|| ActorStats {
-            name: actor.display(player),
-            ..Default::default()
+        self.actors.entry(key).or_insert_with(|| {
+            let name = actor.display(player);
+            // "Brennagh`s warder" says whose it is without anyone having to
+            // type a command, and it is the only attribution available for
+            // another player's pet that never talks to you.
+            let owner = crate::event::pet_owner_in_name(&name).map(str::to_string);
+            ActorStats {
+                summoned: owner.is_some(),
+                owned_by_you: owner.as_deref() == Some(player),
+                owner,
+                name,
+                ..Default::default()
+            }
         })
+    }
+
+    /// Pets fighting for `owner`, whatever their kind.
+    pub fn pets_of(&self, owner: &str) -> Vec<&ActorStats> {
+        let mut v: Vec<&ActorStats> = self
+            .actors
+            .values()
+            .filter(|s| s.owner.as_deref() == Some(owner))
+            .collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.credited_damage()));
+        v
     }
 }
 
@@ -731,6 +998,15 @@ pub struct EncounterTracker {
     charmed: std::collections::HashSet<String>,
     /// When the charm currently held on each creature began.
     charm_since: std::collections::HashMap<String, i64>,
+    /// Pet actor key -> the display name of the player it belongs to.
+    ///
+    /// On the tracker rather than the encounter because a pet outlives any one
+    /// pull: it is summoned once and fights all evening, and `/pet leader` is
+    /// typed once if at all. Losing the attribution between fights would mean
+    /// re-deriving it from a line that may never come again.
+    pet_owners: std::collections::HashMap<String, String>,
+    /// Pets known to be summoned rather than charmed.
+    summoned: std::collections::HashSet<String>,
     /// Rolling buffer of damage aimed at you, for death post-mortems.
     recent_incoming: Vec<IncomingHit>,
 }
@@ -753,8 +1029,40 @@ impl EncounterTracker {
             last_combat: 0,
             charmed: std::collections::HashSet::new(),
             charm_since: std::collections::HashMap::new(),
+            pet_owners: std::collections::HashMap::new(),
+            summoned: std::collections::HashSet::new(),
             recent_incoming: Vec::new(),
         }
+    }
+
+    /// Record that a creature fights for a player, and whether it was summoned.
+    ///
+    /// Applied to the open encounter as well as remembered, so a pet whose
+    /// owner is learned mid-fight — the moment somebody types `/pet leader` —
+    /// is credited for the whole of that fight rather than from then on.
+    fn set_pet_owner(&mut self, pet: &Actor, owner: &str, summoned: bool) {
+        let key = pet.key();
+        self.pet_owners.insert(key.clone(), owner.to_string());
+        if summoned {
+            self.summoned.insert(key);
+        }
+        let player = self.player.clone();
+        let yours = owner == player;
+        if let Some(enc) = self.current.as_mut() {
+            let st = enc.entry(pet, &player);
+            st.owner = Some(owner.to_string());
+            st.owned_by_you = yours;
+            if summoned {
+                st.summoned = true;
+            }
+        }
+    }
+
+    /// Whether this creature is known to be a summoned pet rather than a
+    /// charmed mob. Used to keep summoned pets out of the charm bookkeeping.
+    fn is_summoned(&self, pet: &Actor) -> bool {
+        self.summoned.contains(&pet.key())
+            || crate::event::pet_owner_in_name(&pet.display(&self.player)).is_some()
     }
 
     /// Actor keys currently under your control.
@@ -782,7 +1090,13 @@ impl EncounterTracker {
             self.charm_since.entry(key).or_insert(timestamp);
             if let Some(enc) = self.current.as_mut() {
                 let player = self.player.clone();
-                enc.entry(actor, &player).charmed_by_you = true;
+                let st = enc.entry(actor, &player);
+                st.charmed_by_you = true;
+                // This path is only reached when the caller resolved a charm
+                // spell against the database, so the charm is a fact here.
+                st.charm_seen = true;
+                st.owner = Some(player.clone());
+                st.owned_by_you = true;
             }
         } else {
             self.charmed.remove(&key);
@@ -827,12 +1141,28 @@ impl EncounterTracker {
                 return z.or(closed);
             }
             Event::PetAttack { pet, .. } => {
-                // Only something you control calls you Master.
-                self.charmed.insert(pet.key());
-                if let Some(enc) = self.current.as_mut() {
-                    let player = self.player.clone();
-                    enc.entry(pet, &player).charmed_by_you = true;
+                // Only something you control calls you Master — but a summoned
+                // pet says it too, so this proves ownership, not charm.
+                let player = self.player.clone();
+                let summoned = self.is_summoned(pet);
+                self.set_pet_owner(pet, &player, summoned);
+                if !summoned {
+                    // For a charming class this line is the primary evidence a
+                    // mob has switched sides: the pet announces itself when
+                    // ordered to attack, and the spell that took hold often
+                    // cannot be named from the log at all.
+                    self.charmed.insert(pet.key());
+                    if let Some(enc) = self.current.as_mut() {
+                        enc.entry(pet, &player).charmed_by_you = true;
+                    }
                 }
+            }
+            Event::PetLeader { pet, leader } => {
+                // A creature that names a leader is a pet by definition, and
+                // one that answers `/pet leader` is a summoned pet: a charmed
+                // mob is not on anybody's pet window.
+                let owner = leader.display(&self.player);
+                self.set_pet_owner(pet, &owner, true);
             }
             // Deliberately does *not* end a charm. Which spell wore off decides
             // that, and naming spells needs the database this crate cannot
@@ -854,6 +1184,9 @@ impl EncounterTracker {
                         .or_default()
                         .entry(spell.clone())
                         .or_default() += 1;
+                    // The client only reports resists of your own spells, so
+                    // this needs no source check.
+                    enc.note_timeline(entry.timestamp, spell, Outcome::Resist, 0);
                 }
             }
             Event::Damage {
@@ -869,6 +1202,12 @@ impl EncounterTracker {
                 let crit = flags.is_crit();
                 let player = self.player.clone();
                 let src_charmed = self.charmed.contains(&source.key());
+                // A pet is summoned once and fights all evening, while the
+                // line that named its owner came in some earlier pull. Carry
+                // the attribution forward so every fight credits it, not just
+                // the one where `/pet leader` happened to be typed.
+                let src_owner = self.pet_owners.get(&source.key()).cloned();
+                let src_summoned = self.summoned.contains(&source.key());
                 let enc = self.current.as_mut().unwrap();
 
                 let ability_name = ability
@@ -888,6 +1227,11 @@ impl EncounterTracker {
                         s.charmed_by_you = true;
                         s.damage_while_charmed += *amount;
                     }
+                    if let Some(owner) = &src_owner {
+                        s.owned_by_you = owner == &player;
+                        s.summoned |= src_summoned;
+                        s.owner = Some(owner.clone());
+                    }
                     let label = kind_label(*kind).to_string();
                     *s.damage_by_kind.entry(label.clone()).or_default() += *amount;
                     *s.hits_by_kind.entry(label.clone()).or_default() += 1;
@@ -899,6 +1243,10 @@ impl EncounterTracker {
                         a.kind = kind_label(*kind).to_string();
                     }
                     a.record_hit(*amount, crit);
+                }
+                if src_is_you {
+                    let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
+                    enc.note_timeline(entry.timestamp, &ability_label, outcome, *amount);
                 }
                 {
                     let label = kind_label(*kind).to_string();
@@ -959,7 +1307,10 @@ impl EncounterTracker {
                 {
                     let s = enc.entry(source, &player);
                     s.misses += 1;
-                    s.by_ability.entry(name).or_default().misses += 1;
+                    s.by_ability.entry(name.clone()).or_default().misses += 1;
+                }
+                if source.is_you() {
+                    enc.note_timeline(entry.timestamp, &name, Outcome::Miss, 0);
                 }
                 enc.entry(target, &player).attacks_missed += 1;
                 self.last_combat = entry.timestamp;
@@ -971,6 +1322,12 @@ impl EncounterTracker {
                 let enc = self.current.as_mut().unwrap();
                 enc.entry(source, &player).misses += 1;
                 enc.entry(target, &player).avoided += 1;
+                // Counted as a miss on the timeline for the same reason the
+                // meter counts it as one: from your side, the swing produced
+                // nothing. The log names no ability on these lines.
+                if source.is_you() {
+                    enc.note_timeline(entry.timestamp, "melee", Outcome::Miss, 0);
+                }
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
             }
@@ -1089,6 +1446,9 @@ impl EncounterTracker {
                 loot: Vec::new(),
                 coin_copper: 0,
                 resists: HashMap::new(),
+                timeline: Vec::new(),
+                timeline_dropped: 0,
+                timeline_retained: true,
             });
             self.next_id += 1;
             self.last_combat = timestamp;
@@ -1673,7 +2033,12 @@ mod tests {
         assert_eq!(e.actors.get("you").unwrap().damage_done, 100);
         // ...but the pet-inclusive figure reflects the whole pull.
         assert_eq!(e.your_damage_with_pets(), 500);
-        assert_eq!(e.charmed_pets().len(), 1);
+        assert_eq!(e.your_pets().len(), 1);
+        // The "Master" line proves the imp is fighting for you and is enough
+        // to credit its damage, but it is not proof of a charm — a summoned
+        // pet says the same thing. Nothing here saw a charm land, so the
+        // charm-specific list stays empty rather than claiming one.
+        assert!(e.charmed_pets().is_empty());
     }
 
     #[test]
@@ -1900,5 +2265,190 @@ mod tests {
             1,
             "case variants must fold: {mummy_entries:?}"
         );
+    }
+
+    /// A summoned pet answers "Attacking … Master." exactly as a charmed mob
+    /// does. Before pets were told apart, that line marked a warder as charmed
+    /// — reporting a charm the character never cast.
+    #[test]
+    fn a_summoned_pet_is_not_charmed() {
+        let encs = run(&[
+            (100, "Tharn`s warder told you, 'Attacking a giant Master.'"),
+            (101, "Tharn`s warder slashes a giant for 60 points of damage."),
+            (102, "You slash a giant for 40 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        let pet = e.actors.get("tharn`s warder").expect("the warder");
+        assert!(pet.summoned, "a warder is summoned");
+        assert!(!pet.charmed_by_you, "and must not read as charmed");
+        assert!(pet.owned_by_you);
+        assert_eq!(pet.owner.as_deref(), Some("Tharn"));
+        // All of a summoned pet's output is its owner's: it never was an enemy.
+        assert_eq!(pet.credited_damage(), 60);
+        assert_eq!(e.your_damage_with_pets(), 100);
+        // ...and it is not counted as a charm anywhere.
+        assert!(e.charmed_pets().is_empty());
+        assert_eq!(e.charm_uptime(), 0.0);
+    }
+
+    /// A charm confirmed by the caller — which is how the daemon reports one,
+    /// having resolved the spell against the database — still reads as a
+    /// charm, and still counts only what was dealt while held.
+    #[test]
+    fn a_confirmed_charm_is_still_charmed() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::parse("An imp protector");
+        for e in entries(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (101, "An imp protector slashes a giant for 5 points of damage."),
+        ]) {
+            t.push(&e);
+        }
+        // The resolver decides a charm of yours landed.
+        t.set_charmed(102, &imp, true);
+        for e in entries(&[
+            (103, "An imp protector slashes a giant for 70 points of damage."),
+            (110, "You have slain a giant!"),
+        ]) {
+            t.push(&e);
+        }
+        let e = t.flush().expect("a fight");
+        let stats = e.actors.get("an imp protector").expect("the imp");
+        assert!(stats.charm_seen, "a resolved charm is a charm");
+        assert!(!stats.summoned);
+        // Only the 70 dealt after the charm landed; the earlier 5 was an
+        // enemy's damage and stays that way.
+        assert_eq!(stats.credited_damage(), 70);
+        assert_eq!(e.charmed_pets().len(), 1);
+        assert_eq!(e.your_damage_with_pets(), 80);
+    }
+
+    /// `/pet leader` is the only line that attributes a pet whose name says
+    /// nothing — and it works for other people's pets too.
+    #[test]
+    fn pet_leader_attributes_someone_elses_pet() {
+        let encs = run(&[
+            (100, "Gabeker says, 'My leader is Brennagh.'"),
+            (101, "Gabeker slashes a giant for 80 points of damage."),
+            (102, "You slash a giant for 20 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        let pet = e.actors.get("gabeker").expect("the pet");
+        assert_eq!(pet.owner.as_deref(), Some("Brennagh"));
+        assert!(pet.summoned);
+        assert!(!pet.owned_by_you, "it is not the logging character's");
+        // Somebody else's pet must not inflate your damage.
+        assert_eq!(e.your_damage_with_pets(), 20);
+        assert_eq!(e.pets_of("Brennagh").len(), 1);
+    }
+
+    /// The attribution has to outlive the pull it was learned in: `/pet
+    /// leader` gets typed once an evening, if at all.
+    #[test]
+    fn pet_ownership_carries_into_later_fights() {
+        let encs = run(&[
+            (100, "Gabeker says, 'My leader is Tharn.'"),
+            (101, "Gabeker slashes a giant for 10 points of damage."),
+            (110, "You have slain a giant!"),
+            // Well past the idle timeout: a separate fight.
+            (400, "Gabeker slashes a rat for 90 points of damage."),
+            (405, "You have slain a rat!"),
+        ]);
+        assert_eq!(encs.len(), 2);
+        let later = encs[1].actors.get("gabeker").expect("the pet, later");
+        assert_eq!(later.owner.as_deref(), Some("Tharn"));
+        assert!(later.owned_by_you);
+        assert_eq!(encs[1].your_damage_with_pets(), 90);
+    }
+
+    /// A pet with a generated name that was never asked `/pet leader` is
+    /// simply "yours" — calling it charmed would invent a spell nobody cast,
+    /// and calling it summoned would be a guess in the other direction.
+    #[test]
+    fn a_pet_of_unknown_kind_claims_neither() {
+        let encs = run(&[
+            (100, "Xibektik told you, 'Attacking a giant Master.'"),
+            (101, "Xibektik slashes a giant for 50 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        let pet = encs[0].actors.get("xibektik").expect("the pet");
+        assert!(pet.is_yours(), "it fights for you");
+        assert!(!pet.summoned, "nothing said it was summoned");
+        assert!(!pet.charm_seen, "and no charm was ever seen to land");
+        // The damage still counts as yours; only the label is withheld.
+        assert_eq!(encs[0].your_damage_with_pets(), 50);
+    }
+
+    /// A mob whose name merely looks possessive is not somebody's pet.
+    #[test]
+    fn a_possessive_mob_name_is_not_a_pet() {
+        assert_eq!(crate::event::pet_owner_in_name("Innoruuk`s Chosen"), None);
+        assert_eq!(
+            crate::event::pet_owner_in_name("Brennagh`s warder"),
+            Some("Brennagh")
+        );
+        assert_eq!(crate::event::pet_owner_in_name("a lesser mummy"), None);
+    }
+
+    /// The timeline is what the totals cannot say: when each thing happened,
+    /// and how it turned out.
+    #[test]
+    fn timeline_records_your_actions_in_order() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 100 points of damage."),
+            (101, "You try to slash a lesser mummy, but miss!"),
+            (
+                102,
+                "You crush a lesser mummy for 250 points of damage. (Critical)",
+            ),
+            (103, "Your target resisted the Shock of Frost spell."),
+            (110, "You have slain a lesser mummy!"),
+        ]);
+        let t = &encs[0].timeline;
+        let kinds: Vec<Outcome> = t.iter().map(|e| e.outcome).collect();
+        assert_eq!(
+            kinds,
+            vec![Outcome::Hit, Outcome::Miss, Outcome::Crit, Outcome::Resist]
+        );
+        assert_eq!(t[0].at, 100);
+        assert_eq!(t[0].amount, 100);
+        assert_eq!(t[2].amount, 250);
+        // Nothing landed, so nothing to report.
+        assert_eq!(t[1].amount, 0);
+        assert_eq!(t[3].ability, "Shock of Frost");
+        assert!(encs[0].timeline_retained);
+        assert_eq!(encs[0].timeline_dropped, 0);
+    }
+
+    /// A mob hitting you is not one of your skills, and would swamp the lanes.
+    #[test]
+    fn timeline_holds_only_your_own_actions() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 100 points of damage."),
+            (101, "A lesser mummy hits YOU for 40 points of damage."),
+            (102, "A lesser mummy tries to hit YOU, but misses!"),
+            (110, "You have slain a lesser mummy!"),
+        ]);
+        assert_eq!(encs[0].timeline.len(), 1);
+        assert_eq!(encs[0].timeline[0].amount, 100);
+    }
+
+    /// A fight long enough to overflow must say so rather than present a
+    /// truncated timeline as the whole story.
+    #[test]
+    fn timeline_caps_and_counts_what_it_dropped() {
+        let mut lines: Vec<(i64, &str)> = Vec::new();
+        for i in 0..(TIMELINE_MAX + 50) {
+            lines.push((100 + (i as i64 / 10), "You slash a giant for 10 points of damage."));
+        }
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&lines) {
+            t.push(&e);
+        }
+        let enc = t.flush().expect("a fight");
+        assert_eq!(enc.timeline.len(), TIMELINE_MAX);
+        assert_eq!(enc.timeline_dropped, 50);
     }
 }

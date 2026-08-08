@@ -6,6 +6,7 @@
 //! snapshot. That keeps request handling lock-free apart from a brief read.
 
 use eqlparser_core::aa::{AaCatalog, AaReport};
+use eqlparser_core::alert::{AlertBook, AlertFire, AlertRule, Signal};
 use eqlparser_core::class::{ClassDetector, ClassScore};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
@@ -18,6 +19,7 @@ use eqlparser_core::tells::{TellReport, TellTracker};
 use eqlparser_core::tradeskill::{TradeskillReport, TradeskillTracker};
 use eqlparser_core::{Event, LogEntry, Parser, SpellbookChangeKind};
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::path::Path;
 
 /// One row of a live damage meter.
@@ -48,10 +50,21 @@ pub struct MeterRow {
     /// True when the logging character has damaged this actor, i.e. it is an
     /// opponent rather than an ally.
     pub is_enemy: bool,
-    /// True when this actor was charmed by you during the fight. Takes
+    /// True when this actor fought for you — charmed or summoned. Takes
     /// precedence over `is_enemy` in the UI: a charmed creature is an enemy by
     /// origin but fights for you, and its damage counts toward your total.
     pub is_pet: bool,
+    /// "charmed", "summoned", "pet", or absent when this is not a pet.
+    ///
+    /// Charmed and summoned are worth telling apart on screen: a charm can
+    /// break and a summoned pet cannot, so they demand different amounts of
+    /// attention. The plain "pet" is the honest third answer — the creature
+    /// fights for you, and nothing in the log says which kind it is. A pet
+    /// with a generated name that was never asked `/pet leader` lands here.
+    pub pet_kind: Option<&'static str>,
+    /// The player this pet fights for, including other people's pets. Absent
+    /// for anything that is not a pet.
+    pub pet_owner: Option<String>,
     /// Damage this actor dealt while charmed by you.
     pub pet_damage: u64,
 }
@@ -449,7 +462,22 @@ pub struct Snapshot {
     pub log_time: i64,
     /// True once the initial backlog has been read and we are following live.
     pub live: bool,
+    /// Alerts that recently went off, oldest first.
+    ///
+    /// Carried on the snapshot rather than pushed on their own channel so a
+    /// client that missed a frame still catches up: play everything newer than
+    /// the sequence you last played, then remember `alert_seq`.
+    pub alerts: Vec<AlertFire>,
+    /// The highest alert sequence issued so far. A client records this on its
+    /// first snapshot without playing anything, so connecting mid-session does
+    /// not replay the last few minutes at you.
+    pub alert_seq: u64,
 }
+
+/// How many past fires ride along on each snapshot.
+///
+/// Only has to cover the gap between two publishes, which is a poll interval.
+const SNAPSHOT_ALERTS: u64 = 20;
 
 /// Window for the "AA per hour" figure.
 ///
@@ -535,7 +563,39 @@ pub struct Engine {
     /// reaches the end of the file, the newest line is approximately "now".
     clock_offset: Option<i64>,
     live: bool,
+    /// Alert rules and what they have fired.
+    alerts: AlertBook,
+    /// The last lines to arrive, so the alerts view can offer "tell me when
+    /// this happens" against something the player just watched scroll past.
+    ///
+    /// Live lines only: the backlog is hundreds of thousands of lines and none
+    /// of it is what just happened.
+    recent_lines: VecDeque<LogLine>,
+    line_seq: u64,
 }
+
+/// One line as the alerts view sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogLine {
+    /// Monotonic, so a client can ask for only what it has not seen.
+    pub seq: u64,
+    pub at: i64,
+    /// The line with the client's timestamp prefix removed.
+    pub text: String,
+}
+
+/// How many recent lines are kept for the alerts view.
+///
+/// Combat writes tens of lines a second, so this is a few seconds of a busy
+/// fight and a long while of standing still. It exists to be scrolled, not
+/// searched — the log file itself is the archive.
+const RECENT_LINES: usize = 400;
+
+/// How many recent fights keep their per-event timeline.
+///
+/// An evening's worth of pulls, which is as far back as anyone opens a fight
+/// to ask when something fired.
+const TIMELINE_ENCOUNTERS: usize = 25;
 
 impl Engine {
     pub fn new(player: String, spell_db: SpellDb) -> Engine {
@@ -567,6 +627,9 @@ impl Engine {
             seen_logon: false,
             clock_offset: None,
             live: false,
+            alerts: AlertBook::new(),
+            recent_lines: VecDeque::new(),
+            line_seq: 0,
         };
         e.load_marks();
         e.load_task_defs();
@@ -594,6 +657,9 @@ impl Engine {
     /// Mark the backlog as consumed; subsequent lines are live.
     pub fn set_live(&mut self, live: bool) {
         self.live = live;
+        // Alerts are about what is happening now. Arming only once the backlog
+        // is consumed is what keeps startup silent.
+        self.alerts.arm(live);
         if live {
             self.calibrate_clock();
         }
@@ -633,6 +699,85 @@ impl Engine {
             return;
         };
         self.push_entry(entry);
+    }
+
+    /// Record a live line for the alerts view and run the line-level rules.
+    fn note_line(&mut self, entry: &LogEntry) {
+        if !self.live {
+            return;
+        }
+        // Split the borrow: the rules need the player name to render "you"
+        // into something speakable, and it lives on the same struct.
+        let Engine {
+            alerts,
+            player,
+            recent_lines,
+            line_seq,
+            ..
+        } = self;
+        alerts.on_line(entry.timestamp, &entry.raw, &entry.event, player);
+        *line_seq += 1;
+        recent_lines.push_back(LogLine {
+            seq: *line_seq,
+            at: entry.timestamp,
+            text: eqlparser_core::alert::strip_timestamp(&entry.raw).to_string(),
+        });
+        while recent_lines.len() > RECENT_LINES {
+            recent_lines.pop_front();
+        }
+    }
+
+    /// Whether the backlog has been consumed and we are following the file.
+    /// Until then, alerts are disarmed and no lines are retained.
+    pub fn is_live(&self) -> bool {
+        self.live
+    }
+
+    /// Recent lines newer than `since`, oldest first.
+    pub fn lines_since(&self, since: u64) -> Vec<LogLine> {
+        self.recent_lines
+            .iter()
+            .filter(|l| l.seq > since)
+            .cloned()
+            .collect()
+    }
+
+    /// Evaluate the triggers that depend on elapsed time rather than on a line
+    /// arriving.
+    ///
+    /// Called on every publish, including the quiet ones: a buff running out
+    /// while you stand still is exactly the case a warning is for, and no log
+    /// line marks it.
+    pub fn tick(&mut self) {
+        let now = self.now();
+        // Permanents have no meaningful countdown, and auras re-land every few
+        // seconds by design — warning about either would be constant noise.
+        let watched: Vec<(String, i64)> = self
+            .resolver
+            .active_buffs(now)
+            .into_iter()
+            .filter(|b| !b.permanent && !b.is_aura())
+            .filter_map(|b| b.remaining(now).map(|r| (b.name.clone(), r)))
+            .collect();
+        self.alerts.on_buffs(now, &watched);
+    }
+
+    // ---- alert rules ---------------------------------------------------
+
+    pub fn alert_rules(&self) -> &[AlertRule] {
+        self.alerts.rules()
+    }
+
+    pub fn set_alert_rules(&mut self, rules: Vec<AlertRule>) {
+        self.alerts.set_rules(rules);
+    }
+
+    pub fn put_alert_rule(&mut self, rule: AlertRule) {
+        self.alerts.put(rule);
+    }
+
+    pub fn remove_alert_rule(&mut self, id: &str) {
+        self.alerts.remove(id);
     }
 
     fn push_entry(&mut self, entry: LogEntry) {
@@ -758,6 +903,12 @@ impl Engine {
             Event::EffectWoreOffTarget { spell, target } => {
                 if self.fading_effect_ends_a_charm(spell) {
                     self.tracker.set_charmed(entry.timestamp, target, false);
+                    // The line names a fading spell, not a charm break; only
+                    // the spell database and the tracker together know it was
+                    // one. So the alert cannot come from a text rule.
+                    let who = target.display(&self.player);
+                    self.alerts
+                        .on_signal(entry.timestamp, Signal::CharmBroken { target: &who });
                 }
             }
             Event::Resisted { target, spell } => {
@@ -928,8 +1079,15 @@ impl Engine {
                     self.exp.on_kill(entry.timestamp, &name);
                     // Difficulty comes from the zone, so use the zone we were
                     // in when it died, not wherever we ended up later.
-                    self.lockouts
-                        .on_kill(entry.timestamp, &name, self.tracker.current_zone());
+                    let was_raid_target =
+                        self.lockouts
+                            .on_kill(entry.timestamp, &name, self.tracker.current_zone());
+                    // Only raid targets. "Something died" is every other line
+                    // in the log and would make the alert worthless.
+                    if was_raid_target {
+                        self.alerts
+                            .on_signal(entry.timestamp, Signal::BossKilled { boss: &name });
+                    }
                     // Lets a following "task has been updated" say which step.
                     self.tasks.on_kill(entry.timestamp, &name);
                 }
@@ -972,6 +1130,7 @@ impl Engine {
 
         if let Some(done) = self.tracker.push(&entry) {
             self.encounters.push(done);
+            self.trim_timelines();
         }
 
         // Loot picked up after its fight closed. This runs *after* the tracker
@@ -991,6 +1150,32 @@ impl Engine {
                         last.loot.push(rec);
                     }
                 }
+            }
+        }
+
+        // Alerts see the line *after* the trackers have digested it, so a rule
+        // and the panels can never disagree about whether something happened.
+        // Conclusions no single line states — a charm coming loose, a raid
+        // target dying — are raised as signals from the arms above.
+        self.note_line(&entry);
+    }
+
+    /// Release the per-event timeline of all but the most recent fights.
+    ///
+    /// Every encounter in the log stays in memory, and a full log holds
+    /// thousands of them. Their summaries are small; a per-event list is not.
+    /// The fights whose timeline anyone opens are the recent ones, so older
+    /// fights keep their totals and give up their detail — and say so, rather
+    /// than presenting an empty timeline as a quiet fight.
+    fn trim_timelines(&mut self) {
+        if self.encounters.len() <= TIMELINE_ENCOUNTERS {
+            return;
+        }
+        let cut = self.encounters.len() - TIMELINE_ENCOUNTERS;
+        for e in &mut self.encounters[..cut] {
+            if e.timeline_retained {
+                e.timeline = Vec::new();
+                e.timeline_retained = false;
             }
         }
     }
@@ -1354,6 +1539,15 @@ impl Engine {
             let excess = self.charm_failures.len() - CHARM_FAILURE_MAX;
             self.charm_failures.drain(0..excess);
         }
+        // Two of the three failure lines name nobody and no spell, so a text
+        // rule on them could not say what failed. This one can.
+        self.alerts.on_signal(
+            at,
+            Signal::CharmResisted {
+                target,
+                how: kind,
+            },
+        );
     }
 
     /// Your deaths, newest first, each with the blows that caused it.
@@ -1708,6 +1902,73 @@ impl Engine {
         self.session_start
     }
 
+    /// Every fight of the current session as one meter, plus the fight in
+    /// progress.
+    ///
+    /// The same panels the dashboard shows for a single pull, asked of the
+    /// whole session — which is the only way to see what a build actually does
+    /// over an evening rather than over one lucky burn.
+    ///
+    /// Rate is per second **of combat**, not of wall clock. An evening is
+    /// mostly running, buffing and sitting; dividing an evening's damage by an
+    /// evening's seconds produces a number that describes nothing. The count
+    /// of fights and the combat time come back alongside so the UI can say
+    /// what the denominator was.
+    pub fn session_summary(&self, zone_only: bool) -> (EncounterSummary, usize, i64) {
+        let zone = self.tracker.current_zone();
+        let in_session = |e: &&Encounter| {
+            e.start >= self.session_start
+                && (!zone_only || e.zone.as_deref() == zone)
+        };
+        let mut merged = Encounter {
+            id: 0,
+            zone: zone.map(str::to_string),
+            start: 0,
+            end: 0,
+            actors: std::collections::HashMap::new(),
+            deaths: Vec::new(),
+            loot: Vec::new(),
+            coin_copper: 0,
+            resists: std::collections::HashMap::new(),
+            timeline: Vec::new(),
+            timeline_dropped: 0,
+            timeline_retained: false,
+        };
+        let mut fights = 0usize;
+        let mut combat = 0i64;
+        for e in self.encounters.iter().filter(in_session) {
+            merged.merge_from(e);
+            fights += 1;
+            combat += e.duration();
+        }
+        if let Some(open) = self.tracker.current().filter(|e| in_session(&e)) {
+            merged.merge_from(open);
+            fights += 1;
+            combat += open.duration();
+        }
+
+        let combat = combat.max(1);
+        let mut summary = self.summarise(&merged, true);
+        // Re-base every rate on combat time. `summarise` divided by the span
+        // from the first pull to the last, which includes everything that was
+        // not a fight.
+        let span = merged.duration().max(1) as f64;
+        let scale = span / combat as f64;
+        summary.duration = combat;
+        summary.your_dps *= scale;
+        summary.your_hps *= scale;
+        for row in &mut summary.meter {
+            row.dps *= scale;
+            row.hps *= scale;
+        }
+        summary.title = match (zone_only, zone) {
+            (true, Some(z)) => z.to_string(),
+            (true, None) => "this zone".to_string(),
+            _ => "This session".to_string(),
+        };
+        (summary, fights, combat)
+    }
+
     /// Coin taken from corpses during the current session.
     pub fn session_coin(&self) -> u64 {
         self.encounters
@@ -1938,8 +2199,17 @@ impl Engine {
                     .collect(),
                 accuracy: s.accuracy(),
                 is_you: key == "you",
-                is_enemy: s.damaged_by_you && !s.charmed_by_you,
-                is_pet: s.charmed_by_you,
+                is_enemy: s.damaged_by_you && !s.charmed_by_you && !s.summoned,
+                is_pet: s.is_yours(),
+                pet_kind: match (s.summoned, s.charm_seen, s.is_yours()) {
+                    (true, _, _) => Some("summoned"),
+                    (false, true, _) => Some("charmed"),
+                    // Ours, but the log never said how. Saying "charmed" here
+                    // would invent a spell that was never cast.
+                    (false, false, true) => Some("pet"),
+                    _ => None,
+                },
+                pet_owner: s.owner.clone(),
                 pet_damage: s.damage_while_charmed,
             })
             .collect()
@@ -2191,6 +2461,10 @@ impl Engine {
             totals,
             log_time: self.last_timestamp,
             live: self.live,
+            alerts: self
+                .alerts
+                .since(self.alerts.seq().saturating_sub(SNAPSHOT_ALERTS)),
+            alert_seq: self.alerts.seq(),
         }
     }
 }
@@ -2841,5 +3115,155 @@ mod tests {
         // Once calibrated, `now` tracks the wall clock and never runs backwards.
         assert!(e.now() >= before);
         assert!(e.snapshot(1).live);
+    }
+
+    /// The whole point of the session view: rates over time actually spent
+    /// fighting, not over an evening that was mostly walking.
+    #[test]
+    fn session_meter_rates_by_combat_time_not_wall_clock() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                // Two ten-second fights, five minutes apart.
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 500 points of damage.",
+                "[Tue Jul 28 14:00:10 2026] You slash a giant for 500 points of damage.",
+                "[Tue Jul 28 14:00:11 2026] You have slain a giant!",
+                "[Tue Jul 28 14:05:00 2026] You slash a rat for 500 points of damage.",
+                "[Tue Jul 28 14:05:10 2026] You slash a rat for 500 points of damage.",
+                "[Tue Jul 28 14:05:11 2026] You have slain a rat!",
+                // A third line closes the second fight.
+                "[Tue Jul 28 14:20:00 2026] You have entered Freeport.",
+            ],
+        );
+        let (summary, fights, combat) = e.session_summary(false);
+        assert_eq!(fights, 2);
+        assert_eq!(summary.your_damage, 2000);
+        // Roughly 11 seconds of fighting each, not the five minutes between.
+        assert!(
+            (20..=30).contains(&combat),
+            "combat seconds should cover the fights only, got {combat}"
+        );
+        assert_eq!(summary.duration, combat);
+        let expected = 2000.0 / combat as f64;
+        assert!(
+            (summary.your_dps - expected).abs() < 1.0,
+            "dps {} should be near {expected}",
+            summary.your_dps
+        );
+        // The meter rows must agree with the headline.
+        let you = summary.meter.iter().find(|r| r.is_you).expect("your row");
+        assert!((you.dps - summary.your_dps).abs() < 1.0);
+    }
+
+    /// Merging must add fights together rather than let the last one win.
+    #[test]
+    fn session_meter_sums_every_fight() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 100 points of damage.",
+                "[Tue Jul 28 14:00:01 2026] A giant hits YOU for 30 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You have slain a giant!",
+                "[Tue Jul 28 14:10:00 2026] You slash a giant for 400 points of damage.",
+                "[Tue Jul 28 14:10:01 2026] A giant hits YOU for 70 points of damage.",
+            ],
+        );
+        let (summary, fights, _) = e.session_summary(false);
+        // One closed fight plus the one still open.
+        assert_eq!(fights, 2);
+        assert_eq!(summary.your_damage, 500);
+        assert_eq!(summary.your_damage_taken, 100);
+        // The giant is one actor across both fights, not two rows.
+        let giants = summary.meter.iter().filter(|r| r.name.contains("giant")).count();
+        assert_eq!(giants, 1);
+    }
+
+    fn contains_rule(id: &str, text: &str) -> AlertRule {
+        AlertRule {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            trigger: eqlparser_core::alert::Trigger::Contains {
+                text: text.to_string(),
+            },
+            sound: eqlparser_core::alert::Sound::Chime,
+            speak: false,
+            say: None,
+            cooldown: 0,
+            error: None,
+        }
+    }
+
+    /// Reading the backlog must not set off every rule the player owns. This
+    /// is the difference between opening the app and being shouted at.
+    #[test]
+    fn the_backlog_fires_nothing_and_live_lines_do() {
+        let mut e = engine();
+        e.set_alert_rules(vec![contains_rule("r1", "hits YOU")]);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] A giant hits YOU for 90 points of damage."],
+        );
+        assert!(e.snapshot(1).alerts.is_empty(), "backlog must be silent");
+
+        e.set_live(true);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:05 2026] A giant hits YOU for 95 points of damage."],
+        );
+        let s = e.snapshot(1);
+        assert_eq!(s.alerts.len(), 1);
+        assert_eq!(s.alerts[0].rule_id, "r1");
+        assert_eq!(s.alert_seq, 1);
+    }
+
+    /// A charm break is a spell fading plus a creature the tracker knew was
+    /// yours. Neither half is enough, so this rides on a signal rather than on
+    /// text — and it must still reach the snapshot.
+    #[test]
+    fn charm_break_raises_its_signal() {
+        let mut e = engine();
+        e.set_alert_rules(vec![AlertRule {
+            trigger: eqlparser_core::alert::Trigger::Signal {
+                kind: eqlparser_core::alert::SignalKind::CharmResisted,
+                name: None,
+            },
+            ..contains_rule("charm", "unused")
+        }]);
+        e.set_live(true);
+        // Charm immunity names nobody; the engine supplies the target from the
+        // charm it was last attempting.
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] This NPC cannot be charmed."],
+        );
+        let s = e.snapshot(1);
+        assert_eq!(s.alerts.len(), 1, "charm failure should raise an alert");
+        assert!(s.alerts[0].detail.contains("immune"));
+    }
+
+    /// The lines feed is what the "alert me about this" button reads, so it
+    /// must hold live lines only — and without the timestamp prefix.
+    #[test]
+    fn recent_lines_start_at_go_live() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage."],
+        );
+        assert!(e.lines_since(0).is_empty(), "backlog is not recent");
+        e.set_live(true);
+        feed(
+            &mut e,
+            &["[Tue Jul 28 14:00:01 2026] You slash a rat for 12 points of damage."],
+        );
+        let lines = e.lines_since(0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "You slash a rat for 12 points of damage.");
+        // Asking again with the sequence just seen returns nothing, so polling
+        // a quiet log costs nothing.
+        assert!(e.lines_since(lines[0].seq).is_empty());
     }
 }

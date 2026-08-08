@@ -69,6 +69,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
         .route("/api/buff-marks", get(get_marks).post(set_mark))
+        .route("/api/alerts", get(alerts).post(put_alert))
+        .route("/api/alerts/delete", post(delete_alert))
+        .route("/api/lines", get(lines))
+        .route("/api/session", get(session))
         .route("/ws", get(ws_upgrade))
         .with_state(state)
 }
@@ -456,6 +460,10 @@ async fn encounter_detail(State(s): State<AppState>, AxPath(id): AxPath<u64>) ->
             "summary": engine.summarise(e, true),
             "encounter": e,
             "charmed_pets": e.charmed_pets(),
+            // Everything that fought for you, summoned pets included. Kept
+            // beside `charmed_pets` rather than replacing it: the charm
+            // figures — uptime, breaks — are only meaningful for charms.
+            "your_pets": e.your_pets(),
             "your_damage_with_pets": e.your_damage_with_pets(),
         }))
         .into_response(),
@@ -668,6 +676,128 @@ async fn set_mark(State(s): State<AppState>, Json(req): Json<MarkRequest>) -> Re
     *s.snapshot.write().unwrap() = snap;
     let _ = s.updates.send(());
     (StatusCode::OK, "ok").into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+/// The rule set, as the engine holds it.
+///
+/// Served from the engine rather than the database so a rule whose regular
+/// expression failed to compile comes back carrying its error — the store only
+/// knows what was written, not whether it works.
+async fn alerts(State(s): State<AppState>) -> Json<serde_json::Value> {
+    let engine = s.engine.lock().unwrap();
+    Json(serde_json::json!({
+        "rules": engine.alert_rules(),
+        "persisted": s.store.is_some(),
+    }))
+}
+
+/// Add or replace one rule.
+async fn put_alert(
+    State(s): State<AppState>,
+    Json(rule): Json<eqlparser_core::alert::AlertRule>,
+) -> Response {
+    if rule.id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "an alert needs an id").into_response();
+    }
+    if rule.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "an alert needs a name").into_response();
+    }
+    {
+        let mut engine = s.engine.lock().unwrap();
+        engine.put_alert_rule(rule.clone());
+    }
+    if let Some(store) = &s.store {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Err(e) = store.lock().unwrap().put_alert(&rule, now) {
+            // The rule is live either way; say plainly that it will not
+            // survive a restart rather than pretend it saved.
+            return (
+                StatusCode::OK,
+                format!("active, but not saved: {e}"),
+            )
+                .into_response();
+        }
+    }
+    // Hand back the stored rule so the client sees a pattern error straight
+    // away rather than on the next load.
+    let engine = s.engine.lock().unwrap();
+    match engine.alert_rules().iter().find(|r| r.id == rule.id) {
+        Some(r) => Json(r).into_response(),
+        None => (StatusCode::OK, "ok").into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AlertIdRequest {
+    id: String,
+}
+
+async fn delete_alert(
+    State(s): State<AppState>,
+    Json(req): Json<AlertIdRequest>,
+) -> Response {
+    {
+        let mut engine = s.engine.lock().unwrap();
+        engine.remove_alert_rule(&req.id);
+    }
+    if let Some(store) = &s.store {
+        let _ = store.lock().unwrap().delete_alert(&req.id);
+    }
+    (StatusCode::OK, "ok").into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SinceQuery {
+    #[serde(default)]
+    since: Option<u64>,
+}
+
+/// The last lines to arrive, for building a rule from something just seen.
+///
+/// `since` is the highest sequence the client already has, so polling costs
+/// nothing when the log is quiet. Live lines only — see the engine.
+async fn lines(State(s): State<AppState>, Query(q): Query<SinceQuery>) -> Json<serde_json::Value> {
+    let engine = s.engine.lock().unwrap();
+    let lines = engine.lines_since(q.since.unwrap_or(0));
+    Json(serde_json::json!({
+        "lines": lines,
+        "live": engine.is_live(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ScopeQuery {
+    /// "session" (default) or "zone".
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Every fight of this session as one meter.
+///
+/// Served on request rather than carried on the snapshot: it merges every
+/// encounter held in memory, and paying that on each publish would put it on
+/// the path the overlay and the WebSocket share. The dashboard asks for it
+/// only while the scope switch is on it.
+async fn session(State(s): State<AppState>, Query(q): Query<ScopeQuery>) -> Json<serde_json::Value> {
+    let zone_only = q.scope.as_deref() == Some("zone");
+    let engine = s.engine.lock().unwrap();
+    let (summary, fights, combat) = engine.session_summary(zone_only);
+    Json(serde_json::json!({
+        "summary": summary,
+        "fights": fights,
+        // The denominator behind every rate above, so the UI can state it
+        // rather than let it be read as wall-clock time.
+        "combat_seconds": combat,
+        "session_start": engine.session_start(),
+        "zone_only": zone_only,
+    }))
 }
 
 /// Assigned tasks with step counts, and achievements earned.

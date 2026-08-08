@@ -181,6 +181,18 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(Some(spent)) = store.stated("aa_spent") {
                 engine.set_stated_aa_spent(spent as u32);
             }
+            // Alerts are not scoped to a character, so these load whichever
+            // log is being followed. They stay disarmed until the backlog is
+            // consumed; see `Engine::set_live`.
+            match store.alerts() {
+                Ok(rules) => {
+                    if !rules.is_empty() {
+                        eprintln!("[eqlparserd] {} alert rules loaded", rules.len());
+                    }
+                    engine.set_alert_rules(rules);
+                }
+                Err(e) => eprintln!("[eqlparserd] could not read alert rules: {e}"),
+            }
         }
     }
 
@@ -307,6 +319,10 @@ fn spawn_follower(
                 if let Err(e) = follower.read_available(|line| eng.push_line(line)) {
                     eprintln!("[eqlparserd] read error: {e}");
                 }
+                // Time-based alerts. Runs on the quiet polls too — a buff
+                // running out while nothing is happening is precisely when a
+                // warning earns its keep, and no line marks it.
+                eng.tick();
             }
             // Always republish: buff timers count down even with no new lines.
             publish(&engine, &snapshot, &updates);

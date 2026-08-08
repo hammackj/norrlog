@@ -33,6 +33,21 @@ calls you Master) and released when the charm song wears off. Their damage is
 credited to you *while charmed only*, reported separately from your personal
 damage so neither number is misleading.
 
+**Pets, and whose they are.** A summoned pet answers that same announcement
+word for word, so the line proves ownership but not the kind. Three things
+resolve it: the spell database confirming a charm actually landed, the naming
+convention (`Brennagh`s warder`), and `/pet leader`, whose reply — `Xabarn
+says, 'My leader is Brennagh.'` — is the only line that attributes a pet
+outright. That last one also covers other players' pets, so a group meter can
+name the owner instead of listing unfamiliar creatures. A pet with a generated
+name that has never been asked is labelled just **pet**: it fights for you and
+its damage counts, but nothing in the log says how it came to be yours, and
+claiming a charm would invent a spell that was never cast. Type `/pet leader`
+once and it is pinned down for the rest of the session.
+
+All of a summoned pet's damage counts toward its owner, because it was never
+anything else; a charmed mob only counts for the time it was held.
+
 **Buff timers.** Real durations, not guesses. The game ships `spells_us.txt`
 (duration formula + cap per spell) and `spells_us_str.txt` (the flavour text
 shown when an effect lands and expires), so the parser works backwards from
@@ -53,6 +68,25 @@ class you have since dropped does not linger.
 
 **Historical browser.** Search and filter every encounter by mob, zone, date, or
 minimum duration; open any fight for its full breakdown.
+
+**Fight timeline.** Totals say what you did; the timeline says when. Every one
+of your actions is kept in order for the most recent fights and drawn as one
+lane per ability — hits, crits, misses and resists on a time axis — so a burn
+window, a proc chain firing together, or a dot resisted halfway through is a
+shape rather than a number. Long fights state how much they had to drop.
+
+**Fight, session, or zone.** The same meter, healing and damage-taken panels
+answer for one pull, for everything fought since you logged in, or for the
+current zone. Rates in the wider scopes are per second *of combat* — an
+evening is mostly running about, and dividing by wall clock describes nothing.
+
+**Sound alerts.** Rules that watch the log and make a noise: a substring of a
+line, a regular expression, a typed happening (a charm broke, a raid target
+died, someone sent you a tell), or a buff crossing a threshold. Build one by
+clicking a line you just watched scroll past. Sounds are synthesised rather
+than shipped, so there is nothing to download, and anything can also be spoken
+aloud. Nothing fires while the backlog is being read, so starting the app is
+silent no matter what is in the log.
 
 ---
 
@@ -106,6 +140,8 @@ as a frameless, always-on-top, click-through desktop window.
 | `?width=340` | Width in pixels |
 | `?self=1` | Show only your own row |
 | `?enemies=0` | Hide enemy rows |
+| `?crit=0` | Hide the crit % column in the meter |
+| `?scope=session` | Meter the whole session instead of the current fight (`zone` for the current zone) |
 | `?idle=1` | Keep the last fight on screen between pulls |
 
 ## CLI tools
@@ -128,6 +164,9 @@ as a frameless, always-on-top, click-through desktop window.
 | `GET /api/encounters/:id` | Full breakdown for one fight |
 | `GET /api/loot` | Aggregated loot |
 | `GET /api/classes` | Detected classes with evidence |
+| `GET /api/session` | Every fight of the session as one meter — `?scope=zone` for the current zone |
+| `GET /api/alerts` · `POST` | Alert rules; `POST /api/alerts/delete` removes one |
+| `GET /api/lines` | Recent log lines — `?since=` a sequence number |
 | `WS /ws` | Live snapshot stream |
 
 ---

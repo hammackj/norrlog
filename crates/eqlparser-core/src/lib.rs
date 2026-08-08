@@ -9,6 +9,7 @@
 //! on these without reaching back into raw text.
 
 pub mod aa;
+pub mod alert;
 pub mod class;
 pub mod classlevel;
 pub mod encounter;

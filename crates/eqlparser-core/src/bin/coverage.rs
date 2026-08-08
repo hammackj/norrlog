@@ -267,6 +267,7 @@ fn kind_name(e: &Event) -> &'static str {
         Event::AbilityPointsSpent { .. } => "AbilityPointsSpent",
         Event::SpellbookChange { .. } => "SpellbookChange",
         Event::PetAttack { .. } => "PetAttack",
+        Event::PetLeader { .. } => "PetLeader",
         Event::EffectWoreOffTarget { .. } => "EffectWoreOffTarget",
         Event::System { .. } => "System",
         Event::Unknown => "Unknown",

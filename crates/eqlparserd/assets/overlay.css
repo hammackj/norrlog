@@ -185,6 +185,16 @@ body {
   text-align: right;
 }
 
+/* Crit rate sits behind damage and dps in the reading order: it is context
+   for the two numbers beside it, not something to notice first. */
+.row .crit {
+  color: var(--text-dim);
+  opacity: 0.75;
+  font-size: 11px;
+  min-width: 30px;
+  text-align: right;
+}
+
 .tag {
   font-size: 10px;
   padding: 0 4px;
@@ -351,4 +361,11 @@ body {
   border-radius: 3px;
   margin-left: 5px;
   vertical-align: middle;
+}
+
+/* Another player's pet: labelled with whose it is, in the neutral dim, since
+   it is context rather than something you control. */
+.tag.other {
+  background: rgba(139, 148, 158, 0.22);
+  color: var(--text-dim);
 }

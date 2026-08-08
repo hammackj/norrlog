@@ -56,6 +56,33 @@ impl Actor {
     }
 }
 
+/// Nouns the client uses for a pet named after its owner.
+///
+/// `warder` is the only one this variant has actually been seen to write —
+/// 4,359 lines of it across the logs on hand — but the construction is the
+/// game's, not the class's, so the siblings are included rather than waiting
+/// for a log to prove each one. The list is kept deliberately short: a
+/// creature legitimately called "Innoruuk`s Chosen" must not become
+/// Innoruuk's pet, and only an exact match on one of these words prevents it.
+const PET_NOUNS: [&str; 5] = ["warder", "pet", "companion", "familiar", "minion"];
+
+/// The owner named inside a pet's own name, as in "Brennagh`s warder".
+///
+/// This attributes a pet with no help from any command, which matters because
+/// `/pet leader` has to be typed and mostly is not. Returns the owner's name,
+/// or `None` when the name is not of that form.
+pub fn pet_owner_in_name(name: &str) -> Option<&str> {
+    // The client writes a backtick where an apostrophe belongs; accept both.
+    let (owner, noun) = name
+        .split_once("`s ")
+        .or_else(|| name.split_once("'s "))?;
+    let noun = noun.trim();
+    if owner.is_empty() || !PET_NOUNS.contains(&noun.to_lowercase().as_str()) {
+        return None;
+    }
+    Some(owner.trim())
+}
+
 /// Strip possessives and trailing corpse markers that leak into name captures.
 fn clean_name(s: &str) -> String {
     let s = s.trim();
@@ -347,7 +374,18 @@ pub enum Event {
     /// orders with "Attacking <target> Master.", and only something you control
     /// calls you Master. For a charming class this is the primary evidence that
     /// a mob has switched to your side.
+    ///
+    /// A summoned pet answers exactly the same way, so this says "mine", not
+    /// "charmed" — see [`Event::PetLeader`] and the pet naming convention for
+    /// how the two are told apart.
     PetAttack { pet: Actor, target: Actor },
+    /// A pet naming its owner, in reply to `/pet leader`.
+    ///
+    /// The only line in the log that attributes a pet to a player outright.
+    /// Summoned pets carry generated names with nothing in them to go on, so
+    /// without this a magician's pet is just another actor in the meter — and
+    /// it works for other people's pets as well as your own.
+    PetLeader { pet: Actor, leader: Actor },
     /// One of your spells expired *from a named target*, as opposed to from
     /// yourself. Charm breaks are reported this way, naming the creature.
     EffectWoreOffTarget { spell: String, target: Actor },

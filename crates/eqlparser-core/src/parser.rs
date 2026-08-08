@@ -86,6 +86,7 @@ enum RuleId {
     SpellForgotten,
     SpellGranted,
     PetAttack,
+    PetLeader,
     EffectWoreOffTarget,
     EffectLandedOnTarget,
     LoggedOn,
@@ -305,6 +306,18 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::ChatTellByYou,
         r"^You told (?P<tgt>[^,]+), '(?P<msg>.*)'$",
     ),
+    // "Xabarn says, 'My leader is Brennagh.'" — the reply to `/pet leader`.
+    //
+    // The only line that names a pet's owner outright, and the only way to
+    // attribute one whose name carries no clue. Works for other people's pets
+    // as well as your own, which is what makes a group meter add up.
+    //
+    // Must precede `ChatSays`: it is a say line, and the generic rule would
+    // otherwise swallow it as ordinary conversation.
+    (
+        RuleId::PetLeader,
+        r"^(?P<pet>.+?) says, 'My leader is (?P<leader>.+?)\.'$",
+    ),
     (
         RuleId::ChatSays,
         r"^(?P<src>.+?) (?P<verb>say|says|shouts|auctions|says out of character), '(?P<msg>.*)'$",
@@ -350,7 +363,9 @@ static RULES: &[(RuleId, &str)] = &[
     ),
     // "An imp protector told you, 'Attacking an imp protector Master.'"
     // Only a creature under your control addresses you as Master, so this
-    // identifies a charmed pet by name.
+    // identifies a pet of yours by name. It does *not* say which kind: a
+    // charmed mob and a summoned pet answer identically, and telling them
+    // apart is the caller's job.
     (
         RuleId::PetAttack,
         r"^(?P<pet>.+?) told you, 'Attacking (?P<target>.+?) Master\.'$",
@@ -1029,6 +1044,10 @@ impl Parser {
                 RuleId::PetAttack => Event::PetAttack {
                     pet: self.actor(g("pet").unwrap_or_default()),
                     target: self.actor(g("target").unwrap_or_default()),
+                },
+                RuleId::PetLeader => Event::PetLeader {
+                    pet: self.actor(g("pet").unwrap_or_default()),
+                    leader: self.actor(g("leader").unwrap_or_default()),
                 },
                 RuleId::LoggedOn => Event::LoggedOn,
                 RuleId::TradeOffer => Event::TradeOffer {
@@ -1866,6 +1885,28 @@ mod tests {
         match p().parse_body("You have gained a level! Welcome to level 42!") {
             Event::LevelUp { level } => assert_eq!(level, 42),
             other => panic!("expected level up, got {other:?}"),
+        }
+    }
+
+    /// `/pet leader` is a say line, so it has to beat the generic chat rule to
+    /// the match or it arrives as ordinary conversation.
+    #[test]
+    fn pet_leader_beats_the_chat_rule() {
+        match p().parse_body("Xabarn says, 'My leader is Brennagh.'") {
+            Event::PetLeader { pet, leader } => {
+                assert_eq!(pet.display("Tharn"), "Xabarn");
+                assert_eq!(leader.display("Tharn"), "Brennagh");
+            }
+            other => panic!("expected a pet leader line, got {other:?}"),
+        }
+    }
+
+    /// An ordinary say that merely mentions a leader is still conversation.
+    #[test]
+    fn ordinary_say_is_not_a_pet_leader_line() {
+        match p().parse_body("Trux says, 'need to be in a town no to guild leader'") {
+            Event::Chat { .. } => {}
+            other => panic!("expected chat, got {other:?}"),
         }
     }
 

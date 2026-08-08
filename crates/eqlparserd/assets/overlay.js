@@ -11,6 +11,8 @@
  *   ?width=340            overlay width in px
  *   ?self=1               show only your own row in the meter
  *   ?enemies=0            hide enemy rows
+ *   ?crit=0               hide the crit % column in the meter
+ *   ?scope=session        meter the whole session, or ?scope=zone for the zone
  *   ?idle=1               keep the last fight on screen when combat ends
  */
 
@@ -32,6 +34,10 @@
     width: int(params.get("width"), 340),
     selfOnly: params.get("self") === "1",
     showEnemies: params.get("enemies") !== "0",
+    showCrit: params.get("crit") !== "0",
+    // "session" or "zone" replaces the per-fight meter with a running total.
+    // Anything else, including absent, means the fight in progress.
+    scope: ["session", "zone"].includes(params.get("scope")) ? params.get("scope") : null,
     keepIdle: params.get("idle") === "1",
   };
 
@@ -192,6 +198,38 @@
     setInterval(pollSky, SKY_POLL_MS);
   }
 
+  /* Session totals.
+   *
+   * Polled, not pushed: merging every fight of a session is too much work to
+   * do on each snapshot, which the WebSocket sends on every log line. Two
+   * seconds is imperceptible on a figure covering an evening.
+   *
+   * Rates from this endpoint are per second *of combat* — the daemon divides
+   * by time actually spent fighting, not by wall clock, so the number means
+   * the same thing as the one on a single pull. */
+  const SESSION_POLL_MS = 2000;
+  let sessionSummary = null;
+  let sessionMeta = null;
+
+  async function pollSession() {
+    if (!opt.scope) return;
+    try {
+      const r = await fetch(`/api/session?scope=${opt.scope}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      sessionSummary = d.fights ? d.summary : null;
+      sessionMeta = d;
+      if (lastSnapshot) render(lastSnapshot);
+    } catch (e) {
+      /* daemon busy; try again next tick */
+    }
+  }
+
+  if (opt.scope) {
+    pollSession();
+    setInterval(pollSession, SESSION_POLL_MS);
+  }
+
   // ---- formatting -------------------------------------------------------
 
   /** Compact large damage numbers; overlays are narrow. */
@@ -223,10 +261,14 @@
 
   function render(snap) {
     lastSnapshot = snap;
-    const enc = snap.current || (opt.keepIdle ? snap.recent && snap.recent[0] : null);
+    // With a scope set, the meter is the running total rather than the pull.
+    // Everything else on the page — buffs, auras, xp — is still about now.
+    const enc = opt.scope
+      ? sessionSummary
+      : snap.current || (opt.keepIdle ? snap.recent && snap.recent[0] : null);
 
     if (!enc) {
-      el.title.textContent = "Waiting for combat";
+      el.title.textContent = opt.scope ? "Nothing fought yet" : "Waiting for combat";
       el.title.classList.add("idle");
       el.meta.textContent = "";
       el.rows.innerHTML = '<div class="empty">No active encounter</div>';
@@ -235,8 +277,15 @@
       el.sub.innerHTML = "";
     } else {
       el.title.textContent = enc.title || "Encounter";
-      el.title.classList.toggle("idle", !snap.current);
-      el.meta.innerHTML = `<b>${num(enc.your_dps)}</b> dps &middot; ${dur(enc.duration)}`;
+      // A session total is never "idle": it is not waiting on anything.
+      el.title.classList.toggle("idle", !opt.scope && !snap.current);
+      // For a scoped meter the duration is combat time, so say what it counts
+      // rather than let it read as how long you have been playing.
+      el.meta.innerHTML = opt.scope
+        ? `<b>${num(enc.your_dps)}</b> dps &middot; ${dur(enc.duration)} fighting &middot; ${
+            sessionMeta ? sessionMeta.fights : 0
+          } fights`
+        : `<b>${num(enc.your_dps)}</b> dps &middot; ${dur(enc.duration)}`;
       renderRows(enc);
       renderMetric(el.healRows, enc, "healing", "hps", "heal_share", "No healing yet");
       renderMetric(el.takenRows, enc, "damage_taken", null, "taken_share", "No damage taken");
@@ -269,16 +318,34 @@
         if (r.is_you) cls.push("you");
         else if (r.is_pet) cls.push("pet");
         else if (r.is_enemy) cls.push("enemy");
-        const tag = r.is_pet ? '<span class="tag">charmed</span>' : "";
+        // A charm can break mid-fight and hand its damage back to the other
+        // side; a summoned pet cannot. Worth two words on a narrow overlay.
+        // Another player's pet is labelled with whose it is.
+        const tag = r.pet_kind
+          ? `<span class="tag${r.is_pet ? "" : " other"}">${
+              r.pet_kind === "charmed" ? "charmed" : "pet"
+            }${!r.is_pet && r.pet_owner ? " " + esc(r.pet_owner) : ""}</span>`
+          : "";
         return `<div class="${cls.join(" ")}" style="--share:${(r.share * 100).toFixed(1)}%">
           <span class="name">${esc(r.name)}${tag}</span>
           <span class="nums">
+            ${critCell(r)}
             <span class="dmg">${num(r.damage)}</span>
             <span class="dps">${num(r.dps)}</span>
           </span>
         </div>`;
       })
       .join("");
+  }
+
+  /* Crit rate for a meter row. The overall figure covers every mechanism at
+     once — shields never crit and dot ticks crit at their own rate — so it is
+     a summary, not a stat to tune against; the desktop app breaks it down by
+     type. Rendered as a column even at 0% so the numbers stay aligned, and
+     dropped entirely with ?crit=0 for narrow overlays. */
+  function critCell(r) {
+    if (!opt.showCrit) return "";
+    return `<span class="crit">${((r.crit_rate || 0) * 100).toFixed(0)}%</span>`;
   }
 
   /* Render a meter for a metric other than damage (healing, damage taken).
@@ -326,8 +393,14 @@
     el.sub.innerHTML = bits.join("");
   }
 
+  /** Where a class stops levelling. Mirrors `classlevel::LEVEL_CAP`. */
+  const LEVEL_CAP = 50;
+
   /* Progress through the current level, with the rate and a projected time to
-     level. The bar is the headline; the numbers are secondary. */
+     level. The bar is the headline; the numbers are secondary.
+
+     At the cap the bar disappears and the panel becomes an AA readout, which
+     is the only thing still moving. */
   function renderXp(snap) {
     const x = snap.exp;
     if (!x) return;
@@ -338,23 +411,36 @@
     el.xpTitle.textContent = snap.levelling
       ? `Level ${lvl} (${snap.levelling})`
       : `Level ${lvl}`;
+    // At the cap there is no next level, so the bar, the projection and the
+    // %/hr rate all describe something that cannot happen. `snap.level` is the
+    // *lowest* class in the loadout, so this only fires once every class is
+    // capped — while anything can still gain a level, the bar stays.
+    const capped = lvl >= LEVEL_CAP;
     const bits = [];
-    if (x.rate_per_hour > 0) bits.push(`<b>${x.rate_per_hour.toFixed(1)}</b> %/hr`);
+    if (!capped && x.rate_per_hour > 0)
+      bits.push(`<b>${x.rate_per_hour.toFixed(1)}</b> %/hr`);
     if (x.aa_per_hour > 0) bits.push(`<b>${x.aa_per_hour.toFixed(1)}</b> AA/hr`);
     el.xpMeta.innerHTML = bits.join(" &middot; ");
     const pct = Math.max(0, Math.min(100, x.percent));
     const eta = x.seconds_to_next_level != null ? dur(x.seconds_to_next_level) : "—";
-    el.xpRows.innerHTML = `<div class="row you" style="--share:${pct.toFixed(1)}%">
+    const levelRow = capped
+      ? ""
+      : `<div class="row you" style="--share:${pct.toFixed(1)}%">
       <span class="name">${pct.toFixed(1)}% &rarr; ${lvl + 1}</span>
       <span class="nums">
         <span class="dmg">${x.kills} kills</span>
         <span class="dps">${eta}</span>
-      </span></div>
+      </span></div>`;
+    el.xpRows.innerHTML = `${levelRow}
+      <!-- Unspent only. The client states the balance outright, so it is
+           always right; lifetime spent has to be reconstructed from purchases
+           in the log plus whatever baseline the player typed in, and in
+           practice it is wrong more often than not. A number nobody can trust
+           is worse on an overlay than no number at all. -->
       <div class="row" style="--share:0%">
         <span class="name">AA</span>
         <span class="nums">
-          <span class="dmg">${x.aa_unspent} unspent</span>
-          <span class="dps">${x.aa_spent} spent</span>
+          <span class="dps">${x.aa_unspent} unspent</span>
         </span></div>
       ${potionRow(x)}`;
   }

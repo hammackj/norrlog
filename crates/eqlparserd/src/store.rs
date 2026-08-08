@@ -427,6 +427,20 @@ impl Store {
                 updated INTEGER NOT NULL DEFAULT 0
             );
 
+            -- Alert rules. JSON for the same reason as quests: the trigger is
+            -- a tagged union whose arms grow, and columns would have to be
+            -- migrated every time one is added.
+            --
+            -- Deliberately not scoped to a character. An alert is a habit of
+            -- the person playing — you want to hear about a charm break on
+            -- every character that can charm, not to rebuild the rule set
+            -- after each log switch.
+            CREATE TABLE IF NOT EXISTS alerts (
+                id      TEXT PRIMARY KEY,
+                data    TEXT NOT NULL,
+                updated INTEGER NOT NULL DEFAULT 0
+            );
+
             -- Which log files have been seen, purely so the UI can say what
             -- the history is built from. Never used to decide what to parse:
             -- that is what the natural keys are for.
@@ -667,6 +681,37 @@ impl Store {
         let n = self
             .conn
             .execute("DELETE FROM quests WHERE name = ?1", params![name])?;
+        Ok(n > 0)
+    }
+
+    /// Write an alert rule, replacing any existing rule of the same id.
+    pub fn put_alert(&mut self, rule: &eqlparser_core::alert::AlertRule, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO alerts (id, data, updated) VALUES (?1,?2,?3)",
+            params![rule.id, serde_json::to_string(rule)?, now],
+        )?;
+        Ok(())
+    }
+
+    /// Every alert rule, oldest first so the list keeps the order they were
+    /// written in rather than reshuffling on each load.
+    pub fn alerts(&self) -> Result<Vec<eqlparser_core::alert::AlertRule>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM alerts ORDER BY updated ASC, id ASC")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .iter()
+            .filter_map(|d| serde_json::from_str(d).ok())
+            .collect())
+    }
+
+    pub fn delete_alert(&mut self, id: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM alerts WHERE id = ?1", params![id])?;
         Ok(n > 0)
     }
 
