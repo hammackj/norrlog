@@ -83,6 +83,7 @@ enum RuleId {
     RecipeLearned,
     SongFizzle,
     SpellMemorized,
+    StanceChanged,
     SpellForgotten,
     SpellGranted,
     PetAttack,
@@ -401,6 +402,13 @@ static RULES: &[(RuleId, &str)] = &[
         r"^You have finished memorizing (?P<spell>.+?)\.$",
     ),
     (RuleId::SpellForgotten, r"^You forget (?P<spell>.+?)\.$"),
+    // "You assume a defensive stance." — the stance you fight in changes how
+    // often a creature's swings land, so every melee observation is recorded
+    // against the stance it was made in rather than pooled across all of them.
+    (
+        RuleId::StanceChanged,
+        r"^You assume an? (?P<stance>[a-z]+) stance\.$",
+    ),
     (
         RuleId::SpellGranted,
         r"^You have been granted the following spell: (?P<spell>.+?)\.$",
@@ -1032,6 +1040,9 @@ impl Parser {
                 RuleId::SpellMemorized => Event::SpellbookChange {
                     spell: g("spell").unwrap_or_default().to_string(),
                     change: SpellbookChangeKind::Memorized,
+                },
+                RuleId::StanceChanged => Event::StanceChanged {
+                    stance: g("stance").unwrap_or_default().to_string(),
                 },
                 RuleId::SpellForgotten => Event::SpellbookChange {
                     spell: g("spell").unwrap_or_default().to_string(),

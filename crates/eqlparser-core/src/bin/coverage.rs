@@ -260,6 +260,7 @@ fn kind_name(e: &Event) -> &'static str {
         Event::ComponentConsumed { .. } => "ComponentConsumed",
         Event::ItemPurchased { .. } => "ItemPurchased",
         Event::RecipeLearned { .. } => "RecipeLearned",
+        Event::StanceChanged { .. } => "StanceChanged",
         Event::TaskAssigned { .. } => "TaskAssigned",
         Event::TaskUpdated { .. } => "TaskUpdated",
         Event::AchievementEarned { .. } => "AchievementEarned",

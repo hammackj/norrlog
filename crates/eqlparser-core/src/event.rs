@@ -262,6 +262,12 @@ pub enum Event {
     MerchantSale { coin: Coin, item: String },
     /// Zone transition.
     ZoneChange { zone: String },
+    /// You changed combat stance: balanced, defensive, offensive, evasive.
+    ///
+    /// A confounder for anything measured about being hit, which is why it is
+    /// tracked rather than ignored: the same creature lands a very different
+    /// share of its swings against a defensive stance than an offensive one.
+    StanceChanged { stance: String },
     /// A cast or song started. This is the anchor used to disambiguate the
     /// buff-landed flavour text that follows.
     CastStart {

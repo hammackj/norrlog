@@ -1,0 +1,127 @@
+# Every zone string seen across two characters' logs. Fixtures for
+# zone::tests: the parser has to hold for all of them, not just the shapes
+# someone thought to write a case for.
+Ak'Anon
+Befallen
+Befallen 1 (Awakened)
+Befallen 2 (Adaptive)
+Befallen 4 (Refined)
+Blackburrow
+Blackburrow 1 (Awakened)
+Blackburrow 2 (Adaptive)
+Butcherblock Mountains
+Clan Crushbone
+Clan Crushbone 2 (Adaptive)
+East Commonlands
+East Freeport
+East Freeport 1 (Awakened)
+East Freeport 2 (Adaptive)
+Erudin
+Everfrost Peaks
+Grobb
+High Keep
+Highpass Hold
+Innothule Swamp
+Innothule Swamp 1 (Awakened)
+Innothule Swamp 2 (Adaptive)
+Innothule Swamp 3 (Fused)
+Innothule Swamp 4 (Refined)
+Kithicor Forest
+Nagafen's Lair
+Nagafen's Lair - Solo
+Nagafen's Lair - Solo 1 (Awakened)
+Nagafen's Lair - Solo 2 (Adaptive)
+Nagafen's Lair - Solo 3 (Fused)
+Nagafen's Lair - Solo 4 (Refined)
+Nagafen's Lair 1 (Awakened)
+Nagafen's Lair 2 (Adaptive)
+Najena
+Najena 2 (Adaptive)
+Nektulos Forest
+Neriak - Commons
+Neriak - Foreign Quarter
+Neriak - Third Gate
+New Sebilis Expedition
+North Freeport
+North Kaladim
+North Qeynos
+Oggok
+Paineel
+Permafrost Keep
+Qeynos Hills
+Solusek's Eye
+Solusek's Eye 1 (Awakened)
+Solusek's Eye 2 (Adaptive)
+South Kaladim
+South Qeynos
+Surefall Glade
+Temple of Cazic-Thule
+The Castle of Mistmoore
+The Castle of Mistmoore 4 (Refined)
+The City of Guk
+The City of Guk 1 (Awakened)
+The City of Guk 2 (Adaptive)
+The City of Guk 4 (Refined)
+The Feerrott
+The Greater Faydark
+The Lair of the Splitpaw
+The Lavastorm Mountains
+The Lesser Faydark
+The Northern Desert of Ro
+The Northern Plains of Karana
+The Oasis of Marr
+The Ocean of Tears
+The Ocean of Tears 2 (Adaptive)
+The Permafrost Caverns - Solo
+The Permafrost Caverns - Solo 1 (Awakened)
+The Permafrost Caverns - Solo 2 (Adaptive)
+The Permafrost Caverns - Solo 3 (Fused)
+The Permafrost Caverns - Solo 4 (Refined)
+The Plane of Fear
+The Plane of Fear - Solo
+The Plane of Fear - Solo 1 (Awakened)
+The Plane of Fear - Solo 2 (Adaptive)
+The Plane of Fear - Solo 3 (Fused)
+The Plane of Fear - Solo 4 (Refined)
+The Plane of Fear 1 (Awakened)
+The Plane of Fear 2 (Adaptive)
+The Plane of Hate
+The Plane of Hate - Solo
+The Plane of Hate - Solo 1 (Awakened)
+The Plane of Hate - Solo 2 (Adaptive)
+The Plane of Hate - Solo 3 (Fused)
+The Plane of Hate - Solo 4 (Refined)
+The Plane of Hate 1 (Awakened)
+The Plane of Hate 2 (Adaptive)
+The Plane of Hate 3 (Fused)
+The Plane of Hate 4 (Refined)
+The Plane of Sky
+The Plane of Sky 1 (Awakened)
+The Rathe Mountains
+The Ruins of Old Guk
+The Ruins of Old Guk 1 (Awakened)
+The Ruins of Old Guk 2 (Adaptive)
+The Ruins of Old Guk 3 (Fused)
+The Ruins of Old Guk 4 (Refined)
+The Ruins of Old Paineel
+The Ruins of Old Paineel - Solo
+The Ruins of Old Paineel - Solo 1 (Awakened)
+The Ruins of Old Paineel - Solo 2 (Adaptive)
+The Ruins of Old Paineel - Solo 3 (Fused)
+The Ruins of Old Paineel - Solo 4 (Refined)
+The Ruins of Old Paineel 1 (Awakened)
+The Ruins of Old Paineel 2 (Adaptive)
+The Southern Desert of Ro
+The Southern Plains of Karana
+The Steamfont Mountains
+The Stonebrunt Mountains
+The Warrens
+The Western Plains of Karana
+The Western Plains of Karana 1 (Awakened)
+The Western Plains of Karana 3 (Fused)
+Toxxulia Forest
+West Commonlands
+West Commonlands 1 (Awakened)
+West Freeport
+an area where Bind Affinity is allowed
+the Hall of Truth

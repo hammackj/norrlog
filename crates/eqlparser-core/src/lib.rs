@@ -10,19 +10,24 @@
 
 pub mod aa;
 pub mod alert;
+pub mod bestiary;
 pub mod class;
 pub mod classlevel;
+pub mod drops;
 pub mod encounter;
 pub mod event;
 pub mod experience;
+pub mod game;
 pub mod lockout;
 pub mod npc;
 pub mod parser;
+pub mod recipe;
 pub mod skyquest;
 pub mod spell;
 pub mod task;
 pub mod tells;
 pub mod tradeskill;
+pub mod zone;
 
 pub use class::{Class, ClassDetector, ClassScore};
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
