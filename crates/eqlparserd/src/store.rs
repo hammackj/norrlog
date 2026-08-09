@@ -441,6 +441,157 @@ impl Store {
                 updated INTEGER NOT NULL DEFAULT 0
             );
 
+            -- What was seen dropping from what, and the kills behind it.
+            --
+            -- Keyed by the log it came from as well as the character, because
+            -- these are running totals rather than events: a re-parse of one
+            -- log REPLACEs that log's rows, while a second log adds its own.
+            -- Summing across the rows is therefore correct however many times
+            -- anything is re-read, which a single per-character total would
+            -- not be.
+            --
+            -- `game` is part of the key, not a detail hung off it. The same
+            -- creature in EverQuest and EverQuest Legends may not drop the
+            -- same things, and data that cannot say which game it describes
+            -- cannot be corrected later.
+            CREATE TABLE IF NOT EXISTS item_drops (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                item      TEXT NOT NULL,
+                npc       TEXT NOT NULL,
+                zones     TEXT NOT NULL DEFAULT '',
+                looted    INTEGER NOT NULL,
+                quantity  INTEGER NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, item, npc)
+            );
+
+            -- Kills per creature, the denominator behind a sighting count.
+            -- Separate from item_drops because a creature that dropped
+            -- nothing still has to be counted: it is evidence about
+            -- everything it did *not* drop.
+            CREATE TABLE IF NOT EXISTS npc_kills (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                npc       TEXT NOT NULL,
+                kills     INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, npc)
+            );
+
+            -- The bestiary: one row per creature per log.
+            --
+            -- Keyed on the zone variant, not just the name, because that is
+            -- what a creature *is* here — the same name at Awakened and at
+            -- Refined has different health and different loot, and a table
+            -- that cannot tell them apart can never be corrected into one
+            -- that can. (npc_kills above predates this and is still keyed on
+            -- the bare name; it pools tiers, and should follow.)
+            --
+            -- `source` is in the key for the usual reason: these are running
+            -- totals, so re-parsing a log must replace its own rows while a
+            -- second log adds to them.
+            CREATE TABLE IF NOT EXISTS npc_profiles (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                mode       TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                npc        TEXT NOT NULL,
+                kills        INTEGER NOT NULL,
+                deaths_to_it INTEGER NOT NULL,
+                max_hit      INTEGER NOT NULL,
+                first_seen   INTEGER NOT NULL,
+                last_seen    INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, zone, mode, difficulty, npc)
+            );
+
+            -- Melee, split by the pairing that produced it.
+            --
+            -- A hit rate is a fact about a creature swinging at one character,
+            -- at one level, in one stance. Level and stance are in the key so
+            -- that levelling up or switching stance opens a new row instead of
+            -- quietly contaminating the old one — the same rule the in-memory
+            -- bestiary follows, carried into storage.
+            CREATE TABLE IF NOT EXISTS npc_melee (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                mode       TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                npc        TEXT NOT NULL,
+                level      INTEGER NOT NULL,
+                stance     TEXT NOT NULL,
+                swings   INTEGER NOT NULL,
+                hits     INTEGER NOT NULL,
+                misses   INTEGER NOT NULL,
+                avoided  INTEGER NOT NULL,
+                damage   INTEGER NOT NULL,
+                max_hit  INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, zone, mode, difficulty, npc,
+                             level, stance)
+            );
+
+            -- One row per death that measured anything.
+            --
+            -- The summary is deliberately *not* stored. A median cannot be
+            -- merged with another log's median, so keeping min/median/max per
+            -- log would make the combined figure unrecoverable; keeping the
+            -- samples makes it exact. `at` is the kill's own timestamp, which
+            -- both keys the row and lets any figure be traced back to the
+            -- kills behind it. Two of a name dying in the same second having
+            -- absorbed exactly the same damage would key alike and count
+            -- once; a lost sample is the right way to lose that argument,
+            -- since the alternative is a synthetic id that stops a re-parse
+            -- from replacing its own rows.
+            CREATE TABLE IF NOT EXISTS npc_health_samples (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                mode       TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                npc        TEXT NOT NULL,
+                at         INTEGER NOT NULL,
+                hp         INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, zone, mode, difficulty, npc,
+                             at, hp)
+            );
+
+            -- What a merchant charged, and where they stand. The buying half
+            -- of where an item comes from; item_drops is the killing half.
+            --
+            -- Per merchant, never blended: the same reagent costs different
+            -- amounts from different vendors and at different factions, and
+            -- an average would destroy the one fact worth keeping — which
+            -- vendor is cheapest, and in which zone.
+            --
+            -- Keyed by log for the same reason as item_drops: these are
+            -- running totals, so a re-parse must replace its own rows while a
+            -- second log adds to them.
+            CREATE TABLE IF NOT EXISTS item_vendors (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                item      TEXT NOT NULL,
+                merchant  TEXT NOT NULL,
+                zone      TEXT NOT NULL DEFAULT '',
+                unit_copper INTEGER NOT NULL,
+                bought      INTEGER NOT NULL,
+                last_bought INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, item, merchant)
+            );
+
             -- Which log files have been seen, purely so the UI can say what
             -- the history is built from. Never used to decide what to parse:
             -- that is what the natural keys are for.
@@ -715,6 +866,480 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Record what this log has seen dropping, and the kills behind it.
+    ///
+    /// Rows are keyed by log, so this REPLACEs only what the same log said
+    /// last time. Re-parsing changes nothing; a different log adds to the
+    /// pile rather than overwriting it.
+    pub fn put_drops(
+        &mut self,
+        game: &str,
+        source: &str,
+        report: &eqlparser_core::drops::DropReport,
+    ) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        {
+            let mut drop_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO item_drops
+                 (game, character, server, source, item, npc, zones, looted, quantity,
+                  first_seen, last_seen)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )?;
+            for item in &report.items {
+                for s in &item.sources {
+                    drop_stmt.execute(params![
+                        game,
+                        c,
+                        sv,
+                        source,
+                        item.item,
+                        s.npc,
+                        s.zones.join("|"),
+                        s.looted as i64,
+                        s.quantity as i64,
+                        s.first_seen,
+                        s.last_seen,
+                    ])?;
+                    n += 1;
+                }
+            }
+            let mut kill_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO npc_kills
+                 (game, character, server, source, npc, kills) VALUES (?1,?2,?3,?4,?5,?6)",
+            )?;
+            for (npc, kills) in &report.kills {
+                kill_stmt.execute(params![game, c, sv, source, npc, *kills as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Every drop observation on file, summed across logs and characters.
+    ///
+    /// Returns `(game, item, npc, zones, looted, quantity, first_seen,
+    /// last_seen)`. The game stays in the key: totals are per game, never
+    /// pooled across the two.
+    #[allow(clippy::type_complexity)]
+    pub fn all_drops(&self) -> Result<Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT game, item, npc, group_concat(zones, '|'),
+                    SUM(looted), SUM(quantity), MIN(first_seen), MAX(last_seen)
+             FROM item_drops GROUP BY game, lower(item), lower(npc)
+             ORDER BY SUM(looted) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let zones: Option<String> = r.get(3)?;
+                let mut zones: Vec<String> = zones
+                    .unwrap_or_default()
+                    .split('|')
+                    .filter(|z| !z.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                zones.sort();
+                zones.dedup();
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    zones,
+                    r.get::<_, i64>(4)? as u64,
+                    r.get::<_, i64>(5)? as u64,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// What level to assume for a log that has not said yet.
+    ///
+    /// Nothing in a log states your level, so a file that opens mid-session
+    /// leaves the bestiary at zero until the next level-up — hours of swings
+    /// filed against an "unknown level" pairing that no later log will rejoin.
+    /// Three sources answer it, and the largest wins because levels only go
+    /// up:
+    ///
+    /// * `npc_melee` — the level the bestiary itself last filed rows under.
+    ///   The most direct evidence there is: not an inference about the
+    ///   character, but a record of what this exact code last believed.
+    /// * `levels` **plus one** — those rows are *completed* level spans, so
+    ///   the highest one finished means the next was reached. The `+1` is why
+    ///   this cannot be read off directly; a store written before the bestiary
+    ///   existed has nothing else to offer.
+    /// * `class_levels` — what the player entered by hand, and the only
+    ///   evidence at all for a character who capped before any of this was
+    ///   recorded.
+    ///
+    /// Returns 0 when nothing is known, which the caller must treat as "leave
+    /// it alone" rather than as level zero.
+    pub fn last_known_level(&self) -> Result<u32> {
+        let filed: Option<u32> = self.conn.query_row(
+            "SELECT MAX(level) FROM npc_melee WHERE character = ?1 AND server = ?2",
+            params![self.character, self.server],
+            |r| r.get(0),
+        )?;
+        let completed: Option<u32> = self.conn.query_row(
+            "SELECT MAX(level) FROM levels WHERE character = ?1 AND server = ?2",
+            params![self.character, self.server],
+            |r| r.get(0),
+        )?;
+        let stated: Option<u32> = self.conn.query_row(
+            "SELECT MAX(level) FROM class_levels WHERE character = ?1 AND server = ?2",
+            params![self.character, self.server],
+            |r| r.get(0),
+        )?;
+        Ok(filed
+            .unwrap_or(0)
+            .max(completed.map(|l| l + 1).unwrap_or(0))
+            .max(stated.unwrap_or(0)))
+    }
+
+    /// Record the bestiary this log produced: profiles, melee per pairing, and
+    /// every health sample.
+    ///
+    /// Same keying as [`Store::put_drops`] — a re-parse replaces this log's
+    /// rows and nothing else. The health samples are written in full rather
+    /// than summarised, because [`eqlparser_core::bestiary::merge`] has to
+    /// recompute the spread over every log at once and cannot do that from
+    /// per-log medians.
+    pub fn put_bestiary(
+        &mut self,
+        game: &str,
+        source: &str,
+        report: &eqlparser_core::bestiary::BestiaryReport,
+        health: &[eqlparser_core::bestiary::HealthSample],
+    ) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        {
+            let mut npc_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO npc_profiles
+                 (game, character, server, source, zone, mode, difficulty, npc,
+                  kills, deaths_to_it, max_hit, first_seen, last_seen)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            )?;
+            let mut melee_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO npc_melee
+                 (game, character, server, source, zone, mode, difficulty, npc,
+                  level, stance, swings, hits, misses, avoided, damage, max_hit)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            )?;
+            for p in &report.npcs {
+                npc_stmt.execute(params![
+                    game,
+                    c,
+                    sv,
+                    source,
+                    p.zone,
+                    p.mode.as_str(),
+                    p.difficulty,
+                    p.name,
+                    p.kills as i64,
+                    p.deaths_to_it as i64,
+                    p.max_hit as i64,
+                    p.first_seen,
+                    p.last_seen,
+                ])?;
+                n += 1;
+                for m in &p.melee {
+                    melee_stmt.execute(params![
+                        game,
+                        // The pairing's own character, not the store's: a
+                        // merged report can carry rows from another log.
+                        m.character,
+                        sv,
+                        source,
+                        p.zone,
+                        p.mode.as_str(),
+                        p.difficulty,
+                        p.name,
+                        m.level as i64,
+                        m.stance,
+                        m.swings as i64,
+                        m.hits as i64,
+                        m.misses as i64,
+                        m.avoided as i64,
+                        m.damage as i64,
+                        m.max_hit as i64,
+                    ])?;
+                }
+            }
+            let mut hp_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO npc_health_samples
+                 (game, character, server, source, zone, mode, difficulty, npc, at, hp)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            )?;
+            for s in health {
+                hp_stmt.execute(params![
+                    game,
+                    c,
+                    sv,
+                    source,
+                    s.zone,
+                    s.mode.as_str(),
+                    s.difficulty,
+                    s.name,
+                    s.at,
+                    s.hp as i64,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Every creature on file for one game, except those from one log.
+    ///
+    /// The exclusion is the whole point. The log being followed is flushed
+    /// here periodically, so its rows are already stored *and* still live in
+    /// the engine; a caller that wants both history and an up-to-the-second
+    /// view has to take the stored rows from every log but this one and let
+    /// the engine supply this one. Adding the two unfiltered would double
+    /// every kill in the current file.
+    ///
+    /// Returns profiles as they were written, per log — not merged. Folding
+    /// them is [`eqlparser_core::bestiary::merge`]'s job, so that one rule
+    /// governs it whether the caller is the API or a future export.
+    pub fn bestiary_excluding(
+        &self,
+        game: &str,
+        source: &str,
+    ) -> Result<(
+        Vec<eqlparser_core::bestiary::NpcProfile>,
+        Vec<eqlparser_core::bestiary::HealthSample>,
+    )> {
+        use eqlparser_core::bestiary::{HealthSample, MeleeAgainst, NpcProfile};
+        use eqlparser_core::game::Game;
+        use eqlparser_core::zone::Mode;
+
+        let parsed_game = match game {
+            "everquest" => Game::EverQuest,
+            "everquest-legends" => Game::EverQuestLegends,
+            _ => Game::Unknown,
+        };
+
+        // Melee first, so each profile can be handed its own rows.
+        //
+        // `source` is part of the grouping key, not just the creature: a
+        // profile row exists per log, and handing one log's profile the melee
+        // of every log would attach the same swings to a row whose counts do
+        // not include them. The merge would then see one already-pooled row
+        // rather than one row per log, and the pairing split would be lost.
+        type MeleeKey = (String, String, String, u8, String);
+        let mut melee: std::collections::HashMap<MeleeKey, Vec<MeleeAgainst>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT source, zone, mode, difficulty, npc, character, level, stance,
+                    swings, hits, misses, avoided, damage, max_hit
+             FROM npc_melee WHERE game = ?1 AND source <> ?2",
+        )?;
+        let rows = stmt.query_map(params![game, source], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, u8>(3)?,
+                r.get::<_, String>(4)?,
+                MeleeAgainst {
+                    character: r.get(5)?,
+                    level: r.get::<_, i64>(6)? as u32,
+                    stance: r.get(7)?,
+                    swings: r.get::<_, i64>(8)? as u64,
+                    hits: r.get::<_, i64>(9)? as u64,
+                    misses: r.get::<_, i64>(10)? as u64,
+                    avoided: r.get::<_, i64>(11)? as u64,
+                    damage: r.get::<_, i64>(12)? as u64,
+                    max_hit: r.get::<_, i64>(13)? as u64,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (src, zone, mode, difficulty, npc, m) = row?;
+            melee
+                .entry((src, zone, mode, difficulty, npc))
+                .or_default()
+                .push(m);
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT source, zone, mode, difficulty, npc, kills, deaths_to_it, max_hit,
+                    first_seen, last_seen
+             FROM npc_profiles WHERE game = ?1 AND source <> ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![game, source], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, u8>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)? as u64,
+                    r.get::<_, i64>(6)? as u64,
+                    r.get::<_, i64>(7)? as u64,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut profiles = Vec::with_capacity(rows.len());
+        for (src, zone, mode, difficulty, npc, kills, deaths, max_hit, first, last) in rows {
+            // A mode nothing recognises is dropped rather than guessed at:
+            // filing an instance as the open world would merge it into a
+            // different creature entirely.
+            let Some(parsed_mode) = Mode::from_str(&mode) else {
+                continue;
+            };
+            profiles.push(NpcProfile {
+                melee: melee
+                    .remove(&(src, zone.clone(), mode, difficulty, npc.clone()))
+                    .unwrap_or_default(),
+                name: npc,
+                zone,
+                mode: parsed_mode,
+                difficulty,
+                game: parsed_game,
+                kills,
+                deaths_to_it: deaths,
+                // Recomputed by the merge from the samples; whatever is put
+                // here would be overwritten.
+                health_samples: 0,
+                health_min: 0,
+                health_median: 0,
+                health_max: 0,
+                max_hit,
+                first_seen: first,
+                last_seen: last,
+            });
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT zone, mode, difficulty, npc, at, hp
+             FROM npc_health_samples WHERE game = ?1 AND source <> ?2",
+        )?;
+        let health = stmt
+            .query_map(params![game, source], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, u8>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)? as u64,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(zone, mode, difficulty, name, at, hp)| {
+                Some(HealthSample {
+                    zone,
+                    mode: Mode::from_str(&mode)?,
+                    difficulty,
+                    name,
+                    at,
+                    hp,
+                })
+            })
+            .collect();
+
+        Ok((profiles, health))
+    }
+
+    /// Record what merchants charged, per merchant.
+    ///
+    /// Same keying as [`Store::put_drops`]: a re-parse replaces this log's
+    /// rows and nothing else.
+    pub fn put_vendors(
+        &mut self,
+        game: &str,
+        source: &str,
+        prices: &[eqlparser_core::tradeskill::ItemPrice],
+    ) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO item_vendors
+                 (game, character, server, source, item, merchant, zone,
+                  unit_copper, bought, last_bought)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            )?;
+            for p in prices {
+                for v in &p.vendors {
+                    stmt.execute(params![
+                        game,
+                        c,
+                        sv,
+                        source,
+                        p.item,
+                        v.merchant,
+                        v.zone.clone().unwrap_or_default(),
+                        v.unit_copper as i64,
+                        v.bought as i64,
+                        v.last_bought,
+                    ])?;
+                    n += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Every merchant price on file, summed across logs and characters.
+    ///
+    /// Returns `(game, item, merchant, zone, unit_copper, bought,
+    /// last_bought)`. Quantities add up across logs; the price is the most
+    /// recent one paid rather than a sum or an average, since it is what that
+    /// merchant charges today.
+    #[allow(clippy::type_complexity)]
+    pub fn all_vendors(&self) -> Result<Vec<(String, String, String, String, u64, u64, i64)>> {
+        // SQLite resolves the bare columns beside a MAX() aggregate from the
+        // row that produced the maximum, which is exactly the "price as of the
+        // most recent purchase" wanted here.
+        let mut stmt = self.conn.prepare(
+            "SELECT game, item, merchant, zone, unit_copper, SUM(bought), MAX(last_bought)
+             FROM item_vendors GROUP BY game, lower(item), lower(merchant)
+             ORDER BY unit_copper DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    r.get::<_, i64>(4)? as u64,
+                    r.get::<_, i64>(5)? as u64,
+                    r.get(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Kills per creature per game, summed across logs and characters.
+    pub fn all_kills(&self) -> Result<Vec<(String, String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT game, npc, SUM(kills) FROM npc_kills
+             GROUP BY game, lower(npc) ORDER BY SUM(kills) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn note_source(&mut self, path: &str, bytes: u64, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO sources (path, last_seen, bytes) VALUES (?1,?2,?3)",
@@ -871,6 +1496,268 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bestiary built the way the engine builds one, so the test exercises
+    /// the real report rather than hand-written rows.
+    fn bestiary(
+        character: &str,
+        zone: &str,
+        level: u32,
+        kills: &[(i64, u64)],
+    ) -> (
+        eqlparser_core::bestiary::BestiaryReport,
+        Vec<eqlparser_core::bestiary::HealthSample>,
+    ) {
+        use eqlparser_core::bestiary::{Bestiary, Swing};
+        let mut b = Bestiary::new(eqlparser_core::game::Game::EverQuestLegends, character);
+        b.on_level(level);
+        b.on_stance("defensive");
+        b.on_zone(zone);
+        for (at, hp) in kills {
+            b.on_damage_to(*at, "a fire giant", *hp);
+            b.on_kill(*at, "a fire giant");
+            b.on_swing(*at, "a fire giant", Swing::Hit(*hp / 100));
+        }
+        (b.report(), b.health_samples())
+    }
+
+    /// The whole reason the bestiary is persisted: a creature's record has to
+    /// outlive the log file it was seen in, and two logs have to add up.
+    ///
+    /// Re-reading one log replaces its own rows rather than doubling them —
+    /// the same property the drop and vendor tables need, and the one that
+    /// makes a periodic flush safe to run as often as we like.
+    #[test]
+    fn a_creature_survives_its_log_and_two_logs_add_up() {
+        let mut s = Store::in_memory().unwrap();
+        let zone = "Nagafen's Lair - Solo 4 (Refined)";
+        let (first, first_hp) = bestiary("Tharn", zone, 50, &[(100, 20000), (200, 22000)]);
+        let (second, second_hp) = bestiary("Tharn", zone, 50, &[(900, 24000)]);
+
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &first, &first_hp)
+            .unwrap();
+        // Flushed twice, as the daemon really does on its timer.
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &first, &first_hp)
+            .unwrap();
+        s.put_bestiary("everquest-legends", "/logs/two.txt", &second, &second_hp)
+            .unwrap();
+
+        let (profiles, health) = s
+            .bestiary_excluding("everquest-legends", "/no/such/log.txt")
+            .unwrap();
+        let merged = eqlparser_core::bestiary::merge(profiles, &health);
+
+        assert_eq!(merged.len(), 1, "one creature across both logs: {merged:?}");
+        let p = &merged[0];
+        assert_eq!(p.kills, 3, "a second flush of the same log must not double it");
+        assert_eq!(p.zone, "Nagafen's Lair");
+        assert_eq!((p.mode, p.difficulty), (eqlparser_core::zone::Mode::Solo, 4));
+        assert_eq!((p.first_seen, p.last_seen), (100, 900));
+        assert_eq!(
+            (p.health_samples, p.health_min, p.health_median, p.health_max),
+            (3, 20000, 22000, 24000),
+            "every sample kept, and the median taken over all of them"
+        );
+        // Melee round-trips with the pairing intact, stance and all.
+        assert_eq!(p.melee.len(), 1);
+        assert_eq!(
+            (p.melee[0].character.as_str(), p.melee[0].level, p.melee[0].stance.as_str()),
+            ("Tharn", 50, "defensive")
+        );
+        assert_eq!(p.melee[0].swings, 3);
+    }
+
+    /// The exclusion the API depends on. The followed log is stored *and*
+    /// live in the engine, so the stored side must be able to leave it out —
+    /// otherwise every kill in the open file counts twice.
+    #[test]
+    fn the_followed_log_can_be_left_out_of_the_stored_side() {
+        let mut s = Store::in_memory().unwrap();
+        let zone = "Befallen 2 (Adaptive)";
+        let (old, old_hp) = bestiary("Tharn", zone, 30, &[(100, 1000)]);
+        let (live, live_hp) = bestiary("Tharn", zone, 30, &[(500, 1200), (600, 1100)]);
+        s.put_bestiary("everquest-legends", "/logs/old.txt", &old, &old_hp)
+            .unwrap();
+        s.put_bestiary("everquest-legends", "/logs/live.txt", &live, &live_hp)
+            .unwrap();
+
+        let (profiles, health) = s
+            .bestiary_excluding("everquest-legends", "/logs/live.txt")
+            .unwrap();
+        // Only the old log came back...
+        assert_eq!(eqlparser_core::bestiary::merge(profiles.clone(), &health)[0].kills, 1);
+
+        // ...so adding the engine's own view gives each kill exactly once.
+        let combined = eqlparser_core::bestiary::merge(
+            live.npcs.clone().into_iter().chain(profiles),
+            &[health, live_hp].concat(),
+        );
+        assert_eq!(combined[0].kills, 3);
+        assert_eq!(combined[0].health_samples, 3);
+    }
+
+    /// The level a rolled log has to be told, and where each answer comes
+    /// from. Getting this wrong files hours of swings under a pairing that
+    /// never rejoins the real one.
+    #[test]
+    fn the_last_known_level_prefers_direct_evidence_over_inference() {
+        let mut s = Store::in_memory().unwrap();
+        assert_eq!(
+            s.last_known_level().unwrap(),
+            0,
+            "nothing on file is not level zero, and the caller must not seed it"
+        );
+
+        // A completed level 49 means 50 was reached — the row itself never
+        // says 50, which is exactly the trap.
+        s.put_levels(&[StoredLevel {
+            level: 49,
+            started: 10,
+            ended: 20,
+            seconds: 10,
+            kills: 5,
+            percent: 100.0,
+            build: String::new(),
+            zones: "[]".into(),
+        }])
+        .unwrap();
+        assert_eq!(s.last_known_level().unwrap(), 50);
+
+        // The bestiary's own rows outrank that inference.
+        let (report, health) = bestiary("Test", "Befallen 2 (Adaptive)", 52, &[(100, 900)]);
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &report, &health)
+            .unwrap();
+        assert_eq!(s.last_known_level().unwrap(), 52);
+
+        // And a level stated by hand still counts when it is the highest.
+        s.put_class_level("WAR", 60, 30).unwrap();
+        assert_eq!(s.last_known_level().unwrap(), 60);
+    }
+
+    /// Another character's level must not leak into this one's — an alt who
+    /// has never left Qeynos would otherwise be seeded at the main's cap.
+    #[test]
+    fn the_last_known_level_is_per_character() {
+        let dir = std::env::temp_dir().join("eqlparser-bestiary-level-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("history.db");
+
+        let mut main = Store::open_as(&path, "Tharn", "freeport").unwrap();
+        let (report, health) = bestiary("Tharn", "Befallen 2 (Adaptive)", 52, &[(100, 900)]);
+        main.put_bestiary("everquest-legends", "/logs/one.txt", &report, &health)
+            .unwrap();
+        assert_eq!(main.last_known_level().unwrap(), 52);
+        drop(main);
+
+        let alt = Store::open_as(&path, "Grimhide", "freeport").unwrap();
+        assert_eq!(
+            alt.last_known_level().unwrap(),
+            0,
+            "an alt starts from nothing, not from the main's level"
+        );
+    }
+
+    /// Two games are two sets of creatures. Pooling them would assert that a
+    /// fire giant in EverQuest has the health of one in Legends.
+    #[test]
+    fn one_game_never_reads_back_anothers_creatures() {
+        let mut s = Store::in_memory().unwrap();
+        let (eql, eql_hp) = bestiary("Tharn", "Nagafen's Lair", 50, &[(100, 20000)]);
+        s.put_bestiary("everquest-legends", "/logs/eql.txt", &eql, &eql_hp)
+            .unwrap();
+        s.put_bestiary("everquest", "/logs/eq.txt", &eql, &eql_hp)
+            .unwrap();
+
+        let (profiles, health) = s.bestiary_excluding("everquest", "/none").unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(health.len(), 1);
+        assert_eq!(profiles[0].game, eqlparser_core::game::Game::EverQuest);
+    }
+
+    /// A creature's identity includes the tier, in storage as much as in
+    /// memory. If the table pooled them, the harder one's health would be
+    /// averaged away with the easier one's.
+    #[test]
+    fn stored_tiers_stay_separate_creatures() {
+        let mut s = Store::in_memory().unwrap();
+        let (t1, t1_hp) = bestiary("Tharn", "Nagafen's Lair - Solo 1 (Awakened)", 50, &[(100, 5000)]);
+        let (t4, t4_hp) = bestiary("Tharn", "Nagafen's Lair - Solo 4 (Refined)", 50, &[(200, 30000)]);
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &t1, &t1_hp)
+            .unwrap();
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &t4, &t4_hp)
+            .unwrap();
+
+        let (profiles, health) = s.bestiary_excluding("everquest-legends", "/none").unwrap();
+        let merged = eqlparser_core::bestiary::merge(profiles, &health);
+        assert_eq!(merged.len(), 2, "same name and place, two tiers: {merged:?}");
+        let easy = merged.iter().find(|p| p.difficulty == 1).unwrap();
+        let hard = merged.iter().find(|p| p.difficulty == 4).unwrap();
+        assert_eq!((easy.health_median, hard.health_median), (5000, 30000));
+    }
+
+    fn price(item: &str, merchant: &str, zone: &str, copper: u64, bought: u64, at: i64)
+        -> eqlparser_core::tradeskill::ItemPrice
+    {
+        eqlparser_core::tradeskill::ItemPrice {
+            item: item.into(),
+            unit_copper: copper,
+            bought,
+            last_bought: at,
+            vendors: vec![eqlparser_core::tradeskill::VendorPrice {
+                merchant: merchant.into(),
+                zone: Some(zone.into()),
+                unit_copper: copper,
+                bought,
+                last_bought: at,
+            }],
+        }
+    }
+
+    /// Merchant prices have to survive the log they came from. Re-reading one
+    /// log replaces its own rows; a second log adds to them. Getting this
+    /// wrong either doubles the totals or throws away everything but the log
+    /// currently open.
+    #[test]
+    fn vendor_prices_accumulate_across_logs_and_survive_a_reparse() {
+        let mut s = Store::in_memory().unwrap();
+        let log_a = "/logs/eqlog_Tharn_freeport.txt";
+        let log_b = "/logs/eqlog_Alt_freeport.txt";
+
+        s.put_vendors("everquest-legends", log_a,
+            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 654, 1000, 100)]).unwrap();
+        // The same log read again: same keys, so the row is replaced.
+        s.put_vendors("everquest-legends", log_a,
+            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 654, 1000, 100)]).unwrap();
+
+        let v = s.all_vendors().unwrap();
+        assert_eq!(v.len(), 1, "a re-parse is not a second set of purchases");
+        assert_eq!(v[0].5, 1000, "still a thousand, not two");
+
+        // A different log is genuinely more data, and adds.
+        s.put_vendors("everquest-legends", log_b,
+            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 700, 500, 200)]).unwrap();
+        let v = s.all_vendors().unwrap();
+        assert_eq!(v.len(), 1, "one merchant, one item");
+        assert_eq!(v[0].5, 1500, "both logs' purchases");
+        assert_eq!(v[0].4, 700, "the price as of the most recent purchase");
+        assert_eq!(v[0].3, "Innothule Swamp");
+    }
+
+    /// Two games are two datasets. The same merchant name in each must not be
+    /// pooled, because the price need not be the same.
+    #[test]
+    fn vendor_prices_are_not_pooled_across_games() {
+        let mut s = Store::in_memory().unwrap();
+        s.put_vendors("everquest", "/logs/a.txt",
+            &[price("Water Flask", "Clork", "Innothule Swamp", 10, 100, 100)]).unwrap();
+        s.put_vendors("everquest-legends", "/logs/b.txt",
+            &[price("Water Flask", "Clork", "Innothule Swamp", 99, 100, 100)]).unwrap();
+
+        let v = s.all_vendors().unwrap();
+        assert_eq!(v.len(), 2, "one row per game: {v:?}");
+        let games: Vec<&str> = v.iter().map(|r| r.0.as_str()).collect();
+        assert!(games.contains(&"everquest") && games.contains(&"everquest-legends"));
+    }
 
     fn kill(ts: i64, boss: &str, build: &str) -> StoredKill {
         StoredKill {

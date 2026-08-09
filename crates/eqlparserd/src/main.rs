@@ -10,6 +10,7 @@ mod store;
 mod tail;
 
 use engine::Engine;
+use eqlparser_core::game::Game;
 use eqlparser_core::Parser;
 use server::AppState;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,9 @@ struct Config {
     logs_dir: Option<PathBuf>,
     game_dir: Option<PathBuf>,
     port: u16,
+    /// Which game the log is from, when declared. Left `None` to infer it
+    /// from the install path.
+    game: Option<Game>,
 }
 
 fn usage() -> ! {
@@ -38,6 +42,7 @@ fn usage() -> ! {
 
 USAGE:
     eqlparserd [--log <file>] [--logs-dir <dir>] [--game-dir <dir>] [--port <n>]
+               [--game <eq|eql>]
 
 OPTIONS:
     --log <file>       Log file to follow. If omitted, the newest eqlog_*.txt
@@ -45,6 +50,10 @@ OPTIONS:
     --logs-dir <dir>   Directory of EverQuest logs.
     --game-dir <dir>   Game install directory, for spells_us.txt. Without it,
                        buff timers and class detection are unavailable.
+    --game <name>      Which game this log is from: eq (EverQuest) or eql
+                       (EverQuest Legends). Inferred from the install path
+                       when omitted, and left unknown if that says nothing.
+                       Everything the daemon records is tagged with it.
     --port <n>         HTTP port (default 8777).
 
 ENDPOINTS:
@@ -65,6 +74,7 @@ fn parse_args() -> Config {
         logs_dir: None,
         game_dir: None,
         port: DEFAULT_PORT,
+        game: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -72,6 +82,16 @@ fn parse_args() -> Config {
             "--log" => cfg.log = args.next().map(PathBuf::from),
             "--logs-dir" => cfg.logs_dir = args.next().map(PathBuf::from),
             "--game-dir" => cfg.game_dir = args.next().map(PathBuf::from),
+            "--game" => {
+                let raw = args.next().unwrap_or_default();
+                match Game::parse(&raw) {
+                    Some(g) => cfg.game = Some(g),
+                    None => {
+                        eprintln!("[eqlparserd] unknown --game {raw:?}; expected eq or eql");
+                        usage()
+                    }
+                }
+            }
             "--port" => {
                 cfg.port = args
                     .next()
@@ -124,8 +144,31 @@ async fn main() -> anyhow::Result<()> {
         }
     );
 
+    // Nothing in a log says which game wrote it, so this comes from the
+    // install being followed, or is declared. An install directory is the
+    // better evidence of the two paths — a log file can be copied anywhere.
+    let game = cfg.game.unwrap_or_else(|| {
+        Game::detect(
+            [cfg.game_dir.as_deref(), Some(log_path.as_path())]
+                .into_iter()
+                .flatten(),
+        )
+    });
+    eprintln!(
+        "[eqlparserd] game: {game}{}",
+        match (cfg.game.is_some(), game) {
+            (true, _) => " (declared)",
+            // Worth saying out loud: everything recorded from here on carries
+            // this tag, and an untagged pile of observations is hard to fix
+            // afterwards.
+            (false, Game::Unknown) =>
+                " — pass --game eq or --game eql to tag what this session records",
+            (false, _) => " (from the install path)",
+        }
+    );
+
     let spell_db = Engine::load_spell_db(cfg.game_dir.as_deref());
-    let engine = Engine::new(player.clone(), spell_db);
+    let engine = Engine::with_game(player.clone(), spell_db, game);
 
     // History outlives any one log file. Opened before the follower starts so
     // the first flush after catch-up has somewhere to go.
@@ -180,6 +223,12 @@ async fn main() -> anyhow::Result<()> {
             }
             if let Ok(Some(spent)) = store.stated("aa_spent") {
                 engine.set_stated_aa_spent(spent as u32);
+            }
+            // The level the bestiary should assume until this log says
+            // otherwise; see `Store::last_known_level` for where it comes from.
+            match store.last_known_level() {
+                Ok(level) => engine.set_known_level(level),
+                Err(e) => eprintln!("[eqlparserd] could not read the last known level: {e}"),
             }
             // Alerts are not scoped to a character, so these load whichever
             // log is being followed. They stay disarmed until the backlog is
@@ -253,6 +302,17 @@ fn history_path() -> PathBuf {
 fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
     let (kills, encs, levels, aa) = { engine.lock().unwrap().history_to_persist() };
     let sky_turn_ins = { engine.lock().unwrap().sky_turn_ins() };
+    let (drops, prices, game, bestiary, health) = {
+        let e = engine.lock().unwrap();
+        (
+            e.drop_report(),
+            e.tradeskill_report().prices,
+            e.game(),
+            e.bestiary_report(),
+            e.bestiary_health_samples(),
+        )
+    };
+    let source = path.to_string_lossy().to_string();
     let mut st = store.lock().unwrap();
     if let Err(e) = st
         .put_kills(&kills)
@@ -260,6 +320,9 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
         .and_then(|_| st.put_levels(&levels))
         .and_then(|_| st.put_aa(&aa))
         .and_then(|_| st.put_sky_turnins(&sky_turn_ins))
+        .and_then(|_| st.put_drops(game.slug(), &source, &drops))
+        .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
+        .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))
     {
         eprintln!("[eqlparserd] history write failed: {e}");
         return;
@@ -361,6 +424,7 @@ mod tests {
             logs_dir: Some(PathBuf::from("/nonexistent")),
             game_dir: None,
             port: DEFAULT_PORT,
+            game: None,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -375,6 +439,7 @@ mod tests {
             logs_dir: None,
             game_dir: None,
             port: DEFAULT_PORT,
+            game: None,
         };
         assert!(resolve_log(&cfg).is_err());
     }

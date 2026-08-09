@@ -7,8 +7,11 @@
 
 use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::alert::{AlertBook, AlertFire, AlertRule, Signal};
+use eqlparser_core::bestiary::{Bestiary, BestiaryReport, HealthSample, Swing};
 use eqlparser_core::class::{ClassDetector, ClassScore};
+use eqlparser_core::drops::{DropReport, DropTracker};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
+use eqlparser_core::game::Game;
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::npc::{NpcReport, NpcTracker};
@@ -507,6 +510,57 @@ fn system_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Everything known about one item, curated and observed kept apart.
+///
+/// The separation is the point. A recipe comes from a reference site and is
+/// true of the game; a drop, a price or a combine count comes from one
+/// character's log and is true of what that character happened to see. Merging
+/// them would produce a record nobody could audit later.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ItemEntry {
+    pub item: String,
+    /// Which game the *observations* are from. Curated recipes carry their own
+    /// game tag, since a book entry may describe a game this log is not.
+    pub game: eqlparser_core::game::Game,
+    /// The tradeskill that makes it, when known.
+    pub skill: Option<String>,
+    /// Curated: recipes that produce it.
+    pub made_by: Vec<eqlparser_core::recipe::Recipe>,
+    /// Curated: products it is a component of.
+    pub used_in: Vec<String>,
+    /// Curated: a tool a combine hands back rather than consumes.
+    pub tool: bool,
+    /// Observed: creatures it was looted from.
+    pub dropped_by: Vec<eqlparser_core::drops::DropSighting>,
+    /// Observed: the last unit price a merchant charged, in copper.
+    pub merchant_copper: Option<u64>,
+    /// Observed: how many were bought.
+    pub bought: u64,
+    /// Observed: who sold it and where — the counterpart to `dropped_by`, and
+    /// the other way an item enters the world.
+    pub sold_by: Vec<eqlparser_core::tradeskill::VendorPrice>,
+    /// Observed: combines attempted at it, and how many succeeded.
+    pub combines: u64,
+    pub combine_successes: u64,
+    /// Observed: how many were consumed by combines.
+    pub consumed: u64,
+}
+
+/// The item database this log has contributed to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ItemDatabase {
+    /// The game the observations describe. `unknown` when the install could
+    /// not be identified — see [`eqlparser_core::game`].
+    pub game: eqlparser_core::game::Game,
+    /// Whose log the observations came from.
+    pub character: String,
+    pub items: Vec<ItemEntry>,
+    /// Creatures killed and how often, as the denominator behind every
+    /// sighting count. Not a drop rate: corpses you never looted are in here
+    /// too, so a rate derived from it is a floor.
+    pub kills: Vec<(String, u64)>,
+}
+
 /// Owns the parsing pipeline and derives snapshots from it.
 pub struct Engine {
     parser: Parser,
@@ -531,6 +585,11 @@ pub struct Engine {
     /// The description line awaiting its cost, so a rank keeps its text.
     aa_pending_desc: String,
     trades: TradeskillTracker,
+    /// Where items were seen coming from, tagged with the game they were seen
+    /// in — see [`eqlparser_core::game`] for why that tag is not optional.
+    drops: DropTracker,
+    /// Creature profiles, keyed by zone, mode and difficulty.
+    bestiary: Bestiary,
     tasks: TaskTracker,
     encounters: Vec<Encounter>,
     /// Coin taken from corpses, and coin from items auto-sold on pickup.
@@ -599,6 +658,13 @@ const TIMELINE_ENCOUNTERS: usize = 25;
 
 impl Engine {
     pub fn new(player: String, spell_db: SpellDb) -> Engine {
+        Engine::with_game(player, spell_db, Game::Unknown)
+    }
+
+    /// An engine that knows which game its log came from, so what it observes
+    /// is recorded as being about that game rather than about EverQuest in
+    /// general.
+    pub fn with_game(player: String, spell_db: SpellDb, game: Game) -> Engine {
         let mut e = Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
@@ -616,6 +682,8 @@ impl Engine {
             last_charm_attempt: None,
             aa_pending_desc: String::new(),
             trades: TradeskillTracker::new(),
+            drops: DropTracker::new(game),
+            bestiary: Bestiary::new(game, &player),
             tasks: TaskTracker::new(),
             encounters: Vec::new(),
             coin_from_corpses: 0,
@@ -861,10 +929,16 @@ impl Engine {
                 item,
                 quantity,
                 coin,
-                ..
-            } => self
-                .trades
-                .on_purchase(entry.timestamp, item, *quantity, coin.as_copper()),
+                merchant,
+            } => self.trades.on_purchase_from(
+                entry.timestamp,
+                item,
+                *quantity,
+                coin.as_copper(),
+                Some(merchant.as_str()),
+                // Where you are standing is where the merchant is.
+                self.tracker.current_zone(),
+            ),
             Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
             Event::Chat {
                 speaker,
@@ -963,6 +1037,39 @@ impl Engine {
                 self.sky.on_trade_complete(entry.timestamp, npc);
                 self.npcs.on_trade_complete(entry.timestamp, npc);
             }
+            // Damage into a creature is evidence of its health; damage out of
+            // one is evidence about the pairing. Both are recorded, neither is
+            // confused for the other.
+            Event::Damage {
+                source,
+                target,
+                amount,
+                ..
+            } => {
+                if let eqlparser_core::event::Actor::Named(npc) = target {
+                    self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
+                }
+                if target.is_you() {
+                    if let eqlparser_core::event::Actor::Named(npc) = source {
+                        self.bestiary
+                            .on_swing(entry.timestamp, npc, Swing::Hit(*amount));
+                    }
+                }
+            }
+            Event::Miss { source, target, .. } => {
+                if target.is_you() {
+                    if let eqlparser_core::event::Actor::Named(npc) = source {
+                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Missed);
+                    }
+                }
+            }
+            Event::Avoided { source, target, .. } => {
+                if target.is_you() {
+                    if let eqlparser_core::event::Actor::Named(npc) = source {
+                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Avoided);
+                    }
+                }
+            }
             Event::Faction {
                 faction,
                 adjustment,
@@ -1009,7 +1116,9 @@ impl Engine {
                     }
                 }
             }
+            Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
             Event::LevelUp { level } => {
+                self.bestiary.on_level(*level as u32);
                 self.resolver.set_level(*level);
                 self.exp.on_level_up(entry.timestamp, *level);
                 let trio = self.current_loadout(entry.timestamp);
@@ -1029,6 +1138,21 @@ impl Engine {
                 // Recorded here as well as inside the encounter, because loot
                 // frequently arrives after the fight has closed.
                 self.sky.on_loot(item, *quantity);
+
+                // A named corpse that is not your own is a creature, and what
+                // came off it is a drop. Your own corpse is items going back
+                // where they came from, which says nothing about any creature.
+                if let Some(eqlparser_core::event::Actor::Named(npc)) = source {
+                    if !npc.eq_ignore_ascii_case(&self.player) {
+                        self.drops.on_drop(
+                            entry.timestamp,
+                            item,
+                            *quantity,
+                            npc,
+                            self.tracker.current_zone(),
+                        );
+                    }
+                }
                 let (fate, destination, sold) =
                     eqlparser_core::encounter::LootFate::split(disposition);
                 let record = eqlparser_core::encounter::LootRecord {
@@ -1061,6 +1185,11 @@ impl Engine {
                 // lines for it, so this is the only chance to notice.
                 if victim.is_you() {
                     self.resolver.clear_on_death();
+                    // What actually kills you is worth knowing per creature,
+                    // and it is the one statistic a death line states outright.
+                    if let Some(eqlparser_core::event::Actor::Named(k)) = killer {
+                        self.bestiary.on_your_death(entry.timestamp, k);
+                    }
                 }
                 // Credit is by *participation*, not the killing blow. The game
                 // attributes the final hit to whoever landed it, which for a
@@ -1077,6 +1206,13 @@ impl Engine {
                 if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
                     let name = victim.display(&self.player);
                     self.exp.on_kill(entry.timestamp, &name);
+                    // The denominator for every drop this creature did or did
+                    // not yield. Counted whether or not the corpse was looted,
+                    // which is what makes a sighting count a floor.
+                    self.drops.on_kill(&name);
+                    // Closes out the damage accumulated into it, which becomes
+                    // a lower bound on its health.
+                    self.bestiary.on_kill(entry.timestamp, &name);
                     // Difficulty comes from the zone, so use the zone we were
                     // in when it died, not wherever we ended up later.
                     let was_raid_target =
@@ -1099,6 +1235,9 @@ impl Engine {
                 }
             }
             Event::ZoneChange { zone } => {
+                // Everything the bestiary records is keyed on where you are,
+                // and a zone line also ends any fight still in progress.
+                self.bestiary.on_zone(zone);
                 // Most buffs do not survive a zone line in practice, but rather
                 // than drop them we simply let them expire naturally.
                 self.resolver.expire(entry.timestamp);
@@ -1373,6 +1512,25 @@ impl Engine {
     /// Apply levels the player entered, from the history database.
     pub fn set_stated_level(&mut self, class: eqlparser_core::class::Class, level: u32, at: i64) {
         self.class_levels.set_stated(class, level, at);
+    }
+
+    /// Tell the bestiary what level the character was before this log opened.
+    ///
+    /// Nothing in a log states your level; it is only ever learned from a
+    /// level-up line. So the first log the daemon reads is fine, and every log
+    /// after a roll is not — the client opens a new file mid-session and the
+    /// character will not level again for hours, during which every swing
+    /// would be filed against level 0.
+    ///
+    /// That matters more now that these rows persist. Filed at 0 they do not
+    /// merely read wrong, they key wrong: `(character, level, stance)` is the
+    /// pairing, so the same fights split into an "unknown level" row that no
+    /// later log will ever join up with. Seeding from what the store already
+    /// knows keeps one pairing one row across a roll.
+    pub fn set_known_level(&mut self, level: u32) {
+        if level > 0 {
+            self.bestiary.on_level(level);
+        }
     }
 
     /// Per-class levels, and whether a `/who` would settle anything.
@@ -1813,7 +1971,117 @@ impl Engine {
 
     /// Tradeskill activity: skill progress, combines and components.
     pub fn tradeskill_report(&self) -> TradeskillReport {
-        self.trades.report()
+        let mut r = self.trades.report();
+        // The tracker knows nothing about which game it is reading; the cost
+        // totals mean different things in the two, so the tag is stamped on
+        // here where it is known.
+        r.game = self.game();
+        r
+    }
+
+    /// Where items were seen coming from, and how often.
+    pub fn drop_report(&self) -> DropReport {
+        self.drops.report()
+    }
+
+    /// Creature profiles, keyed by zone, mode and difficulty.
+    pub fn bestiary_report(&self) -> BestiaryReport {
+        self.bestiary.report()
+    }
+
+    /// Every health measurement this log produced, one row per death.
+    ///
+    /// Separate from the report because it is evidence rather than a summary:
+    /// the store keeps these so a median can be taken across every log, which
+    /// no amount of per-log spreads would allow.
+    pub fn bestiary_health_samples(&self) -> Vec<HealthSample> {
+        self.bestiary.health_samples()
+    }
+
+    /// Which game this engine's log is from.
+    pub fn game(&self) -> Game {
+        self.drops.game()
+    }
+
+    /// Everything known about the items this log has touched, gathered into
+    /// one record per item.
+    ///
+    /// This is the shape a reference site wants: an item, what makes it, what
+    /// it goes into, what drops it, what it sells for — with the observed
+    /// parts kept apart from the curated ones, so a reader can always tell a
+    /// recipe someone typed in from a drop this character actually saw.
+    pub fn item_database(&self) -> ItemDatabase {
+        let book = eqlparser_core::recipe::RecipeBook::embedded();
+        let trades = self.trades.report();
+        let drops = self.drops.report();
+
+        let game = drops.game;
+        let mut items: std::collections::BTreeMap<String, ItemEntry> =
+            std::collections::BTreeMap::new();
+        macro_rules! entry {
+            ($name:expr) => {
+                items
+                    .entry($name.to_lowercase())
+                    .or_insert_with(|| ItemEntry {
+                        item: $name.to_string(),
+                        game,
+                        ..Default::default()
+                    })
+            };
+        }
+
+        // Curated: every recipe in the book, indexed both ways — what makes
+        // this item, and what this item goes into.
+        for r in &book.recipes {
+            entry!(r.product).made_by.push(r.clone());
+            for c in r.components.iter().flatten() {
+                let u = entry!(c.item);
+                if !u.used_in.iter().any(|p| p.eq_ignore_ascii_case(&r.product)) {
+                    u.used_in.push(r.product.clone());
+                }
+            }
+        }
+        for t in &book.tools {
+            entry!(t).tool = true;
+        }
+
+        // Observed: drops, merchant prices, and combines attempted.
+        for d in &drops.items {
+            entry!(d.item).dropped_by = d.sources.clone();
+        }
+        for p in &trades.prices {
+            let e = entry!(p.item);
+            e.merchant_copper = Some(p.unit_copper);
+            e.bought = p.bought;
+            e.sold_by = p.vendors.clone();
+        }
+        for c in &trades.crafts {
+            let e = entry!(c.item);
+            e.combines = c.attempts() as u64;
+            e.combine_successes = c.successes as u64;
+            if e.skill.is_none() {
+                e.skill = c.skill.clone();
+            }
+        }
+        for cu in &trades.components {
+            entry!(cu.item).consumed = cu.used;
+        }
+
+        let mut items: Vec<ItemEntry> = items.into_values().collect();
+        for e in &mut items {
+            if e.skill.is_none() {
+                e.skill = e.made_by.first().map(|r| r.skill.clone());
+            }
+            e.used_in.sort();
+        }
+        items.sort_by(|a, b| a.item.to_lowercase().cmp(&b.item.to_lowercase()));
+
+        ItemDatabase {
+            game: drops.game,
+            character: self.player.clone(),
+            items,
+            kills: drops.kills,
+        }
     }
 
     /// Weekly and daily boss lockout grid.

@@ -49,6 +49,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experience", get(experience))
         .route("/api/lockouts", get(lockouts))
         .route("/api/tradeskills", get(tradeskills))
+        .route("/api/items", get(items))
+        .route("/api/drops", get(drops))
+        .route("/api/bestiary", get(bestiary))
         .route("/api/tasks", get(tasks).post(define_task))
         .route("/api/builds", get(builds))
         .route("/api/history", get(history))
@@ -626,6 +629,173 @@ async fn tradeskills(
 ) -> Json<eqlparser_core::tradeskill::TradeskillReport> {
     let engine = s.engine.lock().unwrap();
     Json(engine.tradeskill_report())
+}
+
+/// The item database: recipes, drop sources, prices and combine counts, one
+/// record per item, tagged with the game the observations came from.
+///
+/// This is the export a reference site would consume. Curated fields (recipes,
+/// tools) and observed fields (drops, prices, combines) are kept in separate
+/// keys so a reader can always tell which is which.
+async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
+    let mut db = { s.engine.lock().unwrap().item_database() };
+
+    // Everything on file, not only what this log happens to contain — the
+    // point of collecting is that it accumulates. Rows for other games are
+    // left out rather than pooled: the same creature need not drop the same
+    // things in both.
+    if let Some(store) = &s.store {
+        if let Ok(st) = store.lock() {
+            let kills: std::collections::HashMap<String, u64> = st
+                .all_kills()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(g, _, _)| *g == db.game.slug())
+                .map(|(_, npc, n)| (npc.to_lowercase(), n))
+                .collect();
+            if let Ok(rows) = st.all_drops() {
+                for (game, item, npc, zones, looted, quantity, first_seen, last_seen) in rows {
+                    if game != db.game.slug() {
+                        continue;
+                    }
+                    let sighting = eqlparser_core::drops::DropSighting {
+                        kills: kills.get(&npc.to_lowercase()).copied().unwrap_or(0),
+                        npc,
+                        zones,
+                        looted,
+                        quantity,
+                        first_seen,
+                        last_seen,
+                    };
+                    match db
+                        .items
+                        .iter_mut()
+                        .find(|e| e.item.eq_ignore_ascii_case(&item))
+                    {
+                        Some(e) => {
+                            // The stored row already includes this log's own
+                            // contribution, flushed earlier, so it replaces
+                            // rather than adds to what the engine reported.
+                            match e
+                                .dropped_by
+                                .iter_mut()
+                                .find(|d| d.npc.eq_ignore_ascii_case(&sighting.npc))
+                            {
+                                Some(d) if d.looted >= sighting.looted => {}
+                                Some(d) => *d = sighting,
+                                None => e.dropped_by.push(sighting),
+                            }
+                        }
+                        None => db.items.push(crate::engine::ItemEntry {
+                            item,
+                            game: db.game,
+                            dropped_by: vec![sighting],
+                            ..Default::default()
+                        }),
+                    }
+                }
+            }
+            // Merchants on file, same treatment as drops: the stored row
+            // already contains this log's contribution, so it replaces rather
+            // than adds to what the engine reported.
+            if let Ok(rows) = st.all_vendors() {
+                for (game, item, merchant, zone, unit_copper, bought, last_bought) in rows {
+                    if game != db.game.slug() {
+                        continue;
+                    }
+                    let vendor = eqlparser_core::tradeskill::VendorPrice {
+                        merchant,
+                        zone: Some(zone).filter(|z| !z.is_empty()),
+                        unit_copper,
+                        bought,
+                        last_bought,
+                    };
+                    match db
+                        .items
+                        .iter_mut()
+                        .find(|e| e.item.eq_ignore_ascii_case(&item))
+                    {
+                        Some(e) => match e
+                            .sold_by
+                            .iter_mut()
+                            .find(|v| v.merchant.eq_ignore_ascii_case(&vendor.merchant))
+                        {
+                            Some(v) if v.bought >= vendor.bought => {}
+                            Some(v) => *v = vendor,
+                            None => e.sold_by.push(vendor),
+                        },
+                        None => db.items.push(crate::engine::ItemEntry {
+                            item,
+                            game: db.game,
+                            merchant_copper: Some(vendor.unit_copper),
+                            bought: vendor.bought,
+                            sold_by: vec![vendor],
+                            ..Default::default()
+                        }),
+                    }
+                }
+            }
+            db.kills = kills.into_iter().collect();
+        }
+    }
+    for e in &mut db.items {
+        e.sold_by
+            .sort_by_key(|v| std::cmp::Reverse(v.unit_copper));
+    }
+    for e in &mut db.items {
+        e.dropped_by
+            .sort_by_key(|d| std::cmp::Reverse(d.looted));
+    }
+    db.items.sort_by_key(|e| e.item.to_lowercase());
+    db.kills.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Json(db)
+}
+
+/// Creature profiles: one per (zone, mode, difficulty, name).
+///
+/// Every log on file, not only the one being followed. The stored side
+/// deliberately excludes the current log — those rows exist too, flushed on a
+/// timer, and counting them as well as the engine's live view would double
+/// every kill in the file open right now. So: history from every *other* log,
+/// plus the engine for this one, which also keeps the figures current between
+/// flushes rather than up to a flush interval stale.
+async fn bestiary(State(s): State<AppState>) -> Json<eqlparser_core::bestiary::BestiaryReport> {
+    let (live, live_health, game) = {
+        let e = s.engine.lock().unwrap();
+        (
+            e.bestiary_report(),
+            e.bestiary_health_samples(),
+            e.game(),
+        )
+    };
+
+    let Some(store) = &s.store else {
+        return Json(live);
+    };
+    let Ok(st) = store.lock() else {
+        return Json(live);
+    };
+    let source = s.log_path.to_string_lossy().to_string();
+    // Rows for other games are left out rather than pooled: the same creature
+    // need not have the same health or hit as hard in both.
+    let Ok((stored, stored_health)) = st.bestiary_excluding(game.slug(), &source) else {
+        return Json(live);
+    };
+
+    let health = [live_health, stored_health].concat();
+    Json(eqlparser_core::bestiary::BestiaryReport {
+        game,
+        npcs: eqlparser_core::bestiary::merge(
+            live.npcs.into_iter().chain(stored),
+            &health,
+        ),
+    })
+}
+
+/// What was seen dropping from what, with the kill counts behind it.
+async fn drops(State(s): State<AppState>) -> Json<eqlparser_core::drops::DropReport> {
+    let engine = s.engine.lock().unwrap();
+    Json(engine.drop_report())
 }
 
 #[derive(Debug, Deserialize)]
