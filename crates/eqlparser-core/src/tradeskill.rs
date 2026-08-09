@@ -42,9 +42,29 @@
 //! The association is then remembered per item, letting the many combines that
 //! yield no skill-up be attributed too. This matters because skill-ups become
 //! rare as a skill caps, which is exactly when most combines happen.
+//!
+//! # Attributing components to a combine
+//!
+//! The `Consumed` lines are written in the same two orders, for the same
+//! reason. A failure announces its outcome and then what it ate; a success
+//! announces what it ate and then the outcome:
+//!
+//! ```text
+//! You lacked the skills to fashion Metal Bits.
+//! Consumed 1 x Small Piece of Ore (leaving 693) from your personal depot.
+//!
+//! Consumed 1 x Small Piece of Ore (leaving 691) from your personal depot.
+//! You have fashioned the items together to create something new: Metal Bits.
+//! ```
+//!
+//! Across two characters' logs — 5,178 `Consumed` lines — the two orders are
+//! perfectly separated: every line preceded by a same-second outcome follows a
+//! failure, every line followed by one precedes a success, and nothing falls in
+//! between. So a component belongs to the combine it shares a second with,
+//! whichever side of it that combine is announced on.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// How far from a combine a skill-up is still taken to belong to it.
 ///
@@ -63,6 +83,11 @@ pub const TRADESKILLS: &[&str] = &[
     "Baking",
     "Blacksmithing",
     "Brewing",
+    // A skill like the others: it has a trivial, needs a container and bait,
+    // and yields items. The recipe book carries hundreds of fishing recipes,
+    // and leaving it out would mean combines the book can attribute to a skill
+    // the rest of the app refuses to recognise.
+    "Fishing",
     "Fletching",
     "Jewelry Making",
     "Make Poison",
@@ -76,15 +101,12 @@ pub fn is_tradeskill(skill: &str) -> bool {
     TRADESKILLS.iter().any(|s| s.eq_ignore_ascii_case(skill))
 }
 
-/// Recipes whose tradeskill cannot be inferred from the log.
-///
-/// Attribution normally comes from an adjacent skill-up, but a recipe that
-/// never skills up leaves no evidence at all — and component-based inference
-/// does not help either, because reagents taken from inventory rather than the
-/// depot produce no "Consumed" line. Such recipes are seeded here.
-///
-/// Extend this list, or call [`TradeskillTracker::set_item_skill`] at runtime.
-pub const KNOWN_RECIPE_SKILLS: &[(&str, &str)] = &[("Kilva's Skin of Flame", "Alchemy")];
+/// Recipes whose tradeskill cannot be inferred from the log are supplied by
+/// the recipe book instead — see [`crate::recipe`], and
+/// `crates/eqlparser-core/assets/recipes.json` for the data itself. A mapping
+/// can also be declared at runtime with
+/// [`TradeskillTracker::set_item_skill`].
+pub use crate::recipe::RecipeBook;
 
 /// Progress in one tradeskill.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +183,13 @@ pub struct ComponentUse {
     /// Stock reported by the client after the most recent use.
     pub remaining: Option<u64>,
     pub last_used: i64,
+    /// Tradeskills whose recipes were seen consuming this, alphabetically.
+    ///
+    /// A list rather than one skill because a component is rarely exclusive —
+    /// a water flask goes into most of them — and empty when every recipe that
+    /// consumed it is itself unattributed.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// One skill point, with what earned it.
@@ -196,25 +225,117 @@ pub struct SkillSegment {
     /// Attempts at this item within the stretch, and how many worked.
     pub attempts: u32,
     pub successes: u32,
+    /// What the stretch cost: every attempt in it at this recipe's per-combine
+    /// price. A failed combine eats its components like any other, so this
+    /// counts attempts, not successes. Zero when the recipe has no observed
+    /// price, which is not the same as free — see [`SkillCost`].
+    #[serde(default)]
+    pub copper: u64,
     pub started: i64,
     pub ended: i64,
+}
+
+/// A recipe the character learned.
+///
+/// The client names the recipe and nothing else, so its tradeskill is only
+/// known when the same name has been combined and attributed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearnedRecipe {
+    pub recipe: String,
+    pub skill: Option<String>,
+}
+
+/// What raising one tradeskill has cost, recipe by recipe.
+///
+/// # Why attempts and not successes
+///
+/// A combine consumes its components whether or not it works, so what a skill
+/// cost is what every attempt at it cost. In EverQuest Legends that is the
+/// whole story. In classic EverQuest the Salvage AA hands some components back
+/// from a failure at random, so the same figure is an upper bound there — and
+/// since nothing in the log announces a salvage, that gap cannot be measured
+/// from here. The game is carried on the report so a reader can say which of
+/// the two they are looking at rather than guess.
+///
+/// # Why it is still a floor in both
+///
+/// Per-combine prices come from components the log announced and a merchant
+/// priced. Anything taken from inventory, or never bought, is not in the
+/// figure at all. `priced_attempts` against `attempts` is how much of the
+/// effort the total actually covers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillCost {
+    pub skill: String,
+    /// Sum over recipes of attempts times per-combine price.
+    pub copper: u64,
+    /// Every combine attributed to this skill.
+    pub attempts: u64,
+    /// Attempts at recipes that have a per-combine price at all. The rest
+    /// contribute nothing, which is why the total is a floor.
+    pub priced_attempts: u64,
+    /// Of those, attempts priced from the recipe book rather than from
+    /// components the log announced. Reported separately because the two are
+    /// different kinds of claim, and a total that blurs them cannot be
+    /// checked.
+    #[serde(default)]
+    pub book_priced_attempts: u64,
+    /// Per recipe, dearest first.
+    pub recipes: Vec<RecipeSpend>,
+}
+
+/// What one recipe cost across every attempt at it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeSpend {
+    pub item: String,
+    pub attempts: u64,
+    pub successes: u64,
+    /// Per-combine price, or `None` when nothing could price it.
+    pub unit_copper: Option<u64>,
+    /// Priced from the recipe book because the log announced nothing.
+    #[serde(default)]
+    pub from_book: bool,
+    pub copper: u64,
 }
 
 /// Everything the tradeskill tab shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeskillReport {
+    /// Which game these observations are from. Decides whether the cost
+    /// totals are what was spent (Legends) or an upper bound before Salvage
+    /// (classic).
+    #[serde(default)]
+    pub game: crate::game::Game,
+    /// What each tradeskill cost to raise, dearest first.
+    pub skill_costs: Vec<SkillCost>,
     pub skills: Vec<SkillProgress>,
     /// Per-skill history, oldest first.
     pub segments: Vec<SkillSegment>,
     pub crafts: Vec<CraftRecord>,
     pub components: Vec<ComponentUse>,
-    pub recipes_learned: Vec<String>,
+    pub recipes_learned: Vec<LearnedRecipe>,
     pub total_successes: u32,
     pub total_failures: u32,
     /// What each recipe cost per combine, as far as can be shown.
     pub costs: Vec<RecipeCost>,
     /// Merchant prices learned from purchases, dearest first.
     pub prices: Vec<ItemPrice>,
+}
+
+fn observed_basis() -> CostBasis {
+    CostBasis::Observed
+}
+
+/// Where a per-combine price came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CostBasis {
+    /// Components the log announced going in, priced from purchases. What
+    /// actually happened, but only ever a subset: inventory is silent.
+    Observed,
+    /// Components the recipe book lists, priced from purchases. Complete as to
+    /// what a combine takes, but it assumes the book's recipe is the one that
+    /// was used, and assumes the price paid still applied.
+    Recipe,
 }
 
 /// The observable cost of one combine at a recipe.
@@ -226,8 +347,16 @@ pub struct TradeskillReport {
 pub struct RecipeCost {
     pub item: String,
     pub skill: Option<String>,
+    /// Whether the components behind this figure were seen in the log or read
+    /// out of the recipe book.
+    #[serde(default = "observed_basis")]
+    pub basis: CostBasis,
     /// Copper per combine, from the components seen and priced.
     pub unit_copper: u64,
+    /// Every attempt at this recipe at that price. Failures included: they
+    /// eat their components too.
+    #[serde(default)]
+    pub total_copper: u64,
     /// Components seen going in, dearest first: (name, qty per combine, copper).
     pub components: Vec<CostComponent>,
     /// Combines whose components the log revealed.
@@ -263,6 +392,26 @@ pub struct ItemPrice {
     pub item: String,
     /// Price of one, in copper. Prices vary by merchant and faction; this is
     /// the most recent one paid.
+    pub unit_copper: u64,
+    pub bought: u64,
+    pub last_bought: i64,
+    /// Who sold it and where, dearest first.
+    ///
+    /// Kept per merchant rather than collapsed into one price: the same
+    /// reagent costs different amounts from different vendors and at different
+    /// factions, and "where do I buy this" is a question the single figure
+    /// above cannot answer.
+    #[serde(default)]
+    pub vendors: Vec<VendorPrice>,
+}
+
+/// One merchant's price for an item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VendorPrice {
+    pub merchant: String,
+    /// The zone you were in when you bought it, which is where the merchant
+    /// is. Absent only if the log had not yet said which zone that was.
+    pub zone: Option<String>,
     pub unit_copper: u64,
     pub bought: u64,
     pub last_bought: i64,
@@ -315,6 +464,9 @@ pub struct TradeskillTracker {
     consumed: HashMap<String, ConsumedBy>,
     /// Item key -> what a merchant charged for it.
     prices: HashMap<String, ItemPrice>,
+    /// (item key, merchant key) -> that merchant's price, so "where do I buy
+    /// this" survives alongside "what does it cost".
+    vendors: HashMap<(String, String), VendorPrice>,
     /// Counts combines, so one combine's several `Consumed` lines are one.
     craft_seq: u64,
     /// Every skill point in order, per skill.
@@ -326,6 +478,11 @@ pub struct TradeskillTracker {
     /// Mappings declared rather than inferred. A skill-up that merely happens
     /// to land near one of these combines must not relabel it.
     declared: std::collections::HashSet<String>,
+    /// Components announced before the combine that ate them — the success
+    /// ordering — waiting for it to be named: (second, component key, qty).
+    pending_components: Vec<(i64, String, u64)>,
+    /// Recipes known independently of the log.
+    book: &'static RecipeBook,
 }
 
 impl Default for TradeskillTracker {
@@ -336,7 +493,15 @@ impl Default for TradeskillTracker {
 
 impl TradeskillTracker {
     pub fn new() -> Self {
+        Self::with_book(RecipeBook::embedded())
+    }
+
+    /// A tracker reading a particular recipe book, for tests that need to
+    /// control what is known in advance.
+    pub fn with_book(book: &'static RecipeBook) -> Self {
         let mut t = TradeskillTracker {
+            book,
+            pending_components: Vec::new(),
             timeline: HashMap::new(),
             attempts: Vec::new(),
             skills: HashMap::new(),
@@ -348,12 +513,17 @@ impl TradeskillTracker {
             last_craft: None,
             consumed: HashMap::new(),
             prices: HashMap::new(),
+            vendors: HashMap::new(),
             craft_seq: 0,
             item_skill: HashMap::new(),
             declared: std::collections::HashSet::new(),
         };
-        for (item, skill) in KNOWN_RECIPE_SKILLS {
-            t.set_item_skill(item, skill);
+        let known: Vec<(String, String)> = book
+            .products()
+            .map(|(i, s)| (i.to_string(), s.to_string()))
+            .collect();
+        for (item, skill) in known {
+            t.set_item_skill(&item, &skill);
         }
         t
     }
@@ -373,6 +543,14 @@ impl TradeskillTracker {
 
     /// Record a combine attempt.
     pub fn on_craft(&mut self, timestamp: i64, item: &str, success: bool) {
+        // A combine hands its tools back, and the client announces that with
+        // the same line it uses for what you made. Counting it would invent a
+        // combine, and — because it would become the most recent one — would
+        // hand the real combine's components to the tool as well.
+        if self.book.is_tool(item) {
+            return;
+        }
+
         let key = item.to_lowercase();
         let known = self.item_skill.get(&key).cloned();
         let e = self
@@ -400,12 +578,23 @@ impl TradeskillTracker {
         // Set before any early return: the `Consumed` lines that follow belong
         // to this combine whether or not it also earned a point.
         self.craft_seq += 1;
+        let seq = self.craft_seq;
         self.last_craft = Some(PendingCraft {
             at: timestamp,
             item: key.clone(),
-            seq: self.craft_seq,
+            seq,
         });
         self.consumed.entry(key.clone()).or_default().combines += 1;
+
+        // Components announced ahead of this line are this combine's — the
+        // success ordering. Anything left over was announced in a second that
+        // never produced an outcome, and is discarded rather than handed to
+        // the next combine along.
+        for (at, comp, qty) in std::mem::take(&mut self.pending_components) {
+            if at == timestamp {
+                self.attribute_component(&key, seq, comp, qty);
+            }
+        }
 
         // A point already announced is this combine's, if it is close enough:
         // that is the success ordering, where the point precedes the line
@@ -563,24 +752,35 @@ impl TradeskillTracker {
                 used: 0,
                 remaining: None,
                 last_used: timestamp,
+                // Filled in at report time, from the recipes seen consuming it.
+                skills: Vec::new(),
             });
         e.used += qty;
         e.remaining = remaining;
         e.last_used = timestamp;
 
-        // The client prints what a combine consumed immediately after its
-        // outcome, so the most recent combine is the one that used it. This
-        // reads `last_craft` rather than `pending` because the skill-up in
+        // A combine already announced this second is a failure announcing what
+        // it ate; otherwise the combine is still to come, and this waits for
+        // it. Reads `last_craft` rather than `pending` because a skill-up in
         // between will have spent `pending` already.
-        if let Some(p) = self.last_craft.clone() {
-            if timestamp - p.at <= SKILL_ATTRIBUTION_WINDOW {
-                let c = self.consumed.entry(p.item).or_default();
-                *c.per_combine.entry(key).or_insert(0) += qty;
-                if c.last_seq != Some(p.seq) {
-                    c.last_seq = Some(p.seq);
-                    c.costed += 1;
-                }
-            }
+        //
+        // Same second exactly, not the skill-up's one-second slack: a combine
+        // one second earlier is the *previous* attempt, and attributing to it
+        // is precisely the mistake this replaced.
+        match self.last_craft.clone() {
+            Some(p) if p.at == timestamp => self.attribute_component(&p.item, p.seq, key, qty),
+            _ => self.pending_components.push((timestamp, key, qty)),
+        }
+    }
+
+    /// Charge a component to a combine, counting the combine as costed the
+    /// first time one of its components is seen.
+    fn attribute_component(&mut self, recipe: &str, seq: u64, component: String, qty: u64) {
+        let c = self.consumed.entry(recipe.to_string()).or_default();
+        *c.per_combine.entry(component).or_insert(0) += qty;
+        if c.last_seq != Some(seq) {
+            c.last_seq = Some(seq);
+            c.costed += 1;
         }
     }
 
@@ -588,14 +788,52 @@ impl TradeskillTracker {
     /// costable; prices move with faction and merchant, so the most recent one
     /// paid is the one used.
     pub fn on_purchase(&mut self, timestamp: i64, item: &str, qty: u64, total_copper: u64) {
+        self.on_purchase_from(timestamp, item, qty, total_copper, None, None)
+    }
+
+    /// A purchase with its provenance: who sold it and where they stand.
+    ///
+    /// "Where do I buy this" is a different question from "what does it cost",
+    /// and only this form can answer it.
+    pub fn on_purchase_from(
+        &mut self,
+        timestamp: i64,
+        item: &str,
+        qty: u64,
+        total_copper: u64,
+        merchant: Option<&str>,
+        zone: Option<&str>,
+    ) {
         if qty == 0 {
             return;
+        }
+        if let Some(m) = merchant.filter(|m| !m.is_empty()) {
+            let v = self
+                .vendors
+                .entry((item.to_lowercase(), m.to_lowercase()))
+                .or_insert_with(|| VendorPrice {
+                    merchant: m.to_string(),
+                    zone: None,
+                    unit_copper: 0,
+                    bought: 0,
+                    last_bought: timestamp,
+                });
+            v.unit_copper = total_copper / qty;
+            v.bought += qty;
+            v.last_bought = timestamp;
+            // Where you were standing is where the merchant is. Only
+            // overwritten by a real zone, so an early purchase before the log
+            // named one is corrected rather than blanked.
+            if let Some(z) = zone.filter(|z| !z.is_empty()) {
+                v.zone = Some(z.to_string());
+            }
         }
         let e = self
             .prices
             .entry(item.to_lowercase())
             .or_insert_with(|| ItemPrice {
                 item: item.to_string(),
+                vendors: Vec::new(),
                 unit_copper: 0,
                 bought: 0,
                 last_bought: timestamp,
@@ -648,6 +886,8 @@ impl TradeskillTracker {
                     ups: 1,
                     attempts: 0,
                     successes: 0,
+                    // Filled in once per-combine prices are known.
+                    copper: 0,
                     started: e.at,
                     ended: e.at,
                 });
@@ -696,7 +936,33 @@ impl TradeskillTracker {
             .collect();
         crafts.sort_by_key(|c| std::cmp::Reverse(c.attempts()));
 
-        let mut components: Vec<ComponentUse> = self.components.values().cloned().collect();
+        // Which tradeskills each component serves, from the recipes seen
+        // consuming it. A component whose recipes are all unattributed carries
+        // no skill rather than a guessed one.
+        let mut component_skills: HashMap<&str, BTreeSet<&str>> = HashMap::new();
+        for (recipe, c) in &self.consumed {
+            let Some(skill) = self.item_skill.get(recipe) else {
+                continue;
+            };
+            for comp in c.per_combine.keys() {
+                component_skills
+                    .entry(comp.as_str())
+                    .or_default()
+                    .insert(skill.as_str());
+            }
+        }
+
+        let mut components: Vec<ComponentUse> = self
+            .components
+            .iter()
+            .map(|(key, c)| ComponentUse {
+                skills: component_skills
+                    .get(key.as_str())
+                    .map(|s| s.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default(),
+                ..c.clone()
+            })
+            .collect();
         components.sort_by_key(|c| std::cmp::Reverse(c.used));
 
         let mut costs: Vec<RecipeCost> = self
@@ -727,6 +993,7 @@ impl TradeskillTracker {
                 }
                 parts.sort_by_key(|p| std::cmp::Reverse(p.copper));
                 unpriced.sort();
+                let unit: u64 = parts.iter().map(|p| p.copper).sum();
                 RecipeCost {
                     item: self
                         .crafts
@@ -734,7 +1001,11 @@ impl TradeskillTracker {
                         .map(|c| c.item.clone())
                         .unwrap_or_else(|| key.clone()),
                     skill: self.item_skill.get(key).cloned(),
-                    unit_copper: parts.iter().map(|p| p.copper).sum(),
+                    basis: CostBasis::Observed,
+                    unit_copper: unit,
+                    // Every attempt, not every success: a failed combine eats
+                    // its components just the same.
+                    total_copper: unit * c.combines,
                     components: parts,
                     costed: c.costed,
                     combines: c.combines,
@@ -742,25 +1013,176 @@ impl TradeskillTracker {
                 }
             })
             .collect();
+
+        // A recipe whose components never came from the depot announced
+        // nothing at all, so the log alone can never price it — Tharn's 356
+        // Elixir combines drew from his bags and are silent to the last one.
+        // The book can still price them, from what a merchant charged for the
+        // components it lists.
+        //
+        // Only where the book is unambiguous: one recipe for the product, and
+        // nothing observed to contradict it. Guessing which of twenty-one ways
+        // of making an ore brick was used would be inventing evidence, not
+        // recovering it.
+        for (key, c) in &self.consumed {
+            if costs.iter().any(|x| x.item.to_lowercase() == *key) {
+                continue;
+            }
+            let mut recipes = self.book.recipes_for(key);
+            let (Some(recipe), None) = (recipes.next(), recipes.next()) else {
+                continue;
+            };
+            let Some(components) = recipe.components.as_ref() else {
+                continue;
+            };
+            let mut parts: Vec<CostComponent> = Vec::new();
+            let mut unpriced: Vec<String> = Vec::new();
+            for comp in components {
+                // A tool is handed back, not consumed, so it is not a cost.
+                if self.book.is_tool(&comp.item) {
+                    continue;
+                }
+                match self.prices.get(&comp.item.to_lowercase()) {
+                    Some(p) => parts.push(CostComponent {
+                        item: p.item.clone(),
+                        per_combine: comp.qty as f64,
+                        copper: p.unit_copper * comp.qty as u64,
+                    }),
+                    None => unpriced.push(comp.item.clone()),
+                }
+            }
+            if parts.is_empty() {
+                continue;
+            }
+            parts.sort_by_key(|p| std::cmp::Reverse(p.copper));
+            unpriced.sort();
+            let unit: u64 = parts.iter().map(|p| p.copper).sum();
+            costs.push(RecipeCost {
+                item: self
+                    .crafts
+                    .get(key)
+                    .map(|c| c.item.clone())
+                    .unwrap_or_else(|| recipe.product.clone()),
+                skill: self.item_skill.get(key).cloned(),
+                basis: CostBasis::Recipe,
+                unit_copper: unit,
+                total_copper: unit * c.combines,
+                components: parts,
+                // Nothing was observed: that is the whole reason this row
+                // exists, and the zero says so.
+                costed: 0,
+                combines: c.combines,
+                unpriced,
+            });
+        }
         costs.sort_by_key(|c| std::cmp::Reverse(c.unit_copper));
 
-        let mut prices: Vec<ItemPrice> = self.prices.values().cloned().collect();
+        let mut prices: Vec<ItemPrice> = self
+            .prices
+            .iter()
+            .map(|(key, p)| {
+                let mut vendors: Vec<VendorPrice> = self
+                    .vendors
+                    .iter()
+                    .filter(|((item, _), _)| item == key)
+                    .map(|(_, v)| v.clone())
+                    .collect();
+                vendors.sort_by_key(|v| std::cmp::Reverse(v.unit_copper));
+                ItemPrice {
+                    vendors,
+                    ..p.clone()
+                }
+            })
+            .collect();
         prices.sort_by_key(|p| std::cmp::Reverse(p.unit_copper));
 
-        let segments: Vec<SkillSegment> = self
+        // Per-combine price by recipe, so effort can be turned into spend
+        // wherever attempts are counted.
+        let unit: HashMap<String, (u64, CostBasis)> = costs
+            .iter()
+            .filter(|c| c.unit_copper > 0)
+            .map(|c| (c.item.to_lowercase(), (c.unit_copper, c.basis)))
+            .collect();
+
+        let mut segments: Vec<SkillSegment> = self
             .skills
             .iter()
             .flat_map(|(key, p)| self.segments_for(key, &p.skill))
             .collect();
+        for s in &mut segments {
+            if let Some(item) = s.item.as_ref() {
+                if let Some((u, _)) = unit.get(&item.to_lowercase()) {
+                    s.copper = u * s.attempts as u64;
+                }
+            }
+        }
+
+        // What each tradeskill cost to raise. Built from the combine record
+        // rather than from the segments: a recipe worked long after the last
+        // skill-up still cost what it cost.
+        let mut by_skill: HashMap<String, SkillCost> = HashMap::new();
+        for c in &crafts {
+            let Some(skill) = c.skill.as_ref() else {
+                continue;
+            };
+            let attempts = c.attempts() as u64;
+            let priced = unit.get(&c.item.to_lowercase()).copied();
+            let unit_copper = priced.map(|(u, _)| u);
+            let spend = RecipeSpend {
+                item: c.item.clone(),
+                attempts,
+                successes: c.successes as u64,
+                unit_copper,
+                from_book: matches!(priced, Some((_, CostBasis::Recipe))),
+                copper: unit_copper.unwrap_or(0) * attempts,
+            };
+            let e = by_skill
+                .entry(skill.to_lowercase())
+                .or_insert_with(|| SkillCost {
+                    skill: skill.clone(),
+                    copper: 0,
+                    attempts: 0,
+                    priced_attempts: 0,
+                    book_priced_attempts: 0,
+                    recipes: Vec::new(),
+                });
+            e.copper += spend.copper;
+            e.attempts += attempts;
+            if unit_copper.is_some() {
+                e.priced_attempts += attempts;
+            }
+            if spend.from_book {
+                e.book_priced_attempts += attempts;
+            }
+            e.recipes.push(spend);
+        }
+        let mut skill_costs: Vec<SkillCost> = by_skill.into_values().collect();
+        for s in &mut skill_costs {
+            s.recipes
+                .sort_by_key(|r| std::cmp::Reverse((r.copper, r.attempts)));
+        }
+        skill_costs.sort_by_key(|s| std::cmp::Reverse(s.copper));
 
         TradeskillReport {
+            game: crate::game::Game::Unknown,
+            skill_costs,
             total_successes: crafts.iter().map(|c| c.successes).sum(),
             total_failures: crafts.iter().map(|c| c.failures).sum(),
             segments,
             skills,
             crafts,
             components,
-            recipes_learned: self.recipes.clone(),
+            recipes_learned: self
+                .recipes
+                .iter()
+                .map(|r| LearnedRecipe {
+                    // The recipe name and the item it makes are the same string
+                    // in every line observed, so a recipe that has been
+                    // combined inherits that combine's attribution.
+                    skill: self.item_skill.get(&r.to_lowercase()).cloned(),
+                    recipe: r.clone(),
+                })
+                .collect(),
             costs,
             prices,
         }
@@ -770,6 +1192,18 @@ impl TradeskillTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tracker that knows no recipes at all.
+    ///
+    /// Tests about attribution and costing are about the *logic*, and must not
+    /// change meaning as the shipped recipe book grows — an item name that is
+    /// unknown today can be in the book tomorrow, which would silently turn a
+    /// test of "the log said nothing, so we know nothing" into a test of the
+    /// book. Only tests that are about the book itself use the real one.
+    fn bookless() -> TradeskillTracker {
+        static EMPTY: std::sync::OnceLock<RecipeBook> = std::sync::OnceLock::new();
+        TradeskillTracker::with_book(EMPTY.get_or_init(RecipeBook::default))
+    }
 
     /// A combine costs what its components cost, priced from what a merchant
     /// charged. The `Consumed` lines follow the outcome, and follow the
@@ -795,6 +1229,42 @@ mod tests {
         assert!(c[0].unpriced.is_empty());
     }
 
+    /// A success announces what it consumed *before* saying what it made, so
+    /// costing has to look forwards as well as back. Reading only backwards
+    /// hands a success's components to the previous attempt — and since
+    /// combines are about three seconds apart, usually to nothing at all,
+    /// which left costs resting on failed combines alone.
+    #[test]
+    fn components_announced_before_their_combine_are_still_costed() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000); // 0.2p each
+
+        t.on_craft(100, "Metal Bits", true); // an earlier, unrelated attempt
+        t.on_component(103, "Water Flask", 1, Some(9));
+        t.on_craft(103, "Sheet Metal", true);
+
+        let c = t.report().costs;
+        let sheet = c.iter().find(|c| c.item == "Sheet Metal").unwrap();
+        assert_eq!(sheet.costed, 1, "the flask belongs to the combine it preceded");
+        assert_eq!(sheet.unit_copper, 200);
+        assert!(
+            !c.iter().any(|c| c.item == "Metal Bits" && c.costed > 0),
+            "and not to the attempt three seconds earlier: {c:?}"
+        );
+    }
+
+    /// A combine one second earlier is the previous attempt, not this one.
+    #[test]
+    fn a_component_does_not_reach_back_a_second() {
+        let mut t = bookless();
+        t.on_purchase(50, "Water Flask", 10, 2000);
+        t.on_craft(100, "Metal Bits", false);
+        t.on_component(101, "Water Flask", 1, Some(9));
+
+        let c = t.report().costs;
+        assert!(c.is_empty(), "nothing to charge it to yet: {c:?}");
+    }
+
     /// Components taken from inventory are never announced, so most combines
     /// reveal nothing. Those must not be averaged in as though they were free —
     /// the figure is per *costed* combine, and `costed` vs `combines` is what
@@ -813,6 +1283,187 @@ mod tests {
         let c = &t.report().costs[0];
         assert_eq!(c.unit_copper, 200, "still one flask per combine, not a quarter");
         assert_eq!((c.costed, c.combines), (1, 4), "one of four revealed itself");
+    }
+
+    /// What a skill cost to raise is what every attempt cost — a failed
+    /// combine eats its components exactly like one that worked, so counting
+    /// successes would understate the bill by the failure rate, which on a
+    /// skill being pushed is most of it.
+    #[test]
+    fn levelling_a_skill_costs_every_attempt_not_every_success() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000); // 0.2p each
+
+        // Four attempts, one of which worked, each eating one flask.
+        for (i, ok) in [false, false, true, false].into_iter().enumerate() {
+            let at = 100 + i as i64 * 10;
+            t.on_component(at, "Water Flask", 1, Some(9 - i as u64));
+            t.on_craft(at, "Sheet Metal", ok);
+        }
+        // Same second as the last attempt, which is what names the tradeskill.
+        t.on_skill_up(130, "Blacksmithing", 21);
+
+        let r = t.report();
+        let cost = &r.skill_costs[0];
+        assert_eq!(cost.skill, "Blacksmithing");
+        assert_eq!(cost.attempts, 4);
+        assert_eq!(cost.copper, 800, "four flasks, not the one that worked");
+        assert_eq!(cost.priced_attempts, 4);
+        assert_eq!(cost.recipes[0].item, "Sheet Metal");
+        assert_eq!(cost.recipes[0].unit_copper, Some(200));
+
+        let c = &r.costs[0];
+        assert_eq!((c.unit_copper, c.total_copper), (200, 800));
+    }
+
+    /// The client announces only what a combine drew from the depot, so a
+    /// recipe worked out of your bags is silent however many times you run it
+    /// — 356 combines on one character's log, not one `Consumed` line. The
+    /// book can price it anyway, from what a merchant charged for the
+    /// components the recipe lists.
+    #[test]
+    fn a_recipe_the_log_never_itemises_is_priced_from_the_book() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Violet Tri-Tube Sap", 100, 32_700); // 0.327p each
+        t.on_purchase(50, "Duskglow Vine", 100, 32_700);
+
+        // Straight from the bags: no components are ever announced.
+        for at in [100i64, 110, 120] {
+            t.on_craft(at, "Elixir of Greater Concentration", false);
+        }
+
+        let c = t
+            .report()
+            .costs
+            .into_iter()
+            .find(|c| c.item == "Elixir of Greater Concentration")
+            .expect("the book should price what the log cannot");
+        assert_eq!(c.basis, CostBasis::Recipe);
+        assert_eq!(c.unit_copper, 654, "one of each reagent");
+        assert_eq!(c.total_copper, 654 * 3);
+        assert_eq!(c.costed, 0, "nothing was observed, and it says so");
+        assert_eq!(c.combines, 3);
+    }
+
+    /// A price with no idea where it came from is half an answer. The same
+    /// reagent costs different amounts from different merchants, so vendors
+    /// are kept apart rather than averaged.
+    #[test]
+    fn a_purchase_records_who_sold_it_and_where() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase_from(100, "Duskglow Vine", 100, 65_400, Some("Sithgok"), Some("Innothule Swamp"));
+        t.on_purchase_from(200, "Duskglow Vine", 100, 70_000, Some("Someone Else"), Some("Grobb"));
+        t.on_purchase_from(300, "Duskglow Vine", 100, 65_400, Some("Sithgok"), Some("Innothule Swamp"));
+
+        let p = t
+            .report()
+            .prices
+            .into_iter()
+            .find(|p| p.item == "Duskglow Vine")
+            .unwrap();
+        assert_eq!(p.bought, 300);
+        assert_eq!(p.unit_copper, 654, "the most recent price paid");
+        assert_eq!(p.vendors.len(), 2, "two merchants, not one blended price");
+        let dearest = &p.vendors[0];
+        assert_eq!(dearest.merchant, "Someone Else");
+        assert_eq!(dearest.unit_copper, 700);
+        let sithgok = p.vendors.iter().find(|v| v.merchant == "Sithgok").unwrap();
+        assert_eq!(sithgok.zone.as_deref(), Some("Innothule Swamp"));
+        assert_eq!(sithgok.bought, 200, "both trips counted");
+    }
+
+    /// A purchase before the log has named a zone still records the merchant,
+    /// and a later one fills the zone in rather than the blank sticking.
+    #[test]
+    fn a_zone_learned_later_corrects_an_earlier_purchase() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase_from(100, "Water Flask", 10, 2000, Some("Clork"), None);
+        t.on_purchase_from(200, "Water Flask", 10, 2000, Some("Clork"), Some("Innothule Swamp"));
+        let p = &t.report().prices[0];
+        assert_eq!(p.vendors[0].zone.as_deref(), Some("Innothule Swamp"));
+    }
+
+    /// Twenty-one ways to make an ore brick and no way to tell which was used:
+    /// picking one would be inventing evidence rather than recovering it.
+    #[test]
+    fn an_ambiguous_recipe_is_not_priced_from_the_book() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 100, 20_000);
+        t.on_craft(100, "Small Brick of High Quality Ore", true);
+
+        let priced = t
+            .report()
+            .costs
+            .into_iter()
+            .any(|c| c.item == "Small Brick of High Quality Ore");
+        assert!(!priced, "the book lists many recipes for it; none can be assumed");
+    }
+
+    /// A tool is handed back, so it is not part of what a combine costs even
+    /// though the recipe lists it.
+    #[test]
+    fn a_tool_is_not_charged_for_in_a_book_priced_recipe() {
+        let book: &'static RecipeBook = Box::leak(Box::new(
+            RecipeBook::parse(
+                r#"{"tools":["Smithing Chisel"],
+                    "recipes":[{"product":"Widget","skill":"Blacksmithing","components":[
+                      {"item":"Smithing Chisel","qty":1},{"item":"Water Flask","qty":2}]}]}"#,
+            )
+            .unwrap(),
+        ));
+        let mut t = TradeskillTracker::with_book(book);
+        t.on_purchase(50, "Water Flask", 10, 2000); // 0.2p each
+        t.on_purchase(50, "Smithing Chisel", 1, 79_480); // dear, and returned
+        t.on_craft(100, "Widget", true);
+
+        let c = &t.report().costs[0];
+        assert_eq!(c.unit_copper, 400, "two flasks; the chisel comes back");
+    }
+
+    /// A recipe nothing is known about contributes nothing, and the total has
+    /// to admit that rather than read as complete.
+    #[test]
+    fn unpriced_recipes_are_counted_as_effort_but_not_as_spend() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000);
+
+        t.on_component(100, "Water Flask", 1, Some(9));
+        t.on_craft(100, "Sheet Metal", true);
+        t.on_skill_up(100, "Blacksmithing", 21);
+        // Components straight from inventory: the log says nothing at all.
+        for at in [200i64, 210] {
+            t.on_craft(at, "Banded Gorget", true);
+            t.on_skill_up(at, "Blacksmithing", 22);
+        }
+
+        let cost = &t.report().skill_costs[0];
+        assert_eq!(cost.attempts, 3);
+        assert_eq!(cost.priced_attempts, 1, "two attempts we cannot price");
+        assert_eq!(cost.copper, 200);
+        let gorget = cost
+            .recipes
+            .iter()
+            .find(|r| r.item == "Banded Gorget")
+            .unwrap();
+        assert_eq!(gorget.unit_copper, None, "unknown, not free");
+        assert_eq!(gorget.attempts, 2);
+    }
+
+    /// A stretch of levelling carries its own bill, so "30 to 92 on Banded
+    /// Gorget" can be read as a price as well as a range.
+    #[test]
+    fn each_stretch_of_a_skill_carries_what_it_cost() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000);
+        for (i, ts) in [100i64, 110, 120].iter().enumerate() {
+            t.on_component(*ts, "Water Flask", 1, Some(9 - i as u64));
+            t.on_craft(*ts, "Sheet Metal", true);
+            t.on_skill_up(ts + 1, "Blacksmithing", 21 + i as u32);
+        }
+        let segs = t.report().segments;
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].attempts, 3);
+        assert_eq!(segs[0].copper, 600, "three combines at 0.2p");
     }
 
     /// A component never bought has no price, so it cannot be counted. Saying
@@ -1059,7 +1710,7 @@ mod tests {
     /// A skill-up long after a combine is unrelated to it.
     #[test]
     fn a_distant_skill_up_does_not_attribute() {
-        let mut t = TradeskillTracker::new();
+        let mut t = bookless();
         t.on_craft(100, "Metal Bits", true);
         t.on_skill_up(9999, "Blacksmithing", 18);
         assert_eq!(t.report().crafts[0].skill, None);
@@ -1077,6 +1728,65 @@ mod tests {
         assert_eq!(fen.remaining, Some(312), "latest stock wins");
         // Ordered by most used.
         assert_eq!(r.components[0].item, "Fenugreek");
+    }
+
+    /// Showing one tradeskill at a time means every row has to know which
+    /// tradeskill it belongs to — including components, which the log never
+    /// labels. The recipe that consumed them does.
+    #[test]
+    fn components_carry_the_skills_of_the_recipes_that_used_them() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Potion of Accuracy", false);
+        t.on_skill_up(100, "Alchemy", 52);
+        t.on_component(100, "Water Flask", 1, Some(9));
+        t.on_component(100, "Fenugreek", 1, Some(20));
+
+        t.on_craft(200, "Sheet Metal", false);
+        t.on_skill_up(200, "Blacksmithing", 21);
+        t.on_component(200, "Water Flask", 1, Some(8));
+
+        // Never near a combine, so nothing says what it was for.
+        t.on_component(9000, "Kiola Nut", 1, Some(3));
+
+        let r = t.report();
+        let by = |name: &str| {
+            r.components
+                .iter()
+                .find(|c| c.item == name)
+                .unwrap()
+                .skills
+                .clone()
+        };
+        assert_eq!(by("Fenugreek"), vec!["Alchemy"]);
+        assert_eq!(
+            by("Water Flask"),
+            vec!["Alchemy", "Blacksmithing"],
+            "a shared component belongs to both, not to whichever came last"
+        );
+        assert!(by("Kiola Nut").is_empty(), "no recipe, no skill");
+    }
+
+    /// A learned recipe is attributed by having been combined; one that was
+    /// only ever learned stays unattributed rather than being guessed at.
+    #[test]
+    fn learned_recipes_inherit_the_skill_of_their_combines() {
+        let mut t = TradeskillTracker::new();
+        t.on_recipe_learned("Potion of Accuracy");
+        t.on_recipe_learned("Some Unmade Thing");
+        t.on_craft(100, "Potion of Accuracy", false);
+        t.on_skill_up(100, "Alchemy", 52);
+
+        let r = t.report();
+        let find = |name: &str| {
+            r.recipes_learned
+                .iter()
+                .find(|x| x.recipe == name)
+                .unwrap()
+                .skill
+                .clone()
+        };
+        assert_eq!(find("Potion of Accuracy").as_deref(), Some("Alchemy"));
+        assert_eq!(find("Some Unmade Thing"), None);
     }
 
     #[test]
@@ -1100,6 +1810,48 @@ mod tests {
             Some("Alchemy"),
             "seeded mapping should apply with no skill-up at all"
         );
+    }
+
+    /// A combine hands its tools back, and the client says so with the same
+    /// line it uses for what you made:
+    ///
+    /// ```text
+    /// You have fashioned the items together to create something new: Small Piece of High Quality Ore.
+    /// You have fashioned the items together to create something new: Smithing Chisel.
+    /// ```
+    ///
+    /// Counting that invents a combine — and because it is then the most
+    /// recent one, it also takes the real combine's components with it.
+    #[test]
+    fn a_returned_tool_is_not_a_combine() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000);
+        t.on_craft(100, "Small Piece of High Quality Ore", true);
+        t.on_craft(100, "Smithing Chisel", true);
+        t.on_component(100, "Water Flask", 1, Some(9));
+
+        let r = t.report();
+        assert!(
+            !r.crafts.iter().any(|c| c.item == "Smithing Chisel"),
+            "the chisel is a tool, not something made: {:?}",
+            r.crafts
+        );
+        assert_eq!(r.total_successes, 1, "one combine, not two");
+        assert_eq!(r.costs.len(), 1);
+        assert_eq!(
+            r.costs[0].item, "Small Piece of High Quality Ore",
+            "the flask went into the ore, not the chisel"
+        );
+    }
+
+    /// The recipes that prompted the book: ore that is long past skilling
+    /// Tharn up, so the log offers nothing to attribute it by.
+    #[test]
+    fn the_book_attributes_a_recipe_the_log_cannot() {
+        let mut t = TradeskillTracker::new();
+        t.on_craft(100, "Small Brick of High Quality Ore", true);
+        let c = &t.report().crafts[0];
+        assert_eq!(c.skill.as_deref(), Some("Blacksmithing"));
     }
 
     /// A declaration must not be overwritten by a skill-up that merely happens

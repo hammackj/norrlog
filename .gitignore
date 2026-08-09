@@ -15,6 +15,18 @@ node_modules/
 *.txt.log
 eqlog_*.txt
 
+# Byte-compiled helpers in tools/.
+__pycache__/
+
+# Raw pages kept by tools/import-eqtraders.py. This is an archive, not build
+# output — keep it, back it up, but it does not belong in the repo. The
+# recipes derived from it are committed instead.
+.eqtraders-cache/
+
+# Progress output from a crawl run. Regenerated every run, and only ever
+# interesting while one is in flight.
+tools/crawl.log
+
 # Editor and OS noise.
 .vscode/
 .idea/
