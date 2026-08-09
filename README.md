@@ -153,6 +153,16 @@ as a frameless, always-on-top, click-through desktop window.
 # Parser coverage: what fraction of lines are understood, and what is not.
 # The unmatched histogram is the tool for growing the rule table.
 ./target/release/eqlcoverage <logfile> [top-n] [game-dir]
+
+# Recipe book: grow it by pasting an EQTraders "Full Recipe List" into a file.
+# Merging is additive and deduplicated, so re-importing changes nothing.
+tools/import-recipes.py paste.txt [--check]
+
+# Archive recipe data from eqtraders.com item pages, one request at a time
+# with a five-second gap. Every page is cached, so resuming is free and a
+# rerun costs nothing; touch <cache>/STOP to halt cleanly mid-run.
+tools/import-eqtraders.py --items 1-2000
+tools/import-eqtraders.py --reparse          # rebuild from the cache, no network
 ```
 
 ## API
@@ -163,6 +173,8 @@ as a frameless, always-on-top, click-through desktop window.
 | `GET /api/encounters` | History — `?search=`, `?zone=`, `?since=`, `?until=`, `?min_duration=`, `?limit=`, `?offset=` |
 | `GET /api/encounters/:id` | Full breakdown for one fight |
 | `GET /api/loot` | Aggregated loot |
+| `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |
+| `GET /api/drops` | What dropped from what, with the kills behind each count |
 | `GET /api/classes` | Detected classes with evidence |
 | `GET /api/session` | Every fight of the session as one meter — `?scope=zone` for the current zone |
 | `GET /api/alerts` · `POST` | Alert rules; `POST /api/alerts/delete` removes one |
@@ -180,6 +192,9 @@ crates/eqlparser-core/    parsing, encounters, spells, class inference
   src/encounter.rs          segmentation + combat aggregation
   src/spell.rs              spell database, duration formulas, buff resolver
   src/class.rs              class inference
+  src/tradeskill.rs         combines, skill-ups, component use, recipe costs
+  src/recipe.rs             recipe book: what a combine makes, and from what
+  assets/recipes.json       the book itself (tools/import-recipes.py)
 crates/eqlparserd/        daemon: follower, HTTP/WebSocket API, overlay assets
 gui/                      Electron desktop app
 ```
@@ -197,6 +212,65 @@ The resolver scores candidates using the preceding cast line, then the
 character's known repertoire from memorised spells, then rank equivalence.
 On a real 595k-line log this identifies **93% of landings confidently**; the
 rest are flagged with a `?` in both UIs rather than presented as fact.
+
+**A combine never names its tradeskill.** The client writes only the outcome, so
+attribution comes from the skill-up beside it — which it prints *before* a
+success and *after* a failure, so both orders are read. The `Consumed` lines
+follow the same asymmetry, and are attributed the same way. What is left is the
+recipe that never skills you up at all, which no reading of the log can reach;
+those come from the recipe book in `assets/recipes.json`. The book also lists
+**tools**, because a combine hands its tools back and the client announces that
+with the same line it uses for the thing you made — on one character's log that
+was 113 combines that never happened.
+
+**Everything recorded is tagged with its game.** EverQuest and EverQuest
+Legends share a client and a log format, so two logs are indistinguishable line
+by line — which is exactly why the tag cannot be inferred later. It comes from
+the install being followed, or from `--game eq|eql`, and is left `unknown`
+rather than guessed when neither answers. Drop observations are keyed on it, so
+totals are never pooled across the two games.
+
+**Where an item comes from is recorded both ways.** A loot line names the
+corpse; a purchase line names the merchant, and the zone you were standing in
+when you bought it is where that merchant is. Vendors are kept apart rather
+than blended into one price, because the same reagent costs different amounts
+from different merchants and at different factions — and "which zone was that
+vendor in" is the question a single average cannot answer.
+
+Both are written to the history database keyed by the log they came from, so
+they outlive it: re-reading a log replaces its own rows, a second log adds its
+own, and quantities sum across every character on file. `GET /api/items`
+serves the accumulated picture rather than only what the log currently open
+happens to contain.
+
+**A drop count is not a drop rate.** A loot line names the corpse, which is
+solid evidence a creature dropped something; the denominator is not. Kills are
+counted whether or not the corpse was looted, so sightings over kills is a
+floor on the rate. Both numbers are stored and no rate is published — a
+consumer that wants one has to say what it is dividing.
+
+**Recipe costs are a floor, never a total.** Only components drawn from the
+depot are announced; anything taken from inventory is consumed silently, and
+nothing distinguishes a complete observation from a partial one. Every row
+carries how many of that recipe's combines revealed anything, and a component
+that was never bought is named rather than priced at a guess.
+
+A recipe worked out of your bags announces *nothing*, however many times you run
+it — 356 combines of one alchemy recipe on a real log, not a single `Consumed`
+line. Where the recipe book knows exactly one way to make that item, the price
+is taken from the book's components instead and the row is marked **from the
+recipe**: complete as to what a combine takes, but resting on the assumption
+that this is the recipe you used. Where the book lists several ways (twenty-one,
+for a brick of ore) no price is claimed, because picking one would be inventing
+evidence rather than recovering it.
+
+**What a tradeskill cost to raise counts attempts, not successes.** A failed
+combine eats its components exactly like one that worked, and on a skill being
+pushed most attempts fail. In EverQuest Legends that is the whole bill. In
+classic EverQuest the **Salvage** AA returns some of a failed combine's
+components at random, and no log line announces a salvage — so there the same
+arithmetic is an upper bound, and the app says which of the two you are looking
+at rather than quietly meaning one of them.
 
 **Timestamps carry no timezone.** EverQuest writes local time with no offset, so
 timestamps are parsed as UTC and compared within that domain. Every use is a
