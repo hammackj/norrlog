@@ -1292,11 +1292,33 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut n = 0;
         {
+            // ON CONFLICT DO UPDATE rather than INSERT OR REPLACE, and the
+            // difference is not stylistic.
+            //
+            // REPLACE deletes the conflicting row and inserts a new one, so
+            // every column the statement does not name reverts to its default.
+            // That makes adding a column a live hazard: any writer still
+            // running the previous build keeps working, keeps looking correct,
+            // and quietly zeroes the new column on every row it touches. It
+            // happened the day `quoted` was added — a daemon left over from an
+            // earlier build sat there resetting it to 0 while a freshly built
+            // one wrote it, and nothing anywhere reported a conflict.
+            //
+            // Naming the columns to update confines a writer to the columns it
+            // knows about, which is the property that makes an old binary
+            // merely out of date instead of destructive.
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO item_vendors
+                "INSERT INTO item_vendors
                  (game, character, server, source, item, merchant, zone,
                   unit_copper, bought, quoted, last_bought)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                 ON CONFLICT(game, character, server, source, item, merchant)
+                 DO UPDATE SET
+                   zone        = excluded.zone,
+                   unit_copper = excluded.unit_copper,
+                   bought      = excluded.bought,
+                   quoted      = excluded.quoted,
+                   last_bought = excluded.last_bought",
             )?;
             for p in prices {
                 for v in &p.vendors {
@@ -1733,15 +1755,80 @@ mod tests {
             item: item.into(),
             unit_copper: copper,
             bought,
+            quoted: 0,
             last_bought: at,
             vendors: vec![eqlparser_core::tradeskill::VendorPrice {
                 merchant: merchant.into(),
                 zone: Some(zone.into()),
                 unit_copper: copper,
                 bought,
+                quoted: 0,
                 last_bought: at,
             }],
         }
+    }
+
+    /// A writer that has never heard of a column must not be able to erase it.
+    ///
+    /// The reason this is a test and not a comment: for one afternoon a
+    /// leftover daemon from a previous build sat resetting `quoted` to 0 on
+    /// every row it touched, while a newly built one wrote it correctly.
+    /// Nothing errored, nothing conflicted, and the count simply never moved.
+    /// The statement is confined to the columns it names now, so a stale
+    /// writer is out of date rather than destructive.
+    #[test]
+    fn an_older_writer_cannot_blank_a_column_it_does_not_know() {
+        let mut s = Store::in_memory().unwrap();
+        // The same identity put_vendors writes under, or the stale-writer
+        // statement below lands on a different row and proves nothing.
+        let (who, server) = {
+            let (c, sv) = s.identity();
+            (c.to_string(), sv.to_string())
+        };
+
+        // A current writer records a price it was quoted but never bought.
+        let mut quoted_only = price("Elf Leaf", "Isslana", "The Oasis of Marr", 500, 0, 10);
+        quoted_only.quoted = 3;
+        quoted_only.vendors[0].quoted = 3;
+        s.put_vendors("everquest-legends", "/logs/a.txt", &[quoted_only])
+            .unwrap();
+
+        // Exactly what a build predating the column writes: the same row,
+        // every column it knows about, and no mention of `quoted`.
+        s.conn
+            .execute(
+                "INSERT INTO item_vendors
+                   (game, character, server, source, item, merchant, zone,
+                    unit_copper, bought, last_bought)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                 ON CONFLICT(game, character, server, source, item, merchant)
+                 DO UPDATE SET
+                   zone = excluded.zone,
+                   unit_copper = excluded.unit_copper,
+                   bought = excluded.bought,
+                   last_bought = excluded.last_bought",
+                params![
+                    "everquest-legends", who, server, "/logs/a.txt",
+                    "Elf Leaf", "Isslana", "The Oasis of Marr", 500i64, 0i64, 20i64
+                ],
+            )
+            .unwrap();
+
+        let rows: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM item_vendors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the stale write should have hit the same row");
+        let (quoted, last): (i64, i64) = s
+            .conn
+            .query_row(
+                "SELECT quoted, last_bought FROM item_vendors WHERE item = 'Elf Leaf'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(quoted, 3, "an older writer erased a column it never knew about");
+        assert_eq!(last, 20, "the columns it does know about should still update");
     }
 
     /// Merchant prices have to survive the log they came from. Re-reading one
