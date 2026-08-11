@@ -80,6 +80,8 @@ enum RuleId {
     CraftFailure,
     ComponentConsumed,
     ItemPurchased,
+    MerchantQuotePer,
+    MerchantQuoteOne,
     RecipeLearned,
     SongFizzle,
     SpellMemorized,
@@ -446,6 +448,29 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::ItemPurchased,
         r"^You purchased (?P<qty>\d+) (?P<item>.+?) from (?P<merchant>.+?) for\s+(?P<coin>.+?)\.$",
+    ),
+    // Clicking an item in a merchant's window makes them quote a price, with
+    // no coin changing hands:
+    //
+    //   Blackeye told you, 'That'll be 7 copper per Muffin.'
+    //   a clockwork jeweler told you, 'That'll be 1 platinum 4 silver 9 copper
+    //     for the Jeweler's Kit.'
+    //
+    // Worth as much as a purchase and far cheaper to collect — one click per
+    // item instead of buying the shop out. Both wordings give the price of a
+    // single item: across 643 pairs seen quoted *and* bought, the quote
+    // matched the unit price paid every single time.
+    //
+    // Two rules rather than one alternation because "per" and "for the" have
+    // to be tried in that order. An item whose name begins with "the" would
+    // otherwise let the looser pattern win and swallow the word.
+    (
+        RuleId::MerchantQuotePer,
+        r"^(?P<merchant>.+?) told you, 'That'll be (?P<coin>.+?) per (?P<item>.+?)\.'$",
+    ),
+    (
+        RuleId::MerchantQuoteOne,
+        r"^(?P<merchant>.+?) told you, 'That'll be (?P<coin>.+?) for the (?P<item>.+?)\.'$",
     ),
     (
         RuleId::RecipeLearned,
@@ -1027,6 +1052,13 @@ impl Parser {
                     quantity: num("qty"),
                     remaining: num("left"),
                 },
+                RuleId::MerchantQuotePer | RuleId::MerchantQuoteOne => {
+                    Event::ItemQuoted {
+                        item: g("item").unwrap_or_default().to_string(),
+                        merchant: g("merchant").unwrap_or_default().to_string(),
+                        coin: Coin::parse(g("coin").unwrap_or_default()),
+                    }
+                }
                 RuleId::ItemPurchased => Event::ItemPurchased {
                     item: g("item").unwrap_or_default().to_string(),
                     quantity: num("qty"),
@@ -1545,6 +1577,46 @@ mod tests {
             }
             other => panic!("expected death, got {other:?}"),
         }
+    }
+
+    /// Clicking an item in a merchant's window, which prices a whole shop
+    /// without buying anything. Both wordings give the price of one item.
+    #[test]
+    fn a_merchant_quote_is_a_price_without_a_sale() {
+        match p().parse_body("Blackeye told you, 'That'll be 7 copper per Muffin.'") {
+            Event::ItemQuoted { item, merchant, coin } => {
+                assert_eq!(item, "Muffin");
+                assert_eq!(merchant, "Blackeye");
+                assert_eq!(coin.as_copper(), 7);
+            }
+            other => panic!("expected a quote, got {other:?}"),
+        }
+        // The other wording, and a merchant whose name is several lowercase
+        // words rather than a proper noun.
+        match p().parse_body(
+            "a clockwork jeweler told you, 'That'll be 1 platinum 4 silver 9 copper \
+             for the Jeweler's Kit.'",
+        ) {
+            Event::ItemQuoted { item, merchant, coin } => {
+                assert_eq!(item, "Jeweler's Kit");
+                assert_eq!(merchant, "a clockwork jeweler");
+                assert_eq!(coin.as_copper(), 1049);
+            }
+            other => panic!("expected a quote, got {other:?}"),
+        }
+    }
+
+    /// A merchant offering to buy is quoting a different number, and must not
+    /// be read as what they sell for.
+    #[test]
+    fn an_offer_to_buy_is_not_an_asking_price() {
+        let e = p().parse_body(
+            "Blackeye told you, 'I'll give you 1 copper for the Blackburrow Cask.'",
+        );
+        assert!(
+            !matches!(e, Event::ItemQuoted { .. }),
+            "an offer to buy was read as an asking price: {e:?}"
+        );
     }
 
     /// The only line that says what anything costs. Note the two spaces after

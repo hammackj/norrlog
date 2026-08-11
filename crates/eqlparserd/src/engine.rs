@@ -939,6 +939,18 @@ impl Engine {
                 // Where you are standing is where the merchant is.
                 self.tracker.current_zone(),
             ),
+            Event::ItemQuoted {
+                item,
+                merchant,
+                coin,
+            } => self.trades.on_quote_from(
+                entry.timestamp,
+                item,
+                coin.as_copper(),
+                Some(merchant.as_str()),
+                // Where you are standing is where the merchant is.
+                self.tracker.current_zone(),
+            ),
             Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
             Event::Chat {
                 speaker,

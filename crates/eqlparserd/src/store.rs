@@ -180,6 +180,7 @@ impl Store {
         s.migrate()?;
         s.add_identity_columns()?;
         s.add_encounter_difficulty()?;
+        s.add_vendor_quoted()?;
         Ok(s)
     }
 
@@ -193,6 +194,7 @@ impl Store {
         s.migrate()?;
         s.add_identity_columns()?;
         s.add_encounter_difficulty()?;
+        s.add_vendor_quoted()?;
         Ok(s)
     }
 
@@ -211,6 +213,25 @@ impl Store {
         if !present {
             self.conn
                 .execute_batch("ALTER TABLE encounters ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0")?;
+        }
+        Ok(())
+    }
+
+    /// Add the vendor quote counter, once.
+    ///
+    /// Existing rows predate price quotes and can only have come from actual
+    /// purchases, so a default of 0 is not a placeholder — it is the true
+    /// count for every row already there.
+    fn add_vendor_quoted(&mut self) -> Result<()> {
+        let present: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('item_vendors') WHERE name='quoted'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if !present {
+            self.conn.execute_batch(
+                "ALTER TABLE item_vendors ADD COLUMN quoted INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         Ok(())
     }
@@ -588,6 +609,11 @@ impl Store {
                 zone      TEXT NOT NULL DEFAULT '',
                 unit_copper INTEGER NOT NULL,
                 bought      INTEGER NOT NULL,
+                -- Times the merchant quoted the price without a sale. A
+                -- price can be known from clicking an item in the shop
+                -- window, which costs nothing; `bought` and `quoted` are the
+                -- two ways the same number gets established.
+                quoted      INTEGER NOT NULL DEFAULT 0,
                 last_bought INTEGER NOT NULL,
                 PRIMARY KEY (game, character, server, source, item, merchant)
             );
@@ -1269,8 +1295,8 @@ impl Store {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO item_vendors
                  (game, character, server, source, item, merchant, zone,
-                  unit_copper, bought, last_bought)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                  unit_copper, bought, quoted, last_bought)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             )?;
             for p in prices {
                 for v in &p.vendors {
@@ -1284,6 +1310,7 @@ impl Store {
                         v.zone.clone().unwrap_or_default(),
                         v.unit_copper as i64,
                         v.bought as i64,
+                        v.quoted as i64,
                         v.last_bought,
                     ])?;
                     n += 1;
@@ -1296,17 +1323,20 @@ impl Store {
 
     /// Every merchant price on file, summed across logs and characters.
     ///
-    /// Returns `(game, item, merchant, zone, unit_copper, bought,
+    /// Returns `(game, item, merchant, zone, unit_copper, bought, quoted,
     /// last_bought)`. Quantities add up across logs; the price is the most
-    /// recent one paid rather than a sum or an average, since it is what that
+    /// recent one seen rather than a sum or an average, since it is what that
     /// merchant charges today.
     #[allow(clippy::type_complexity)]
-    pub fn all_vendors(&self) -> Result<Vec<(String, String, String, String, u64, u64, i64)>> {
+    pub fn all_vendors(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, u64, u64, u64, i64)>> {
         // SQLite resolves the bare columns beside a MAX() aggregate from the
         // row that produced the maximum, which is exactly the "price as of the
-        // most recent purchase" wanted here.
+        // most recent sighting" wanted here.
         let mut stmt = self.conn.prepare(
-            "SELECT game, item, merchant, zone, unit_copper, SUM(bought), MAX(last_bought)
+            "SELECT game, item, merchant, zone, unit_copper, SUM(bought),
+                    SUM(quoted), MAX(last_bought)
              FROM item_vendors GROUP BY game, lower(item), lower(merchant)
              ORDER BY unit_copper DESC",
         )?;
@@ -1319,7 +1349,8 @@ impl Store {
                     r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                     r.get::<_, i64>(4)? as u64,
                     r.get::<_, i64>(5)? as u64,
-                    r.get(6)?,
+                    r.get::<_, i64>(6)? as u64,
+                    r.get(7)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

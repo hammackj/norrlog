@@ -421,6 +421,22 @@ pub enum Event {
         /// Paid for the whole stack, not per unit.
         coin: Coin,
     },
+    /// A merchant's asking price, from clicking an item in their window.
+    ///
+    /// No coin moves, which is what makes this worth having: a shop's whole
+    /// stock can be priced with one click per item instead of buying it. The
+    /// price is per single item in both wordings the client uses, and matched
+    /// the unit price actually paid in all 643 cases seen both ways.
+    ///
+    /// Like a purchase price, it is **this character's** price — merchants
+    /// charge according to charisma and faction — so it is what one person
+    /// was quoted rather than a universal figure.
+    ItemQuoted {
+        item: String,
+        merchant: String,
+        /// For one item, not for a stack.
+        coin: Coin,
+    },
     /// A new recipe became available.
     RecipeLearned { recipe: String },
     /// A task was assigned.

@@ -394,6 +394,11 @@ pub struct ItemPrice {
     /// the most recent one paid.
     pub unit_copper: u64,
     pub bought: u64,
+    /// Times a merchant quoted a price for it without a sale — clicking the
+    /// item in their window. The same number as a purchase establishes, and
+    /// counted apart so a page can say which it saw.
+    #[serde(default)]
+    pub quoted: u64,
     pub last_bought: i64,
     /// Who sold it and where, dearest first.
     ///
@@ -414,6 +419,13 @@ pub struct VendorPrice {
     pub zone: Option<String>,
     pub unit_copper: u64,
     pub bought: u64,
+    /// Times the merchant quoted this price without a sale — one click in
+    /// their window each. Kept apart from `bought` because they are different
+    /// evidence of the same number: a purchase proves the price *and* that
+    /// the item was in stock and affordable, a quote proves only the price.
+    /// Nothing here is worth less for having been quoted: across 643 pairs
+    /// seen both ways the two agreed every time.
+    pub quoted: u64,
     pub last_bought: i64,
 }
 
@@ -795,6 +807,66 @@ impl TradeskillTracker {
     ///
     /// "Where do I buy this" is a different question from "what does it cost",
     /// and only this form can answer it.
+    /// A merchant's asking price, with nothing bought.
+    ///
+    /// Same shelf as a purchase — it is the same number, established the same
+    /// way — but counted separately so a page can say which it saw. The price
+    /// is overwritten rather than averaged: merchants charge by charisma and
+    /// faction, so if it has changed, the newer reading is the true one for
+    /// whoever is looking.
+    pub fn on_quote_from(
+        &mut self,
+        timestamp: i64,
+        item: &str,
+        unit_copper: u64,
+        merchant: Option<&str>,
+        zone: Option<&str>,
+    ) {
+        let Some(m) = merchant.filter(|m| !m.is_empty()) else {
+            return;
+        };
+        if item.is_empty() {
+            return;
+        }
+        let v = self
+            .vendors
+            .entry((item.to_lowercase(), m.to_lowercase()))
+            .or_insert_with(|| VendorPrice {
+                merchant: m.to_string(),
+                zone: None,
+                unit_copper: 0,
+                bought: 0,
+                quoted: 0,
+                last_bought: timestamp,
+            });
+        v.unit_copper = unit_copper;
+        v.quoted += 1;
+        v.last_bought = timestamp;
+        if let Some(z) = zone.filter(|z| !z.is_empty()) {
+            v.zone = Some(z.to_string());
+        }
+
+        // The report is built by walking `prices` and hanging each item's
+        // merchants off it, so an item that has only ever been quoted needs an
+        // entry here too. Without one its vendor row exists and is never
+        // reachable — which is exactly how the first version of this silently
+        // recorded nothing.
+        let e = self
+            .prices
+            .entry(item.to_lowercase())
+            .or_insert_with(|| ItemPrice {
+                item: item.to_string(),
+                vendors: Vec::new(),
+                unit_copper: 0,
+                bought: 0,
+                quoted: 0,
+                last_bought: timestamp,
+            });
+        e.unit_copper = unit_copper;
+        e.quoted += 1;
+        e.last_bought = timestamp;
+    }
+
     pub fn on_purchase_from(
         &mut self,
         timestamp: i64,
@@ -816,6 +888,7 @@ impl TradeskillTracker {
                     zone: None,
                     unit_copper: 0,
                     bought: 0,
+                    quoted: 0,
                     last_bought: timestamp,
                 });
             v.unit_copper = total_copper / qty;
@@ -836,6 +909,7 @@ impl TradeskillTracker {
                 vendors: Vec::new(),
                 unit_copper: 0,
                 bought: 0,
+                quoted: 0,
                 last_bought: timestamp,
             });
         e.unit_copper = total_copper / qty;

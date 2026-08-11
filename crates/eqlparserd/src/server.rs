@@ -699,7 +699,9 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
             // already contains this log's contribution, so it replaces rather
             // than adds to what the engine reported.
             if let Ok(rows) = st.all_vendors() {
-                for (game, item, merchant, zone, unit_copper, bought, last_bought) in rows {
+                for (game, item, merchant, zone, unit_copper, bought, quoted, last_bought)
+                    in rows
+                {
                     if game != db.game.slug() {
                         continue;
                     }
@@ -708,6 +710,7 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                         zone: Some(zone).filter(|z| !z.is_empty()),
                         unit_copper,
                         bought,
+                        quoted,
                         last_bought,
                     };
                     match db
