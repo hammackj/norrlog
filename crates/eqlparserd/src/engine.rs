@@ -188,6 +188,9 @@ pub struct GroupedAbility {
     pub crits: u64,
     pub max: u64,
     pub average: f64,
+    /// Times it was cast, which is not `hits`; see [`AbilityStats::casts`].
+    /// Zero for anything swung rather than cast.
+    pub casts: u64,
     /// Share of its own group, so bars read within the group.
     pub share: f64,
 }
@@ -2616,6 +2619,7 @@ impl Engine {
                     crits: a.crits,
                     max: a.max,
                     average: a.average(),
+                    casts: a.casts,
                     share: 0.0,
                 });
         }

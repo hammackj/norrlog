@@ -22,6 +22,15 @@ use std::collections::HashMap;
 /// pause but short enough to separate consecutive pulls.
 pub const DEFAULT_IDLE_TIMEOUT: i64 = 12;
 
+/// How long before a fight opens a cast may still be counted as part of it.
+///
+/// A pull usually starts with a spell, and nothing has been damaged yet when
+/// it goes off, so the cast arrives before the encounter exists. Six seconds
+/// covers the slowest cast worth opening with plus the flight time of what it
+/// throws — short enough that a buff applied while waiting is not swept into
+/// the next fight.
+pub const CAST_LEAD_WINDOW: i64 = 6;
+
 /// How far back a death looks for the blows that caused it.
 ///
 /// Long enough to cover a burst that began before the final hit, short enough
@@ -40,6 +49,16 @@ pub struct AbilityStats {
     pub crits: u64,
     pub min: u64,
     pub max: u64,
+    /// Times you began casting or singing this, which is not `hits`.
+    ///
+    /// One cast of a damage-over-time spell lands a dozen ticks, and one that
+    /// is resisted lands none, so the number of times a spell went off and the
+    /// number of times it did something are different questions. Only the
+    /// second could be answered before this.
+    ///
+    /// Zero for melee, which is swung rather than cast.
+    #[serde(default)]
+    pub casts: u64,
     /// The mechanism that delivered it — "melee", "spell", "dot", "damage
     /// shield". Recorded per ability because the totals alone cannot say
     /// whether a name is a weapon skill, a song, or thorns, and grouping
@@ -1030,6 +1049,8 @@ pub struct EncounterTracker {
     hostile: std::collections::HashSet<String>,
     /// Rolling buffer of damage aimed at you, for death post-mortems.
     recent_incoming: Vec<IncomingHit>,
+    /// Casts made with no fight open, awaiting one to belong to.
+    pending_casts: Vec<(i64, String)>,
 }
 
 /// How long after a fight closes its corpses may still be looted.
@@ -1054,6 +1075,7 @@ impl EncounterTracker {
             summoned: std::collections::HashSet::new(),
             hostile: std::collections::HashSet::new(),
             recent_incoming: Vec::new(),
+            pending_casts: Vec::new(),
         }
     }
 
@@ -1251,6 +1273,12 @@ impl EncounterTracker {
                         st.charm_seen = true;
                     }
                 }
+            }
+            // Deliberately does not `ensure_open`: a spell is not combat until
+            // something comes of it, and buffing between pulls must not open a
+            // fight. See `note_cast` for where an unattached one goes.
+            Event::CastStart { source, spell, .. } if source.is_you() => {
+                self.note_cast(entry.timestamp, spell);
             }
             Event::PetLeader { pet, leader } => {
                 // A creature that names a leader is a pet by definition. It
@@ -1586,6 +1614,49 @@ impl EncounterTracker {
             });
             self.next_id += 1;
             self.last_combat = timestamp;
+            // The cast that started the pull happened before anything had been
+            // damaged, so there was no encounter to count it against. Crediting
+            // it here is the difference between "you cast this five times" and
+            // four, every fight.
+            let lead: Vec<(i64, String)> = self
+                .pending_casts
+                .drain(..)
+                .filter(|(at, _)| timestamp - at <= CAST_LEAD_WINDOW)
+                .collect();
+            let player = self.player.clone();
+            if let Some(enc) = self.current.as_mut() {
+                for (_, spell) in lead {
+                    enc.entry(&Actor::You, &player)
+                        .by_ability
+                        .entry(spell)
+                        .or_default()
+                        .casts += 1;
+                }
+            }
+        }
+    }
+
+    /// Count a cast of yours against the fight it belongs to.
+    ///
+    /// A cast outside combat is held rather than counted, and never opens an
+    /// encounter: buffing between pulls is not a fight, and letting a spell
+    /// start one would fill the history with encounters in which nothing
+    /// happened. It is credited only if a fight starts shortly afterwards.
+    fn note_cast(&mut self, timestamp: i64, spell: &str) {
+        let player = self.player.clone();
+        match self.current.as_mut() {
+            Some(enc) => {
+                enc.entry(&Actor::You, &player)
+                    .by_ability
+                    .entry(spell.to_string())
+                    .or_default()
+                    .casts += 1;
+            }
+            None => {
+                self.pending_casts.push((timestamp, spell.to_string()));
+                let cutoff = timestamp - CAST_LEAD_WINDOW;
+                self.pending_casts.retain(|(at, _)| *at >= cutoff);
+            }
         }
     }
 
@@ -2537,6 +2608,51 @@ mod tests {
         let st = &t.current().unwrap().actors["lebekab"];
         assert!(st.summoned, "nothing suggests a charm, so it is a summon");
         assert_eq!(st.owner.as_deref(), Some("Brennagh"));
+    }
+
+    /// Casts are counted per spell, and a cast is not a hit: one cast of a
+    /// dot lands many ticks, and a resisted one lands none.
+    #[test]
+    fn casts_are_counted_separately_from_what_they_landed() {
+        let encs = run(&[
+            (100, "You begin casting Envenomed Bolt VI."),
+            (101, "You hit a rat for 300 points of magic damage by Envenomed Bolt VI."),
+            (104, "You begin casting Envenomed Bolt VI."),
+            (105, "You hit a rat for 280 points of magic damage by Envenomed Bolt VI."),
+            (106, "A rat has taken 40 damage from your Envenomed Bolt VI."),
+            (108, "A rat has taken 40 damage from your Envenomed Bolt VI."),
+        ]);
+        let you = encs[0].actors.get("you").expect("you");
+        let a = you.by_ability.get("Envenomed Bolt VI").expect("the spell");
+        assert_eq!(a.casts, 2, "two casts");
+        assert_eq!(a.hits, 4, "which landed twice and ticked twice");
+    }
+
+    /// The cast that opens a pull happens before anything has been damaged, so
+    /// there is no fight for it to belong to yet. It must not be lost.
+    #[test]
+    fn the_cast_that_opens_a_fight_is_counted_in_it() {
+        let encs = run(&[
+            (100, "You begin casting Drifting Death V."),
+            (103, "A rat has taken 90 damage from your Drifting Death V."),
+            (106, "You slash a rat for 10 points of damage."),
+        ]);
+        let a = encs[0].actors["you"].by_ability.get("Drifting Death V");
+        assert_eq!(a.map(|a| a.casts), Some(1), "the opener counts");
+    }
+
+    /// Buffing between pulls is not a fight, and must not open one.
+    #[test]
+    fn a_cast_outside_combat_opens_no_encounter() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in &entries(&[
+            (100, "You begin singing Chorus of Replenishment."),
+            (140, "You begin singing Chorus of Replenishment."),
+        ]) {
+            t.push(e);
+        }
+        assert!(t.current().is_none(), "no fight was started by singing");
+        assert!(t.flush().is_none(), "and none is produced at the end");
     }
 
     /// Refreshing a charm that never broke must not restart its clock.
