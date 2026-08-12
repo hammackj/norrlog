@@ -7,7 +7,7 @@
 
 use eqlparser_core::aa::{AaCatalog, AaReport};
 use eqlparser_core::alert::{AlertBook, AlertFire, AlertRule, Signal};
-use eqlparser_core::bestiary::{Bestiary, BestiaryReport, HealthSample, Swing};
+use eqlparser_core::bestiary::{Bestiary, BestiaryReport, CreatureKind, HealthSample, Swing};
 use eqlparser_core::class::{ClassDetector, ClassScore};
 use eqlparser_core::drops::{DropReport, DropTracker};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
@@ -1056,10 +1056,20 @@ impl Engine {
                 source,
                 target,
                 amount,
+                ability,
                 ..
             } => {
                 if let eqlparser_core::event::Actor::Named(npc) = target {
                     self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
+                    // A damage line names both the spell and who it hit, so a
+                    // spell the game will only cast at one body type settles
+                    // what that creature is. Whose spell it was does not
+                    // matter — the restriction is the game's, so a group
+                    // member's cast proves it just as well as your own.
+                    if let Some(kind) = ability.as_deref().and_then(|a| self.spell_restricts_to(a))
+                    {
+                        self.bestiary.on_kind_evidence(entry.timestamp, npc, kind);
+                    }
                 }
                 if target.is_you() {
                     if let eqlparser_core::event::Actor::Named(npc) = source {
@@ -1692,6 +1702,26 @@ impl Engine {
             .iter()
             .filter_map(|id| db.get(*id))
             .any(|sp| sp.is_charm)
+    }
+
+    /// The body type a named spell proves about whatever it just hit.
+    ///
+    /// A log names a spell without its rank, and ranks are separate rows in the
+    /// spell file, so the name resolves to several candidates. Every one of
+    /// them has to carry the same restriction before anything is claimed: a
+    /// name shared between a restricted spell and an unrestricted one proves
+    /// nothing about which was cast, and the whole value of this evidence is
+    /// that it is the game's own verdict rather than an inference.
+    fn spell_restricts_to(&self, spell: &str) -> Option<CreatureKind> {
+        let db = self.resolver.db();
+        let ids = db.candidates_for_name(eqlparser_core::spell::base_spell_name(spell));
+        let mut kinds = ids.iter().filter_map(|id| db.get(*id)).map(|s| s.restricted_to);
+        let first = kinds.next()??;
+        if kinds.all(|k| k == Some(first)) {
+            Some(first)
+        } else {
+            None
+        }
     }
 
     fn note_charm_failure(&mut self, at: i64, target: &str, kind: &'static str, spell: &str) {
@@ -2853,7 +2883,8 @@ mod tests {
     }
 
     /// A database with one charm song and one mez song that share a landing
-    /// phrase — the exact ambiguity the real data contains.
+    /// phrase — the exact ambiguity the real data contains — plus a pair of
+    /// body-restricted spells for the bestiary.
     fn charm_db() -> SpellDb {
         use eqlparser_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT};
         use eqlparser_core::spell::Spell;
@@ -2873,12 +2904,105 @@ mod tests {
             good_effect: 0,
             category_id: 0,
             is_charm,
+            restricted_to: None,
             linked: Vec::new(),
+        };
+        let restricted = |id: u32, name: &str, to: CreatureKind| Spell {
+            restricted_to: Some(to),
+            ..mk(id, name, false)
         };
         let mut m = std::collections::HashMap::new();
         m.insert(1, mk(1, "Solon's Bewitching Bravura", true));
         m.insert(2, mk(2, "Crission's Pixie Strike", false));
+        m.insert(3, restricted(3, "Expel Undead", CreatureKind::Undead));
+        // Two ranks of one spell, as the real file holds them: the log names
+        // neither rank, so both have to agree before anything is claimed.
+        m.insert(4, restricted(4, "Dismiss Summoned", CreatureKind::Summoned));
+        m.insert(
+            5,
+            restricted(5, "Dismiss Summoned Rk. II", CreatureKind::Summoned),
+        );
+        // A name shared by a restricted spell and an unrestricted one, which
+        // must therefore prove nothing.
+        m.insert(6, restricted(6, "Ambiguous Word", CreatureKind::Undead));
+        m.insert(7, mk(7, "Ambiguous Word", false));
         SpellDb::from_spells(m)
+    }
+
+    /// The body type of the 43 creatures this finds in the shipped logs comes
+    /// entirely from lines like these: the game refuses to cast Expel Undead at
+    /// anything that is not undead, so one landing is its own proof.
+    #[test]
+    fn a_body_restricted_spell_names_what_it_hit() {
+        let mut e = Engine::new("Tharn".to_string(), charm_db());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
+                "[Tue Jul 28 14:00:01 2026] You hit a wan ghoul knight for 319 points of magic damage by Expel Undead.",
+                // An ordinary sword swing says nothing about a body.
+                "[Tue Jul 28 14:00:02 2026] You slash a giant spider for 10 points of damage.",
+            ],
+        );
+        let npcs = e.bestiary_report().npcs;
+        let ghoul = npcs
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case("wan ghoul knight"))
+            .expect("the ghoul was damaged, so it is in the bestiary");
+        assert_eq!(ghoul.kind, Some(CreatureKind::Undead));
+        let spider = npcs
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case("giant spider"))
+            .expect("the spider too");
+        assert_eq!(spider.kind, None, "nothing here proved anything about it");
+    }
+
+    /// Someone else's cast is the game's verdict just as much as your own, and
+    /// a log carries a group's spells as well as yours.
+    #[test]
+    fn another_caster_proves_it_just_as_well() {
+        let mut e = Engine::new("Tharn".to_string(), charm_db());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
+                "[Tue Jul 28 14:00:01 2026] Xeker hit a dar ghoul knight for 40 points of magic damage by Expel Undead.",
+            ],
+        );
+        let npcs = e.bestiary_report().npcs;
+        let ghoul = npcs
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case("dar ghoul knight"))
+            .expect("in the bestiary");
+        assert_eq!(ghoul.kind, Some(CreatureKind::Undead));
+    }
+
+    /// A log names a spell without its rank, and ranks are separate rows. Every
+    /// candidate must agree, or the line proves nothing about which was cast.
+    #[test]
+    fn a_name_shared_with_an_unrestricted_spell_proves_nothing() {
+        let mut e = Engine::new("Tharn".to_string(), charm_db());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
+                // Every rank of this one is summoned-only, so it counts.
+                "[Tue Jul 28 14:00:01 2026] You hit an air elemental for 30 points of magic damage by Dismiss Summoned.",
+                // This name belongs to both a restricted spell and a plain one.
+                "[Tue Jul 28 14:00:02 2026] You hit a hill giant for 30 points of magic damage by Ambiguous Word.",
+            ],
+        );
+        let npcs = e.bestiary_report().npcs;
+        let elemental = npcs
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case("air elemental"))
+            .expect("in the bestiary");
+        assert_eq!(elemental.kind, Some(CreatureKind::Summoned));
+        let giant = npcs
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case("hill giant"))
+            .expect("in the bestiary");
+        assert_eq!(giant.kind, None, "the cast spell cannot be identified");
     }
 
     /// A charmed pet only says "Attacking X Master" when ordered to, which on

@@ -181,6 +181,7 @@ impl Store {
         s.add_identity_columns()?;
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
+        s.add_npc_kind()?;
         Ok(s)
     }
 
@@ -195,6 +196,7 @@ impl Store {
         s.add_identity_columns()?;
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
+        s.add_npc_kind()?;
         Ok(s)
     }
 
@@ -231,6 +233,25 @@ impl Store {
         if !present {
             self.conn.execute_batch(
                 "ALTER TABLE item_vendors ADD COLUMN quoted INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Add the creature body type to the bestiary, once.
+    ///
+    /// Existing rows predate the evidence entirely, and the empty default says
+    /// exactly the right thing about them: nothing has been proved. They fill
+    /// in on their own as logs are re-read.
+    fn add_npc_kind(&mut self) -> Result<()> {
+        let present: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('npc_profiles') WHERE name='kind'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if !present {
+            self.conn.execute_batch(
+                "ALTER TABLE npc_profiles ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
             )?;
         }
         Ok(())
@@ -530,6 +551,10 @@ impl Store {
                 max_hit      INTEGER NOT NULL,
                 first_seen   INTEGER NOT NULL,
                 last_seen    INTEGER NOT NULL,
+                -- Body type, where a body-restricted spell has proved one.
+                -- Empty for the great majority: it is only ever set by someone
+                -- casting such a spell at this creature.
+                kind         TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (game, character, server, source, zone, mode, difficulty, npc)
             );
 
@@ -1044,11 +1069,30 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut n = 0;
         {
+            // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: see the note on
+            // `put_vendors` for the column-erasing hazard that distinction
+            // avoids. `kind` is exactly the kind of column it bites — it is
+            // written only when a body-restricted spell happened to land, so a
+            // writer that reverted it would undo evidence that may not come
+            // round again for weeks.
+            //
+            // Which is also why `kind` is the one column that will not go back
+            // to empty: a re-parse of a log whose casts have scrolled out of
+            // range must not erase what an earlier parse proved.
             let mut npc_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO npc_profiles
+                "INSERT INTO npc_profiles
                  (game, character, server, source, zone, mode, difficulty, npc,
-                  kills, deaths_to_it, max_hit, first_seen, last_seen)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                  kills, deaths_to_it, max_hit, first_seen, last_seen, kind)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                 ON CONFLICT(game, character, server, source, zone, mode, difficulty, npc)
+                 DO UPDATE SET
+                   kills        = excluded.kills,
+                   deaths_to_it = excluded.deaths_to_it,
+                   max_hit      = excluded.max_hit,
+                   first_seen   = excluded.first_seen,
+                   last_seen    = excluded.last_seen,
+                   kind         = CASE WHEN excluded.kind <> '' THEN excluded.kind
+                                       ELSE npc_profiles.kind END",
             )?;
             let mut melee_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO npc_melee
@@ -1071,6 +1115,7 @@ impl Store {
                     p.max_hit as i64,
                     p.first_seen,
                     p.last_seen,
+                    p.kind.map(|k| k.as_str()).unwrap_or(""),
                 ])?;
                 n += 1;
                 for m in &p.melee {
@@ -1195,7 +1240,7 @@ impl Store {
 
         let mut stmt = self.conn.prepare(
             "SELECT source, zone, mode, difficulty, npc, kills, deaths_to_it, max_hit,
-                    first_seen, last_seen
+                    first_seen, last_seen, kind
              FROM npc_profiles WHERE game = ?1 AND source <> ?2",
         )?;
         let rows = stmt
@@ -1211,12 +1256,13 @@ impl Store {
                     r.get::<_, i64>(7)? as u64,
                     r.get::<_, i64>(8)?,
                     r.get::<_, i64>(9)?,
+                    r.get::<_, String>(10)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut profiles = Vec::with_capacity(rows.len());
-        for (src, zone, mode, difficulty, npc, kills, deaths, max_hit, first, last) in rows {
+        for (src, zone, mode, difficulty, npc, kills, deaths, max_hit, first, last, kind) in rows {
             // A mode nothing recognises is dropped rather than guessed at:
             // filing an instance as the open world would merge it into a
             // different creature entirely.
@@ -1232,6 +1278,9 @@ impl Store {
                 mode: parsed_mode,
                 difficulty,
                 game: parsed_game,
+                // Empty for every row written before body types were recorded,
+                // and for every creature nobody has proved one for.
+                kind: eqlparser_core::bestiary::CreatureKind::from_str(&kind),
                 kills,
                 deaths_to_it: deaths,
                 // Recomputed by the merge from the samples; whatever is put
@@ -1572,6 +1621,42 @@ mod tests {
             b.on_swing(*at, "a fire giant", Swing::Hit(*hp / 100));
         }
         (b.report(), b.health_samples())
+    }
+
+    /// A body type is proved by a single spell landing, which may happen once
+    /// in one log and never again. So it has to survive the round trip, survive
+    /// a re-parse of a log that no longer reaches that cast, and reach a
+    /// creature the other log only ever hit with a sword.
+    #[test]
+    fn a_proved_body_type_outlives_the_cast_that_proved_it() {
+        use eqlparser_core::bestiary::CreatureKind;
+        let mut s = Store::in_memory().unwrap();
+        let zone = "Nagafen's Lair - Solo 4 (Refined)";
+
+        let (mut proved, proved_hp) = bestiary("Tharn", zone, 50, &[(100, 20000)]);
+        proved.npcs[0].kind = Some(CreatureKind::Undead);
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &proved, &proved_hp)
+            .unwrap();
+
+        // The same log flushed again after the casts scrolled out of range,
+        // and a second log that never saw one at all.
+        let (bare, bare_hp) = bestiary("Tharn", zone, 50, &[(100, 20000)]);
+        assert_eq!(bare.npcs[0].kind, None, "this one proves nothing");
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &bare, &bare_hp)
+            .unwrap();
+        s.put_bestiary("everquest-legends", "/logs/two.txt", &bare, &bare_hp)
+            .unwrap();
+
+        let (profiles, health) = s
+            .bestiary_excluding("everquest-legends", "/no/such/log.txt")
+            .unwrap();
+        let merged = eqlparser_core::bestiary::merge(profiles, &health);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].kind,
+            Some(CreatureKind::Undead),
+            "nothing may unprove it"
+        );
     }
 
     /// The whole reason the bestiary is persisted: a creature's record has to

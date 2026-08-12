@@ -70,6 +70,51 @@ use crate::zone::{Mode, Zone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// A creature's body type, where the log has proved one.
+///
+/// Proof comes from spells the game refuses to cast at anything else: a great
+/// many spells are restricted to undead, to summoned creatures, to animals or
+/// to plants, and the spell file says which. One of those landing is the game
+/// itself answering the question, so no guessing from names is involved.
+///
+/// Deliberately not exhaustive of the game's body types — only the four the
+/// spell file can vouch for appear here. A creature nobody happened to cast
+/// such a spell at simply has no kind, which is why this is an `Option`
+/// everywhere it is stored rather than a variant meaning "unknown".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CreatureKind {
+    Undead,
+    Summoned,
+    Animal,
+    Plant,
+}
+
+impl CreatureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CreatureKind::Undead => "undead",
+            CreatureKind::Summoned => "summoned",
+            CreatureKind::Animal => "animal",
+            CreatureKind::Plant => "plant",
+        }
+    }
+
+    /// Read back what [`CreatureKind::as_str`] wrote.
+    ///
+    /// `None` for anything unrecognised, and for the empty string a stored row
+    /// uses to mean nothing was ever proved.
+    pub fn from_str(s: &str) -> Option<CreatureKind> {
+        match s {
+            "undead" => Some(CreatureKind::Undead),
+            "summoned" => Some(CreatureKind::Summoned),
+            "animal" => Some(CreatureKind::Animal),
+            "plant" => Some(CreatureKind::Plant),
+            _ => None,
+        }
+    }
+}
+
 /// What identifies one creature in one place.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NpcKey {
@@ -154,6 +199,13 @@ pub struct NpcProfile {
     pub mode: Mode,
     pub difficulty: u8,
     pub game: Game,
+    /// Its body type, on the days the log proved one; see [`CreatureKind`].
+    ///
+    /// Absent for most creatures and expected to stay that way: it is set only
+    /// when someone cast a body-restricted spell at this one, so the field
+    /// reports what has been proved, not what is known.
+    #[serde(default)]
+    pub kind: Option<CreatureKind>,
     /// Times it was seen to die.
     pub kills: u64,
     /// Times it killed you.
@@ -272,6 +324,7 @@ impl Bestiary {
             mode,
             difficulty,
             game,
+            kind: None,
             kills: 0,
             deaths_to_it: 0,
             health_samples: 0,
@@ -290,6 +343,34 @@ impl Bestiary {
         let Some(key) = self.key(npc) else { return };
         *self.in_flight.entry(key.clone()).or_insert(0) += amount;
         self.profile(key, at).last_seen = at;
+    }
+
+    /// A spell that only works on one body type landed on this creature.
+    ///
+    /// The game enforces the restriction, so a single one of these settles the
+    /// question outright — there is no counting or corroboration to do, and a
+    /// creature already filed under a kind is left alone rather than churned.
+    ///
+    /// A contradiction is reported and then ignored, keeping the kind that
+    /// arrived first. It should not happen; if it does, the cause is upstream —
+    /// two creatures sharing a name, or a spell file whose columns have moved —
+    /// and quietly flip-flopping the field would hide it.
+    pub fn on_kind_evidence(&mut self, at: i64, npc: &str, kind: CreatureKind) {
+        let Some(key) = self.key(npc) else { return };
+        let p = self.profile(key, at);
+        match p.kind {
+            None => p.kind = Some(kind),
+            Some(k) if k != kind => {
+                eprintln!(
+                    "[bestiary] {} is filed as {} but a {}-only spell landed on it; keeping {}",
+                    p.name,
+                    k.as_str(),
+                    kind.as_str(),
+                    k.as_str()
+                );
+            }
+            Some(_) => {}
+        }
     }
 
     /// A swing by a creature at you, however it turned out.
@@ -475,6 +556,10 @@ pub fn merge(
                 into.max_hit = into.max_hit.max(p.max_hit);
                 into.first_seen = into.first_seen.min(p.first_seen);
                 into.last_seen = into.last_seen.max(p.last_seen);
+                // A kind proved anywhere holds everywhere: one log casting an
+                // undead-only spell settles it for a creature fifty other logs
+                // only ever hit with a sword.
+                into.kind = into.kind.or(p.kind);
             }
         }
         let into = merged.get_mut(&key).expect("just inserted");

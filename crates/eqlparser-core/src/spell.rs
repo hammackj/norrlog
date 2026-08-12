@@ -23,6 +23,7 @@
 //! [`SpellResolver`] scores that set using surrounding context — chiefly the
 //! `You begin casting <name>.` line that immediately precedes a self-cast.
 
+use crate::bestiary::CreatureKind;
 use crate::class::{CLASS_CANNOT_CAST, CLASS_COUNT, CLASS_FIELD_BASE};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -68,6 +69,11 @@ pub struct Spell {
     /// takes hold, so following the link is the only way it can be known
     /// about at all.
     pub linked: Vec<u32>,
+    /// The body type this spell may only be cast at, if it is restricted.
+    ///
+    /// The game refuses the cast otherwise, so one of these landing proves what
+    /// the target is. See [`crate::bestiary::CreatureKind`].
+    pub restricted_to: Option<CreatureKind>,
     /// True when any effect slot is SPA 22, the charm effect.
     ///
     /// Needed because the landing text cannot be trusted on its own: eleven
@@ -253,7 +259,57 @@ impl SpellDb {
     pub fn load(spells_path: &Path, strings_path: &Path) -> anyhow::Result<SpellDb> {
         let mut spells = Self::load_spells(spells_path)?;
         Self::apply_strings(&mut spells, strings_path)?;
+        Self::verify_restrictions(&mut spells);
         Ok(Self::from_spells(spells))
+    }
+
+    /// Check the target-type column still is one, and disown every restriction
+    /// if it is not.
+    ///
+    /// The column is read by position out of a 173-field record, so a patch
+    /// that inserts a field ahead of it leaves this reading something else
+    /// entirely — and the failure is silent and confident, filing whatever
+    /// creature happens to be hit next under a body type from nowhere. Since
+    /// the whole point of these restrictions is that the game vouches for
+    /// them, evidence that cannot be trusted is worth less than none.
+    ///
+    /// Three spells whose names state their own restriction serve as the
+    /// canaries. If they do not agree, the restrictions are dropped wholesale
+    /// and the bestiary simply learns nothing, which is the failure this is
+    /// allowed to have.
+    fn verify_restrictions(spells: &mut HashMap<u32, Spell>) {
+        const CANARIES: [(&str, CreatureKind); 3] = [
+            ("dismiss undead", CreatureKind::Undead),
+            ("dismiss summoned", CreatureKind::Summoned),
+            ("beguile animals", CreatureKind::Animal),
+        ];
+        let mut checked = 0;
+        for (name, want) in CANARIES {
+            let Some(s) = spells.values().find(|s| s.name.to_lowercase() == name) else {
+                continue;
+            };
+            checked += 1;
+            if s.restricted_to == Some(want) {
+                continue;
+            }
+            eprintln!(
+                "[spells] '{}' reads as {:?}, not {:?}: the target-type column has moved. \
+                 Creature body types will not be recorded from this spell file.",
+                s.name,
+                s.restricted_to,
+                Some(want)
+            );
+            for s in spells.values_mut() {
+                s.restricted_to = None;
+            }
+            return;
+        }
+        if checked == 0 {
+            eprintln!(
+                "[spells] none of the canary spells are present; creature body types \
+                 are being read from an unverified column."
+            );
+        }
     }
 
     /// Build a database from spells already in memory, indexing their texts.
@@ -300,6 +356,22 @@ impl SpellDb {
         }
     }
 
+    /// The body type a target-type value confines a spell to, if any.
+    ///
+    /// Only these four of the game's target types name a body; the rest
+    /// describe how a spell is aimed and say nothing about what it may be
+    /// aimed at. 10 and 21 are the single-target and area forms of the same
+    /// undead restriction.
+    fn target_type_restriction(v: &str) -> Option<CreatureKind> {
+        match v {
+            "9" => Some(CreatureKind::Animal),
+            "10" | "21" => Some(CreatureKind::Undead),
+            "11" => Some(CreatureKind::Summoned),
+            "16" => Some(CreatureKind::Plant),
+            _ => None,
+        }
+    }
+
     fn load_spells(path: &Path) -> anyhow::Result<HashMap<u32, Spell>> {
         // Field positions within the 173-column record. Verified against the
         // shipped data: e.g. Spirit of Wolf is formula 3 / cap 360 (36 min),
@@ -314,6 +386,11 @@ impl SpellDb {
         const F_MANA: usize = 14;
         // The beneficial flag; see `Spell::is_beneficial`.
         const F_GOOD_EFFECT: usize = 28;
+        // Who the spell may be aimed at. Most values say only how it is
+        // targeted — single, group, self, pet — but four name a body type the
+        // game will not let you cast it at anything else. See
+        // `target_type_restriction`.
+        const F_TARGET_TYPE: usize = 30;
         // The effect category; see `Spell::category`.
         const F_CATEGORY: usize = 146;
         // The effect table: slots separated by `$`, fields within a slot by
@@ -386,6 +463,9 @@ impl SpellDb {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    restricted_to: f
+                        .get(F_TARGET_TYPE)
+                        .and_then(|v| Self::target_type_restriction(v)),
                     name: f[F_NAME].to_string(),
                     cast_time_ms: num(F_CAST_TIME),
                     recovery_ms: num(F_RECOVERY),
@@ -1116,6 +1196,7 @@ mod tests {
             landed_on_you: Some(landed.into()),
             landed_on_other: None,
             fades: Some(fades.into()),
+            restricted_to: None,
             class_levels: [CLASS_CANNOT_CAST; CLASS_COUNT],
             good_effect: 1,
             category_id: 1,
