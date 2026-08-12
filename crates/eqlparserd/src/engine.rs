@@ -1792,15 +1792,10 @@ impl Engine {
         failures.reverse();
         CharmReport {
             recent_failures: failures.iter().filter(|f| now - f.at <= 60).count(),
-            charmed: cur
-                .map(|e| {
-                    e.actors
-                        .values()
-                        .filter(|s| s.charmed_by_you)
-                        .map(|s| s.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            // The live set, not the encounter's `charmed_by_you` flag: that one
+            // is sticky on purpose, so reading it here listed every creature
+            // charmed during the fight and cleared none of them on a break.
+            charmed: self.tracker.charmed_now(),
             uptime: cur.map(|e| e.charm_uptime()).unwrap_or(0.0),
             breaks: cur.map(|e| e.charm_breaks()).unwrap_or(0),
             failures,
@@ -2490,7 +2485,13 @@ impl Engine {
                     _ => None,
                 },
                 pet_owner: s.owner.clone(),
-                pet_damage: s.damage_while_charmed,
+                // What this pet contributed to your total, which for a charmed
+                // mob is only the part it dealt while held and for anything
+                // else of yours is all of it. Reading `damage_while_charmed`
+                // directly reported zero for a summoned pet. Gated on the row
+                // being a pet at all, since the figure is meaningless — and
+                // equal to the whole of its output — for an enemy.
+                pet_damage: if s.is_yours() { s.credited_damage() } else { 0 },
             })
             .collect()
     }

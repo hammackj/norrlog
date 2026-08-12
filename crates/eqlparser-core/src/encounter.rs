@@ -185,8 +185,10 @@ pub struct ActorStats {
     /// `charmed_by_you` is the looser claim — "counts as your pet for damage
     /// credit" — and a pet announcing itself with "Master" is enough for that.
     /// It is not enough to call the creature charmed: a summoned pet says the
-    /// same words. Only a charm spell landing proves a charm, so only that
-    /// sets this, and only this is allowed to put the word on screen.
+    /// same words. Two things clear that bar and set this, and only this is
+    /// allowed to put the word on screen: a charm spell seen to land, or a
+    /// "Master" line from a creature that has damaged you, which no pet of
+    /// your own summoning has ever done.
     #[serde(default)]
     pub charm_seen: bool,
     /// True when `owner` is the logging character.
@@ -276,15 +278,21 @@ impl ActorStats {
 
     /// Damage this creature contributed to its owner's total.
     ///
-    /// A summoned pet is its owner's for the whole fight, so all of its output
-    /// counts. A charmed mob is not: it was an enemy before the charm landed
-    /// and is one again the moment it breaks, so only what it dealt while held
-    /// belongs to the charmer.
+    /// A charmed mob was an enemy before the charm landed and is one again the
+    /// moment it breaks, so only what it dealt while held belongs to the
+    /// charmer. Anything else fighting for you — summoned, or a pet whose kind
+    /// was never established — is yours for the whole fight, so all of its
+    /// output counts.
+    ///
+    /// Keyed on the charm rather than on `summoned` because those two are not
+    /// a partition: a magician's pet is recognised by neither naming
+    /// convention nor `/pet leader`, and crediting it the charmed way would
+    /// silently drop every point of damage it dealt.
     pub fn credited_damage(&self) -> u64 {
-        if self.summoned {
-            self.damage_done
-        } else {
+        if self.charmed_by_you {
             self.damage_while_charmed
+        } else {
+            self.damage_done
         }
     }
 
@@ -991,11 +999,15 @@ pub struct EncounterTracker {
     current: Option<Encounter>,
     /// Timestamp of the most recent combat activity in the open encounter.
     last_combat: i64,
-    /// Actor keys currently charmed by the logging character.
+    /// Actor keys currently charmed by the logging character, each mapped to
+    /// the display name to put on screen.
     ///
     /// Lives on the tracker rather than the encounter because a charm can be
-    /// established in one pull and still hold when the next one starts.
-    charmed: std::collections::HashSet<String>,
+    /// established in one pull and still hold when the next one starts. That
+    /// same span is why entries must be removed as carefully as they are added:
+    /// nothing else clears this, so anything left behind is left for the
+    /// session.
+    charmed: std::collections::HashMap<String, String>,
     /// When the charm currently held on each creature began.
     charm_since: std::collections::HashMap<String, i64>,
     /// Pet actor key -> the display name of the player it belongs to.
@@ -1007,6 +1019,15 @@ pub struct EncounterTracker {
     pet_owners: std::collections::HashMap<String, String>,
     /// Pets known to be summoned rather than charmed.
     summoned: std::collections::HashSet<String>,
+    /// Actor keys that have damaged the logging character at some point.
+    ///
+    /// The evidence that separates a charmed mob from a summoned pet. Both
+    /// answer "Master" in identical words, and the naming conventions catch
+    /// only some summons — a magician's pet is called `Lebekab`, which looks
+    /// like nothing in particular. What a summoned pet never does is attack
+    /// you, and what a charmed mob nearly always did is exactly that, before
+    /// the charm and again when it breaks.
+    hostile: std::collections::HashSet<String>,
     /// Rolling buffer of damage aimed at you, for death post-mortems.
     recent_incoming: Vec<IncomingHit>,
 }
@@ -1027,10 +1048,11 @@ impl EncounterTracker {
             zone: None,
             current: None,
             last_combat: 0,
-            charmed: std::collections::HashSet::new(),
+            charmed: std::collections::HashMap::new(),
             charm_since: std::collections::HashMap::new(),
             pet_owners: std::collections::HashMap::new(),
             summoned: std::collections::HashSet::new(),
+            hostile: std::collections::HashSet::new(),
             recent_incoming: Vec::new(),
         }
     }
@@ -1065,9 +1087,21 @@ impl EncounterTracker {
             || crate::event::pet_owner_in_name(&pet.display(&self.player)).is_some()
     }
 
-    /// Actor keys currently under your control.
-    pub fn charmed(&self) -> &std::collections::HashSet<String> {
-        &self.charmed
+    /// Creatures under your control *right now*, by display name.
+    ///
+    /// The answer to "what am I holding", which is not the question
+    /// [`ActorStats::charmed_by_you`] answers. That flag is deliberately sticky
+    /// — it means "was yours at some point this fight", which is what damage
+    /// credit needs and the opposite of what a live panel needs. Reading it for
+    /// a live display accumulates every creature charmed during the fight and
+    /// never drops one.
+    ///
+    /// Sorted, because the backing map has no order and a panel whose rows
+    /// reshuffle on every poll is unreadable.
+    pub fn charmed_now(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.charmed.values().cloned().collect();
+        v.sort();
+        v
     }
 
     /// Mark or clear a creature as charmed by you.
@@ -1084,7 +1118,7 @@ impl EncounterTracker {
     pub fn set_charmed(&mut self, timestamp: i64, actor: &Actor, charmed: bool) {
         let key = actor.key();
         if charmed {
-            self.charmed.insert(key.clone());
+            self.charmed.insert(key.clone(), actor.display(&self.player));
             // Re-landing a charm that never broke must not restart the clock,
             // or a fight of constant refreshes would report almost no uptime.
             self.charm_since.entry(key).or_insert(timestamp);
@@ -1099,12 +1133,38 @@ impl EncounterTracker {
                 st.owned_by_you = true;
             }
         } else {
-            self.charmed.remove(&key);
-            if let Some(since) = self.charm_since.remove(&key) {
-                if let Some(enc) = self.current.as_mut() {
-                    let player = self.player.clone();
-                    let st = enc.entry(actor, &player);
-                    st.charmed_seconds += (timestamp - since).max(0);
+            self.end_charm(timestamp, actor, true);
+        }
+    }
+
+    /// Stop holding a creature, recording a break only if the charm failed.
+    ///
+    /// A charm coming loose and a charmed pet dying both stop the clock, but
+    /// only the first is a break. Counting deaths would inflate the figure a
+    /// charmer reads to judge how well the charm is holding — and on a class
+    /// that charms to kill, the pet dying is the *good* outcome.
+    /// Let go of everything at once, none of it counted as a break.
+    fn clear_charms(&mut self, timestamp: i64) {
+        // The stored display name rebuilds the actor exactly: the key it was
+        // filed under is that name lowercased.
+        let held: Vec<String> = self.charmed.values().cloned().collect();
+        for name in held {
+            self.end_charm(timestamp, &Actor::Named(name), false);
+        }
+    }
+
+    fn end_charm(&mut self, timestamp: i64, actor: &Actor, was_break: bool) {
+        let key = actor.key();
+        self.charmed.remove(&key);
+        // Absent when the charm was inferred from a "Master" line rather than
+        // seen to land, which starts no clock; there is then no span to close
+        // and nothing to count.
+        if let Some(since) = self.charm_since.remove(&key) {
+            if let Some(enc) = self.current.as_mut() {
+                let player = self.player.clone();
+                let st = enc.entry(actor, &player);
+                st.charmed_seconds += (timestamp - since).max(0);
+                if was_break {
                     st.charm_breaks += 1;
                 }
             }
@@ -1137,6 +1197,13 @@ impl EncounterTracker {
             Event::ZoneChange { zone } => {
                 // You cannot still be fighting something in a zone you left.
                 let z = self.close();
+                // Nor holding it. A charmed pet does not cross the zone line
+                // with you, and a login arrives here too, so this is also what
+                // ends the charms of the session before. Without it the held
+                // set is never emptied at all for charms known only from a
+                // "Master" line: no spell was named, so no spell can wear off,
+                // and a creature charmed in July was still on screen in August.
+                self.clear_charms(entry.timestamp);
                 self.zone = Some(zone.clone());
                 return z.or(closed);
             }
@@ -1146,14 +1213,42 @@ impl EncounterTracker {
                 let player = self.player.clone();
                 let summoned = self.is_summoned(pet);
                 self.set_pet_owner(pet, &player, summoned);
-                if !summoned {
+                // Calling it a charm needs evidence of its own, not merely the
+                // absence of evidence of summoning. `is_summoned` recognises
+                // the naming conventions and whatever `/pet leader` has
+                // answered, and that misses a magician's pet entirely — five
+                // creatures in these logs that never once attacked the player
+                // were being counted as charmed, and one was still on the
+                // overlay weeks later. Having fought you is what a summoned pet
+                // never does.
+                //
+                // Deliberately not folded into `is_summoned`: that verdict is
+                // recorded permanently in `summoned`, and a mob charmed before
+                // it ever swung at you would be branded a pet for good.
+                if !summoned && self.hostile.contains(&pet.key()) {
                     // For a charming class this line is the primary evidence a
                     // mob has switched sides: the pet announces itself when
                     // ordered to attack, and the spell that took hold often
                     // cannot be named from the log at all.
-                    self.charmed.insert(pet.key());
+                    self.charmed.insert(pet.key(), pet.display(&player));
+                    // Start the clock too, or the charm is held but never
+                    // timed: this is the only evidence of charm a log gives
+                    // for a spell that could not be named, and without a start
+                    // there is no span for `end_charm` to close, so uptime and
+                    // the break count both stay at zero for the whole session.
+                    //
+                    // `or_insert`, because the pet repeats this line on every
+                    // attack order — dozens of times in one fight — and
+                    // restarting the clock at each one would report a charm
+                    // that was never held for longer than a single order.
+                    self.charm_since.entry(pet.key()).or_insert(entry.timestamp);
                     if let Some(enc) = self.current.as_mut() {
-                        enc.entry(pet, &player).charmed_by_you = true;
+                        let st = enc.entry(pet, &player);
+                        st.charmed_by_you = true;
+                        // Safe to call it charm on screen now: the objection
+                        // was that a summoned pet says the same words, and a
+                        // summoned pet has not spent the evening hitting you.
+                        st.charm_seen = true;
                     }
                 }
             }
@@ -1201,7 +1296,29 @@ impl EncounterTracker {
                 self.ensure_open(entry.timestamp);
                 let crit = flags.is_crit();
                 let player = self.player.clone();
-                let src_charmed = self.charmed.contains(&source.key());
+                let mut src_charmed = self.charmed.contains_key(&source.key());
+                // Blows in either direction count: the game gives you no way to
+                // attack a pet of your own summoning, so having swung at a
+                // creature says it was an enemy just as plainly as being hit
+                // by it does.
+                if source.is_you() {
+                    self.hostile.insert(target.key());
+                }
+                if target.is_you() {
+                    self.hostile.insert(source.key());
+                    // A creature you are holding does not attack you. When one
+                    // does, the charm is over, and for a charm known only from
+                    // a "Master" line this is the only line in the log that
+                    // says so — there is no named spell to wear off.
+                    //
+                    // Done before the credit below rather than after, so the
+                    // blow that ended the charm is not counted as your pet's
+                    // work and added to your own damage.
+                    if src_charmed {
+                        self.end_charm(entry.timestamp, source, true);
+                        src_charmed = false;
+                    }
+                }
                 // A pet is summoned once and fights all evening, while the
                 // line that named its owner came in some earlier pull. Carry
                 // the attribution forward so every fight credits it, not just
@@ -1402,6 +1519,11 @@ impl EncounterTracker {
                 });
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
+                // A corpse is not a pet. Nothing else would ever drop it: the
+                // live set is deliberately kept across encounters, and a dead
+                // creature casts no more spells to wear off, so without this
+                // the charm outlives the kill for the rest of the session.
+                self.end_charm(entry.timestamp, victim, false);
             }
             Event::Loot {
                 item,
@@ -2011,6 +2133,9 @@ mod tests {
     #[test]
     fn charmed_pet_damage_is_credited_to_you() {
         let encs = run(&[
+            // It is an enemy first. That is what tells it apart from a pet you
+            // summoned, which says the same words when ordered to attack.
+            (99, "An imp protector hits YOU for 20 points of damage."),
             (
                 100,
                 "You slash a fire giant warrior for 100 points of damage.",
@@ -2034,11 +2159,11 @@ mod tests {
         // ...but the pet-inclusive figure reflects the whole pull.
         assert_eq!(e.your_damage_with_pets(), 500);
         assert_eq!(e.your_pets().len(), 1);
-        // The "Master" line proves the imp is fighting for you and is enough
-        // to credit its damage, but it is not proof of a charm — a summoned
-        // pet says the same thing. Nothing here saw a charm land, so the
-        // charm-specific list stays empty rather than claiming one.
-        assert!(e.charmed_pets().is_empty());
+        // A "Master" line alone would not prove a charm — a summoned pet says
+        // the same thing. One from a creature that was hitting you moments
+        // earlier does, so this fight belongs on the charm-specific list.
+        assert_eq!(e.charmed_pets().len(), 1);
+        assert!(e.actors.get("an imp protector").unwrap().charm_seen);
     }
 
     #[test]
@@ -2069,6 +2194,7 @@ mod tests {
         // The caller reports the break through `set_charmed`.
         let mut t = EncounterTracker::new("Tharn");
         let before = entries(&[
+            (99, "An imp protector hits YOU for 5 points of damage."),
             (100, "You slash a rat for 1 point of damage."),
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
             (
@@ -2174,6 +2300,193 @@ mod tests {
         );
     }
 
+    /// What the overlay reads must empty out when the charm goes, even though
+    /// the encounter's own flag is sticky and deliberately does not.
+    #[test]
+    fn breaking_a_charm_empties_the_live_set() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        for e in &entries(&[(100, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        t.set_charmed(100, &imp, true);
+        assert_eq!(t.charmed_now(), vec!["An imp protector".to_string()]);
+
+        t.set_charmed(106, &imp, false);
+        assert!(t.charmed_now().is_empty(), "the break clears the panel");
+        assert!(
+            t.current().unwrap().actors["an imp protector"].charmed_by_you,
+            "while the sticky flag survives, so the damage stays credited"
+        );
+    }
+
+    /// Charming three creatures over a fight and losing each one must not leave
+    /// three names on screen. This is the shape of the bug the live set exists
+    /// to fix: the sticky flag accumulated every one of them.
+    #[test]
+    fn successive_charms_do_not_pile_up_on_the_overlay() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in &entries(&[(100, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        for (i, name) in ["An imp protector", "A cave bat", "A dark elf"]
+            .iter()
+            .enumerate()
+        {
+            let who = Actor::Named((*name).into());
+            let at = 100 + i as i64 * 2;
+            t.set_charmed(at, &who, true);
+            t.set_charmed(at + 1, &who, false);
+        }
+        assert!(
+            t.charmed_now().is_empty(),
+            "three charms held one at a time, none of them still held: {:?}",
+            t.charmed_now()
+        );
+    }
+
+    /// A charmed pet that dies stops being a pet — and its death is not a charm
+    /// break. Nothing else clears the live set, which is kept across
+    /// encounters, so a corpse left in it stays for the session.
+    #[test]
+    fn a_charmed_pet_dying_ends_the_charm_without_counting_a_break() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        for e in &entries(&[(100, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        t.set_charmed(100, &imp, true);
+        for e in &entries(&[(106, "An imp protector has been slain by a rat!")]) {
+            t.push(e);
+        }
+        assert!(t.charmed_now().is_empty(), "the corpse leaves the panel");
+
+        for e in &entries(&[(108, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        let enc = t.flush().expect("encounter");
+        let st = enc.actors.get("an imp protector").expect("pet recorded");
+        assert_eq!(st.charmed_seconds, 6, "the clock still closes at the death");
+        assert_eq!(st.charm_breaks, 0, "dying is not the charm failing");
+    }
+
+    /// Zoning ends every charm. This is the only thing that ever clears one
+    /// known solely from a "Master" line — no spell was named, so no spell can
+    /// wear off — and without it such a charm is held for the whole session.
+    #[test]
+    fn zoning_lets_go_of_every_charm() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in &entries(&[
+            (99, "An imp protector hits YOU for 10 points of damage."),
+            (100, "You slash a rat for 1 point of damage."),
+            (101, "An imp protector told you, 'Attacking a rat Master.'"),
+        ]) {
+            t.push(e);
+        }
+        t.set_charmed(102, &Actor::Named("A cave bat".into()), true);
+        assert_eq!(t.charmed_now().len(), 2, "{:?}", t.charmed_now());
+
+        for e in &entries(&[(400, "You have entered Lavastorm Mountains.")]) {
+            t.push(e);
+        }
+        assert!(
+            t.charmed_now().is_empty(),
+            "nothing follows you across the line: {:?}",
+            t.charmed_now()
+        );
+    }
+
+    /// A charm known only from a "Master" line must still be timed. No spell
+    /// was named, so nothing can wear off — before the clock started here,
+    /// uptime and the break count read zero for a whole session of charming.
+    #[test]
+    fn a_master_line_charm_is_timed_like_any_other() {
+        let encs = run(&[
+            (100, "An imp protector hits YOU for 20 points of damage."),
+            (101, "An imp protector told you, 'Attacking a rat Master.'"),
+            (
+                104,
+                "An imp protector slashes a rat for 30 points of damage.",
+            ),
+            (112, "You slash a rat for 1 point of damage."),
+        ]);
+        let st = encs[0].actors.get("an imp protector").expect("pet");
+        assert_eq!(st.charmed_seconds, 11, "101 to the end of the fight");
+        assert!(encs[0].charm_uptime() > 0.9, "{}", encs[0].charm_uptime());
+    }
+
+    /// The pet repeats its attack order constantly. Each one must not restart
+    /// the clock, or a charm held all fight reports a couple of seconds.
+    #[test]
+    fn repeated_attack_orders_do_not_restart_the_clock() {
+        let encs = run(&[
+            (100, "An imp protector hits YOU for 20 points of damage."),
+            (101, "An imp protector told you, 'Attacking a rat Master.'"),
+            (105, "An imp protector told you, 'Attacking a rat Master.'"),
+            (109, "An imp protector told you, 'Attacking a rat Master.'"),
+            (112, "You slash a rat for 1 point of damage."),
+        ]);
+        let st = encs[0].actors.get("an imp protector").expect("pet");
+        assert_eq!(st.charmed_seconds, 11, "held from the first order, not the last");
+    }
+
+    /// A creature you hold does not attack you. When one does, that is the
+    /// break — the only line saying so when no spell can be named.
+    #[test]
+    fn a_held_creature_hitting_you_is_the_break() {
+        let encs = run(&[
+            (99, "An imp protector hits YOU for 10 points of damage."),
+            (100, "You slash a rat for 1 point of damage."),
+            (101, "An imp protector told you, 'Attacking a rat Master.'"),
+            (
+                104,
+                "An imp protector slashes a rat for 30 points of damage.",
+            ),
+            // The charm comes loose and it turns on you.
+            (106, "An imp protector hits YOU for 50 points of damage."),
+            (112, "You slash a rat for 1 point of damage."),
+        ]);
+        let st = encs[0].actors.get("an imp protector").expect("pet");
+        assert_eq!(st.charm_breaks, 1);
+        assert_eq!(st.charmed_seconds, 5, "101 to 106, and no longer");
+        assert_eq!(
+            st.damage_while_charmed, 30,
+            "the blow that broke it is not your pet's work"
+        );
+        assert_eq!(st.damage_done, 90, "though it is still its own damage");
+    }
+
+    /// A summoned pet answers "Master" in the same words a charmed mob does,
+    /// and its generated name matches no convention. What it never does is
+    /// fight you — so it must not reach the charm overlay, which is where two
+    /// of these sat for weeks.
+    #[test]
+    fn a_summoned_pet_that_never_fought_you_is_not_a_charm() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in &entries(&[
+            (100, "You slash a giant spider for 10 points of damage."),
+            (101, "Janer told you, 'Attacking a giant spider Master.'"),
+            (102, "Janer slashes a giant spider for 90 points of damage."),
+        ]) {
+            t.push(e);
+        }
+        assert!(
+            t.charmed_now().is_empty(),
+            "nothing here says this was ever an enemy: {:?}",
+            t.charmed_now()
+        );
+
+        let enc = t.flush().expect("encounter");
+        let janer = enc.actors.get("janer").expect("the pet");
+        assert!(!janer.charm_seen, "and no charm may be claimed");
+        assert!(janer.is_yours(), "though it plainly fights for you");
+        assert_eq!(
+            enc.your_damage_with_pets(),
+            100,
+            "so all of its damage counts, not the zero seconds it was charmed"
+        );
+    }
+
     /// Refreshing a charm that never broke must not restart its clock.
     #[test]
     fn re_landing_an_unbroken_charm_does_not_reset_uptime() {
@@ -2203,6 +2516,7 @@ mod tests {
     #[test]
     fn an_unrelated_debuff_fading_does_not_end_a_charm() {
         let encs = run(&[
+            (99, "An imp protector hits YOU for 10 points of damage."),
             (100, "You slash a rat for 1 point of damage."),
             (101, "An imp protector told you, 'Attacking a rat Master.'"),
             (
