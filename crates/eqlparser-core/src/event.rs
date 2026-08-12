@@ -8,6 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Stands in for an attacker the log declines to name.
+///
+/// A few lines report damage to you with no source at all. The damage is real
+/// and belongs in your totals, but nothing in the log says what dealt it, and
+/// a breakdown by attacker that quietly omitted it would not add up. So it is
+/// carried under a name that says plainly that nobody knows, rather than being
+/// dropped or pinned on the nearest plausible creature.
+pub const UNSEEN_ATTACKER: &str = "an unseen attacker";
+
 /// A participant in an event.
 ///
 /// The log refers to the logging character as "You"/"YOU"/"YOUR"/"you" and to

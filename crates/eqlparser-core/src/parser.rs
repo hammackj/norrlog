@@ -139,9 +139,15 @@ static RULES: &[(RuleId, &str)] = &[
         r"^(?P<tgt>.+?) (?:is|are) (?P<verb>\w+) by (?P<src>.+?)[`']s (?P<medium>thorns|flames) for (?P<amt>\d+) points? of non-melee damage[.!]$",
     ),
     // "Lord Nagafen was hit by non-melee for 500 points of damage."
+    // "You were hit by non-melee for 118 damage."
+    //
+    // Both persons and both phrasings: the second person drops "points of"
+    // entirely, and requiring it dropped every one of these on the floor — 229
+    // hits and 4,421 damage across the logs on hand, incoming damage that
+    // appeared in no total anywhere.
     (
         RuleId::NonMeleeGeneric,
-        r"^(?P<tgt>.+?) was hit by non-melee for (?P<amt>\d+) points? of damage\.$",
+        r"^(?P<tgt>.+?) (?:was|were) hit by non-melee for (?P<amt>\d+)(?: points? of)? damage\.$",
     ),
     // ---- Melee --------------------------------------------------------------
     // Second person uses the bare verb; third person uses the inflected form.
@@ -150,31 +156,44 @@ static RULES: &[(RuleId, &str)] = &[
     // with a bare `[a-z]+` the engine commits to the leftmost lazy split, so
     // "A giant fire beetle bites YOU" would yield verb="giant" and a later
     // rejection could not make it backtrack to the correct split.
+    // One verb takes a preposition: you *frenzy on* something, where you
+    // *slash* it. Without the optional `on` the lazy target capture keeps the
+    // word — "Morgok frenzies on a cracked skeleton" files a creature called
+    // "on a cracked skeleton", and every mob anyone ever frenzied on gets a
+    // shadow twin. It cost 37 invented creatures in one log, including "on
+    // YOU", before anybody noticed; the names are only visibly wrong if you
+    // happen to read the bestiary.
+    //
+    // Optional rather than a second rule, and matched inside the pattern
+    // rather than trimmed afterwards, for the reason above: the engine has to
+    // be able to reach the right split by backtracking. A target genuinely
+    // beginning with "on " does not exist, and would have to survive the same
+    // ambiguity in the client's own output if it did.
     // "You slash Lord Nagafen for 160 points of damage. (Critical)"
     (
         RuleId::MeleeYou,
-        r"^You (?P<verb>{VERB}) (?P<tgt>.+?) for (?P<amt>\d+) points? of damage\.(?: \((?P<flags>[^)]*)\))?$",
+        r"^You (?P<verb>{VERB})(?: on)? (?P<tgt>.+?) for (?P<amt>\d+) points? of damage\.(?: \((?P<flags>[^)]*)\))?$",
     ),
     // "An imp protector hits YOU for 33 points of damage. (Riposte)"
     (
         RuleId::MeleeOther,
-        r"^(?P<src>.+?) (?P<verb>{VERB}) (?P<tgt>.+?) for (?P<amt>\d+) points? of damage\.(?: \((?P<flags>[^)]*)\))?$",
+        r"^(?P<src>.+?) (?P<verb>{VERB})(?: on)? (?P<tgt>.+?) for (?P<amt>\d+) points? of damage\.(?: \((?P<flags>[^)]*)\))?$",
     ),
     // ---- Misses -------------------------------------------------------------
     (
         RuleId::MissYou,
-        r"^You try to (?P<verb>[a-z]+) (?P<tgt>.+?), but miss!(?: \((?P<flags>[^)]*)\))?$",
+        r"^You try to (?P<verb>[a-z]+)(?: on)? (?P<tgt>.+?), but miss!(?: \((?P<flags>[^)]*)\))?$",
     ),
     (
         RuleId::MissOther,
-        r"^(?P<src>.+?) tries to (?P<verb>[a-z]+) (?P<tgt>.+?), but misses!(?: \((?P<flags>[^)]*)\))?$",
+        r"^(?P<src>.+?) tries to (?P<verb>[a-z]+)(?: on)? (?P<tgt>.+?), but misses!(?: \((?P<flags>[^)]*)\))?$",
     ),
     // ---- Active avoidance ---------------------------------------------------
     // Distinct from a plain miss: the defender did something.
     // "An imp protector tries to hit YOU, but YOU block!"
     (
         RuleId::Avoided,
-        r"^(?P<src>.+?) tries to {VERB} (?P<tgt>.+?), but (?P<defender>.+?) (?P<how>blocks?|parr(?:y|ies)|dodges?|ripostes?)!$",
+        r"^(?P<src>.+?) tries to {VERB}(?: on)? (?P<tgt>.+?), but (?P<defender>.+?) (?P<how>blocks?|parr(?:y|ies)|dodges?|ripostes?)!$",
     ),
     // ---- Resists ------------------------------------------------------------
     (
@@ -189,7 +208,7 @@ static RULES: &[(RuleId, &str)] = &[
     // "A dar ghoul knight tries to cleave X, but X's magical skin absorbs the blow!"
     (
         RuleId::AbsorbBlow,
-        r"^(?P<src>.+?) tries to [a-z]+ (?P<tgt>.+?), but .+?[`']s magical skin absorbs the blow!$",
+        r"^(?P<src>.+?) tries to [a-z]+(?: on)? (?P<tgt>.+?), but .+?[`']s magical skin absorbs the blow!$",
     ),
     // "A fire giant warrior's magical skin absorbs the damage of YOUR thorns."
     (
@@ -803,15 +822,30 @@ impl Parser {
                     damage_type: Some("non-melee".into()),
                     flags: Flags::default(),
                 },
-                RuleId::NonMeleeGeneric => Event::Damage {
-                    source: Actor::You,
-                    target: self.actor(g("tgt").unwrap_or_default()),
-                    amount: num("amt"),
-                    kind: DamageKind::DirectSpell,
-                    ability: None,
-                    damage_type: Some("non-melee".into()),
-                    flags: Flags::default(),
-                },
+                RuleId::NonMeleeGeneric => {
+                    let target = self.actor(g("tgt").unwrap_or_default());
+                    Event::Damage {
+                        // The line names nobody. When a creature took the
+                        // damage it was almost certainly yours — that is what
+                        // this line is, a nuke of yours the client did not name.
+                        // When *you* took it, that reasoning inverts: you did
+                        // not hit yourself, and saying you did would add the
+                        // damage to your own output and list you among your own
+                        // attackers. There is nothing in the log to name the
+                        // real one, so it is named as unknown instead.
+                        source: if target.is_you() {
+                            Actor::Named(UNSEEN_ATTACKER.to_string())
+                        } else {
+                            Actor::You
+                        },
+                        target,
+                        amount: num("amt"),
+                        kind: DamageKind::DirectSpell,
+                        ability: None,
+                        damage_type: Some("non-melee".into()),
+                        flags: Flags::default(),
+                    }
+                }
                 RuleId::MeleeYou => Event::Damage {
                     source: Actor::You,
                     target: self.actor(g("tgt").unwrap_or_default()),
@@ -1289,6 +1323,81 @@ mod tests {
                 assert!(flags.is_crit());
             }
             other => panic!("expected melee damage, got {other:?}"),
+        }
+    }
+
+    /// Frenzy is the one melee verb that takes a preposition. Left in the
+    /// target, it invents a creature per victim: a log with 484 frenzy lines
+    /// produced 37 of them, "on YOU" among the names.
+    #[test]
+    fn frenzy_takes_a_preposition_and_the_target_does_not_keep_it() {
+        // Third person, damage.
+        match p().parse_body("Morgok frenzies on a cracked skeleton for 12 points of damage.") {
+            Event::Damage { source, target, amount, kind, ability, .. } => {
+                assert_eq!(source, Actor::Named("Morgok".into()));
+                assert_eq!(target, Actor::Named("a cracked skeleton".into()));
+                assert_eq!(amount, 12);
+                assert_eq!(kind, DamageKind::Melee);
+                assert_eq!(ability.as_deref(), Some("frenzies"));
+            }
+            other => panic!("expected melee damage, got {other:?}"),
+        }
+        // Second person, damage.
+        match p().parse_body("You frenzy on a fire giant warrior for 40 points of damage.") {
+            Event::Damage { source, target, .. } => {
+                assert_eq!(source, Actor::You);
+                assert_eq!(target, Actor::Named("a fire giant warrior".into()));
+            }
+            other => panic!("expected melee damage, got {other:?}"),
+        }
+        // Misses, both persons. "on YOU" was the most common invented name.
+        match p().parse_body("Lord of Ire tries to frenzy on YOU, but misses! (Flurry)") {
+            Event::Miss { source, target, .. } => {
+                assert_eq!(source, Actor::Named("Lord of Ire".into()));
+                assert_eq!(target, Actor::You);
+            }
+            other => panic!("expected a miss, got {other:?}"),
+        }
+        match p().parse_body("You try to frenzy on a lesser mummy, but miss!") {
+            Event::Miss { source, target, .. } => {
+                assert_eq!(source, Actor::You);
+                assert_eq!(target, Actor::Named("a lesser mummy".into()));
+            }
+            other => panic!("expected a miss, got {other:?}"),
+        }
+        // A verb that does NOT take one is unaffected: "on" here would be
+        // part of a name, and the optional group must not eat it.
+        match p().parse_body("Jaranab pierces a lesser mummy for 1 point of damage.") {
+            Event::Damage { target, .. } => {
+                assert_eq!(target, Actor::Named("a lesser mummy".into()));
+            }
+            other => panic!("expected melee damage, got {other:?}"),
+        }
+    }
+
+    /// The unattributed non-melee line, in both persons. The second person
+    /// drops "points of", which is why none of these were parsed at all.
+    #[test]
+    fn an_unattributed_non_melee_hit_is_counted_and_its_attacker_named_unknown() {
+        // Damage to a creature with nobody named is a nuke of yours the client
+        // did not name, and stays credited to you.
+        match p().parse_body("Lord Nagafen was hit by non-melee for 500 points of damage.") {
+            Event::Damage { source, target, amount, .. } => {
+                assert_eq!(source, Actor::You);
+                assert_eq!(target, Actor::Named("Lord Nagafen".into()));
+                assert_eq!(amount, 500);
+            }
+            other => panic!("expected damage, got {other:?}"),
+        }
+        // Damage to you is not something you did to yourself. Nothing names
+        // the attacker, so the attacker is named as unknown.
+        match p().parse_body("You were hit by non-melee for 118 damage.") {
+            Event::Damage { source, target, amount, .. } => {
+                assert_eq!(source, Actor::Named(UNSEEN_ATTACKER.into()));
+                assert_eq!(target, Actor::You);
+                assert_eq!(amount, 118);
+            }
+            other => panic!("expected damage, got {other:?}"),
         }
     }
 
