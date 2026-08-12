@@ -235,10 +235,14 @@
     const rolled = buckets.slice(-DPS_ROLL_SECONDS).reduce((a, b) => a + b, 0);
     const rolling = Math.round(rolled / DPS_ROLL_SECONDS);
 
-    el.dpsPanel.classList.remove("hidden");
-    el.dpsMeta.innerHTML = `<b>${num(rolling)}</b> now &middot; ${num(enc.your_dps)} avg`;
-
     const peak = Math.max(1, ...buckets);
+    el.dpsPanel.classList.remove("hidden");
+    // Peak belongs on the header line with the other two figures. Floated over
+    // the chart it was unreadable the moment a tall bar reached the right-hand
+    // edge — which is precisely when the peak is worth reading.
+    el.dpsMeta.innerHTML =
+      `<b>${num(rolling)}</b> now &middot; ${num(enc.your_dps)} avg &middot; peak ${num(peak)}`;
+
     const w = 100 / buckets.length;
     // preserveAspectRatio is off on purpose here, unlike the fight timeline:
     // these are solid bars at a fixed count, so stretching them horizontally
@@ -250,8 +254,7 @@
                width="${(w * 0.85).toFixed(2)}" height="${((v / peak) * 24).toFixed(2)}"></rect>`
           : ""
       )
-      .join("")}</svg>
-      <span class="spark-peak">peak ${num(peak)}/s</span>`;
+      .join("")}</svg>`;
   }
 
   /* What is landing on you in the fight you are in.
@@ -460,8 +463,38 @@
     el.status.classList.toggle("hidden", snap.live !== false);
   }
 
+  /* A creature's pet folded into the creature.
+   *
+   * It exists because its owner summoned it and dies when the owner dies, so
+   * it is not a combatant in its own right — it is part of what that creature
+   * is doing to you. Two rows for one thing is expensive on an overlay, where
+   * the row budget is small and every line spent on "King Tranix pet" is a
+   * line not spent on something you did not already know.
+   *
+   * Before the row limit, not after, or the fold would free a slot and then
+   * not fill it. Your own pets are left alone: the split between your damage
+   * and your pets' is one the meter deliberately keeps.
+   *
+   * Copies, because the snapshot object is re-rendered on every tick and
+   * adding into a live row would compound it. */
+  function foldPets(rows) {
+    const out = rows.map((r) => ({ ...r }));
+    const byName = new Map(out.map((r) => [r.name, r]));
+    const absorbed = new Set();
+    for (const r of out) {
+      const owner = r.pet_owner && byName.get(r.pet_owner);
+      if (!owner || r.is_you || r.is_pet || owner === r) continue;
+      owner.damage += r.damage;
+      owner.dps += r.dps;
+      owner.share += r.share;
+      owner.foldedPets = (owner.foldedPets || 0) + 1;
+      absorbed.add(r);
+    }
+    return out.filter((r) => !absorbed.has(r));
+  }
+
   function renderRows(enc) {
-    let meter = enc.meter || [];
+    let meter = foldPets(enc.meter || []);
     if (opt.selfOnly) meter = meter.filter((r) => r.is_you);
     // A charmed pet is an enemy by origin but an ally in effect; keep it even
     // when enemies are hidden, since its damage is credited to the player.
@@ -482,11 +515,15 @@
         // A charm can break mid-fight and hand its damage back to the other
         // side; a summoned pet cannot. Worth two words on a narrow overlay.
         // Another player's pet is labelled with whose it is.
-        const tag = r.pet_kind
-          ? `<span class="tag${r.is_pet ? "" : " other"}">${
-              r.pet_kind === "charmed" ? "charmed" : "pet"
-            }${!r.is_pet && r.pet_owner ? " " + esc(r.pet_owner) : ""}</span>`
-          : "";
+        // A row carrying a folded pet says so, or its total quietly disagrees
+        // with the log.
+        const tag = r.foldedPets
+          ? `<span class="tag other">+${r.foldedPets} pet${r.foldedPets === 1 ? "" : "s"}</span>`
+          : r.pet_kind
+            ? `<span class="tag${r.is_pet ? "" : " other"}">${
+                r.pet_kind === "charmed" ? "charmed" : "pet"
+              }${!r.is_pet && r.pet_owner ? " " + esc(r.pet_owner) : ""}</span>`
+            : "";
         return `<div class="${cls.join(" ")}" style="--share:${(r.share * 100).toFixed(1)}%">
           <span class="name">${esc(r.name)}${tag}</span>
           <span class="nums">

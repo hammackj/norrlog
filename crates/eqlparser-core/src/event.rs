@@ -81,15 +81,31 @@ const PET_NOUNS: [&str; 5] = ["warder", "pet", "companion", "familiar", "minion"
 /// `/pet leader` has to be typed and mostly is not. Returns the owner's name,
 /// or `None` when the name is not of that form.
 pub fn pet_owner_in_name(name: &str) -> Option<&str> {
-    // The client writes a backtick where an apostrophe belongs; accept both.
-    let (owner, noun) = name
-        .split_once("`s ")
-        .or_else(|| name.split_once("'s "))?;
-    let noun = noun.trim();
-    if owner.is_empty() || !PET_NOUNS.contains(&noun.to_lowercase().as_str()) {
-        return None;
+    // The possessive form, "Brennagh`s warder". The client writes a backtick
+    // where an apostrophe belongs; accept both.
+    if let Some((owner, noun)) = name.split_once("`s ").or_else(|| name.split_once("'s ")) {
+        let noun = noun.trim();
+        if !owner.is_empty() && PET_NOUNS.contains(&noun.to_lowercase().as_str()) {
+            return Some(owner.trim());
+        }
     }
-    Some(owner.trim())
+
+    // The bare form, "King Tranix pet", which is how the client names the pet
+    // of a creature rather than of a player. Without this every such pet is a
+    // second row belonging to nobody — 590 lines of "A dracoliche pet" in one
+    // log, sitting beside the dracoliche it dies with.
+    //
+    // Only `pet` is accepted bare, not the rest of PET_NOUNS: "A ghoul minion"
+    // and "An imp familiar" are entirely plausible names for creatures that
+    // belong to nothing, while a creature genuinely called "... pet" is not.
+    if let Some(owner) = name.strip_suffix(" pet") {
+        let owner = owner.trim();
+        if !owner.is_empty() {
+            return Some(owner);
+        }
+    }
+
+    None
 }
 
 /// Strip possessives and trailing corpse markers that leak into name captures.

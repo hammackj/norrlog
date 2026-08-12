@@ -121,16 +121,6 @@ body {
   fill: var(--you);
   opacity: 0.85;
 }
-.spark-peak {
-  position: absolute;
-  right: 2px;
-  top: 0;
-  font-size: 10px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-
 /* ---- damage meter ---- */
 
 .rows {

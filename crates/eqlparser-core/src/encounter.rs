@@ -1253,11 +1253,23 @@ impl EncounterTracker {
                 }
             }
             Event::PetLeader { pet, leader } => {
-                // A creature that names a leader is a pet by definition, and
-                // one that answers `/pet leader` is a summoned pet: a charmed
-                // mob is not on anybody's pet window.
+                // A creature that names a leader is a pet by definition. It
+                // was also taken as proof of *summoning*, on the reasoning
+                // that a charmed mob is not on anybody's pet window — and the
+                // game disagrees. `/pet leader` typed at a charmed fire giant
+                // answered "My leader is Tharn", which under the old rule filed
+                // it as summoned and so excluded it from charm bookkeeping
+                // from that moment on: uptime and breaks silently stopped
+                // being counted for a creature still plainly charmed.
+                //
+                // So the command proves whose it is, and summoning is claimed
+                // only when nothing says the creature is charmed. That still
+                // catches the case this was for — a magician's pet whose
+                // generated name matches no convention, which `/pet leader` is
+                // the only way to identify at all.
                 let owner = leader.display(&self.player);
-                self.set_pet_owner(pet, &owner, true);
+                let summoned = !self.charmed.contains_key(&pet.key());
+                self.set_pet_owner(pet, &owner, summoned);
             }
             // Deliberately does *not* end a charm. Which spell wore off decides
             // that, and naming spells needs the database this crate cannot
@@ -2485,6 +2497,46 @@ mod tests {
             100,
             "so all of its damage counts, not the zero seconds it was charmed"
         );
+    }
+
+    /// `/pet leader` answers for a charmed mob too — the pet window lists it.
+    /// Reading that as proof of summoning stopped its charm being counted.
+    #[test]
+    fn pet_leader_on_a_charmed_mob_does_not_make_it_summoned() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in &entries(&[
+            (99, "A fire giant warrior hits YOU for 10 points of damage."),
+            (100, "You slash a rat for 1 point of damage."),
+            (101, "A fire giant warrior told you, 'Attacking a rat Master.'"),
+            (102, "A fire giant warrior says, 'My leader is Tharn.'"),
+        ]) {
+            t.push(e);
+        }
+        assert_eq!(
+            t.charmed_now(),
+            vec!["A fire giant warrior".to_string()],
+            "still held after the command"
+        );
+        let st = &t.current().unwrap().actors["a fire giant warrior"];
+        assert!(!st.summoned, "the pet window does not make it summoned");
+        assert!(st.charm_seen, "and the charm still reads as a charm");
+        assert_eq!(st.owner.as_deref(), Some("Tharn"), "whose it is, though");
+    }
+
+    /// A generated-name pet that never fought you is summoned, and the command
+    /// is the only thing that can say so.
+    #[test]
+    fn pet_leader_still_identifies_a_summoned_pet() {
+        let mut t = EncounterTracker::new("Brennagh");
+        for e in &entries(&[
+            (100, "You slash a rat for 1 point of damage."),
+            (101, "Lebekab says, 'My leader is Brennagh.'"),
+        ]) {
+            t.push(e);
+        }
+        let st = &t.current().unwrap().actors["lebekab"];
+        assert!(st.summoned, "nothing suggests a charm, so it is a summon");
+        assert_eq!(st.owner.as_deref(), Some("Brennagh"));
     }
 
     /// Refreshing a charm that never broke must not restart its clock.
