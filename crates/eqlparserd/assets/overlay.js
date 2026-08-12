@@ -4,12 +4,13 @@
  * behaviour is configurable by query string so the same page can serve an OBS
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
- *   ?panels=meter,buffs   panels: meter, xp, heals, taken, incoming, auras,
- *                                 buffs, debuffs
+ *   ?panels=meter,buffs   panels: meter, dps, xp, heals, taken, incoming,
+ *                                 auras, buffs, debuffs
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
- *   ?width=340            overlay width in px
+ *   ?width=340            no longer used; the window or capture source sets
+ *                         the width and the content fills it
  *   ?self=1               show only your own row in the meter
  *   ?enemies=0            hide enemy rows
  *   ?crit=0               hide the crit % column in the meter
@@ -52,7 +53,21 @@
   }
 
   const app = document.getElementById("app");
-  app.style.width = opt.width + "px";
+  /* Fill whatever the page has been given rather than a width of our own.
+   *
+   * Both consumers already decide the size: an OBS Browser Source is created
+   * at a width you choose, and the desktop overlay is a window you drag or
+   * type a size into. Pinning the content to `?width=` on top of that meant
+   * the two fought and the fixed number always won — widening the window to
+   * 700 left a 340-wide panel sitting in it, which is exactly what the size
+   * control appearing to do nothing looks like.
+   *
+   * `?width=` is therefore no longer applied at all, rather than kept as a cap
+   * — the shipped default puts `width=340` in everybody's settings, so a cap
+   * would leave the control looking broken for exactly the people who never
+   * chose the number. A narrow panel in a wide capture is now had by sizing
+   * the source, which is where that decision already belonged. */
+  app.style.width = "100%";
   if (opt.scale !== 1) app.style.transform = `scale(${opt.scale})`;
 
   const el = {
@@ -69,6 +84,9 @@
     healRows: document.getElementById("heal-rows"),
     takenPanel: document.getElementById("taken-panel"),
     takenRows: document.getElementById("taken-rows"),
+    dpsPanel: document.getElementById("dps-panel"),
+    dpsMeta: document.getElementById("dps-meta"),
+    dpsSpark: document.getElementById("dps-spark"),
     incomingPanel: document.getElementById("incoming-panel"),
     incomingMeta: document.getElementById("incoming-meta"),
     incomingRows: document.getElementById("incoming-rows"),
@@ -156,6 +174,84 @@
   if (opt.panels.includes("charm")) {
     pollCharm();
     setInterval(pollCharm, CHARM_POLL_MS);
+  }
+
+  /* Damage as it happens, rather than averaged over the fight.
+   *
+   * The meter's dps figure is the fight's total over its length, which is the
+   * right number for comparing pulls and the wrong one for seeing what you are
+   * doing now: it barely moves after the first thirty seconds, so a burn and a
+   * lull look identical while you are in them.
+   *
+   * Derived here rather than served: the snapshot already carries a running
+   * damage total and the log's own clock, and the difference between two of
+   * them is the answer. Nothing needs to be added to a payload that every
+   * client pays for, and no state has to be kept in the daemon.
+   *
+   * Timed on the log clock, not the wall clock. A parse catching up after a
+   * pause delivers many snapshots in one instant, and wall-clock timing would
+   * read that backlog as an enormous burst.
+   */
+  const DPS_ROLL_SECONDS = 10;
+  const DPS_SPARK_SECONDS = 60;
+  /** damage dealt in each log-second, keyed by that second. */
+  const dpsPerSecond = new Map();
+  let dpsPrev = null;
+  let dpsFight = null;
+
+  function renderDps(snap, enc) {
+    if (!opt.panels.includes("dps")) return;
+    const now = snap.log_time;
+    if (!enc || !now) {
+      el.dpsPanel.classList.add("hidden");
+      return;
+    }
+    // A new fight starts a new history; carrying the last one over would show
+    // a burst that belongs to a creature already dead.
+    if (enc.id !== dpsFight) {
+      dpsFight = enc.id;
+      dpsPerSecond.clear();
+      dpsPrev = null;
+    }
+
+    const total = enc.your_damage || 0;
+    if (dpsPrev && total > dpsPrev.total) {
+      // Attribute the gain to the second it was reported in. A single log
+      // second can carry several snapshots; they accumulate into one bucket.
+      dpsPerSecond.set(now, (dpsPerSecond.get(now) || 0) + (total - dpsPrev.total));
+    }
+    dpsPrev = { at: now, total };
+    for (const t of dpsPerSecond.keys()) {
+      if (now - t > DPS_SPARK_SECONDS) dpsPerSecond.delete(t);
+    }
+
+    // Seconds with no damage are real zeroes, not gaps: the log only writes a
+    // line when something happens, so an idle second is simply absent and has
+    // to be filled in or the chart would compress the lulls out of existence.
+    const buckets = [];
+    for (let t = now - DPS_SPARK_SECONDS + 1; t <= now; t++) {
+      buckets.push(dpsPerSecond.get(t) || 0);
+    }
+    const rolled = buckets.slice(-DPS_ROLL_SECONDS).reduce((a, b) => a + b, 0);
+    const rolling = Math.round(rolled / DPS_ROLL_SECONDS);
+
+    el.dpsPanel.classList.remove("hidden");
+    el.dpsMeta.innerHTML = `<b>${num(rolling)}</b> now &middot; ${num(enc.your_dps)} avg`;
+
+    const peak = Math.max(1, ...buckets);
+    const w = 100 / buckets.length;
+    // preserveAspectRatio is off on purpose here, unlike the fight timeline:
+    // these are solid bars at a fixed count, so stretching them horizontally
+    // widens each bar rather than piling separate events on top of each other.
+    el.dpsSpark.innerHTML = `<svg viewBox="0 0 100 24" preserveAspectRatio="none">${buckets
+      .map((v, i) =>
+        v
+          ? `<rect x="${(i * w).toFixed(2)}" y="${(24 - (v / peak) * 24).toFixed(2)}"
+               width="${(w * 0.85).toFixed(2)}" height="${((v / peak) * 24).toFixed(2)}"></rect>`
+          : ""
+      )
+      .join("")}</svg>
+      <span class="spark-peak">peak ${num(peak)}/s</span>`;
   }
 
   /* What is landing on you in the fight you are in.
@@ -353,6 +449,9 @@
       renderMetric(el.takenRows, enc, "damage_taken", null, "taken_share", "No damage taken");
       renderSub(snap, enc);
     }
+    // Outside the branch: it has to see an idle tick to keep the trace moving
+    // when you stop swinging, and to clear itself when the fight ends.
+    renderDps(snap, opt.scope ? null : snap.current);
 
     renderXp(snap);
     renderAuras(snap.auras || []);

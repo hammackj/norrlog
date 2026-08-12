@@ -103,6 +103,34 @@ body {
   font-weight: 650;
 }
 
+/* ---- realtime damage trace ---- */
+
+/* Sized in em rather than px so it follows `?scale=`, and stretched to the
+   panel so it tracks the window width like everything else. */
+.spark {
+  position: relative;
+  height: 2.2em;
+  margin-top: 2px;
+}
+.spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.spark rect {
+  fill: var(--you);
+  opacity: 0.85;
+}
+.spark-peak {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 /* ---- damage meter ---- */
 
 .rows {
