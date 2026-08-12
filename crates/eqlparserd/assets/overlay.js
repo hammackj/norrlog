@@ -4,8 +4,8 @@
  * behaviour is configurable by query string so the same page can serve an OBS
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
- *   ?panels=meter,buffs   panels: meter, dps, xp, heals, taken, incoming,
- *                                 auras, buffs, debuffs
+ *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
+ *                                 incoming, auras, buffs, debuffs
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -87,6 +87,9 @@
     dpsPanel: document.getElementById("dps-panel"),
     dpsMeta: document.getElementById("dps-meta"),
     dpsSpark: document.getElementById("dps-spark"),
+    outgoingPanel: document.getElementById("outgoing-panel"),
+    outgoingMeta: document.getElementById("outgoing-meta"),
+    outgoingRows: document.getElementById("outgoing-rows"),
     incomingPanel: document.getElementById("incoming-panel"),
     incomingMeta: document.getElementById("incoming-meta"),
     incomingRows: document.getElementById("incoming-rows"),
@@ -260,6 +263,49 @@
           : ""
       )
       .join("")}</svg>`;
+  }
+
+  /* Your own output, broken down the way "Hitting you" breaks down theirs.
+   *
+   * The meter says how much you did and how you rank; it never says what you
+   * did it with. Which spell is actually carrying a fight is a question you
+   * can only answer afterwards on the encounter page, by which time the answer
+   * has stopped being actionable.
+   *
+   * Read straight off the snapshot, which already carries the breakdown for
+   * the encounter page — no request of its own, and it updates at the same
+   * rate as everything else on the overlay.
+   *
+   * Abilities are pooled across their groups and ranked together, and the bar
+   * is a share of your whole output rather than of its group. The groups are
+   * scaled to themselves, so a melee swing at 76% of your melee would draw a
+   * longer bar than a nuke at 40% of your total.
+   */
+  function renderOutgoing(enc) {
+    if (!opt.panels.includes("outgoing")) return;
+    const groups = (enc && enc.outgoing_groups) || [];
+    const total = (enc && enc.your_damage) || 0;
+    if (!groups.length || !total) {
+      el.outgoingPanel.classList.add("hidden");
+      return;
+    }
+    const abilities = groups
+      .flatMap((g) => (g.abilities || []).map((a) => ({ ...a, group: g.group })))
+      .sort((a, b) => b.damage - a.damage)
+      .slice(0, opt.rows);
+
+    el.outgoingPanel.classList.remove("hidden");
+    el.outgoingMeta.innerHTML = `<b>${num(total)}</b> dealt &middot; ${num(enc.your_dps)} dps`;
+    el.outgoingRows.innerHTML = abilities
+      .map(
+        (a) => `<div class="row you" style="--share:${((a.damage / total) * 100).toFixed(1)}%">
+          <span class="name">${esc(a.name)}</span>
+          <span class="nums">
+            <span class="dim">${num(a.hits)}× max ${num(a.max)}</span>
+            <span class="dmg">${num(a.damage)}</span>
+          </span></div>`
+      )
+      .join("");
   }
 
   /* What is landing on you in the fight you are in.
@@ -460,6 +506,9 @@
     // Outside the branch: it has to see an idle tick to keep the trace moving
     // when you stop swinging, and to clear itself when the fight ends.
     renderDps(snap, opt.scope ? null : snap.current);
+    // `enc` rather than snap.current, so a scoped overlay breaks down the
+    // session or zone it is scoped to instead of contradicting its own meter.
+    renderOutgoing(enc);
 
     renderXp(snap);
     renderAuras(snap.auras || []);
