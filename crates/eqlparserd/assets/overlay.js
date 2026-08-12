@@ -483,7 +483,12 @@
     const absorbed = new Set();
     for (const r of out) {
       const owner = r.pet_owner && byName.get(r.pet_owner);
+      // Summoned only — the naming convention or an answer to `/pet leader`.
+      // A charmed mob is its own creature that changed sides and can change
+      // back, so its damage is not its captor's to absorb, and a pet of
+      // unknown kind may be a charm nothing managed to classify.
       if (!owner || r.is_you || r.is_pet || owner === r) continue;
+      if (r.pet_kind !== "summoned") continue;
       owner.damage += r.damage;
       owner.dps += r.dps;
       owner.share += r.share;
