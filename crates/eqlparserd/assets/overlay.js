@@ -4,7 +4,8 @@
  * behaviour is configurable by query string so the same page can serve an OBS
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
- *   ?panels=meter,buffs   panels: meter, xp, heals, taken, auras, buffs, debuffs
+ *   ?panels=meter,buffs   panels: meter, xp, heals, taken, incoming, auras,
+ *                                 buffs, debuffs
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -68,6 +69,9 @@
     healRows: document.getElementById("heal-rows"),
     takenPanel: document.getElementById("taken-panel"),
     takenRows: document.getElementById("taken-rows"),
+    incomingPanel: document.getElementById("incoming-panel"),
+    incomingMeta: document.getElementById("incoming-meta"),
+    incomingRows: document.getElementById("incoming-rows"),
     auraPanel: document.getElementById("aura-panel"),
     auraMeta: document.getElementById("aura-meta"),
     auras: document.getElementById("auras"),
@@ -152,6 +156,64 @@
   if (opt.panels.includes("charm")) {
     pollCharm();
     setInterval(pollCharm, CHARM_POLL_MS);
+  }
+
+  /* What is landing on you in the fight you are in.
+   *
+   * The "Damage taken" panel above answers a different question — it ranks the
+   * creatures in the fight by how much damage each one absorbed. Neither it nor
+   * the meter ever names the thing hitting *you*, so a boss AE for 472 every
+   * thirty seconds shows up only as a total quietly climbing.
+   *
+   * Scoped to the current encounter rather than the log: the report defaults to
+   * every fight ever, which is a different question and a useless one mid-pull.
+   * Nothing to scope it to means nothing to show, so the panel hides between
+   * fights rather than displaying a stale fight's numbers.
+   *
+   * Slower than the charm poll: charm breaks are reacted to within a second,
+   * while this is a picture of a fight and changes on the timescale of a boss
+   * casting. */
+  const INCOMING_POLL_MS = 2000;
+
+  async function pollIncoming() {
+    if (!opt.panels.includes("incoming")) return;
+    const enc = lastSnapshot && lastSnapshot.current;
+    if (!enc) {
+      el.incomingPanel.classList.add("hidden");
+      return;
+    }
+    try {
+      const r = await fetch(`/api/incoming?encounter=${enc.id}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      el.incomingPanel.classList.toggle("hidden", !d.total);
+      if (!d.total) return;
+
+      el.incomingMeta.innerHTML = `<b>${num(d.total)}</b> taken${
+        d.biggest_hit ? ` · worst ${num(d.biggest_hit)}` : ""
+      }`;
+      el.incomingRows.innerHTML = (d.by_ability || [])
+        .slice(0, opt.rows)
+        .map(
+          (a) => `<div class="row enemy" style="--share:${(a.share * 100).toFixed(1)}%">
+            <span class="name">${esc(a.name)}</span>
+            <span class="nums">
+              <span class="dim">${num(a.hits)}× max ${num(a.max)}</span>
+              <span class="dmg">${num(a.total)}</span>
+            </span></div>`
+        )
+        .join("");
+    } catch (e) {
+      /* daemon busy; try again next tick */
+    }
+  }
+
+  // Interval only, with no call on the way past: `lastSnapshot` is declared
+  // further down the file, so running this during module evaluation would hit
+  // its temporal dead zone and take the whole overlay down with it. There is
+  // also nothing to report until a snapshot has arrived.
+  if (opt.panels.includes("incoming")) {
+    setInterval(pollIncoming, INCOMING_POLL_MS);
   }
 
   /* Sky turn-ins.

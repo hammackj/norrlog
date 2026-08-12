@@ -1415,8 +1415,17 @@ impl Engine {
             ..Default::default()
         };
 
+        // The open encounter is searched alongside the closed ones. Asking for
+        // a fight by id and getting nothing back because it is the one you are
+        // still in makes this unusable for anything live — which is the moment
+        // you most want to know what is hitting you.
         let selected: Vec<&Encounter> = match encounter_id {
-            Some(id) => self.encounters.iter().filter(|e| e.id == id).collect(),
+            Some(id) => self
+                .encounters
+                .iter()
+                .chain(self.tracker.current())
+                .filter(|e| e.id == id)
+                .collect(),
             None => self
                 .encounters
                 .iter()
