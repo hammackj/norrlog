@@ -91,6 +91,13 @@ pub struct TaskRecord {
     pub steps: Vec<TaskStepDef>,
     /// Quest text captured around assignment and progress.
     pub dialogue: Vec<DialogueLine>,
+    /// Still to do, as of when the report was built; see [`Self::outstanding`].
+    ///
+    /// Carried on the record rather than left for the caller, because deciding
+    /// it needs the weekly reset rule, and a second copy of that rule in a
+    /// front end is one that will eventually disagree with this one.
+    #[serde(default)]
+    pub still_to_do: bool,
 }
 
 impl TaskRecord {
@@ -100,6 +107,32 @@ impl TaskRecord {
 
     pub fn last_progress(&self) -> Option<i64> {
         self.completions.last().map(|c| c.at)
+    }
+
+    /// Whether this task is still outstanding as of `now`.
+    ///
+    /// "Active" was being read off the length of the task list, which counts
+    /// every task ever assigned and so said six were active on an evening when
+    /// all six had been handed in.
+    ///
+    /// A weekly task is outstanding again after its reset, however many times
+    /// it has been done before, so what matters is whether it has been
+    /// completed since the current week began — not whether it has ever been
+    /// completed. A one-off with defined objectives is outstanding until every
+    /// one of them is ticked; with none defined, any completion at all is the
+    /// only evidence available that it is finished.
+    pub fn outstanding(&self, now: i64) -> bool {
+        if self.assigned.is_none() {
+            return false;
+        }
+        if self.weekly {
+            let since = crate::lockout::week_start(now);
+            return !self.completions.iter().any(|c| c.at >= since);
+        }
+        if !self.steps.is_empty() {
+            return !self.step_states().iter().all(|d| *d);
+        }
+        self.completions.is_empty()
     }
 
     /// Whether each defined step has been completed. Empty when undefined.
@@ -171,6 +204,12 @@ pub struct TaskTracker {
     recent_kills: Vec<(i64, String)>,
     /// Rolling say-channel buffer awaiting a task to attach to.
     recent_dialogue: Vec<DialogueLine>,
+    /// The latest timestamp this tracker has been shown.
+    ///
+    /// The log's clock rather than the machine's: whether a weekly task has
+    /// been done "this week" is a question about the week the log describes,
+    /// and re-reading an old log must not answer it from today's date.
+    last_at: i64,
 }
 
 impl TaskTracker {
@@ -204,6 +243,7 @@ impl TaskTracker {
 
     /// Note a kill, so a following step update can be identified.
     pub fn on_kill(&mut self, timestamp: i64, victim: &str) {
+        self.last_at = self.last_at.max(timestamp);
         self.recent_kills.push((timestamp, victim.to_string()));
         let cutoff = timestamp - STEP_KILL_WINDOW;
         self.recent_kills.retain(|(t, _)| *t >= cutoff);
@@ -236,6 +276,7 @@ impl TaskTracker {
 
     /// Note a line of say-channel dialogue.
     pub fn on_dialogue(&mut self, timestamp: i64, speaker: &str, text: &str) {
+        self.last_at = self.last_at.max(timestamp);
         self.recent_dialogue.push(DialogueLine {
             at: timestamp,
             speaker: speaker.to_string(),
@@ -253,6 +294,7 @@ impl TaskTracker {
     /// Definitions and captured dialogue are deliberately kept: they describe
     /// the task itself, not one run of it.
     pub fn on_assigned(&mut self, timestamp: i64, name: &str) {
+        self.last_at = self.last_at.max(timestamp);
         let key = name.to_lowercase();
         let weekly = key.contains("weekly");
         let steps = self
@@ -273,6 +315,8 @@ impl TaskTracker {
             weekly,
             steps,
             dialogue: kept_dialogue,
+            // Recomputed in `report`, which is the only place that knows when.
+            still_to_do: false,
         };
         Self::absorb_dialogue(&mut rec, &self.recent_dialogue, timestamp);
         self.tasks.insert(key, rec);
@@ -280,6 +324,7 @@ impl TaskTracker {
 
     /// Note that a task advanced by one step.
     pub fn on_updated(&mut self, timestamp: i64, name: &str) {
+        self.last_at = self.last_at.max(timestamp);
         let key = name.to_lowercase();
         let weekly = key.contains("weekly");
         let defs = self
@@ -318,6 +363,8 @@ impl TaskTracker {
             weekly,
             steps: defs,
             dialogue: Vec::new(),
+            // Recomputed in `report`, which is the only place that knows when.
+            still_to_do: false,
         });
         rec.completions.push(StepCompletion {
             at: timestamp,
@@ -346,6 +393,7 @@ impl TaskTracker {
     }
 
     pub fn on_achievement(&mut self, timestamp: i64, name: &str) {
+        self.last_at = self.last_at.max(timestamp);
         self.achievements.push(Achievement {
             name: name.to_string(),
             at: timestamp,
@@ -356,6 +404,12 @@ impl TaskTracker {
     pub fn report(&self) -> TaskReport {
         let mut tasks: Vec<TaskRecord> = self.tasks.values().cloned().collect();
         tasks.sort_by_key(|t| std::cmp::Reverse(t.last_progress().or(t.assigned).unwrap_or(0)));
+        // Against the log's own clock, not the wall clock: a log being re-read
+        // from a week ago must be judged against the week it describes.
+        let now = self.last_at;
+        for t in tasks.iter_mut() {
+            t.still_to_do = t.outstanding(now);
+        }
         let mut achievements = self.achievements.clone();
         achievements.sort_by_key(|a| std::cmp::Reverse(a.at));
         TaskReport {
@@ -396,6 +450,47 @@ fn extract_keywords(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Active" counted every task ever assigned, so six weekly tasks all
+    /// handed in this week still read as six things left to do.
+    #[test]
+    fn a_weekly_done_this_week_is_not_still_to_do() {
+        let mut t = TaskTracker::new();
+        t.on_assigned(1_786_527_029, "Potential of the Void - Lord Nagafen - Weekly");
+        t.on_updated(1_786_527_545, "Potential of the Void - Lord Nagafen - Weekly");
+        let r = t.report();
+        let rec = &r.tasks[0];
+        assert!(rec.weekly, "the boss tasks are weekly");
+        assert_eq!(rec.completions.len(), 1);
+        assert!(!rec.still_to_do, "handed in since the reset");
+
+        // The same record, asked about a later week, is outstanding again.
+        let next_week = 1_786_527_545 + 8 * 24 * 60 * 60;
+        assert!(
+            rec.outstanding(next_week),
+            "a weekly comes back after its reset"
+        );
+    }
+
+    /// A one-off with objectives is outstanding until every one is ticked, not
+    /// merely until something has happened.
+    #[test]
+    fn a_defined_task_is_still_to_do_until_every_step_is() {
+        let mut t = TaskTracker::new();
+        t.define(renouncing());
+        t.on_assigned(1_000, "Renouncing Your Faith");
+        t.on_kill(2_000, "Cazic-Thule");
+        t.on_updated(2_001, "Renouncing Your Faith");
+        let rec = &t.report().tasks[0];
+        assert_eq!(rec.step_states(), vec![true, false]);
+        assert!(rec.still_to_do, "one objective of two");
+
+        t.on_kill(3_000, "Innoruuk, the Prince of Hate");
+        t.on_updated(3_001, "Renouncing Your Faith");
+        let rec = &t.report().tasks[0];
+        assert_eq!(rec.step_states(), vec![true, true]);
+        assert!(!rec.still_to_do, "both objectives met");
+    }
 
     fn renouncing() -> TaskDef {
         TaskDef {
