@@ -233,7 +233,12 @@
       buckets.push(dpsPerSecond.get(t) || 0);
     }
     const rolled = buckets.slice(-DPS_ROLL_SECONDS).reduce((a, b) => a + b, 0);
-    const rolling = Math.round(rolled / DPS_ROLL_SECONDS);
+    // Divided by the seconds the window actually covers, not by its size. A
+    // fight three seconds old has seven empty buckets padding the window, and
+    // dividing by ten reported a third of the true rate for the opening of
+    // every pull — precisely where the burst is.
+    const covered = Math.max(1, Math.min(DPS_ROLL_SECONDS, enc.duration || DPS_ROLL_SECONDS));
+    const rolling = Math.round(rolled / covered);
 
     const peak = Math.max(1, ...buckets);
     el.dpsPanel.classList.remove("hidden");
