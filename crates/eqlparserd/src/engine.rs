@@ -47,6 +47,24 @@ pub struct MeterRow {
     pub crit_rate: f64,
     /// Per-mechanism crit: (kind, hits, crits, rate).
     pub crit_by_kind: Vec<(String, u64, u64, f64)>,
+    /// What produced the crits: (flag, count). `Slay Undead` is a separate
+    /// mechanism from an ordinary `Critical` and the melee rate alone cannot
+    /// say which one a paladin's biggest hits came from.
+    pub crit_by_flag: Vec<(String, u64)>,
+    /// Heals cast and how many crit. Kept apart from `crit_rate`, which is
+    /// damage: a healer who never swings would otherwise have no crit rate.
+    pub heals: u64,
+    pub heal_crits: u64,
+    pub heal_crit_rate: f64,
+    /// Overhealing, over the number of heals that stated a pre-cap figure.
+    ///
+    /// `over_heal_measured` is below `heals` whenever the client wrote only one
+    /// number, so this is a floor: the real waste is higher by whatever the
+    /// unmeasured heals spilled. The denominator travels with the figure so the
+    /// UI cannot present it as a share of all healing.
+    pub over_healing: u64,
+    pub healing_attempted: u64,
+    pub over_heal_measured: u64,
     pub accuracy: f64,
     /// True when this actor is the logging character.
     pub is_you: bool,
@@ -2578,6 +2596,13 @@ impl Engine {
                     .into_iter()
                     .map(|(k, h, c, r)| (k.to_string(), h, c, r))
                     .collect(),
+                crit_by_flag: s.crit_causes(),
+                heals: s.heals,
+                heal_crits: s.heal_crits,
+                heal_crit_rate: s.heal_crit_rate(),
+                over_healing: s.over_healing,
+                healing_attempted: s.healing_attempted,
+                over_heal_measured: s.heals_measured_for_overheal,
                 accuracy: s.accuracy(),
                 is_you: key == "you",
                 is_enemy: s.damaged_by_you && !s.charmed_by_you && !s.summoned,
