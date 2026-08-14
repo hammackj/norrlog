@@ -779,6 +779,19 @@ impl Store {
         let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
+            // Toggle abilities used to be stored as the client's two halves —
+            // "Symphonic Aura: Enabled" beside "Symphonic Aura: Disabled" —
+            // and are now folded under the base name. The old rows are keyed by
+            // that old name, so nothing overwrites them and they would sit here
+            // forever, presenting one ability as three to anything reading this
+            // table. Safe to delete outright: every row is re-derived from the
+            // log on each parse, so anything still real comes straight back.
+            tx.execute(
+                "DELETE FROM aa_purchases
+                 WHERE character = ?1 AND server = ?2
+                   AND (ability LIKE '%: Enabled' OR ability LIKE '%: Disabled')",
+                params![c, sv],
+            )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO aa_purchases (character, server, ability, rank, spent, at)
                  VALUES (?1,?2,?3,?4,?5,?6)",

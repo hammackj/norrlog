@@ -41,6 +41,44 @@ use std::collections::HashMap;
 /// rather than silently trusted as complete.
 pub const DUMP_CAP: usize = 100;
 
+/// Split a toggle ability's name into its base name and its state.
+///
+/// The client models a switchable ability as two abilities sharing one rank
+/// ladder: `Symphonic Aura: Disabled` holds the odd ranks and
+/// `Symphonic Aura: Enabled` the even ones, and buying the next rank is how you
+/// flip it. So the ladder runs 1..10 for what the player has as five ranks, and
+/// the paid ranks alternate with free ones — the wiki lists Symphonic Aura's
+/// costs as `0/0/3/0/3/0/3/0/3/0`, which is exactly what the log shows.
+///
+/// Taken apart, the two halves look like two half-finished abilities, each
+/// missing every other rank. Together they are one ability at rank 5 that cost
+/// 12 points and is currently on.
+///
+/// Returns `None` for an ordinary ability. Matching is case-insensitive because
+/// these names are compared as lowercased keys in places.
+pub fn toggle_parts(name: &str) -> Option<(&str, bool)> {
+    let lower = name.to_ascii_lowercase();
+    for (suffix, enabled) in [(": enabled", true), (": disabled", false)] {
+        if lower.ends_with(suffix) {
+            return Some((name[..name.len() - suffix.len()].trim_end(), enabled));
+        }
+    }
+    None
+}
+
+/// The rank the player actually has, from the rank the client counts.
+///
+/// A toggle spends two client ranks per real one — one to pay for it, one to
+/// switch it back on — so client rank 10 is rank 5. Ordinary abilities are
+/// unchanged.
+pub fn real_rank(client_rank: u32, is_toggle: bool) -> u32 {
+    if is_toggle {
+        client_rank.div_ceil(2)
+    } else {
+        client_rank
+    }
+}
+
 /// One purchasable rank of an ability.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AaRank {
@@ -56,9 +94,18 @@ pub struct AaAbility {
     pub id: u32,
     pub name: String,
     pub ranks: Vec<AaRank>,
-    /// Highest rank seen bought in the log. Ranks bought before logging began
-    /// are invisible, so this is a floor.
+    /// Highest rank seen bought in the log, numbered as the client numbers the
+    /// ladder. Ranks bought before logging began are invisible, so this is a
+    /// floor. For a toggle this counts both the paid rank and the free flip
+    /// back on, so it runs to twice `real_owned_rank`.
     pub owned_rank: u32,
+    /// The rank the player has, which for a toggle is half of `owned_rank`.
+    #[serde(default)]
+    pub real_owned_rank: u32,
+    /// True when the client splits this ability into `: Enabled` / `: Disabled`
+    /// halves sharing one ladder.
+    #[serde(default)]
+    pub is_toggle: bool,
     /// Points spent on it within the log.
     pub spent: u32,
     /// Cost of the ranks listed above `owned_rank`. `None` when the dump did
@@ -162,12 +209,19 @@ impl AaCatalog {
             .known
             .iter()
             .map(|(id, (name, ranks))| {
-                let (owned_rank, spent) =
-                    owned.get(&name.to_lowercase()).copied().unwrap_or((0, 0));
+                // Purchases are folded under the base name, so a toggle's
+                // catalogue entry has to look itself up without its suffix or
+                // it reports owning nothing.
+                let toggle = toggle_parts(name);
+                let lookup = toggle.map(|(b, _)| b).unwrap_or(name).to_lowercase();
+                let (owned_rank, spent) = owned.get(&lookup).copied().unwrap_or((0, 0));
                 let truncated = owned_rank as usize > ranks.len();
                 AaAbility {
                     id: *id,
-                    name: name.clone(),
+                    // Shown as the player knows it, not as the client files it.
+                    name: toggle.map(|(b, _)| b.to_string()).unwrap_or_else(|| name.clone()),
+                    is_toggle: toggle.is_some(),
+                    real_owned_rank: real_rank(owned_rank, toggle.is_some()),
                     // Only meaningful when the dump showed at least as far as
                     // we have already climbed.
                     cost_to_finish: (!truncated).then(|| {
@@ -199,8 +253,18 @@ impl AaCatalog {
                 .then(a.name.cmp(&b.name))
         });
 
-        let described: std::collections::BTreeSet<String> =
-            self.known.values().map(|(n, _)| n.to_lowercase()).collect();
+        // A toggle described under either half describes the whole ability, so
+        // record the base name too. Without this the unseen half is reported as
+        // an ability no dump ever described, when it is not a separate ability
+        // at all.
+        let described: std::collections::BTreeSet<String> = self
+            .known
+            .values()
+            .flat_map(|(n, _)| {
+                let base = toggle_parts(n).map(|(b, _)| b.to_lowercase());
+                std::iter::once(n.to_lowercase()).chain(base)
+            })
+            .collect();
         let mut undescribed: Vec<String> = owned
             .iter()
             .filter(|(k, _)| !described.contains(*k))
@@ -324,11 +388,50 @@ mod tests {
     fn abilities_bought_but_never_described_are_listed() {
         let mut c = AaCatalog::new();
         feed(&mut c, &[(40, "Combat Fury", 2)]);
-        let r = c.report(&owned(&[
-            ("Combat Fury", 1, 2),
-            ("Symphonic Aura: Disabled", 3, 0),
-        ]));
-        assert_eq!(r.undescribed, vec!["symphonic aura: disabled"]);
+        let r = c.report(&owned(&[("Combat Fury", 1, 2), ("Hastened Whatever", 3, 0)]));
+        assert_eq!(r.undescribed, vec!["hastened whatever"]);
+    }
+
+    /// A toggle is described by whichever half the dump happened to list.
+    ///
+    /// Only `Symphonic Aura: Enabled` is ever described in the real log, and
+    /// before this the `: Disabled` half was reported as an ability nothing had
+    /// ever described — which read as a hole in the catalogue rather than as
+    /// the other end of a switch.
+    #[test]
+    fn a_toggle_is_one_ability_under_its_base_name() {
+        let mut c = AaCatalog::new();
+        feed(&mut c, &[(152, "Symphonic Aura: Enabled", 0)]);
+        // Purchases arrive already folded, under the base name.
+        let r = c.report(&owned(&[("Symphonic Aura", 10, 12)]));
+        let a = &r.abilities[0];
+        assert_eq!(a.name, "Symphonic Aura", "shown as the player knows it");
+        assert!(a.is_toggle);
+        assert_eq!(a.owned_rank, 10, "the client's ladder position");
+        assert_eq!(a.real_owned_rank, 5, "five ranks, for five aura songs");
+        assert_eq!(a.spent, 12);
+        assert!(
+            r.undescribed.is_empty(),
+            "the other half is not a separate ability"
+        );
+    }
+
+    #[test]
+    fn toggle_names_split_either_way_round() {
+        assert_eq!(
+            toggle_parts("Symphonic Aura: Enabled"),
+            Some(("Symphonic Aura", true))
+        );
+        assert_eq!(
+            toggle_parts("symphonic aura: disabled"),
+            Some(("symphonic aura", false))
+        );
+        assert_eq!(toggle_parts("Combat Fury"), None);
+        // Real ranks pair up; an ordinary ability is untouched.
+        assert_eq!(real_rank(10, true), 5);
+        assert_eq!(real_rank(9, true), 5, "mid-pair still counts as the rank");
+        assert_eq!(real_rank(1, true), 1);
+        assert_eq!(real_rank(7, false), 7);
     }
 
     /// The buy list leads with what is cheapest to finish, not with what is

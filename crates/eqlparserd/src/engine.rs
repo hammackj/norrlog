@@ -1748,11 +1748,17 @@ impl Engine {
             })
             .collect();
 
+        // The stored rank is the *client* ladder position, not the rank the
+        // player has. Nothing here reads it back — the table exists for eqdb,
+        // which lines these up against the wiki's per-rank price list, and the
+        // wiki numbers a toggle's ladder the way the client does: ten entries
+        // for five ranks. Storing the real rank would land every observation
+        // on the wrong rung of that ladder.
         let aa = self
             .exp
             .aa_purchases()
             .into_iter()
-            .map(|p| (p.ability, p.rank, p.spent, p.last_seen))
+            .map(|p| (p.ability, p.client_rank, p.spent, p.last_seen))
             .collect();
 
         (kills, encs, levels, aa)
@@ -1946,7 +1952,9 @@ impl Engine {
             .exp
             .aa_purchases()
             .into_iter()
-            .map(|p| (p.ability.to_lowercase(), (p.rank, p.spent)))
+            // The client rank, because the `/alt list` ladder is numbered that
+            // way — a toggle's rank 5 sits at position 10 in the dump.
+            .map(|p| (p.ability.to_lowercase(), (p.client_rank, p.spent)))
             .collect();
         self.aa.report(&owned)
     }

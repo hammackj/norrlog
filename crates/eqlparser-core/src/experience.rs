@@ -161,9 +161,20 @@ impl ExpSource {
 /// One alternate advancement purchase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AaPurchase {
+    /// The ability as the player knows it. For a toggle this is the base name,
+    /// with the `: Enabled` / `: Disabled` halves already folded together.
     pub ability: String,
-    /// Highest rank reached.
+    /// Highest rank reached, as the player counts them.
     pub rank: u32,
+    /// Highest rank reached as the *client* counts them, which for a toggle is
+    /// twice the real rank. Kept because it is what the log literally says, and
+    /// because the `/alt list` ladder is numbered this way.
+    #[serde(default)]
+    pub client_rank: u32,
+    /// Whether this ability is a toggle, and if so whether the last rank seen
+    /// left it switched on. `None` for an ordinary ability.
+    #[serde(default)]
+    pub enabled: Option<bool>,
     /// Total points sunk into this ability across every rank seen.
     pub spent: u32,
     pub last_seen: i64,
@@ -460,22 +471,34 @@ impl ExpTracker {
 
     /// Note points spent on an alternate advancement.
     pub fn on_ability_spent(&mut self, timestamp: i64, ability: &str, rank: u32, cost: u32) {
-        let e = self
-            .aa_spent
-            .entry(ability.to_lowercase())
-            .or_insert_with(|| AaPurchase {
-                ability: ability.to_string(),
-                rank: 0,
-                spent: 0,
-                last_seen: timestamp,
-                unlogged_ranks: Vec::new(),
-                unlogged_cost_max: 0,
-            });
-        self.aa_ranks_seen
-            .entry(ability.to_lowercase())
-            .or_default()
-            .insert(rank, cost);
-        e.rank = e.rank.max(rank);
+        // A toggle arrives as two abilities sharing one ladder, so fold it back
+        // into the one thing the player bought. Left apart, Symphonic Aura
+        // reads as ": Disabled" at rank 9 for 12 points beside ": Enabled" at
+        // rank 10 for nothing — two entries, neither of them a rank the player
+        // has, and the 12 points attached to the half that sounds switched off.
+        let (name, toggled_on) = match crate::aa::toggle_parts(ability) {
+            Some((base, enabled)) => (base.to_string(), Some(enabled)),
+            None => (ability.to_string(), None),
+        };
+        let key = name.to_lowercase();
+        let e = self.aa_spent.entry(key.clone()).or_insert_with(|| AaPurchase {
+            ability: name.clone(),
+            rank: 0,
+            client_rank: 0,
+            enabled: None,
+            spent: 0,
+            last_seen: timestamp,
+            unlogged_ranks: Vec::new(),
+            unlogged_cost_max: 0,
+        });
+        self.aa_ranks_seen.entry(key).or_default().insert(rank, cost);
+        // The state is whichever half owns the highest rank seen: the last
+        // rank bought is the one you are sitting on.
+        if toggled_on.is_some() && rank >= e.client_rank {
+            e.enabled = toggled_on;
+        }
+        e.client_rank = e.client_rank.max(rank);
+        e.rank = crate::aa::real_rank(e.client_rank, toggled_on.is_some() || e.enabled.is_some());
         e.spent += cost;
         e.last_seen = timestamp;
         // Keep the balance current. The client only restates it on a *gain*,
@@ -587,14 +610,11 @@ impl ExpTracker {
 
     /// Ranks held but never seen bought, and what they can have cost at most.
     ///
-    /// Toggle abilities are skipped. The client models a toggle as two
-    /// abilities whose ranks interleave — "Symphonic Aura: Enabled" holding the
-    /// odd ranks and ": Disabled" the even ones — so each looks to be missing
-    /// every other rank when nothing is missing at all.
+    /// `held` is the *client* rank, because that is what `aa_ranks_seen` is
+    /// keyed by. A toggle's two halves are folded into one entry before they
+    /// get here, so its ladder is continuous — asking this in real ranks would
+    /// compare 5 against a map holding 1 to 10 and call half of it missing.
     fn unlogged_for(&self, key: &str, held: u32) -> (Vec<u32>, u32) {
-        if key.contains(": enabled") || key.contains(": disabled") {
-            return (Vec::new(), 0);
-        }
         let Some(seen) = self.aa_ranks_seen.get(key) else {
             return (Vec::new(), 0);
         };
@@ -619,7 +639,7 @@ impl ExpTracker {
             .aa_spent
             .iter()
             .map(|(key, p)| {
-                let (unlogged_ranks, unlogged_cost_max) = self.unlogged_for(key, p.rank);
+                let (unlogged_ranks, unlogged_cost_max) = self.unlogged_for(key, p.client_rank);
                 AaPurchase {
                     unlogged_ranks,
                     unlogged_cost_max,
@@ -1220,6 +1240,72 @@ mod tests {
         let fury = p.iter().find(|x| x.ability == "Combat Fury").unwrap();
         assert_eq!(fury.rank, 2, "highest rank reached");
         assert_eq!(fury.spent, 3, "costs accumulate across ranks");
+    }
+
+    /// The real Symphonic Aura sequence from the Tharn log, whose costs match
+    /// the wiki's `0/0/3/0/3/0/3/0/3/0` exactly.
+    ///
+    /// The client sells one ability as two that share a ladder: the odd ranks
+    /// arrive as `: Disabled` and carry the cost, the even ones as `: Enabled`
+    /// and are free. Ten client ranks are five real ranks — five aura songs —
+    /// for twelve points, ending switched on.
+    #[test]
+    fn a_toggle_ability_is_folded_into_one_purchase() {
+        let mut t = ExpTracker::new();
+        let seq: [(&str, u32, u32); 10] = [
+            ("Symphonic Aura: Disabled", 1, 0),
+            ("Symphonic Aura: Enabled", 2, 0),
+            ("Symphonic Aura: Disabled", 3, 3),
+            ("Symphonic Aura: Enabled", 4, 0),
+            ("Symphonic Aura: Disabled", 5, 3),
+            ("Symphonic Aura: Enabled", 6, 0),
+            ("Symphonic Aura: Disabled", 7, 3),
+            ("Symphonic Aura: Enabled", 8, 0),
+            ("Symphonic Aura: Disabled", 9, 3),
+            ("Symphonic Aura: Enabled", 10, 0),
+        ];
+        for (i, (name, rank, cost)) in seq.iter().enumerate() {
+            t.on_ability_spent(100 + i as i64, name, *rank, *cost);
+        }
+
+        let p = t.aa_purchases();
+        let aura: Vec<_> = p.iter().filter(|x| x.ability.contains("Symphonic")).collect();
+        assert_eq!(aura.len(), 1, "one ability, not two halves");
+        let a = aura[0];
+        assert_eq!(a.ability, "Symphonic Aura");
+        assert_eq!(a.rank, 5, "five ranks, for five aura songs");
+        assert_eq!(a.client_rank, 10, "the client counts the flips too");
+        assert_eq!(a.spent, 12, "every point lands on the one ability");
+        assert_eq!(a.enabled, Some(true), "the last rank bought left it on");
+        assert!(
+            a.unlogged_ranks.is_empty(),
+            "the folded ladder is continuous, so nothing is missing"
+        );
+    }
+
+    /// Buying the paid half last leaves it switched off.
+    #[test]
+    fn a_toggle_reports_the_state_of_its_highest_rank() {
+        let mut t = ExpTracker::new();
+        t.on_ability_spent(100, "Symphonic Aura: Disabled", 1, 0);
+        t.on_ability_spent(200, "Symphonic Aura: Enabled", 2, 0);
+        t.on_ability_spent(300, "Symphonic Aura: Disabled", 3, 3);
+        let a = &t.aa_purchases()[0];
+        assert_eq!(a.rank, 2, "rank 3 of the ladder is the second real rank");
+        assert_eq!(a.enabled, Some(false));
+        assert_eq!(a.spent, 3);
+    }
+
+    /// An ordinary ability keeps counting ranks the way it always did.
+    #[test]
+    fn a_plain_ability_is_not_treated_as_a_toggle() {
+        let mut t = ExpTracker::new();
+        t.on_ability_spent(100, "Combat Fury", 1, 1);
+        t.on_ability_spent(200, "Combat Fury", 2, 2);
+        let a = &t.aa_purchases()[0];
+        assert_eq!(a.rank, 2);
+        assert_eq!(a.client_rank, 2);
+        assert_eq!(a.enabled, None);
     }
 
     #[test]
