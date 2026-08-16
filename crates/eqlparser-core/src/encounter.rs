@@ -157,6 +157,26 @@ pub struct ActorStats {
     /// way damage is. Heals deliberately do not share `by_ability`: mixing them
     /// would corrupt damage totals and per-ability shares.
     pub healing_by_spell: HashMap<String, AbilityStats>,
+    /// Heals cast, and how many of them crit. Separate from `hits`/`crits`,
+    /// which are damage: a healer's crit rate and a melee crit rate are
+    /// different questions and averaging them answers neither.
+    pub heals: u64,
+    pub heal_crits: u64,
+    /// Overhealing, and the number of heals it could be measured on.
+    ///
+    /// The client states the pre-cap figure on some heal lines and not others,
+    /// so this is a floor over a stated denominator rather than a total: with
+    /// `heals_measured_for_overheal` below `heals`, the real waste is higher by
+    /// however much the unmeasured heals spilled. Reporting it as a percentage
+    /// of all healing would quietly invent the missing lines as perfect.
+    pub healing_attempted: u64,
+    pub over_healing: u64,
+    pub heals_measured_for_overheal: u64,
+    /// Which mechanism produced each crit — `Critical`, `Crippling Blow`,
+    /// `Slay Undead`. A blended melee crit rate cannot say that a paladin's
+    /// rate against undead is a different mechanic from an ordinary critical,
+    /// and the slay hits are often the largest of the fight.
+    pub crits_by_flag: HashMap<String, u64>,
     /// True if the logging character damaged this actor — strong evidence it
     /// is an enemy.
     pub damaged_by_you: bool,
@@ -267,6 +287,11 @@ impl ActorStats {
         self.hits += o.hits;
         self.misses += o.misses;
         self.crits += o.crits;
+        self.heals += o.heals;
+        self.heal_crits += o.heal_crits;
+        self.healing_attempted += o.healing_attempted;
+        self.over_healing += o.over_healing;
+        self.heals_measured_for_overheal += o.heals_measured_for_overheal;
         self.avoided += o.avoided;
         self.deaths += o.deaths;
         self.killing_blows += o.killing_blows;
@@ -282,6 +307,7 @@ impl ActorStats {
         merge_counts(&mut self.damage_taken_by_source, &o.damage_taken_by_source);
         merge_counts(&mut self.hits_by_kind, &o.hits_by_kind);
         merge_counts(&mut self.crits_by_kind, &o.crits_by_kind);
+        merge_counts(&mut self.crits_by_flag, &o.crits_by_flag);
         merge_abilities(&mut self.by_ability, &o.by_ability);
         merge_abilities(&mut self.damage_taken_by_ability, &o.damage_taken_by_ability);
         merge_abilities(&mut self.healing_by_spell, &o.healing_by_spell);
@@ -350,6 +376,30 @@ impl ActorStats {
                 Some((k, hits, crits, crits as f64 / hits as f64))
             })
             .collect()
+    }
+
+    /// Share of heals that critically healed.
+    ///
+    /// Its own figure rather than folded into [`Self::crit_rate`]: the two come
+    /// from different mechanics, and a healer who never swings a weapon would
+    /// otherwise have no crit rate at all.
+    pub fn heal_crit_rate(&self) -> f64 {
+        if self.heals == 0 {
+            0.0
+        } else {
+            self.heal_crits as f64 / self.heals as f64
+        }
+    }
+
+    /// Crits by the mechanism that caused them, biggest first.
+    pub fn crit_causes(&self) -> Vec<(String, u64)> {
+        let mut v: Vec<(String, u64)> = self
+            .crits_by_flag
+            .iter()
+            .map(|(k, n)| (k.clone(), *n))
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v
     }
 
     pub fn accuracy(&self) -> f64 {
@@ -1394,6 +1444,12 @@ impl EncounterTracker {
                     *s.hits_by_kind.entry(label.clone()).or_default() += 1;
                     if crit {
                         *s.crits_by_kind.entry(label).or_default() += 1;
+                        // Also by cause. A hit can carry more than one crit
+                        // flag in principle, so this can exceed `crits` — it is
+                        // a tally of mechanisms, not a second count of hits.
+                        for k in flags.crit_kinds() {
+                            *s.crits_by_flag.entry(k.to_string()).or_default() += 1;
+                        }
                     }
                     let a = s.by_ability.entry(ability_name).or_default();
                     if a.kind.is_empty() {
@@ -1492,8 +1548,10 @@ impl EncounterTracker {
                 source,
                 target,
                 amount,
+                attempted,
                 spell,
                 over_time,
+                flags,
             } => {
                 // Healing alone does not open a fight; out-of-combat healing is
                 // constant in EverQuest and would glue everything together.
@@ -1508,13 +1566,26 @@ impl EncounterTracker {
                 let spell_name = spell.clone().unwrap_or_else(|| {
                     if *over_time { "heal over time" } else { "heal" }.to_string()
                 });
+                let crit = flags.is_crit();
                 {
                     let s = enc.entry(source, &player);
                     s.healing_done += *amount;
+                    s.heals += 1;
+                    if crit {
+                        s.heal_crits += 1;
+                    }
+                    // Only from lines that stated both numbers. Treating a
+                    // one-number line as zero overheal would read as "none
+                    // wasted" when the truth is that the client did not say.
+                    if let Some(full) = attempted {
+                        s.heals_measured_for_overheal += 1;
+                        s.healing_attempted += *full;
+                        s.over_healing += full.saturating_sub(*amount);
+                    }
                     s.healing_by_spell
                         .entry(spell_name)
                         .or_default()
-                        .record_hit(*amount, false);
+                        .record_hit(*amount, crit);
                 }
                 {
                     let t = enc.entry(target, &player);
@@ -2024,6 +2095,82 @@ mod tests {
         assert!(
             encs.is_empty(),
             "out-of-combat healing must not create fights"
+        );
+    }
+
+    /// The crit-heal line used to match no rule, so this is as much about the
+    /// 306 reaching `healing_done` as about the crit being counted.
+    #[test]
+    fn crit_heals_are_counted_and_kept_apart_from_melee_crits() {
+        let encs = run(&[
+            (100, "You slash a mob for 10 points of damage. (Critical)"),
+            (
+                101,
+                "You healed Tharn over time for 306 hit points by Efflorescing Heal. (Critical)",
+            ),
+            (
+                102,
+                "You healed Tharn for 100 hit points by Efflorescing Heal.",
+            ),
+        ]);
+        let you = encs[0].actors.get("you").unwrap();
+        assert_eq!(you.healing_done, 406, "the flagged heal must still count");
+        assert_eq!(you.heals, 2);
+        assert_eq!(you.heal_crits, 1);
+        assert!((you.heal_crit_rate() - 0.5).abs() < f64::EPSILON);
+        // The melee crit is a separate mechanic and must not be mixed in.
+        assert_eq!(you.crits, 1);
+        let eh = you.healing_by_spell.get("Efflorescing Heal").unwrap();
+        assert_eq!(eh.hits, 2);
+        assert_eq!(eh.crits, 1);
+    }
+
+    /// Overhealing is only claimed for lines that stated both numbers.
+    #[test]
+    fn overhealing_is_measured_over_a_stated_denominator() {
+        let encs = run(&[
+            (100, "You slash a mob for 10 points of damage."),
+            (
+                101,
+                "Jabarab healed himself for 47 (241) hit points by Lay on Hands.",
+            ),
+            (102, "Jabarab healed himself for 0 (6) hit points by Lifetap."),
+            // No pre-cap figure: it must not be assumed to have wasted nothing.
+            (
+                103,
+                "Jabarab healed himself for 90 hit points by Healing Water.",
+            ),
+        ]);
+        let j = encs[0].actors.get("jabarab").unwrap();
+        assert_eq!(j.healing_done, 137);
+        assert_eq!(j.heals, 3);
+        assert_eq!(j.healing_attempted, 247);
+        assert_eq!(j.over_healing, 194 + 6);
+        assert_eq!(
+            j.heals_measured_for_overheal, 2,
+            "the third heal said nothing, so it is not in the denominator"
+        );
+    }
+
+    /// A slay is a crit, and it is separable from an ordinary critical.
+    #[test]
+    fn crits_are_tallied_by_mechanism() {
+        let encs = run(&[
+            (100, "You slash a mob for 10 points of damage. (Critical)"),
+            (101, "You slash a mob for 900 points of damage. (Slay Undead)"),
+            (
+                102,
+                "You slash a mob for 800 points of damage. (Riposte Slay Undead)",
+            ),
+            (103, "You slash a mob for 5 points of damage."),
+        ]);
+        let you = encs[0].actors.get("you").unwrap();
+        assert_eq!(you.hits, 4);
+        assert_eq!(you.crits, 3, "both slay hits are criticals");
+        assert_eq!(you.crits_by_kind.get("melee").copied(), Some(3));
+        assert_eq!(
+            you.crit_causes(),
+            vec![("Slay Undead".to_string(), 2), ("Critical".to_string(), 1)]
         );
     }
 

@@ -121,13 +121,45 @@ fn clean_name(s: &str) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Flags(pub Vec<String>);
 
+/// Every flag name the client is known to write, longest first.
+///
+/// The client combines modifiers by joining them with a space and nothing
+/// else, so `(Riposte Slay Undead)` is three words carrying two flags. Neither
+/// obvious split works on its own: keeping the chunk whole made
+/// `has("Riposte")` false for all 581 `(Riposte Critical)` and 14
+/// `(Riposte Slay Undead)` lines in the test logs, and splitting on whitespace
+/// would invent flags called `Slay` and `Undead`. So the words are matched
+/// against this vocabulary instead.
+///
+/// Longest first because the names overlap: `Wild Rampage` has to be found
+/// before `Rampage` can claim its second word.
+///
+/// Built by reading what the two logs on hand actually contain, not from
+/// memory of the game — every entry below appears in at least one of them,
+/// except `Deadly Strike` and `Strikethrough`, which the code already asked
+/// about before this table existed and which are kept so that behaviour does
+/// not change.
+const KNOWN_FLAGS: &[&str] = &[
+    "Double Bow Shot",
+    "Crippling Blow",
+    "Finishing Blow",
+    "Deadly Strike",
+    "Wild Rampage",
+    "Slay Undead",
+    "Strikethrough",
+    "Critical",
+    "Riposte",
+    "Rampage",
+    "Flurry",
+];
+
 impl Flags {
     pub fn parse(raw: Option<&str>) -> Flags {
         match raw {
             None => Flags::default(),
             Some(s) => Flags(
                 s.split(&[',', '/'][..])
-                    .map(|p| p.trim().to_string())
+                    .flat_map(split_compound)
                     .filter(|p| !p.is_empty())
                     .collect(),
             ),
@@ -138,12 +170,78 @@ impl Flags {
         self.0.iter().any(|f| f.eq_ignore_ascii_case(name))
     }
 
+    /// Whether this hit was a critical of some kind.
+    ///
+    /// `Slay Undead` is a paladin's critical against undead and belongs here:
+    /// leaving it out folded those hits into the plain swing count, so the
+    /// biggest hit of a fight could sit in `max` with nothing in `crits` to
+    /// explain it. It is invisible on most characters and material on a
+    /// paladin — 431 lines in the test-server log, 381 of them the player's.
+    ///
+    /// Which mechanism produced the crit is kept separately, in
+    /// `ActorStats::crits_by_flag`; this stays a plain yes-or-no.
     pub fn is_crit(&self) -> bool {
-        self.has("Critical") || self.has("Crippling Blow") || self.has("Deadly Strike")
+        self.has("Critical")
+            || self.has("Crippling Blow")
+            || self.has("Deadly Strike")
+            || self.has("Slay Undead")
+    }
+
+    /// The crit mechanisms named on this hit, for a breakdown by cause.
+    /// Empty unless [`Self::is_crit`] is true.
+    pub fn crit_kinds(&self) -> Vec<&str> {
+        self.0
+            .iter()
+            .map(String::as_str)
+            .filter(|f| {
+                ["Critical", "Crippling Blow", "Deadly Strike", "Slay Undead"]
+                    .iter()
+                    .any(|k| f.eq_ignore_ascii_case(k))
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+/// Split one comma-separated chunk into the flags it names.
+///
+/// Conservative by design: a chunk in which no known flag appears is kept
+/// verbatim rather than chopped into words, so a modifier this server adds
+/// later is passed through intact instead of being silently mangled into
+/// something no caller can ask for.
+fn split_compound(chunk: &str) -> Vec<String> {
+    let words: Vec<&str> = chunk.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut found_known = false;
+    let mut i = 0;
+    while i < words.len() {
+        let hit = KNOWN_FLAGS.iter().find_map(|f| {
+            let n = f.split_whitespace().count();
+            (i + n <= words.len() && words[i..i + n].join(" ").eq_ignore_ascii_case(f))
+                .then_some((*f, n))
+        });
+        match hit {
+            Some((name, n)) => {
+                found_known = true;
+                out.push(name.to_string());
+                i += n;
+            }
+            None => {
+                out.push(words[i].to_string());
+                i += 1;
+            }
+        }
+    }
+    if found_known {
+        out
+    } else {
+        vec![chunk.trim().to_string()]
     }
 }
 
@@ -263,10 +361,21 @@ pub enum Event {
     Heal {
         source: Actor,
         target: Actor,
+        /// Hit points actually restored.
         amount: u64,
+        /// What the heal would have restored on a target missing enough health,
+        /// from the `440 (459)` form. `None` when the line states one number
+        /// only — which is not the same as no overhealing, so the two cases are
+        /// kept apart rather than defaulting to `amount`.
+        attempted: Option<u64>,
         spell: Option<String>,
         /// True for regen-style ticks ("healed X over time for N").
         over_time: bool,
+        /// Heals crit too, and the client flags them the same way it flags
+        /// damage. Until these were parsed the flagged lines matched no rule at
+        /// all, so the healing went missing entirely rather than merely losing
+        /// its crit marker.
+        flags: Flags,
     },
     /// Something died. `killer` is absent when the log does not name one.
     Death {
@@ -583,7 +692,59 @@ mod tests {
     fn flags_detect_crits() {
         assert!(Flags::parse(Some("Critical")).is_crit());
         assert!(Flags::parse(Some("Crippling Blow")).is_crit());
+        assert!(Flags::parse(Some("Slay Undead")).is_crit());
         assert!(!Flags::parse(Some("Riposte")).is_crit());
+        assert!(!Flags::parse(Some("Flurry")).is_crit());
         assert!(Flags::parse(None).is_empty());
+    }
+
+    /// The compound forms the client actually writes, taken from the logs.
+    #[test]
+    fn flags_split_space_joined_compounds() {
+        let f = Flags::parse(Some("Riposte Slay Undead"));
+        assert_eq!(f.0, vec!["Riposte", "Slay Undead"]);
+        assert!(f.has("Riposte"), "the riposte must still register");
+        assert!(f.is_crit());
+
+        let f = Flags::parse(Some("Riposte Critical"));
+        assert_eq!(f.0, vec!["Riposte", "Critical"]);
+        assert!(f.has("Riposte") && f.is_crit());
+
+        // Three words, one flag, and it is not two.
+        let f = Flags::parse(Some("Critical Double Bow Shot"));
+        assert_eq!(f.0, vec!["Critical", "Double Bow Shot"]);
+
+        // Longest match wins, or this reads as a bare Rampage.
+        assert_eq!(Flags::parse(Some("Wild Rampage")).0, vec!["Wild Rampage"]);
+        assert!(!Flags::parse(Some("Wild Rampage")).has("Rampage"));
+
+        assert_eq!(
+            Flags::parse(Some("Finishing Blow Flurry")).0,
+            vec!["Finishing Blow", "Flurry"]
+        );
+    }
+
+    /// A modifier this table has never seen is passed through whole rather than
+    /// chopped into words that mean nothing.
+    #[test]
+    fn flags_keep_unknown_compounds_intact() {
+        assert_eq!(
+            Flags::parse(Some("Devastating Wallop")).0,
+            vec!["Devastating Wallop"]
+        );
+        // Comma-separated chunks are still independent.
+        assert_eq!(
+            Flags::parse(Some("Critical, Some New Thing")).0,
+            vec!["Critical", "Some New Thing"]
+        );
+    }
+
+    #[test]
+    fn flags_name_the_crit_mechanism() {
+        assert_eq!(
+            Flags::parse(Some("Riposte Slay Undead")).crit_kinds(),
+            vec!["Slay Undead"]
+        );
+        assert!(Flags::parse(Some("Riposte")).crit_kinds().is_empty());
     }
 }

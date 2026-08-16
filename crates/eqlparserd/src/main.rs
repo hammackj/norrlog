@@ -302,6 +302,7 @@ fn history_path() -> PathBuf {
 fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
     let (kills, encs, levels, aa) = { engine.lock().unwrap().history_to_persist() };
     let sky_turn_ins = { engine.lock().unwrap().sky_turn_ins() };
+    let grants = { engine.lock().unwrap().grants_to_persist() };
     let (drops, prices, game, bestiary, health) = {
         let e = engine.lock().unwrap();
         (
@@ -320,6 +321,7 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
         .and_then(|_| st.put_levels(&levels))
         .and_then(|_| st.put_aa(&aa))
         .and_then(|_| st.put_sky_turnins(&sky_turn_ins))
+        .and_then(|_| st.put_grants(&grants))
         .and_then(|_| st.put_drops(game.slug(), &source, &drops))
         .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
         .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))

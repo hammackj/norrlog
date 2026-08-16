@@ -24,6 +24,7 @@ enum RuleId {
     SpellDamage,
     DotTickYours,
     DotTickOther,
+    DotTickUnattributed,
     DamageShieldYours,
     DamageShieldOther,
     NonMeleeGeneric,
@@ -127,6 +128,19 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::DotTickOther,
         r"^(?P<tgt>.+?) ha[sv]e? taken (?P<amt>\d+) damage from (?P<spell>.+?) by (?P<src>.+?)\.(?: \((?P<flags>[^)]*)\))?$",
     ),
+    // "A glare lord has taken 100 damage by Rotting Flesh."
+    //
+    // The same tick with no caster named. Note that `by` introduces the *spell*
+    // here, where in the line above it introduces the caster — the client uses
+    // the word for both and only the presence of `from` tells them apart, which
+    // is why this rule has to sit after that one.
+    //
+    // 1,578 lines across the two logs on hand, every one of them previously
+    // dropped, so the damage appeared in no total anywhere.
+    (
+        RuleId::DotTickUnattributed,
+        r"^(?P<tgt>.+?) ha[sv]e? taken (?P<amt>\d+) damage by (?P<spell>.+?)\.(?: \((?P<flags>[^)]*)\))?$",
+    ),
     // ---- Damage shields (thorns / flames) -----------------------------------
     // "A wan ghoul knight is pierced by YOUR thorns for 27 points of non-melee damage."
     (
@@ -218,15 +232,29 @@ static RULES: &[(RuleId, &str)] = &[
     // ---- Heals --------------------------------------------------------------
     // Reflexive form must precede the general one; "himself/herself/itself"
     // would otherwise be captured as a distinct target named "himself".
+    //
+    // Two optional pieces neither form had, both of which cost whole lines
+    // rather than detail — a line that fails to match is not a heal with a
+    // missing flag, it is a heal that never happened as far as any total is
+    // concerned:
+    //
+    //   `(?P<full>\d+)` — "healed X for 47 (241) hit points". The second number
+    //   is what the heal was worth before the target's missing health capped
+    //   it; the first is what actually landed. 9,328 lines across the two logs.
+    //
+    //   the trailing flag group — "... by Efflorescing Heal. (Critical)".
+    //   1,161 lines. Heals crit, and the client says so the same way it does
+    //   for damage.
+    //
     // "Persephone healed herself for 4 hit points by Blessing of the Knight."
     (
         RuleId::HealSelf,
-        r"^(?P<src>.+?) healed (?:himself|herself|itself|yourself)(?P<hot> over time)? for (?P<amt>\d+) hit points?(?: by (?P<spell>.+?))?\.$",
+        r"^(?P<src>.+?) healed (?:himself|herself|itself|yourself)(?P<hot> over time)? for (?P<amt>\d+)(?: \((?P<full>\d+)\))? hit points?(?: by (?P<spell>.+?))?\.(?: \((?P<flags>[^)]*)\))?$",
     ),
     // "You healed Tharn over time for 153 hit points by Efflorescing Heal."
     (
         RuleId::HealOther,
-        r"^(?P<src>.+?) healed (?P<tgt>.+?)(?P<hot> over time)? for (?P<amt>\d+) hit points?(?: by (?P<spell>.+?))?\.$",
+        r"^(?P<src>.+?) healed (?P<tgt>.+?)(?P<hot> over time)? for (?P<amt>\d+)(?: \((?P<full>\d+)\))? hit points?(?: by (?P<spell>.+?))?\.(?: \((?P<flags>[^)]*)\))?$",
     ),
     // ---- Deaths -------------------------------------------------------------
     (RuleId::SlainByYou, r"^You have slain (?P<victim>.+?)!$"),
@@ -804,6 +832,23 @@ impl Parser {
                     damage_type: None,
                     flags: Flags::parse(g("flags")),
                 },
+                // Nobody is named, and unlike `NonMeleeGeneric` there is no
+                // arguing the damage back to you: the same sentence covers your
+                // dots, a group member's, and a mob's dot ticking on your ally.
+                // Checked rather than assumed — of the 35 distinct spells in
+                // this form in the main log, 6 are ever seen as "from your", so
+                // crediting you would be wrong most of the time. It goes down
+                // as damage nobody can be shown to have dealt, which keeps it
+                // in the encounter and out of anyone's output.
+                RuleId::DotTickUnattributed => Event::Damage {
+                    source: Actor::Named(UNSEEN_ATTACKER.to_string()),
+                    target: self.actor(g("tgt").unwrap_or_default()),
+                    amount: num("amt"),
+                    kind: DamageKind::DamageOverTime,
+                    ability: g("spell").map(str::to_string),
+                    damage_type: None,
+                    flags: Flags::parse(g("flags")),
+                },
                 RuleId::DamageShieldYours => Event::Damage {
                     source: Actor::You,
                     target: self.actor(g("tgt").unwrap_or_default()),
@@ -886,16 +931,20 @@ impl Parser {
                         target: src.clone(),
                         source: src,
                         amount: num("amt"),
+                        attempted: g("full").and_then(|s| s.parse().ok()),
                         spell: g("spell").map(str::to_string),
                         over_time: g("hot").is_some(),
+                        flags: Flags::parse(g("flags")),
                     }
                 }
                 RuleId::HealOther => Event::Heal {
                     source: self.actor(g("src").unwrap_or_default()),
                     target: self.actor(g("tgt").unwrap_or_default()),
                     amount: num("amt"),
+                    attempted: g("full").and_then(|s| s.parse().ok()),
                     spell: g("spell").map(str::to_string),
                     over_time: g("hot").is_some(),
+                    flags: Flags::parse(g("flags")),
                 },
                 RuleId::SlainByYou => Event::Death {
                     victim: self.actor(g("victim").unwrap_or_default()),
@@ -1621,6 +1670,7 @@ mod tests {
                 amount,
                 spell,
                 over_time,
+                ..
             } => {
                 assert_eq!(source, Actor::Named("Persephone".into()));
                 assert_eq!(target, Actor::Named("Persephone".into()));
@@ -1629,6 +1679,152 @@ mod tests {
                 assert!(!over_time);
             }
             other => panic!("expected heal, got {other:?}"),
+        }
+    }
+
+    /// The shape that used to match no rule at all, so the healing went
+    /// missing rather than merely losing its crit marker.
+    #[test]
+    fn heal_can_crit() {
+        let e = p().parse_body(
+            "You healed Tharn over time for 306 hit points by Efflorescing Heal. (Critical)",
+        );
+        match e {
+            Event::Heal {
+                amount,
+                spell,
+                over_time,
+                flags,
+                ..
+            } => {
+                assert_eq!(amount, 306);
+                assert_eq!(spell.as_deref(), Some("Efflorescing Heal"));
+                assert!(over_time);
+                assert!(flags.is_crit());
+            }
+            other => panic!("expected heal, got {other:?}"),
+        }
+    }
+
+    /// "for 47 (241) hit points": the first number landed, the second is what
+    /// the heal was worth before the target's missing health capped it.
+    #[test]
+    fn heal_reports_the_pre_cap_amount() {
+        match p().parse_body("Jabarab healed himself for 47 (241) hit points by Lay on Hands.") {
+            Event::Heal {
+                amount,
+                attempted,
+                spell,
+                ..
+            } => {
+                assert_eq!(amount, 47, "only what actually landed counts as healing");
+                assert_eq!(attempted, Some(241));
+                assert_eq!(spell.as_deref(), Some("Lay on Hands"));
+            }
+            other => panic!("expected heal, got {other:?}"),
+        }
+
+        // Both extras at once, and a heal that landed nothing at all.
+        match p().parse_body(
+            "You healed Brennagh for 2405 (12600) hit points by Promised Renewal Trigger I. (Critical)",
+        ) {
+            Event::Heal {
+                amount,
+                attempted,
+                flags,
+                ..
+            } => {
+                assert_eq!(amount, 2405);
+                assert_eq!(attempted, Some(12600));
+                assert!(flags.is_crit());
+            }
+            other => panic!("expected heal, got {other:?}"),
+        }
+
+        match p().parse_body("Jobeker healed itself for 0 (6) hit points by Lifetap.") {
+            Event::Heal {
+                amount, attempted, ..
+            } => {
+                assert_eq!(amount, 0);
+                assert_eq!(attempted, Some(6));
+            }
+            other => panic!("expected heal, got {other:?}"),
+        }
+    }
+
+    /// A plain heal must still report no pre-cap figure, rather than repeating
+    /// the amount and implying nothing was wasted.
+    #[test]
+    fn heal_without_a_cap_figure_states_nothing() {
+        match p().parse_body("You healed Tharn for 250 hit points by Healing Water.") {
+            Event::Heal {
+                amount, attempted, ..
+            } => {
+                assert_eq!(amount, 250);
+                assert_eq!(attempted, None);
+            }
+            other => panic!("expected heal, got {other:?}"),
+        }
+    }
+
+    /// A dot tick that names the spell but no caster. It must not be credited
+    /// to anyone — the same sentence covers your dots and a mob's.
+    #[test]
+    fn dot_tick_without_a_caster_is_unattributed() {
+        match p().parse_body("A glare lord has taken 100 damage by Rotting Flesh.") {
+            Event::Damage {
+                source,
+                target,
+                amount,
+                kind,
+                ability,
+                ..
+            } => {
+                assert_eq!(source, Actor::Named(UNSEEN_ATTACKER.into()));
+                assert_eq!(target, Actor::Named("A glare lord".into()));
+                assert_eq!(amount, 100);
+                assert_eq!(kind, DamageKind::DamageOverTime);
+                assert_eq!(ability.as_deref(), Some("Rotting Flesh"));
+            }
+            other => panic!("expected damage, got {other:?}"),
+        }
+    }
+
+    /// The form that names a caster still wins: `by` means the caster there and
+    /// the spell in the rule above, and only `from` tells them apart.
+    #[test]
+    fn dot_tick_with_a_caster_still_wins() {
+        match p().parse_body("A young kodiak has taken 8 damage from Clinging Darkness by Sticky.") {
+            Event::Damage {
+                source, ability, ..
+            } => {
+                assert_eq!(source, Actor::Named("Sticky".into()));
+                assert_eq!(ability.as_deref(), Some("Clinging Darkness"));
+            }
+            other => panic!("expected damage, got {other:?}"),
+        }
+    }
+
+    /// A paladin's slay is a critical, and the compound flag must still read as
+    /// a riposte.
+    #[test]
+    fn slay_undead_counts_as_a_crit() {
+        match p().parse_body("You slash Lord Nagafen for 900 points of damage. (Slay Undead)") {
+            Event::Damage { flags, amount, .. } => {
+                assert_eq!(amount, 900);
+                assert!(flags.is_crit(), "a slay is a critical hit");
+                assert_eq!(flags.crit_kinds(), vec!["Slay Undead"]);
+            }
+            other => panic!("expected damage, got {other:?}"),
+        }
+
+        match p().parse_body("You slash Lord Nagafen for 900 points of damage. (Riposte Slay Undead)")
+        {
+            Event::Damage { flags, .. } => {
+                assert!(flags.has("Riposte"), "the riposte must register too");
+                assert!(flags.is_crit());
+            }
+            other => panic!("expected damage, got {other:?}"),
         }
     }
 

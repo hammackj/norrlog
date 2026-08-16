@@ -84,6 +84,27 @@ pub struct StoredLevel {
     pub zones: String,
 }
 
+/// A spell the game handed over, rather than one that was bought or looted.
+///
+/// EverQuest Legends grants spells outright — "You have been granted the
+/// following spell: Gate." — which is a fact about the game worth keeping:
+/// it says a spell is real, reachable, and costs nothing to get, none of
+/// which the client's own spell file says.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredGrant {
+    pub spell: String,
+    /// The level gained at that moment, or 0 when none was.
+    ///
+    /// Both cases are grants and both are worth having, but they mean
+    /// different things. A grant with a level says *this spell is given at
+    /// this level*. A grant without one came from a change of invocation,
+    /// which hands over everything the new classes already qualify for; it
+    /// says the spell is granted, and nothing about when.
+    pub level: u32,
+    pub at: i64,
+    pub build: String,
+}
+
 /// Per-raid, per-build aggregate — the shape a build guide needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaidStat {
@@ -433,6 +454,21 @@ impl Store {
 
             -- Sky quest turn-ins. Keyed by quest and time so re-parsing a log
             -- is idempotent, and so the count survives the log rotating away.
+            -- Spells the game handed over. Keyed by spell and time so that
+            -- re-parsing a log is idempotent and so the record survives the
+            -- log rotating away -- the same reason sky_turnins is keyed that
+            -- way. The same spell can be granted twice: once on levelling and
+            -- again after a change of invocation.
+            CREATE TABLE IF NOT EXISTS spell_grants (
+                character TEXT NOT NULL,
+                server TEXT NOT NULL,
+                spell TEXT NOT NULL,
+                level INTEGER NOT NULL DEFAULT 0,
+                at INTEGER NOT NULL DEFAULT 0,
+                build TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (character, server, spell, at)
+            );
+
             -- Levels the player entered by hand. Per character and server from
             -- the start: an alt's classes are their own.
             CREATE TABLE IF NOT EXISTS class_levels (
@@ -743,6 +779,19 @@ impl Store {
         let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
+            // Toggle abilities used to be stored as the client's two halves —
+            // "Symphonic Aura: Enabled" beside "Symphonic Aura: Disabled" —
+            // and are now folded under the base name. The old rows are keyed by
+            // that old name, so nothing overwrites them and they would sit here
+            // forever, presenting one ability as three to anything reading this
+            // table. Safe to delete outright: every row is re-derived from the
+            // log on each parse, so anything still real comes straight back.
+            tx.execute(
+                "DELETE FROM aa_purchases
+                 WHERE character = ?1 AND server = ?2
+                   AND (ability LIKE '%: Enabled' OR ability LIKE '%: Disabled')",
+                params![c, sv],
+            )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO aa_purchases (character, server, ability, rank, spent, at)
                  VALUES (?1,?2,?3,?4,?5,?6)",
@@ -753,6 +802,24 @@ impl Store {
         }
         tx.commit()?;
         Ok(purchases.len())
+    }
+
+    /// Record granted spells. Existing (spell, time) pairs are left alone.
+    pub fn put_grants(&mut self, rows: &[StoredGrant]) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO spell_grants
+                     (character, server, spell, level, at, build)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+            )?;
+            for g in rows {
+                stmt.execute(params![c, sv, g.spell, g.level, g.at, g.build])?;
+            }
+        }
+        tx.commit()?;
+        Ok(rows.len())
     }
 
     /// Record Sky turn-ins. Existing (quest, time) pairs are left alone.

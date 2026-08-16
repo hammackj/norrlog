@@ -47,6 +47,24 @@ pub struct MeterRow {
     pub crit_rate: f64,
     /// Per-mechanism crit: (kind, hits, crits, rate).
     pub crit_by_kind: Vec<(String, u64, u64, f64)>,
+    /// What produced the crits: (flag, count). `Slay Undead` is a separate
+    /// mechanism from an ordinary `Critical` and the melee rate alone cannot
+    /// say which one a paladin's biggest hits came from.
+    pub crit_by_flag: Vec<(String, u64)>,
+    /// Heals cast and how many crit. Kept apart from `crit_rate`, which is
+    /// damage: a healer who never swings would otherwise have no crit rate.
+    pub heals: u64,
+    pub heal_crits: u64,
+    pub heal_crit_rate: f64,
+    /// Overhealing, over the number of heals that stated a pre-cap figure.
+    ///
+    /// `over_heal_measured` is below `heals` whenever the client wrote only one
+    /// number, so this is a floor: the real waste is higher by whatever the
+    /// unmeasured heals spilled. The denominator travels with the figure so the
+    /// UI cannot present it as a share of all healing.
+    pub over_healing: u64,
+    pub healing_attempted: u64,
+    pub over_heal_measured: u64,
     pub accuracy: f64,
     /// True when this actor is the logging character.
     pub is_you: bool,
@@ -565,6 +583,12 @@ pub struct ItemDatabase {
 }
 
 /// Owns the parsing pipeline and derives snapshots from it.
+/// How long a grant waits for the level-up that explains it.
+///
+/// In every log on file the two share a timestamp; a second of slack costs
+/// nothing and covers a log written either side of a tick.
+const GRANT_WINDOW: i64 = 1;
+
 pub struct Engine {
     parser: Parser,
     tracker: EncounterTracker,
@@ -575,6 +599,13 @@ pub struct Engine {
     /// Lifetime points spent, as read off the character sheet by the player.
     aa_spent_stated: Option<u32>,
     exp: ExpTracker,
+    /// Spells the game handed over, and the ones not yet attributed.
+    ///
+    /// Two fields because the log states the effect before the cause: the
+    /// grant lines come first and the `Welcome to level 7!` that explains them
+    /// comes after, so a grant cannot be filed the moment it is read.
+    grants: Vec<crate::store::StoredGrant>,
+    pending_grants: Vec<(i64, String)>,
     lockouts: LockoutTracker,
     sky: SkyTracker,
     aa: AaCatalog,
@@ -676,6 +707,8 @@ impl Engine {
             class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
             aa_spent_stated: None,
             exp: ExpTracker::new(),
+            grants: Vec::new(),
+            pending_grants: Vec::new(),
             lockouts: LockoutTracker::new(),
             sky: SkyTracker::new(),
             aa: AaCatalog::new(),
@@ -872,6 +905,17 @@ impl Engine {
             self.calibrate_clock();
         }
 
+        // Grants waiting for an explanation that is not coming.
+        //
+        // A grant is followed by its `Welcome to level N!` in the same second.
+        // Once the clock has moved past that, no level-up is going to claim
+        // them and they are filed as what they are: spells handed over
+        // without a level being gained, which is what a change of invocation
+        // does -- 24 at once, every spell the new classes already qualify for.
+        if entry.timestamp > self.pending_grants.first().map_or(i64::MAX, |g| g.0 + GRANT_WINDOW) {
+            self.file_grants(entry.timestamp, 0);
+        }
+
         // A `/alt list` dump has no end marker; it simply stops and ordinary
         // lines resume. Any non-dump line therefore closes the run so its
         // ranks can be merged.
@@ -915,6 +959,11 @@ impl Engine {
             {
                 self.resolver.note_known_spell(spell);
                 self.observe_class_spell(entry.timestamp, spell);
+                // Memorising a spell you already own says nothing about how
+                // you got it. Only a grant does.
+                if matches!(change, SpellbookChangeKind::Granted) {
+                    self.pending_grants.push((entry.timestamp, spell.clone()));
+                }
             }
             Event::SkillUp { skill, value } => {
                 self.classes.observe_skill(entry.timestamp, skill);
@@ -1143,6 +1192,9 @@ impl Engine {
             }
             Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
             Event::LevelUp { level } => {
+                // The grants for this level were printed a moment ago, before
+                // the line that says which level it is.
+                self.file_grants(entry.timestamp, *level);
                 self.bestiary.on_level(*level as u32);
                 self.resolver.set_level(*level);
                 self.exp.on_level_up(entry.timestamp, *level);
@@ -1342,6 +1394,36 @@ impl Engine {
                 e.timeline_retained = false;
             }
         }
+    }
+
+    /// File every grant still waiting, against the level that explains them.
+    ///
+    /// `level` is 0 when nothing does. That is not a missing value to be
+    /// filled in later: a spell granted on a change of invocation was granted
+    /// because the character already met its requirement, so the level it
+    /// arrived at says nothing about the level it is given at. Recording a 0
+    /// keeps the two cases apart; guessing would merge them.
+    fn file_grants(&mut self, _now: i64, level: u32) {
+        for (at, spell) in std::mem::take(&mut self.pending_grants) {
+            let build = self.build_label(at);
+            self.grants.push(crate::store::StoredGrant { spell, level, at, build });
+        }
+    }
+
+    /// Every grant read so far, with the still-unexplained ones filed as
+    /// having no level. Called at a flush, where waiting longer is not an
+    /// option: the log may simply end here.
+    pub fn grants_to_persist(&self) -> Vec<crate::store::StoredGrant> {
+        let mut out = self.grants.clone();
+        for (at, spell) in &self.pending_grants {
+            out.push(crate::store::StoredGrant {
+                spell: spell.clone(),
+                level: 0,
+                at: *at,
+                build: self.build_label(*at),
+            });
+        }
+        out
     }
 
     fn observe_class_spell(&mut self, timestamp: i64, spell: &str) {
@@ -1666,11 +1748,17 @@ impl Engine {
             })
             .collect();
 
+        // The stored rank is the *client* ladder position, not the rank the
+        // player has. Nothing here reads it back — the table exists for eqdb,
+        // which lines these up against the wiki's per-rank price list, and the
+        // wiki numbers a toggle's ladder the way the client does: ten entries
+        // for five ranks. Storing the real rank would land every observation
+        // on the wrong rung of that ladder.
         let aa = self
             .exp
             .aa_purchases()
             .into_iter()
-            .map(|p| (p.ability, p.rank, p.spent, p.last_seen))
+            .map(|p| (p.ability, p.client_rank, p.spent, p.last_seen))
             .collect();
 
         (kills, encs, levels, aa)
@@ -1864,7 +1952,9 @@ impl Engine {
             .exp
             .aa_purchases()
             .into_iter()
-            .map(|p| (p.ability.to_lowercase(), (p.rank, p.spent)))
+            // The client rank, because the `/alt list` ladder is numbered that
+            // way — a toggle's rank 5 sits at position 10 in the dump.
+            .map(|p| (p.ability.to_lowercase(), (p.client_rank, p.spent)))
             .collect();
         self.aa.report(&owned)
     }
@@ -2514,6 +2604,13 @@ impl Engine {
                     .into_iter()
                     .map(|(k, h, c, r)| (k.to_string(), h, c, r))
                     .collect(),
+                crit_by_flag: s.crit_causes(),
+                heals: s.heals,
+                heal_crits: s.heal_crits,
+                heal_crit_rate: s.heal_crit_rate(),
+                over_healing: s.over_healing,
+                healing_attempted: s.healing_attempted,
+                over_heal_measured: s.heals_measured_for_overheal,
                 accuracy: s.accuracy(),
                 is_you: key == "you",
                 is_enemy: s.damaged_by_you && !s.charmed_by_you && !s.summoned,
@@ -2805,6 +2902,62 @@ mod tests {
         for l in lines {
             e.push_line(l);
         }
+    }
+
+    /// The log states the effect before the cause.
+    ///
+    /// Three grants, then the line saying which level they came with. Filing
+    /// each grant as it is read would attribute all three to level 3 -- the
+    /// level the character was still on -- and be wrong by one everywhere.
+    #[test]
+    fn a_grant_is_filed_against_the_level_that_follows_it() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 15:03:13 2026] You have been granted the following spell: Gate.",
+                "[Tue Jul 28 15:03:13 2026] You have been granted the following spell: Invisibility.",
+                "[Tue Jul 28 15:03:13 2026] Your spellbook has been updated!",
+                "[Tue Jul 28 15:03:13 2026] You have gained a level! Welcome to level 4!",
+            ],
+        );
+        let grants = e.grants_to_persist();
+        assert_eq!(grants.len(), 2);
+        assert!(grants.iter().all(|g| g.level == 4), "{grants:?}");
+        assert_eq!(grants[0].spell, "Gate");
+    }
+
+    /// A change of invocation hands over every spell the new classes already
+    /// qualify for -- two dozen at once, with no level gained. Those are
+    /// grants too, and the missing level is the answer rather than a gap:
+    /// they say the spell is given, and nothing about when.
+    #[test]
+    fn a_grant_with_no_level_up_keeps_no_level() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 20:32:07 2026] You have been granted the following spell: Snare.",
+                "[Tue Jul 28 20:32:07 2026] You have been granted the following spell: Harmony.",
+                "[Tue Jul 28 20:32:08 2026] Your spellbook has been updated!",
+                // Far enough past for no level-up to be coming.
+                "[Tue Jul 28 20:33:00 2026] You slash a giant spider for 10 points of damage.",
+            ],
+        );
+        let grants = e.grants_to_persist();
+        assert_eq!(grants.len(), 2);
+        assert!(grants.iter().all(|g| g.level == 0), "{grants:?}");
+    }
+
+    /// Memorising a spell into a gem is not being given one.
+    #[test]
+    fn memorising_a_spell_is_not_a_grant() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 15:00:00 2026] You have finished memorizing Gate."],
+        );
+        assert!(e.grants_to_persist().is_empty());
     }
 
     #[test]
