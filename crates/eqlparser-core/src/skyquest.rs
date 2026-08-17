@@ -747,7 +747,10 @@ pub fn seed_quests() -> Vec<SkyQuestDef> {
             "wind",
             "Wind Rune Caza",
             &[("Amulet of Woven Hair", "6-BZ")],
-            "Fae Amulet",
+            // The giver's own words, and the client's: Cilin says "Then I
+            // will give you the amulet of the fae", and eqldb has an item by
+            // that name and none called Fae Amulet.
+            "Amulet of the Fae",
         ),
         q(
             "Bard",
@@ -765,7 +768,9 @@ pub fn seed_quests() -> Vec<SkyQuestDef> {
             "harmony",
             "Wind Rune Heda",
             &[("Nebulous Diamond", "8-EoV"), ("Efreeti War Spear", "")],
-            "Harmonic Spear",
+            // "receive the spear of harmony as your reward", and the item
+            // exists under that name. Harmonic Spear does not.
+            "Spear of Harmony",
         ),
         // ---- Beastlord (Animist Kratho) ----
         q(
