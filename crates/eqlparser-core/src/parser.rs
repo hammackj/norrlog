@@ -103,9 +103,34 @@ enum RuleId {
     ItemProc,
     EmoteWince,
     EmoteGeneric,
+    Consider,
+    ConsiderArmy,
+    Location,
     SystemAutoAttack,
     SystemMessage,
 }
+
+/// How a creature regards you, as the client words it.
+///
+/// Enumerated rather than matched loosely, because the attitude is what
+/// separates the creature's name from the rest of the line and there is
+/// nothing else to anchor on: "A woodland lion scowls at you" has no
+/// punctuation between the name and the verb, so a lazy pattern would call
+/// the creature "A".
+///
+/// Complete against 454 consider lines in a 151 MB log — every one matches
+/// one of these eight. A ninth added by a patch does not corrupt anything: the
+/// line stays [`Event::Unknown`], which is exactly what `eqldb-logscan
+/// --census` exists to surface, rather than being parsed into a creature
+/// called "A".
+const ATTITUDES: &str = "scowls at you, ready to attack\
+    |regards you indifferently\
+    |glowers at you dubiously\
+    |judges you amiably\
+    |regards you as an ally\
+    |looks upon you warmly\
+    |glares at you threateningly\
+    |looks your way apprehensively";
 
 /// Rule table. **Order is precedence** — earlier rules win.
 static RULES: &[(RuleId, &str)] = &[
@@ -622,6 +647,26 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::EmoteGeneric,
         r"^(?P<actor>.+?) (?P<text>is bound by strands of solid music|begins to chant|begins to choke|staggers|looks sick|has been (?:diseased|poisoned)|is (?:enveloped|engulfed) .+)\.$",
     ),
+    // ---- Consider and position ---------------------------------------------
+    // "A noxious spider - a rare creature - scowls at you, ready to attack
+    //  -- looks kind of dangerous. (Lvl: 24)"
+    //
+    // The name is lazy and the attitude is a fixed alternation, which is what
+    // makes the split unambiguous — see [`ATTITUDES`]. The rare marker sits
+    // between them and carries its own spaces, so it is optional here rather
+    // than a second rule.
+    (
+        RuleId::Consider,
+        r"^(?P<name>.+?)(?P<rare> - a rare creature -)? (?P<attitude>{ATTITUDE}) -- (?P<difficulty>.+?) \(Lvl: *(?P<level>\d+)\)\s*$",
+    ),
+    (
+        RuleId::ConsiderArmy,
+        r"^This creature would take an army to defeat!\s*$",
+    ),
+    (
+        RuleId::Location,
+        r"^Your Location is (?P<x>-?[\d.]+), (?P<y>-?[\d.]+), (?P<z>-?[\d.]+)\s*$",
+    ),
     // ---- Client/system feedback --------------------------------------------
     (RuleId::SystemAutoAttack, r"^Auto attack is (?:on|off)\.$"),
     (
@@ -641,7 +686,7 @@ static COMPILED: LazyLock<Compiled> = LazyLock::new(|| {
     let verbs = melee_verb_alternation();
     let pats: Vec<String> = RULES
         .iter()
-        .map(|(_, p)| p.replace("{VERB}", &verbs))
+        .map(|(_, p)| p.replace("{VERB}", &verbs).replace("{ATTITUDE}", ATTITUDES))
         .collect();
     Compiled {
         set: RegexSet::new(&pats).expect("rule patterns must compile"),
@@ -1016,6 +1061,19 @@ impl Parser {
                 }
                 RuleId::Experience => Event::Experience {
                     percent: g("pct").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                },
+                RuleId::Consider => Event::Consider {
+                    name: g("name").unwrap_or_default().trim().to_string(),
+                    level: num("level") as u32,
+                    rare: g("rare").is_some(),
+                    attitude: g("attitude").unwrap_or_default().to_string(),
+                    difficulty: g("difficulty").unwrap_or_default().trim().to_string(),
+                },
+                RuleId::ConsiderArmy => Event::ConsiderArmy,
+                RuleId::Location => Event::Location {
+                    x: g("x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    y: g("y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    z: g("z").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 },
                 RuleId::FactionAdjusted => Event::Faction {
                     faction: g("faction").unwrap_or_default().to_string(),
@@ -2326,5 +2384,95 @@ mod tests {
     fn non_combat_verb_rejected_by_melee_rule() {
         let e = p().parse_body("Someone waits patiently for 5 points of damage.");
         assert!(matches!(e, Event::Unknown), "got {e:?}");
+    }
+}
+
+#[cfg(test)]
+mod consider_tests {
+    use super::*;
+    use crate::event::Event;
+
+    fn ev(body: &str) -> Event {
+        Parser::new("Tharn").parse_body(body)
+    }
+
+    /// The plain case, and the point of the whole rule: the creature is named
+    /// in full rather than cut at its first word.
+    #[test]
+    fn a_consider_names_the_creature_not_its_first_word() {
+        let e = ev("A woodland lion scowls at you, ready to attack -- \
+                    what would you like your tombstone to say? (Lvl: 12)");
+        match e {
+            Event::Consider { name, level, rare, attitude, difficulty } => {
+                assert_eq!(name, "A woodland lion");
+                assert_eq!(level, 12);
+                assert!(!rare);
+                assert_eq!(attitude, "scowls at you, ready to attack");
+                assert_eq!(difficulty, "what would you like your tombstone to say?");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The rare marker is the client's own word, and it sits between the name
+    /// and the attitude rather than at either end.
+    #[test]
+    fn the_rare_marker_is_read_and_kept_out_of_the_name() {
+        match ev("a noxious spider - a rare creature - judges you amiably -- \
+                  You could probably win this fight. (Lvl: 24)")
+        {
+            Event::Consider { name, rare, level, .. } => {
+                assert_eq!(name, "a noxious spider");
+                assert!(rare);
+                assert_eq!(level, 24);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A hyphen in the creature's own name is not the rare marker.
+    #[test]
+    fn a_hyphenated_name_survives() {
+        match ev("Cazic-Thule glares at you threateningly -- \
+                  looks like it would wipe the floor with you! (Lvl: 55)")
+        {
+            Event::Consider { name, rare, .. } => {
+                assert_eq!(name, "Cazic-Thule");
+                assert!(!rare, "the hyphen in the name is not a rare marker");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The raid line names nothing, which is why it is its own event.
+    #[test]
+    fn the_army_line_is_its_own_event() {
+        assert_eq!(ev("This creature would take an army to defeat!"), Event::ConsiderArmy);
+    }
+
+    /// Position, in the client's own order and sign.
+    #[test]
+    fn a_location_keeps_the_clients_own_numbers() {
+        match ev("Your Location is 179.17, -144.70, -20.17") {
+            Event::Location { x, y, z } => {
+                assert!((x - 179.17).abs() < 1e-9);
+                assert!((y + 144.70).abs() < 1e-9);
+                assert!((z + 20.17).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An attitude the table does not know leaves the line alone rather than
+    /// inventing a creature out of its first word.
+    ///
+    /// The failure mode that matters. A patch adding a ninth attitude should
+    /// cost a consider, which `eqldb-logscan --census` will show, and not
+    /// produce a creature called "A".
+    #[test]
+    fn an_unknown_attitude_is_not_parsed_into_a_wrong_creature() {
+        let e = ev("A woodland lion sneers at you contemptuously -- \
+                    looks kind of dangerous. (Lvl: 12)");
+        assert_eq!(e, Event::Unknown, "{e:?}");
     }
 }
