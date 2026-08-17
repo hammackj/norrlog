@@ -12,11 +12,13 @@ pub mod aa;
 pub mod alert;
 pub mod bestiary;
 pub mod class;
+pub mod collect;
 pub mod classlevel;
 pub mod drops;
 pub mod encounter;
 pub mod event;
 pub mod experience;
+pub mod feed;
 pub mod game;
 pub mod lockout;
 pub mod npc;
@@ -30,11 +32,13 @@ pub mod tradeskill;
 pub mod zone;
 
 pub use class::{Class, ClassDetector, ClassScore};
+pub use collect::{ConsiderCollector, Considered};
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
 pub use event::{
     Actor, Coin, DamageKind, Event, Flags, LogEntry, LootDisposition, SpellbookChangeKind,
 };
 pub use experience::{ExpSource, ExpTracker, LevelRecord};
+pub use feed::{Context, Feed, Observer};
 pub use lockout::{BossKill, LockoutReport, LockoutTracker};
 pub use parser::Parser;
 pub use spell::{ActiveBuff, Spell, SpellDb, SpellResolver};
