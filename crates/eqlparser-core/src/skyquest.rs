@@ -85,6 +85,12 @@ impl SkyQuestDef {
 pub struct SkyItemProgress {
     pub name: String,
     pub source: Option<String>,
+    /// The island the `source` note resolves to, as an island code.
+    ///
+    /// Resolved here rather than left to the caller so every view tallies the
+    /// islands the same way — the note is free text and does not always spell
+    /// the code out.
+    pub island: Option<String>,
     /// Times this item has been looted in the log.
     pub looted: u32,
     /// Times it has been handed to an NPC.
@@ -286,7 +292,7 @@ impl SkyTracker {
 
     /// Note an item entering your inventory.
     pub fn on_loot(&mut self, item: &str, quantity: u64) {
-        *self.looted.entry(item.to_lowercase()).or_insert(0) += quantity.max(1) as u32;
+        *self.looted.entry(item_key(item)).or_insert(0) += quantity.max(1) as u32;
     }
 
     /// Note an item offered to an NPC.
@@ -295,8 +301,7 @@ impl SkyTracker {
     /// deducting an item that never left your bags would under-report what you
     /// are holding.
     pub fn on_offer(&mut self, item: &str, quantity: u64) {
-        self.pending_offers
-            .push((item.to_lowercase(), quantity.max(1)));
+        self.pending_offers.push((item_key(item), quantity.max(1)));
     }
 
     /// Note that a trade closed, consuming everything offered into it.
@@ -319,7 +324,7 @@ impl SkyTracker {
             d.giver.eq_ignore_ascii_case(npc)
                 && d.required()
                     .iter()
-                    .all(|i| names.contains(i.name.to_lowercase().as_str()))
+                    .all(|i| names.contains(item_key(&i.name).as_str()))
         });
         if let Some(d) = matched {
             let name = d.name.clone();
@@ -405,11 +410,16 @@ impl SkyTracker {
                     .required()
                     .into_iter()
                     .map(|i| {
-                        let key = i.name.to_lowercase();
+                        let key = item_key(&i.name);
                         let looted = *self.looted.get(&key).unwrap_or(&0);
                         let turned_in = *self.turned_in.get(&key).unwrap_or(&0);
                         let held = looted.saturating_sub(turned_in);
                         SkyItemProgress {
+                            island: i
+                                .source
+                                .as_deref()
+                                .and_then(island_of)
+                                .map(str::to_string),
                             name: i.name,
                             source: i.source,
                             looted,
@@ -472,7 +482,7 @@ impl SkyTracker {
             .defs
             .iter()
             .flat_map(|d| d.required())
-            .map(|i| i.name.to_lowercase())
+            .map(|i| item_key(&i.name))
             .collect();
         let unmatched_runes: Vec<String> = self
             .looted
@@ -482,13 +492,20 @@ impl SkyTracker {
             .collect();
 
         // An island is worth visiting for the items still missing from
-        // quests you can see — counted across the same set the view shows, so
-        // the number matches what is on screen.
-        let mut wanted: HashMap<String, u32> = HashMap::new();
+        // quests you can see.
+        //
+        // "Can see" here means every quest the report calls relevant — the
+        // widest set the Sky view can be showing. A caller narrowing that
+        // further, as the view's class filter does, has to re-tally against
+        // what it actually drew: this number is a default, not the answer to
+        // whatever question the screen is asking. Each item carries the
+        // island it resolves to so re-tallying does not mean re-parsing the
+        // source notes.
+        let mut wanted: HashMap<&str, u32> = HashMap::new();
         for q in quests.iter().filter(|q| q.relevant && !q.complete) {
             for i in q.items.iter().filter(|i| !i.have) {
-                if let Some(src) = &i.source {
-                    *wanted.entry(src.to_lowercase()).or_insert(0) += 1;
+                if let Some(code) = i.island.as_deref() {
+                    *wanted.entry(code).or_insert(0) += 1;
                 }
             }
         }
@@ -512,7 +529,7 @@ impl SkyTracker {
                     name: name.to_string(),
                     kills: bosses.iter().map(|b| b.kills).sum(),
                     last: bosses.iter().filter_map(|b| b.last).max(),
-                    items_wanted: *wanted.get(&code.to_lowercase()).unwrap_or(&0),
+                    items_wanted: *wanted.get(code).unwrap_or(&0),
                     bosses,
                 }
             })
@@ -543,6 +560,62 @@ fn boss_key(name: &str) -> String {
         }
     }
     n
+}
+
+/// Which island a quest table's source note points at.
+///
+/// The notes are transcribed as written and not all of them are island codes.
+/// The tables mark an island's trash rather than its named as `7-Trash`, and
+/// in a few rows write the bare number — `7` for Drake Island, `6` for Bee
+/// Island. Matching the note whole meant those four rows counted toward no
+/// island at all, so an island under-reported what it still owed you.
+///
+/// The leading number is what identifies the island, so that is what is
+/// compared; the suffix is a note about *where on* the island, which is a
+/// distinction the player wants to read but not one to tally separately.
+/// `1.5` stays distinct from `1` because the whole number is compared, not
+/// its first character.
+///
+/// The rune's own `"rune"` marker resolves to nothing on purpose: runes drop
+/// across the plane, so charging one to an island would invent a destination.
+fn island_of(source: &str) -> Option<&'static str> {
+    let head = |s: &str| s.split('-').next().unwrap_or("").trim().to_string();
+    let want = head(source);
+    if want.is_empty() {
+        return None;
+    }
+    SKY_ISLANDS
+        .iter()
+        .find(|(code, _, _)| head(code) == want)
+        .map(|(code, _, _)| *code)
+}
+
+/// Normalise an item name for matching, dropping any `+N` upgrade grade.
+///
+/// Drops arrive graded — `Woven Skull Cap +1`, `Silvery Ring +2` — and the
+/// grade is a bonus on the same item, not a different one. The quest tables
+/// are transcribed ungraded, so keying on the raw name hid every graded drop
+/// from the tracker: an item you were holding read as one you still needed.
+///
+/// The offers in the log settle that the grade is cosmetic to a turn-in — a
+/// `+1` Amethyst Amulet and a `+2` Silvery Ring were both accepted by their
+/// givers — so a graded drop counts in full toward the quest that wants it.
+///
+/// Only a trailing `+` followed by digits is stripped. Nothing else in the
+/// name is touched, so items that merely contain a `+` keep it.
+fn item_key(name: &str) -> String {
+    let n = name.trim();
+    let base = match n.rsplit_once('+') {
+        Some((head, grade))
+            if !head.is_empty()
+                && !grade.is_empty()
+                && grade.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            head.trim_end()
+        }
+        _ => n,
+    };
+    base.to_lowercase()
 }
 
 /// Pull `[bracketed keywords]` out of a giver's line.
@@ -1656,6 +1729,62 @@ mod tests {
         assert_eq!(bee.last, Some(300));
     }
 
+    /// The tables do not spell the island code out every time, and a note
+    /// matched whole left those rows counted toward nothing.
+    #[test]
+    fn a_source_note_resolves_to_its_island_however_it_is_written() {
+        assert_eq!(island_of("7-SotS"), Some("7-SotS"));
+        assert_eq!(island_of("7-Trash"), Some("7-SotS"), "trash is still there");
+        assert_eq!(island_of("7"), Some("7-SotS"));
+        assert_eq!(island_of("6"), Some("6-BZ"));
+        assert_eq!(island_of("2-PoS"), Some("2-PoS"));
+        // The half-island is its own place, not a prefix of the first.
+        assert_eq!(island_of("1"), Some("1"));
+        assert_eq!(island_of("1.5"), Some("1.5"));
+        // Runes drop plane-wide; charging one to an island would invent a
+        // destination.
+        assert_eq!(island_of("rune"), None);
+        assert_eq!(island_of(""), None);
+        assert_eq!(island_of("9-Nowhere"), None);
+
+        // Every note in the shipped table resolves, or an island is silently
+        // under-reporting what it owes.
+        for d in seed_quests() {
+            for i in &d.items {
+                if let Some(s) = &i.source {
+                    assert!(island_of(s).is_some(), "{} has no island: {s}", i.name);
+                }
+            }
+        }
+    }
+
+    /// The items an island owes you have to include the ones its trash drops.
+    #[test]
+    fn an_island_counts_the_items_its_trash_drops() {
+        let mut t = SkyTracker::new();
+        // Warrior Test of Smash: rune + Djinni War Blade (7-SotS) + Gem of
+        // Invigoration (7-Trash). Hold the first two, so only the trash drop
+        // is missing.
+        t.on_loot("Wind Rune Jaka", 1);
+        t.on_loot("Djinni War Blade", 1);
+        let r = t.report(&["Warrior".to_string()]);
+
+        let gem = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Smash")
+            .unwrap()
+            .items
+            .iter()
+            .find(|i| i.name == "Gem of Invigoration")
+            .unwrap();
+        assert_eq!(gem.source.as_deref(), Some("7-Trash"), "note kept as written");
+        assert_eq!(gem.island.as_deref(), Some("7-SotS"), "but tallied there");
+
+        let drake = r.islands.iter().find(|i| i.code == "7-SotS").unwrap();
+        assert!(drake.items_wanted >= 1, "the trash drop counts");
+    }
+
     /// An island is worth visiting for what it still owes you.
     #[test]
     fn an_island_reports_how_many_wanted_items_it_sources() {
@@ -1897,6 +2026,84 @@ mod tests {
             .find(|q| q.name == "Warrior Test of Skill")
             .unwrap();
         assert_eq!(skill.last_started, Some(900));
+    }
+
+    /// Drops come graded, and the grade does not change what the quest wants.
+    #[test]
+    fn a_graded_drop_counts_toward_the_quest_that_wants_it() {
+        let mut t = SkyTracker::new();
+        let me = ["Wizard".to_string()];
+        // Both exactly as the log writes them.
+        t.on_loot("Woven Skull Cap +1", 1);
+        t.on_loot("Wind Rune Fana", 1);
+
+        let r = t.report(&me);
+        let focus = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Wizard Test of Focus")
+            .unwrap();
+        assert!(focus.complete, "the +1 cap is the cap");
+        let cap = focus
+            .items
+            .iter()
+            .find(|i| i.name == "Woven Skull Cap")
+            .unwrap();
+        assert_eq!(cap.held, 1);
+
+        // Grades of the same item stack rather than splitting the count.
+        t.on_loot("Woven Skull Cap +2", 1);
+        t.on_loot("woven skull cap", 1);
+        let r = t.report(&me);
+        let cap = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Wizard Test of Focus")
+            .unwrap()
+            .items
+            .iter()
+            .find(|i| i.name == "Woven Skull Cap")
+            .unwrap()
+            .clone();
+        assert_eq!(cap.looted, 3);
+        assert_eq!(cap.held, 3);
+    }
+
+    /// Graded items are what actually gets handed over, so the turn-in has to
+    /// recognise them or the completion is never recorded.
+    #[test]
+    fn a_trade_of_graded_items_completes_the_quest() {
+        let mut t = SkyTracker::new();
+        for i in ["Wind Rune Izah", "Storm Sky Opal +1", "Efreeti Scimitar +2"] {
+            t.on_loot(i, 1);
+            t.on_offer(i, 1);
+        }
+        t.on_trade_complete(5000, "Strandar Pinemist");
+
+        let r = t.report(&["Druid".to_string()]);
+        let nature = r
+            .quests
+            .iter()
+            .find(|q| q.name == "Druid Test of Nature")
+            .unwrap();
+        assert_eq!(nature.completed, 1);
+        assert!(
+            nature.items.iter().all(|i| i.turned_in == 1 && i.held == 0),
+            "graded items left the bags: {:?}",
+            nature.items
+        );
+    }
+
+    /// Only a trailing grade is stripped; a `+` elsewhere is part of the name.
+    #[test]
+    fn only_a_trailing_grade_is_stripped_from_an_item_name() {
+        assert_eq!(item_key("Woven Skull Cap +1"), "woven skull cap");
+        assert_eq!(item_key("Woven Skull Cap+1"), "woven skull cap");
+        assert_eq!(item_key("Woven Skull Cap +12"), "woven skull cap");
+        assert_eq!(item_key("Spiritualist`s Ring"), "spiritualist`s ring");
+        assert_eq!(item_key("Wand of +Swords"), "wand of +swords");
+        assert_eq!(item_key("Staff +Air"), "staff +air");
+        assert_eq!(item_key("+1"), "+1");
     }
 
     #[test]
