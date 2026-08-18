@@ -370,9 +370,25 @@ pub struct RecipeCost {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostComponent {
     pub item: String,
-    /// Average number used per costed combine.
+    /// Average number used per combine that announced this component.
+    ///
+    /// Not per costed combine. A recipe's third component is silent whenever
+    /// it came out of your bags, and averaging it over every combine that
+    /// announced anything reported `Sheet Metal ×0.30` for a recipe that
+    /// takes one of them — a coverage figure wearing a quantity's clothes.
+    /// Divided by the combines that actually named it, the same evidence
+    /// says ×1, and `seen_in` is what carries how much of it there was.
     pub per_combine: f64,
+    /// Combines that announced this component, against the recipe's `costed`.
+    #[serde(default)]
+    pub seen_in: u64,
     /// Copper per combine for this component.
+    ///
+    /// Still spread over every costed combine, unlike `per_combine`: this is
+    /// what the component was observed to cost a combine, and a component
+    /// that was only announced a third of the time was only *seen* to cost
+    /// anything a third of the time. Assuming it into the other two thirds
+    /// would turn a floor into an estimate.
     pub copper: u64,
 }
 
@@ -439,6 +455,21 @@ pub struct VendorPrice {
 pub struct ConsumedBy {
     /// Component key -> total quantity seen consumed.
     pub per_combine: HashMap<String, u64>,
+    /// Component key -> combines that announced *that component*.
+    ///
+    /// The denominator a quantity should be divided by, and not the same as
+    /// `costed`. A combine announces the components it drew from a depot and
+    /// says nothing about the ones that came out of your bags, so a combine
+    /// can announce two of a recipe's three components and be counted as
+    /// costed on the strength of those two. Dividing the third's quantity by
+    /// `costed` then measures how often it happened to come from the depot,
+    /// which is a fact about where things were stored rather than about the
+    /// recipe.
+    #[serde(default)]
+    pub seen_in: HashMap<String, u64>,
+    /// Component key -> the combine `seen_in` was last incremented for.
+    #[serde(default)]
+    comp_seq: HashMap<String, u64>,
     /// Combines attempted at this recipe.
     pub combines: u64,
     /// Combines that announced at least one component.
@@ -789,7 +820,15 @@ impl TradeskillTracker {
     /// first time one of its components is seen.
     fn attribute_component(&mut self, recipe: &str, seq: u64, component: String, qty: u64) {
         let c = self.consumed.entry(recipe.to_string()).or_default();
-        *c.per_combine.entry(component).or_insert(0) += qty;
+        *c.per_combine.entry(component.clone()).or_insert(0) += qty;
+        // Per component, because one combine can announce some of a recipe
+        // and stay silent about the rest. Several `Consumed` lines for the
+        // same component in one combine are one combine, the same way
+        // `costed` treats the recipe as a whole.
+        if c.comp_seq.get(&component) != Some(&seq) {
+            c.comp_seq.insert(component.clone(), seq);
+            *c.seen_in.entry(component).or_insert(0) += 1;
+        }
         if c.last_seq != Some(seq) {
             c.last_seq = Some(seq);
             c.costed += 1;
@@ -1054,15 +1093,21 @@ impl TradeskillTracker {
                 let mut parts: Vec<CostComponent> = Vec::new();
                 let mut unpriced: Vec<String> = Vec::new();
                 for (comp, qty) in &c.per_combine {
-                    // Per costed combine, not per attempt: the combines that
-                    // said nothing about their components cannot be averaged in
-                    // without inventing a figure for them.
-                    let per = *qty as f64 / c.costed as f64;
+                    // The quantity is per combine that named this component.
+                    // A recipe from before `seen_in` existed has none, and
+                    // `costed` is what it used to divide by.
+                    let named = c.seen_in.get(comp).copied().unwrap_or(c.costed).max(1);
+                    let per = *qty as f64 / named as f64;
+                    // The cost is still per costed combine: the combines that
+                    // said nothing about their components cannot be averaged
+                    // in without inventing a figure for them.
+                    let share = *qty as f64 / c.costed.max(1) as f64;
                     match self.prices.get(comp) {
                         Some(p) => parts.push(CostComponent {
                             item: p.item.clone(),
                             per_combine: per,
-                            copper: (per * p.unit_copper as f64).round() as u64,
+                            seen_in: named,
+                            copper: (share * p.unit_copper as f64).round() as u64,
                         }),
                         None => unpriced.push(
                             self.components
@@ -1127,6 +1172,10 @@ impl TradeskillTracker {
                     Some(p) => parts.push(CostComponent {
                         item: p.item.clone(),
                         per_combine: comp.qty as f64,
+                        // Zero, because no combine announced it: this arm is
+                        // the recipe book stating the quantity, and the book
+                        // is not an observation to count.
+                        seen_in: 0,
                         copper: p.unit_copper * comp.qty as u64,
                     }),
                     None => unpriced.push(comp.item.clone()),
