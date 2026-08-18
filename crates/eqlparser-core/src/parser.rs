@@ -46,6 +46,7 @@ enum RuleId {
     LootPlain,
     CoinFromCorpse,
     MerchantSale,
+    ZoneRuleNotice,
     ZoneEntered,
     CastStartYou,
     SingStartYou,
@@ -63,6 +64,7 @@ enum RuleId {
     GroupLeft,
     LevelUp,
     WhoEntry,
+    WhoAnonymous,
     AbilityPointsGained,
     AbilityFirstRank,
     AbilityPointsSpent,
@@ -103,9 +105,34 @@ enum RuleId {
     ItemProc,
     EmoteWince,
     EmoteGeneric,
+    Consider,
+    ConsiderArmy,
+    Location,
     SystemAutoAttack,
     SystemMessage,
 }
+
+/// How a creature regards you, as the client words it.
+///
+/// Enumerated rather than matched loosely, because the attitude is what
+/// separates the creature's name from the rest of the line and there is
+/// nothing else to anchor on: "A woodland lion scowls at you" has no
+/// punctuation between the name and the verb, so a lazy pattern would call
+/// the creature "A".
+///
+/// Complete against 454 consider lines in a 151 MB log — every one matches
+/// one of these eight. A ninth added by a patch does not corrupt anything: the
+/// line stays [`Event::Unknown`], which is exactly what `eqldb-logscan
+/// --census` exists to surface, rather than being parsed into a creature
+/// called "A".
+const ATTITUDES: &str = "scowls at you, ready to attack\
+    |regards you indifferently\
+    |glowers at you dubiously\
+    |judges you amiably\
+    |regards you as an ally\
+    |looks upon you warmly\
+    |glares at you threateningly\
+    |looks your way apprehensively";
 
 /// Rule table. **Order is precedence** — earlier rules win.
 static RULES: &[(RuleId, &str)] = &[
@@ -305,6 +332,19 @@ static RULES: &[(RuleId, &str)] = &[
         r"^You receive (?P<coin>.+?) from (?P<merchant>.+?) for the (?P<item>.+?)\.$",
     ),
     // ---- World / progression ------------------------------------------------
+    // The client reuses this sentence for rule announcements that are not
+    // places: "You have entered an area where Bind Affinity is allowed."
+    // Taking one as a zone files kills under somewhere that does not exist
+    // and splits the real zone's tally in two.
+    //
+    // Caught by an earlier rule rather than by a negative lookahead, which
+    // this regex engine does not have, and rather than by every reader
+    // filtering the zone name in turn — which is what they were all doing.
+    // Rule order is precedence, so this wins.
+    (
+        RuleId::ZoneRuleNotice,
+        r"^You have entered an? (?:area|zone) [^.]*\.$",
+    ),
     (RuleId::ZoneEntered, r"^You have entered (?P<zone>.+?)\.$"),
     (
         RuleId::CastStartYou,
@@ -603,7 +643,18 @@ static RULES: &[(RuleId, &str)] = &[
     // brackets nor, in some client versions, the trailing zone.
     (
         RuleId::WhoEntry,
-        r"^\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z]+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+        r"^(?:AFK +)?\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z`']+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+    ),
+    // "[ANONYMOUS] Sneaky" — level, class and race withheld, name still
+    // given. Still a WhoEntry, because the fact that matters is that this
+    // name belongs to a player: the roster exists to keep people out of the
+    // bestiary, and somebody hiding their level is exactly as much a person
+    // as somebody who is not. Level 0 is "not stated", as it is elsewhere.
+    //
+    // Two of these in a 151 MB log, and both were lost.
+    (
+        RuleId::WhoAnonymous,
+        r"^(?:AFK +)?\[ANONYMOUS\] (?P<name>[A-Za-z`']+)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
     ),
     // ---- Abilities / items --------------------------------------------------
     // "You can use the ability Rampage again in 8 minute(s) 54 seconds."
@@ -621,6 +672,26 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::EmoteGeneric,
         r"^(?P<actor>.+?) (?P<text>is bound by strands of solid music|begins to chant|begins to choke|staggers|looks sick|has been (?:diseased|poisoned)|is (?:enveloped|engulfed) .+)\.$",
+    ),
+    // ---- Consider and position ---------------------------------------------
+    // "A noxious spider - a rare creature - scowls at you, ready to attack
+    //  -- looks kind of dangerous. (Lvl: 24)"
+    //
+    // The name is lazy and the attitude is a fixed alternation, which is what
+    // makes the split unambiguous — see [`ATTITUDES`]. The rare marker sits
+    // between them and carries its own spaces, so it is optional here rather
+    // than a second rule.
+    (
+        RuleId::Consider,
+        r"^(?P<name>.+?)(?P<rare> - a rare creature -)? (?P<attitude>{ATTITUDE}) -- (?P<difficulty>.+?) \(Lvl: *(?P<level>\d+)\)\s*$",
+    ),
+    (
+        RuleId::ConsiderArmy,
+        r"^This creature would take an army to defeat!\s*$",
+    ),
+    (
+        RuleId::Location,
+        r"^Your Location is (?P<x>-?[\d.]+), (?P<y>-?[\d.]+), (?P<z>-?[\d.]+)\s*$",
     ),
     // ---- Client/system feedback --------------------------------------------
     (RuleId::SystemAutoAttack, r"^Auto attack is (?:on|off)\.$"),
@@ -641,7 +712,7 @@ static COMPILED: LazyLock<Compiled> = LazyLock::new(|| {
     let verbs = melee_verb_alternation();
     let pats: Vec<String> = RULES
         .iter()
-        .map(|(_, p)| p.replace("{VERB}", &verbs))
+        .map(|(_, p)| p.replace("{VERB}", &verbs).replace("{ATTITUDE}", ATTITUDES))
         .collect();
     Compiled {
         set: RegexSet::new(&pats).expect("rule patterns must compile"),
@@ -1017,6 +1088,19 @@ impl Parser {
                 RuleId::Experience => Event::Experience {
                     percent: g("pct").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 },
+                RuleId::Consider => Event::Consider {
+                    name: g("name").unwrap_or_default().trim().to_string(),
+                    level: num("level") as u32,
+                    rare: g("rare").is_some(),
+                    attitude: g("attitude").unwrap_or_default().to_string(),
+                    difficulty: g("difficulty").unwrap_or_default().trim().to_string(),
+                },
+                RuleId::ConsiderArmy => Event::ConsiderArmy,
+                RuleId::Location => Event::Location {
+                    x: g("x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    y: g("y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    z: g("z").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                },
                 RuleId::FactionAdjusted => Event::Faction {
                     faction: g("faction").unwrap_or_default().to_string(),
                     adjustment: g("adj").and_then(|s| s.parse().ok()),
@@ -1052,6 +1136,14 @@ impl Parser {
                 RuleId::GroupLeft => Event::GroupChange {
                     who: self.actor(g("who").unwrap_or_default()),
                     joined: false,
+                },
+                RuleId::WhoAnonymous => Event::WhoEntry {
+                    level: 0,
+                    classes: String::new(),
+                    name: g("name").unwrap_or_default().to_string(),
+                    race: String::new(),
+                    guild: g("guild").unwrap_or_default().to_string(),
+                    zone: g("zone").unwrap_or_default().to_string(),
                 },
                 RuleId::WhoEntry => Event::WhoEntry {
                     level: num("level") as u32,
@@ -1214,7 +1306,9 @@ impl Parser {
                     actor: self.actor(g("actor").unwrap_or_default()),
                     text: g("text").unwrap_or_default().to_string(),
                 },
-                RuleId::SystemAutoAttack | RuleId::SystemMessage => Event::System {
+                RuleId::ZoneRuleNotice
+                | RuleId::SystemAutoAttack
+                | RuleId::SystemMessage => Event::System {
                     text: body.to_string(),
                 },
             };
@@ -2326,5 +2420,139 @@ mod tests {
     fn non_combat_verb_rejected_by_melee_rule() {
         let e = p().parse_body("Someone waits patiently for 5 points of damage.");
         assert!(matches!(e, Event::Unknown), "got {e:?}");
+    }
+}
+
+#[cfg(test)]
+mod consider_tests {
+    use super::*;
+    use crate::event::Event;
+
+    fn ev(body: &str) -> Event {
+        Parser::new("Tharn").parse_body(body)
+    }
+
+    /// The plain case, and the point of the whole rule: the creature is named
+    /// in full rather than cut at its first word.
+    #[test]
+    fn a_consider_names_the_creature_not_its_first_word() {
+        let e = ev("A woodland lion scowls at you, ready to attack -- \
+                    what would you like your tombstone to say? (Lvl: 12)");
+        match e {
+            Event::Consider { name, level, rare, attitude, difficulty } => {
+                assert_eq!(name, "A woodland lion");
+                assert_eq!(level, 12);
+                assert!(!rare);
+                assert_eq!(attitude, "scowls at you, ready to attack");
+                assert_eq!(difficulty, "what would you like your tombstone to say?");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The rare marker is the client's own word, and it sits between the name
+    /// and the attitude rather than at either end.
+    #[test]
+    fn the_rare_marker_is_read_and_kept_out_of_the_name() {
+        match ev("a noxious spider - a rare creature - judges you amiably -- \
+                  You could probably win this fight. (Lvl: 24)")
+        {
+            Event::Consider { name, rare, level, .. } => {
+                assert_eq!(name, "a noxious spider");
+                assert!(rare);
+                assert_eq!(level, 24);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A hyphen in the creature's own name is not the rare marker.
+    #[test]
+    fn a_hyphenated_name_survives() {
+        match ev("Cazic-Thule glares at you threateningly -- \
+                  looks like it would wipe the floor with you! (Lvl: 55)")
+        {
+            Event::Consider { name, rare, .. } => {
+                assert_eq!(name, "Cazic-Thule");
+                assert!(!rare, "the hyphen in the name is not a rare marker");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The raid line names nothing, which is why it is its own event.
+    #[test]
+    fn the_army_line_is_its_own_event() {
+        assert_eq!(ev("This creature would take an army to defeat!"), Event::ConsiderArmy);
+    }
+
+    /// Position, in the client's own order and sign.
+    #[test]
+    fn a_location_keeps_the_clients_own_numbers() {
+        match ev("Your Location is 179.17, -144.70, -20.17") {
+            Event::Location { x, y, z } => {
+                assert!((x - 179.17).abs() < 1e-9);
+                assert!((y + 144.70).abs() < 1e-9);
+                assert!((z + 20.17).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An attitude the table does not know leaves the line alone rather than
+    /// inventing a creature out of its first word.
+    ///
+    /// The failure mode that matters. A patch adding a ninth attitude should
+    /// cost a consider, which `eqldb-logscan --census` will show, and not
+    /// produce a creature called "A".
+    #[test]
+    fn an_unknown_attitude_is_not_parsed_into_a_wrong_creature() {
+        let e = ev("A woodland lion sneers at you contemptuously -- \
+                    looks kind of dangerous. (Lvl: 12)");
+        assert_eq!(e, Event::Unknown, "{e:?}");
+    }
+}
+
+#[cfg(test)]
+mod zone_notice_tests {
+    use super::*;
+    use crate::event::Event;
+
+    fn ev(body: &str) -> Event {
+        Parser::new("Tharn").parse_body(body)
+    }
+
+    /// A place is a place.
+    #[test]
+    fn entering_a_zone_is_a_zone_change() {
+        match ev("You have entered The Oasis of Marr.") {
+            Event::ZoneChange { zone } => assert_eq!(zone, "The Oasis of Marr"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// And a rule announcement is not, however much it reads like one.
+    ///
+    /// Two of these are in the log. Read as zones they file kills under a
+    /// place that does not exist, and split the real zone's tally in two.
+    #[test]
+    fn entering_an_area_rule_is_not_a_place() {
+        for line in [
+            "You have entered an area where Bind Affinity is allowed.",
+            "You have entered an area where levitation effects do not function.",
+        ] {
+            assert!(
+                matches!(ev(line), Event::System { .. }),
+                "{line} became {:?}",
+                ev(line)
+            );
+        }
+    }
+
+    /// A zone whose own name starts with "area" would still be one, but none
+    /// do; the guard is deliberately narrow to the client's two sentences.
+    #[test]
+    fn the_guard_does_not_swallow_an_ordinary_name() {
+        assert!(matches!(ev("You have entered Areana.") , Event::ZoneChange { .. }));
     }
 }

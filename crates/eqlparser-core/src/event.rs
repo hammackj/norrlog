@@ -613,6 +613,44 @@ pub enum Event {
         spell: String,
         change: SpellbookChangeKind,
     },
+    /// What `/consider` says about a creature.
+    ///
+    /// One line carrying four separate facts, which is why it is worth typing
+    /// rather than leaving as flavour text:
+    ///
+    /// ```text
+    /// A noxious spider - a rare creature - scowls at you, ready to attack -- looks kind of dangerous. (Lvl: 24)
+    /// ```
+    ///
+    /// The level is the only number the client ever states about a creature.
+    /// The rare marker is the client's own, not an inference from spawn
+    /// timing. The two halves either side of the `--` are different claims:
+    /// how the creature regards *you*, which is faction, and how hard the
+    /// client thinks the fight is, which is a level comparison.
+    Consider {
+        /// As printed, article and all. Filing convention is the reader's.
+        name: String,
+        level: u32,
+        /// The client marked it a rare spawn.
+        rare: bool,
+        /// "scowls at you, ready to attack" — an attitude, so a faction cue.
+        attitude: String,
+        /// "looks kind of dangerous." — a difficulty, so a level cue.
+        difficulty: String,
+    },
+    /// `This creature would take an army to defeat!`
+    ///
+    /// The raid marker, and it names nothing. The client prints it on its own
+    /// line after the [`Event::Consider`] it belongs to, so pairing the two is
+    /// the reader's job and is only sound within one timestamp.
+    ConsiderArmy,
+    /// `Your Location is 179.17, -144.70, -20.17`
+    ///
+    /// Where the character is standing, in the client's own order, which is
+    /// not the order the maps use. Kept exactly as printed: converting here
+    /// would put a coordinate convention in the grammar, and every consumer
+    /// disagrees about which one it wants.
+    Location { x: f64, y: f64, z: f64 },
     /// A recognised client/system message that carries no combat meaning.
     System { text: String },
     /// A line we recognised as uninteresting or do not yet model.
