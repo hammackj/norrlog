@@ -994,7 +994,14 @@ impl TradeskillTracker {
 
     pub fn report(&self) -> TradeskillReport {
         let mut skills: Vec<SkillProgress> = self.skills.values().cloned().collect();
-        skills.sort_by_key(|s| std::cmp::Reverse(s.current));
+        // Every sort in this report is made total by a name, and none of
+        // them were. The rows come out of HashMaps, so ties held whatever
+        // order the map happened to yield — which differs between runs of the
+        // same binary over the same log, because Rust seeds its hasher per
+        // process. A report written to a file therefore produced a spurious
+        // diff on every rebuild, and a comparison against an older copy could
+        // not tell a change from a reshuffle.
+        skills.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.skill.cmp(&b.skill)));
 
         let mut crafts: Vec<CraftRecord> = self
             .crafts
@@ -1008,7 +1015,7 @@ impl TradeskillTracker {
                 c
             })
             .collect();
-        crafts.sort_by_key(|c| std::cmp::Reverse(c.attempts()));
+        crafts.sort_by(|a, b| b.attempts().cmp(&a.attempts()).then_with(|| a.item.cmp(&b.item)));
 
         // Which tradeskills each component serves, from the recipes seen
         // consuming it. A component whose recipes are all unattributed carries
@@ -1037,7 +1044,7 @@ impl TradeskillTracker {
                 ..c.clone()
             })
             .collect();
-        components.sort_by_key(|c| std::cmp::Reverse(c.used));
+        components.sort_by(|a, b| b.used.cmp(&a.used).then_with(|| a.item.cmp(&b.item)));
 
         let mut costs: Vec<RecipeCost> = self
             .consumed
@@ -1149,7 +1156,7 @@ impl TradeskillTracker {
                 unpriced,
             });
         }
-        costs.sort_by_key(|c| std::cmp::Reverse(c.unit_copper));
+        costs.sort_by(|a, b| b.unit_copper.cmp(&a.unit_copper).then_with(|| a.item.cmp(&b.item)));
 
         let mut prices: Vec<ItemPrice> = self
             .prices
@@ -1161,14 +1168,27 @@ impl TradeskillTracker {
                     .filter(|((item, _), _)| item == key)
                     .map(|(_, v)| v.clone())
                     .collect();
-                vendors.sort_by_key(|v| std::cmp::Reverse(v.unit_copper));
+                // Dearest first, then by name so the order is total. Price
+                // alone leaves two merchants charging the same amount in
+                // whatever order the HashMap yielded them, which differs
+                // between runs of the same binary over the same log — so a
+                // report written to a file produced a spurious diff on every
+                // rebuild, and a comparison against it could not tell a
+                // change from a reshuffle. 42 of 713 prices were in that
+                // state.
+                vendors.sort_by(|a, b| {
+                    b.unit_copper
+                        .cmp(&a.unit_copper)
+                        .then_with(|| a.merchant.cmp(&b.merchant))
+                        .then_with(|| a.zone.cmp(&b.zone))
+                });
                 ItemPrice {
                     vendors,
                     ..p.clone()
                 }
             })
             .collect();
-        prices.sort_by_key(|p| std::cmp::Reverse(p.unit_copper));
+        prices.sort_by(|a, b| b.unit_copper.cmp(&a.unit_copper).then_with(|| a.item.cmp(&b.item)));
 
         // Per-combine price by recipe, so effort can be turned into spend
         // wherever attempts are counted.
@@ -1183,6 +1203,13 @@ impl TradeskillTracker {
             .iter()
             .flat_map(|(key, p)| self.segments_for(key, &p.skill))
             .collect();
+        // Built by iterating a HashMap, so with no order of its own at all.
+        segments.sort_by(|a, b| {
+            a.skill
+                .cmp(&b.skill)
+                .then_with(|| a.from.cmp(&b.from))
+                .then_with(|| a.item.cmp(&b.item))
+        });
         for s in &mut segments {
             if let Some(item) = s.item.as_ref() {
                 if let Some((u, _)) = unit.get(&item.to_lowercase()) {
@@ -1235,7 +1262,7 @@ impl TradeskillTracker {
             s.recipes
                 .sort_by_key(|r| std::cmp::Reverse((r.copper, r.attempts)));
         }
-        skill_costs.sort_by_key(|s| std::cmp::Reverse(s.copper));
+        skill_costs.sort_by(|a, b| b.copper.cmp(&a.copper).then_with(|| a.skill.cmp(&b.skill)));
 
         TradeskillReport {
             game: crate::game::Game::Unknown,

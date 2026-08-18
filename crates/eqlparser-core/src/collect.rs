@@ -1446,3 +1446,87 @@ impl Observer for CombatCollector {
         self.encounters.push(entry);
     }
 }
+
+/// Vendor prices and tradeskill combines.
+///
+/// One tracker rather than two collectors, because [`TradeskillTracker`] is
+/// one: a purchase, a quote, a combine and a skill rise all land in it, and
+/// what a combine cost is worked out from the prices of what went into it.
+///
+/// [`TradeskillTracker`]: crate::tradeskill::TradeskillTracker
+///
+/// # The zone is where you are standing
+///
+/// A merchant does not say where they are. The zone comes from the feed's
+/// context, which is what the daemon does with `current_zone` — where you are
+/// standing is where the merchant is.
+pub struct TradeCollector {
+    trades: crate::tradeskill::TradeskillTracker,
+    game: crate::game::Game,
+}
+
+impl TradeCollector {
+    pub fn new(game: crate::game::Game) -> Self {
+        Self {
+            trades: crate::tradeskill::TradeskillTracker::new(),
+            game,
+        }
+    }
+
+    /// With the client's own recipe book behind it, so a combine can be
+    /// attributed to the tradeskill that made it.
+    pub fn with_book(game: crate::game::Game, book: &'static crate::recipe::RecipeBook) -> Self {
+        Self {
+            trades: crate::tradeskill::TradeskillTracker::with_book(book),
+            game,
+        }
+    }
+
+    /// The report, tagged with the game.
+    ///
+    /// The tracker knows nothing about which game it is reading and the cost
+    /// totals mean different things in the two, so the tag is stamped on here
+    /// — the same thing the daemon does after calling `report`, and the
+    /// reason it is done here instead is that forgetting it produces a report
+    /// labelled "unknown" and nothing complains.
+    pub fn report(&self) -> crate::tradeskill::TradeskillReport {
+        let mut r = self.trades.report();
+        r.game = self.game;
+        r
+    }
+}
+
+impl Observer for TradeCollector {
+    fn name(&self) -> &'static str {
+        "trades"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
+        let at = entry.timestamp;
+        match &entry.event {
+            Event::Craft { item, success } => self.trades.on_craft(at, item, *success),
+            Event::ComponentConsumed { item, quantity, remaining } => {
+                self.trades.on_component(at, item, *quantity, Some(*remaining))
+            }
+            Event::ItemPurchased { item, quantity, coin, merchant } => self.trades.on_purchase_from(
+                at,
+                item,
+                *quantity,
+                coin.as_copper(),
+                Some(merchant.as_str()),
+                cx.zone,
+            ),
+            Event::ItemQuoted { item, merchant, coin } => self.trades.on_quote_from(
+                at,
+                item,
+                coin.as_copper(),
+                Some(merchant.as_str()),
+                cx.zone,
+            ),
+            Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
+            Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
+            Event::SkillUp { skill, value } => self.trades.on_skill_up(at, skill, *value),
+            _ => {}
+        }
+    }
+}
