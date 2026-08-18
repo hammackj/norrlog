@@ -1518,3 +1518,119 @@ impl Observer for TradeCollector {
         }
     }
 }
+
+/// The Plane of Sky chain and the task list.
+///
+/// One observer for two trackers, because they read the same lines: quest
+/// dialogue arrives as say-channel chat, both count kills, and both are
+/// driven by definitions loaded from outside.
+///
+/// # Both need to know whether a death was yours
+///
+/// `on_kill` on either is gated on participation, for the reason
+/// [`Context::fought`] gives — a Sky island named is routinely finished by a
+/// charmed pet, and requiring your own killing blow discards it. The two
+/// gates are not identical, and the difference is the daemon's: the task
+/// list is only told about a kill that also counted for experience, while
+/// Sky counts it on participation alone.
+///
+/// # Only your own say starts a Sky quest
+///
+/// The chain begins by saying a trigger word, and it has to be *your*
+/// utterance: somebody else in the zone saying it starts nothing. The giver's
+/// half is recorded separately, since the giver's own words are what a
+/// walkthrough is built from.
+///
+/// Chat on any other channel is player conversation and would be noise —
+/// only `say` is read.
+pub struct QuestCollector {
+    tasks: crate::task::TaskTracker,
+    sky: crate::skyquest::SkyTracker,
+}
+
+impl Default for QuestCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuestCollector {
+    /// Seeded with the built-in task table, which is what the daemon falls
+    /// back to when no `tasks.json` has been written. A tracker with no
+    /// definitions recognises no task, and says so by reporting none — which
+    /// reads exactly like a character who has never taken one.
+    pub fn new() -> Self {
+        let mut tasks = crate::task::TaskTracker::new();
+        for d in crate::task::seed_definitions() {
+            tasks.define(d);
+        }
+        Self {
+            tasks,
+            sky: crate::skyquest::SkyTracker::new(),
+        }
+    }
+
+    /// What a task is, which the log never says in full.
+    pub fn define_task(&mut self, def: crate::task::TaskDef) {
+        self.tasks.define(def);
+    }
+
+    /// The Sky chain's shape, likewise.
+    pub fn define_sky(&mut self, defs: Vec<crate::skyquest::SkyQuestDef>) {
+        self.sky.set_definitions(defs);
+    }
+
+    pub fn tasks(&self) -> crate::task::TaskReport {
+        self.tasks.report()
+    }
+
+    /// `active` and `played` are the classes to report against; the chain is
+    /// per class and a report for nobody in particular is not meaningful.
+    pub fn sky(&self, active: &[String], played: &[String]) -> crate::skyquest::SkyReport {
+        self.sky.report_for(active, played)
+    }
+
+    pub fn turn_in_log(&self) -> Vec<(String, i64)> {
+        self.sky.turn_in_log()
+    }
+}
+
+impl Observer for QuestCollector {
+    fn name(&self) -> &'static str {
+        "quests"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
+        let at = entry.timestamp;
+        match &entry.event {
+            Event::Chat { speaker, channel, message } => {
+                if !(channel.eq_ignore_ascii_case("say") || channel.eq_ignore_ascii_case("says")) {
+                    return;
+                }
+                let who = speaker.display(cx.player);
+                self.tasks.on_dialogue(at, &who, message);
+                if speaker.is_you() {
+                    self.sky.on_say(at, message);
+                } else {
+                    self.sky.on_giver_line(at, &who, message);
+                }
+            }
+            Event::TaskAssigned { task } => self.tasks.on_assigned(at, task),
+            Event::TaskUpdated { task } => self.tasks.on_updated(at, task),
+            Event::AchievementEarned { name } => self.tasks.on_achievement(at, name),
+            Event::Loot { item, quantity, .. } => self.sky.on_loot(item, *quantity),
+            Event::TradeOffer { item, quantity, .. } => self.sky.on_offer(item, *quantity),
+            Event::TradeComplete { npc } => self.sky.on_trade_complete(at, npc),
+            Event::Death { victim, killer } if !victim.is_you() => {
+                let mine = killer.as_ref().is_some_and(|k| k.is_you()) || cx.fought(victim);
+                if mine {
+                    let name = victim.display(cx.player);
+                    // Lets a following "task has been updated" say which step.
+                    self.tasks.on_kill(at, &name);
+                    self.sky.on_kill(at, &name);
+                }
+            }
+            _ => {}
+        }
+    }
+}

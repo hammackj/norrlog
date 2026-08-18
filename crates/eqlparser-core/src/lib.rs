@@ -34,7 +34,7 @@ pub mod zone;
 pub use class::{Class, ClassDetector, ClassScore};
 pub use collect::{
     ConsiderCollector, Considered, FactionCause, FactionCollector, FactionMoves, Player,
-    CombatCollector, Marker, MarkerCollector, MarkerKind, PlayerCollector, SkillCollector, TradeCollector,
+    CombatCollector, Marker, MarkerCollector, MarkerKind, PlayerCollector, QuestCollector, SkillCollector, TradeCollector,
 };
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
 pub use event::{
