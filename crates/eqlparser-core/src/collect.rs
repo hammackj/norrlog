@@ -1306,3 +1306,143 @@ mod marker_tests {
         assert_eq!(c.spawn_points(15.0).len(), 1, "and are one spawn point");
     }
 }
+
+/// Drops, kills and the bestiary — the three the killing-blow rule ties together.
+///
+/// These are separate trackers and they cannot be separate observers, because
+/// whether a death counts at all is decided from encounter state:
+///
+/// ```text
+/// Innoruuk, the Prince of Hate has been slain by Innoruuk`s Chosen!
+/// Lady Vox has been slain by a priest of Nagafen!
+/// ```
+///
+/// The game credits the final hit to whoever landed it, which for a charming
+/// class is routinely your own charmed pet. Requiring your own killing blow
+/// silently discards those kills. So credit follows *participation* — did you
+/// damage it during the fight that is open right now — and that answer lives
+/// in [`EncounterTracker`].
+///
+/// The order matters and is the daemon's: the death is judged against the
+/// encounter as it stands *before* this entry is pushed into it. Pushing
+/// first closes the fight and the answer becomes no.
+///
+/// # What each is for
+///
+/// [`DropTracker`] holds both halves of a drop rate. `on_drop` is what came
+/// off a corpse and `on_kill` is the denominator — counted whether or not the
+/// corpse was looted, which is what makes a sighting count a floor rather
+/// than a rate.
+///
+/// [`Bestiary`] holds what fighting a creature was like: what it hit you for,
+/// how often it missed, and a floor on its health from the damage it absorbed
+/// before dying. It is keyed on where you were, so a zone change ends every
+/// fight in the old zone — anything still accumulating there was left alive
+/// and its partial damage is a floor for nothing.
+pub struct CombatCollector {
+    player: String,
+    encounters: crate::encounter::EncounterTracker,
+    drops: crate::drops::DropTracker,
+    bestiary: crate::bestiary::Bestiary,
+}
+
+impl CombatCollector {
+    pub fn new(player: &str, game: crate::game::Game) -> Self {
+        Self {
+            player: player.to_string(),
+            encounters: crate::encounter::EncounterTracker::new(player),
+            drops: crate::drops::DropTracker::new(game),
+            bestiary: crate::bestiary::Bestiary::new(game, player),
+        }
+    }
+
+    pub fn drops(&self) -> crate::drops::DropReport {
+        self.drops.report()
+    }
+
+    pub fn bestiary(&self) -> &crate::bestiary::Bestiary {
+        &self.bestiary
+    }
+}
+
+impl Observer for CombatCollector {
+    fn name(&self) -> &'static str {
+        "combat"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+        use crate::bestiary::Swing;
+
+        match &entry.event {
+            Event::Damage { source, target, amount, .. } => {
+                if let Actor::Named(npc) = target {
+                    self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
+                }
+                if target.is_you() {
+                    if let Actor::Named(npc) = source {
+                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Hit(*amount));
+                    }
+                }
+            }
+            Event::Miss { source, target, .. } => {
+                if target.is_you() {
+                    if let Actor::Named(npc) = source {
+                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Missed);
+                    }
+                }
+            }
+            Event::Avoided { source, target, .. } => {
+                if target.is_you() {
+                    if let Actor::Named(npc) = source {
+                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Avoided);
+                    }
+                }
+            }
+            Event::Loot { item, quantity, source, .. } => {
+                // A named corpse that is not your own is a creature, and what
+                // came off it is a drop. Your own corpse is items going back
+                // where they came from, which says nothing about any creature.
+                if let Some(Actor::Named(npc)) = source {
+                    if !npc.eq_ignore_ascii_case(&self.player) {
+                        self.drops.on_drop(
+                            entry.timestamp,
+                            item,
+                            *quantity,
+                            npc,
+                            self.encounters.current_zone(),
+                        );
+                    }
+                }
+            }
+            Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
+            Event::LevelUp { level } => self.bestiary.on_level(*level as u32),
+            Event::ZoneChange { zone } => self.bestiary.on_zone(zone),
+            Event::Death { victim, killer } => {
+                if victim.is_you() {
+                    // What actually kills you is worth knowing per creature,
+                    // and it is the one statistic a death line states outright.
+                    if let Some(Actor::Named(k)) = killer {
+                        self.bestiary.on_your_death(entry.timestamp, k);
+                    }
+                } else {
+                    // Judged before the push. See the type docs.
+                    let fought_it = self
+                        .encounters
+                        .current()
+                        .and_then(|e| e.actors.get(&victim.key()))
+                        .is_some_and(|s| s.damaged_by_you);
+                    if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
+                        let name = victim.display(&self.player);
+                        self.drops.on_kill(&name);
+                        self.bestiary.on_kill(entry.timestamp, &name);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Last, always. The encounter has to see every entry, and the death
+        // above has to be judged against the fight as it stood before it.
+        self.encounters.push(entry);
+    }
+}
