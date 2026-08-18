@@ -28,12 +28,23 @@ pub const WEEKLY_RESET_WEEKDAY: u8 = 2; // 1 = Monday ... 7 = Sunday
 
 /// Hour of day both lockouts reset at, on the player's clock.
 ///
-/// The log carries no reset message, so this cannot be derived — it is read off
-/// the in-game timer. Two readings were taken and they disagreed by an hour:
-/// 8h50m remaining at 01:10 gives 10:00, while 17m remaining at 10:45 gives
-/// 11:00. The second is trusted, being a seventeen-minute estimate rather than
-/// a nine-hour one, and the app was visibly an hour ahead of the client at the
-/// time — it had already cleared the grid.
+/// The log carries no reset message, so this cannot be derived from it — it is
+/// read off the in-game timer. Two readings were taken and they disagreed by
+/// an hour: 8h50m remaining at 01:10 gives 10:00, while 17m remaining at 10:45
+/// gives 11:00. The second was trusted at first, being a seventeen-minute
+/// estimate rather than a nine-hour one.
+///
+/// That was wrong, and play settled it. On Tuesday 18 August the player
+/// cleared Innoruuk at difficulty 0, 1, 2 and 3 in one run, at 10:19, 10:29,
+/// 10:45 and 11:05. An 11:00 reset splits that sweep in three, filing the
+/// first three kills under the expiring week — which is not what clearing four
+/// difficulties back to back means. A 10:00 reset puts the whole run in the
+/// week it obviously belongs to, and the player confirmed the timer reads
+/// 10:00.
+///
+/// The lesson is that a short countdown is not automatically the better
+/// reading: both were estimates of the same instant, and only behaviour over a
+/// reset boundary could tell them apart.
 ///
 /// Local rather than UTC because the server keeps US time and shifts with US
 /// daylight saving, as does this machine; a fixed UTC hour would be an hour out
@@ -41,7 +52,7 @@ pub const WEEKLY_RESET_WEEKDAY: u8 = 2; // 1 = Monday ... 7 = Sunday
 ///
 /// Midnight was the original assumption, which cleared the grid eleven hours
 /// early — bosses read as available while their loot was still locked.
-pub const RESET_HOUR: i64 = 11;
+pub const RESET_HOUR: i64 = 10;
 
 /// Seconds in a day.
 const DAY: i64 = 86_400;
@@ -417,6 +428,30 @@ mod tests {
         assert_eq!(week_start(TUE + 6 * DAY), TUE_RESET);
         // The next Tuesday's reset starts a new one.
         assert_eq!(week_start(TUE_RESET + 7 * DAY), TUE_RESET + 7 * DAY);
+    }
+
+    /// The case that fixed the reset hour: a player clearing four difficulties
+    /// back to back on reset day must land in one week, not two.
+    ///
+    /// Innoruuk at d0/d1/d2/d3 on Tuesday 18 August, at 10:19, 10:29, 10:45
+    /// and 11:05. With the reset modelled an hour late the first three fell
+    /// into the expiring week and the board showed them as never killed, which
+    /// is what a player noticed and reported.
+    #[test]
+    fn a_sweep_across_reset_day_belongs_to_one_week() {
+        let sweep = [
+            TUE + 10 * 3600 + 19 * 60,
+            TUE + 10 * 3600 + 29 * 60,
+            TUE + 10 * 3600 + 45 * 60,
+            TUE + 11 * 3600 + 5 * 60,
+        ];
+        let weeks: Vec<i64> = sweep.iter().map(|t| week_start(*t)).collect();
+        assert!(
+            weeks.iter().all(|w| *w == TUE_RESET),
+            "the whole sweep is this week's: {weeks:?}"
+        );
+        // And it is genuinely the new week, not the one that just ended.
+        assert_ne!(weeks[0], TUE_RESET - 7 * DAY);
     }
 
     /// The hours before the reset on reset day are the *end* of the old week,
