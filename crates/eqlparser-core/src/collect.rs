@@ -901,3 +901,408 @@ mod skill_tests {
         assert_eq!(c.rises, 4);
     }
 }
+
+/// What kind of thing a cartographer marker stands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerKind {
+    /// Something you can hail. Recorded from `You say, 'Hail, X'`.
+    Npc,
+    /// The boundary to somewhere else.
+    Zone,
+    /// A label for a place — anything else the player wrote.
+    Place,
+}
+
+/// One position somebody walked to and wrote down.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Marker {
+    pub name: String,
+    pub kind: MarkerKind,
+    /// What the player calls it — "Banker", "Ranger Guildmaster". The game
+    /// never states this; it is the whole reason for the convention.
+    pub role: String,
+    /// As `/who` reports it, which is the map you are standing on rather than
+    /// the place a zone-line label names.
+    pub zone: String,
+    pub zone_short: String,
+    /// **Map space, not `/loc` space.** See [`MarkerCollector`].
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// From a consider in the same block, when there was one.
+    pub level: Option<u32>,
+}
+
+/// Map markers, from a convention the player follows at the spot.
+///
+/// ```text
+/// You say, '--EQLCartographer--Ranger Guildmaster'
+/// You say, 'Hail, Megosh Thistlethorn'
+/// Your Location is -27.08, -440.14, -11.75
+/// Megosh Thistlethorn glowers at you dubiously -- ... (Lvl: 70)
+/// [50 WAR/DRU/BRD] Tharn (Ogre) ZONE: Rivervale (rivervale)
+/// ```
+///
+/// One block gives everything a marker needs and nothing is typed twice: what
+/// it is, where it stands, which zone's map that is, and often its level.
+///
+/// # `/loc` is not map space
+///
+/// The client prints `(worldX, worldY, z)` and a map file is in
+/// `(-worldY, -worldX, z)`, so a position is swapped and both values negated:
+///
+/// ```text
+/// map(x, y, z) = (-loc2, -loc1, loc3)
+/// ```
+///
+/// That rule is eqmaps' and was confirmed against the client rather than
+/// inferred — one marker per candidate transform, and exactly one lands on
+/// your own character arrow. Storing the raw numbers put 16 of 45 markers
+/// outside their zone's geometry, which is how it was noticed.
+///
+/// Worth repeating the warning that comes with it: **distance to the nearest
+/// map line is not a valid test.** It measures how densely a zone happens to
+/// be contoured, and a wrong transform can score better than the right one in
+/// a dense dungeon and then miss by 400 units in the next zone. Zone bounds
+/// are the test that holds, because a player cannot stand outside the
+/// geometry.
+///
+/// # The zone comes from `/who`, not from the label
+///
+/// Standing in the Southern Desert of Ro at the line to Innothule Swamp, the
+/// label reads `Zone Line: Innothule Swamp` and `/who` reads `ZONE: The
+/// Southern Desert of Ro (sro)`. The marker belongs on the map you are
+/// standing on.
+///
+/// That line is worth more than the markers, and is collected separately: a
+/// shortname is what a map file is called, a zone name is what a player calls
+/// the place, and nothing in the client states the pairing.
+#[derive(Debug, Clone, Default)]
+pub struct MarkerCollector {
+    markers: Vec<Marker>,
+    /// Zone name to shortname, learned from `/who`.
+    zones: BTreeMap<String, String>,
+    open: Option<Open>,
+    /// Blocks that never carried a `Your Location`, and so are not markers.
+    pub blocks_without_a_position: u64,
+}
+
+#[derive(Debug, Clone)]
+struct Open {
+    role: String,
+    seen: usize,
+    name: Option<String>,
+    kind: MarkerKind,
+    loc: Option<(f64, f64, f64)>,
+    zone: String,
+    short: String,
+    level: Option<u32>,
+}
+
+/// The tag that opens a block. Its suffix is the role.
+const TAG: &str = "--EQLCartographer--";
+
+/// How many entries past the tag to read.
+///
+/// Nothing closes a block, so it runs to the next tag or this many entries,
+/// whichever comes first. Enough for every block on file, and it cannot run
+/// into the following marker — which is the failure that would matter, since
+/// it would put one creature's name on another's coordinates.
+const BLOCK_WINDOW: usize = 14;
+
+impl MarkerCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn markers(&self) -> &[Marker] {
+        &self.markers
+    }
+
+    /// Zone name to shortname pairs, which nothing in the client states.
+    pub fn zones(&self) -> &BTreeMap<String, String> {
+        &self.zones
+    }
+
+    /// One marker per name and spawn point, merged by distance.
+    ///
+    /// Offered rather than applied, because [`Self::markers`] is a list of
+    /// things somebody observed and this is a judgement about what they were
+    /// observations *of*. A caller that wants every visit can have it.
+    ///
+    /// Rounding to whole units was the first attempt and does not work: two
+    /// visits to Arias gave -186.84 and -186.41, which round apart and
+    /// survive as two markers a unit away from each other. What separates a
+    /// second visit from a second spawn point is distance, not equality.
+    ///
+    /// 15 units is a body's width or two. The model is one row per spawn
+    /// point and those are far apart where they exist — Befallen holds five
+    /// `a shadowknight` hundreds of units from each other — so the threshold
+    /// has a wide margin either side of it.
+    ///
+    /// Markers with no name or no zone shortname are left out: without either
+    /// there is nothing to merge on, and nothing to put on a map.
+    pub fn spawn_points(&self, near: f64) -> Vec<&Marker> {
+        let mut out: Vec<&Marker> = Vec::new();
+        for m in &self.markers {
+            if m.name.trim().is_empty() || m.zone_short.is_empty() {
+                continue;
+            }
+            let name = m.name.trim().to_lowercase();
+            let dup = out.iter().any(|o| {
+                o.name.trim().to_lowercase() == name
+                    && o.zone_short == m.zone_short
+                    && (o.x - m.x).powi(2) + (o.y - m.y).powi(2) <= near * near
+            });
+            if !dup {
+                out.push(m);
+            }
+        }
+        out
+    }
+
+    /// A block ended: keep it if it has a position, count it if not.
+    fn close(&mut self) {
+        let Some(o) = self.open.take() else { return };
+        let Some((x, y, z)) = o.loc else {
+            self.blocks_without_a_position += 1;
+            return;
+        };
+        self.markers.push(Marker {
+            name: o.name.unwrap_or_default(),
+            kind: o.kind,
+            role: o.role,
+            zone: o.zone,
+            zone_short: o.short,
+            x,
+            y,
+            z,
+            level: o.level,
+        });
+    }
+}
+
+/// `ZONE: The Southern Desert of Ro (sro)` — the name and the file it is in.
+///
+/// An instanced zone carries its instance number in the name: `ZONE: Befallen
+/// 10250 (befallen)`. That is which copy of the place you are standing in,
+/// not what the place is called, and keeping it files one marker under
+/// "Befallen 10250" and the next under "Befallen 23553" — two zones, neither
+/// of them real, and no pairing learned for the one that is.
+///
+/// Only a trailing run of three or more digits is taken as an instance
+/// number. A zone whose name genuinely ends in a number would need more than
+/// two digits to be caught by this, and none do.
+fn split_zone(raw: &str) -> (String, String) {
+    let t = raw.trim();
+    let (name, short) = match (t.rfind('('), t.rfind(')')) {
+        (Some(a), Some(b)) if b > a => (t[..a].trim(), t[a + 1..b].trim()),
+        _ => (t, ""),
+    };
+    let name = match name.rsplit_once(' ') {
+        Some((head, tail))
+            if tail.len() >= 3 && tail.chars().all(|c| c.is_ascii_digit()) && !head.is_empty() =>
+        {
+            head.trim()
+        }
+        _ => name,
+    };
+    (name.to_string(), short.to_string())
+}
+
+impl Observer for MarkerCollector {
+    fn name(&self) -> &'static str {
+        "markers"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+        // A tag closes whatever was open and opens the next, so two blocks
+        // can never merge however short the second one is.
+        if let Event::Chat { speaker, message, .. } = &entry.event {
+            if speaker.is_you() {
+                if let Some(role) = message.trim().strip_prefix(TAG) {
+                    self.close();
+                    self.open = Some(Open {
+                        role: role.trim().to_string(),
+                        seen: 0,
+                        name: None,
+                        kind: MarkerKind::Place,
+                        loc: None,
+                        zone: String::new(),
+                        short: String::new(),
+                        level: None,
+                    });
+                    return;
+                }
+            }
+        }
+
+        let Some(o) = &mut self.open else { return };
+        o.seen += 1;
+        if o.seen > BLOCK_WINDOW {
+            self.close();
+            return;
+        }
+
+        match &entry.event {
+            // The line after the tag names the thing.
+            Event::Chat { speaker, message, .. } if speaker.is_you() && o.name.is_none() => {
+                let text = message.trim();
+                if let Some(who) = text.strip_prefix("Hail, ") {
+                    o.name = Some(who.trim().to_string());
+                    o.kind = MarkerKind::Npc;
+                } else if text.to_lowercase().starts_with("zone line:") {
+                    o.name = Some(text.to_string());
+                    o.kind = MarkerKind::Zone;
+                } else {
+                    o.name = Some(text.to_string());
+                    o.kind = MarkerKind::Place;
+                }
+            }
+            // The only required part. Swapped and negated on the way in.
+            Event::Location { x, y, z } if o.loc.is_none() => {
+                o.loc = Some((-y, -x, *z));
+            }
+            // Which map this is. Any `/who` row in the block will do — the
+            // player is the only one standing where they are standing.
+            Event::WhoEntry { zone, .. } if o.short.is_empty() && !zone.is_empty() => {
+                let (name, short) = split_zone(zone);
+                if !short.is_empty() {
+                    self.zones.insert(name.clone(), short.clone());
+                }
+                o.zone = name;
+                o.short = short;
+            }
+            // A consider of the thing just named gives its level for free.
+            Event::Consider { name, level, .. } if o.level.is_none() => {
+                if let Some(want) = &o.name {
+                    let a = strip_article(name).to_lowercase();
+                    let b = strip_article(want).to_lowercase();
+                    if a == b {
+                        o.level = Some(*level);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(&mut self, _cx: &Context<'_>) {
+        // The last block in a file has no following tag to close it.
+        self.close();
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    fn markers(text: &str) -> MarkerCollector {
+        let mut c = MarkerCollector::new();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+        }
+        c
+    }
+
+    const BLOCK: &str = "\
+[Thu Aug 13 18:10:21 2026] You say, '--EQLCartographer--Banker'
+[Thu Aug 13 18:10:21 2026] You say, 'Hail, Andad Filla'
+[Thu Aug 13 18:10:21 2026] Your Location is -3044.26, 1211.09, -21.14
+[Thu Aug 13 18:10:22 2026] Andad Filla glowers at you dubiously -- looks kind of dangerous. (Lvl: 51)
+[Thu Aug 13 18:10:22 2026] [50 WAR/DRU/BRD] Tharn (Ogre) <Iron Lantern> ZONE: The Southern Desert of Ro (sro)  
+";
+
+    /// One block gives everything a marker needs.
+    #[test]
+    fn a_block_gives_a_whole_marker() {
+        let c = markers(BLOCK);
+        assert_eq!(c.markers().len(), 1);
+        let m = &c.markers()[0];
+        assert_eq!(m.name, "Andad Filla");
+        assert_eq!(m.kind, MarkerKind::Npc);
+        assert_eq!(m.role, "Banker");
+        assert_eq!(m.zone, "The Southern Desert of Ro");
+        assert_eq!(m.zone_short, "sro");
+        assert_eq!(m.level, Some(51));
+    }
+
+    /// `/loc` is not map space: swapped, and both values negated.
+    #[test]
+    fn a_position_is_converted_into_map_space() {
+        let c = markers(BLOCK);
+        let m = &c.markers()[0];
+        assert!((m.x - -1211.09).abs() < 1e-9, "{}", m.x);
+        assert!((m.y - 3044.26).abs() < 1e-9, "{}", m.y);
+        assert!((m.z - -21.14).abs() < 1e-9, "{}", m.z);
+    }
+
+    /// The pairing `/who` states for free is worth more than the marker.
+    #[test]
+    fn a_who_line_teaches_a_zone_its_shortname() {
+        let c = markers(BLOCK);
+        assert_eq!(c.zones()["The Southern Desert of Ro"], "sro");
+    }
+
+    /// An instance number is which copy you are in, not what the place is.
+    #[test]
+    fn an_instance_number_is_not_part_of_the_zone_name() {
+        assert_eq!(
+            split_zone("Befallen 10250 (befallen)"),
+            ("Befallen".to_string(), "befallen".to_string())
+        );
+        assert_eq!(
+            split_zone("The Southern Desert of Ro (sro)"),
+            ("The Southern Desert of Ro".to_string(), "sro".to_string())
+        );
+        // Two digits is not an instance number, and a bare number is not a
+        // zone with one stripped off.
+        assert_eq!(split_zone("Guk 42 (guktop)").0, "Guk 42");
+        assert_eq!(split_zone("1234 (x)").0, "1234");
+    }
+
+    /// A tag closes the block before it, so two markers never merge.
+    ///
+    /// The failure that would matter: it would put one creature's name on
+    /// another's coordinates.
+    #[test]
+    fn a_new_tag_closes_the_block_before_it() {
+        let mut text = String::from(BLOCK);
+        text.push_str(
+            "[Thu Aug 13 18:11:10 2026] You say, '--EQLCartographer--'\n\
+             [Thu Aug 13 18:11:10 2026] You say, 'Zone Line: Innothule Swamp'\n\
+             [Thu Aug 13 18:11:10 2026] Your Location is -3125.36, 1073.25, -21.12\n",
+        );
+        let c = markers(&text);
+        assert_eq!(c.markers().len(), 2);
+        assert_eq!(c.markers()[0].name, "Andad Filla");
+        assert_eq!(c.markers()[1].kind, MarkerKind::Zone);
+        assert_eq!(c.markers()[1].name, "Zone Line: Innothule Swamp");
+    }
+
+    /// A block with no position is not a marker.
+    #[test]
+    fn a_block_without_a_location_is_counted_not_kept() {
+        let c = markers(
+            "[Thu Aug 13 18:10:21 2026] You say, '--EQLCartographer--Banker'\n\
+             [Thu Aug 13 18:10:21 2026] You say, 'Hail, Andad Filla'\n",
+        );
+        assert!(c.markers().is_empty());
+        assert_eq!(c.blocks_without_a_position, 1);
+    }
+
+    /// Two visits to one spot are one spawn point, and rounding cannot say so.
+    #[test]
+    fn two_visits_to_one_spot_fold_into_one() {
+        let mut text = String::from(BLOCK);
+        // -186.84 and -186.41 round to -187 and -186 and would survive as two.
+        text.push_str(&BLOCK.replace("-3044.26, 1211.09", "-3044.69, 1211.52"));
+        let c = markers(&text);
+        assert_eq!(c.markers().len(), 2, "both visits are kept as observations");
+        assert_eq!(c.spawn_points(15.0).len(), 1, "and are one spawn point");
+    }
+}
