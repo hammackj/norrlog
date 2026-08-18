@@ -35,7 +35,8 @@
 
 use std::io::BufRead;
 
-use crate::event::{Event, LogEntry};
+use crate::encounter::{Encounter, EncounterTracker};
+use crate::event::{Actor, Event, LogEntry};
 use crate::game::Game;
 use crate::parser::Parser;
 
@@ -57,6 +58,39 @@ pub struct Context<'a> {
     /// is — that threshold differs between a live view and a rebuild, so it
     /// belongs to the observer.
     pub gap: Option<i64>,
+    /// The fight open right now, as it stood *before* this entry.
+    ///
+    /// Four collectors need the same question answered — drops, the
+    /// bestiary, the Sky chain and the task list all ask whether a death
+    /// counts as yours — and the answer is not in the death line. The game
+    /// credits the final hit to whoever landed it, which for a charming class
+    /// is routinely your own charmed pet:
+    ///
+    /// ```text
+    /// Innoruuk, the Prince of Hate has been slain by Innoruuk`s Chosen!
+    /// ```
+    ///
+    /// So credit follows participation, and participation is encounter state.
+    /// Keeping it here rather than in each collector is the difference
+    /// between one encounter tracker and four — and four would not merely be
+    /// wasteful, they would be four chances to disagree about when a fight
+    /// began.
+    ///
+    /// Use [`Context::fought`] rather than reading this directly.
+    pub encounter: Option<&'a Encounter>,
+}
+
+impl Context<'_> {
+    /// Whether you took part in killing this, by the game's own standard.
+    ///
+    /// True when you damaged it during the fight that is open. Deliberately
+    /// not "did you land the killing blow": requiring that silently discards
+    /// every kill a charmed pet finished, which on a bard is most of them.
+    pub fn fought(&self, victim: &Actor) -> bool {
+        self.encounter
+            .and_then(|e| e.actors.get(&victim.key()))
+            .is_some_and(|s| s.damaged_by_you)
+    }
 }
 
 /// Something that wants to see a log go past.
@@ -88,6 +122,7 @@ pub struct Feed {
     game: Game,
     zone: Option<String>,
     last: Option<i64>,
+    encounters: EncounterTracker,
 }
 
 impl Feed {
@@ -95,6 +130,7 @@ impl Feed {
         let player = player.into();
         Self {
             parser: Parser::new(player.clone()),
+            encounters: EncounterTracker::new(&player),
             player,
             game,
             zone: None,
@@ -154,6 +190,7 @@ impl Feed {
             game: self.game,
             zone: self.zone.as_deref(),
             gap: None,
+            encounter: self.encounters.current(),
         }
     }
 
@@ -165,15 +202,22 @@ impl Feed {
         if let Event::ZoneChange { zone } = &entry.event {
             self.zone = Some(zone.clone());
         }
-        let cx = Context {
-            player: &self.player,
-            game: self.game,
-            zone: self.zone.as_deref(),
-            gap,
-        };
-        for o in to.iter_mut() {
-            o.on_entry(entry, &cx);
+        {
+            let cx = Context {
+                player: &self.player,
+                game: self.game,
+                zone: self.zone.as_deref(),
+                gap,
+                // Before the push: a death has to be judged against the fight
+                // as it stood when the line was written. Push first and the
+                // fight closes and the answer becomes no.
+                encounter: self.encounters.current(),
+            };
+            for o in to.iter_mut() {
+                o.on_entry(entry, &cx);
+            }
         }
+        self.encounters.push(entry);
     }
 }
 

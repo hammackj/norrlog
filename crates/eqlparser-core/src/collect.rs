@@ -1341,7 +1341,6 @@ mod marker_tests {
 /// and its partial damage is a floor for nothing.
 pub struct CombatCollector {
     player: String,
-    encounters: crate::encounter::EncounterTracker,
     drops: crate::drops::DropTracker,
     bestiary: crate::bestiary::Bestiary,
 }
@@ -1350,7 +1349,6 @@ impl CombatCollector {
     pub fn new(player: &str, game: crate::game::Game) -> Self {
         Self {
             player: player.to_string(),
-            encounters: crate::encounter::EncounterTracker::new(player),
             drops: crate::drops::DropTracker::new(game),
             bestiary: crate::bestiary::Bestiary::new(game, player),
         }
@@ -1370,7 +1368,7 @@ impl Observer for CombatCollector {
         "combat"
     }
 
-    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+    fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
         use crate::bestiary::Swing;
 
         match &entry.event {
@@ -1409,7 +1407,7 @@ impl Observer for CombatCollector {
                             item,
                             *quantity,
                             npc,
-                            self.encounters.current_zone(),
+                            cx.zone,
                         );
                     }
                 }
@@ -1424,14 +1422,8 @@ impl Observer for CombatCollector {
                     if let Some(Actor::Named(k)) = killer {
                         self.bestiary.on_your_death(entry.timestamp, k);
                     }
-                } else {
-                    // Judged before the push. See the type docs.
-                    let fought_it = self
-                        .encounters
-                        .current()
-                        .and_then(|e| e.actors.get(&victim.key()))
-                        .is_some_and(|s| s.damaged_by_you);
-                    if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
+                } else if killer.as_ref().is_some_and(|k| k.is_you()) || cx.fought(victim) {
+                    {
                         let name = victim.display(&self.player);
                         self.drops.on_kill(&name);
                         self.bestiary.on_kill(entry.timestamp, &name);
@@ -1440,10 +1432,6 @@ impl Observer for CombatCollector {
             }
             _ => {}
         }
-
-        // Last, always. The encounter has to see every entry, and the death
-        // above has to be judged against the fight as it stood before it.
-        self.encounters.push(entry);
     }
 }
 
