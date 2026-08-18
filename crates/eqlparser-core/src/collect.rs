@@ -702,3 +702,202 @@ mod faction_capped_tests {
         );
     }
 }
+
+/// One player character named by `/who`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Player {
+    pub name: String,
+    /// 0 when not stated, which is what `[ANONYMOUS]` means.
+    pub level: u32,
+    /// Empty when not stated.
+    pub classes: Vec<String>,
+    pub race: String,
+}
+
+/// The roster of player characters a log has seen.
+///
+/// Its job is to keep people out of the bestiary. A melee line does not know
+/// what it is looking at — somebody swinging a sword next to you produces
+/// exactly the shape a monster does — so a groupmate who dies leaves the same
+/// evidence a creature does, and the only reliable way to tell them apart is
+/// that somebody ran `/who` and the client named them as a player.
+///
+/// Anonymous entries count. Somebody hiding their level is exactly as much a
+/// person as somebody who is not, and it is personhood the roster is for.
+#[derive(Debug, Clone, Default)]
+pub struct PlayerCollector {
+    seen: BTreeMap<String, Player>,
+    pub rows: u64,
+    pub anonymous_rows: u64,
+}
+
+impl PlayerCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Keyed on the name as printed.
+    pub fn seen(&self) -> &BTreeMap<String, Player> {
+        &self.seen
+    }
+}
+
+impl Observer for PlayerCollector {
+    fn name(&self) -> &'static str {
+        "players"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+        let Event::WhoEntry { level, classes, name, race, .. } = &entry.event else {
+            return;
+        };
+        if name.is_empty() {
+            return;
+        }
+        self.rows += 1;
+        if *level == 0 && classes.is_empty() {
+            // Anonymous: it names a player and says nothing else. It must not
+            // overwrite a fuller reading of the same person taken earlier.
+            self.anonymous_rows += 1;
+            self.seen.entry(name.clone()).or_insert_with(|| Player {
+                name: name.clone(),
+                ..Default::default()
+            });
+            return;
+        }
+        // Last reading wins: a character levels, and the newest row is the
+        // truest.
+        self.seen.insert(
+            name.clone(),
+            Player {
+                name: name.clone(),
+                level: *level,
+                classes: classes.split('/').map(str::to_string).collect(),
+                race: race.clone(),
+            },
+        );
+    }
+}
+
+/// The highest value seen for each skill.
+///
+/// `You have become better at Baking! (21)` is the client stating a number it
+/// otherwise only shows in a window. The highest is kept because a skill only
+/// goes up: a lower reading is an older one, not a disagreement.
+#[derive(Debug, Clone, Default)]
+pub struct SkillCollector {
+    best: BTreeMap<String, u32>,
+    pub rises: u64,
+}
+
+impl SkillCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn best(&self) -> &BTreeMap<String, u32> {
+        &self.best
+    }
+}
+
+impl Observer for SkillCollector {
+    fn name(&self) -> &'static str {
+        "skills"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+        if let Event::SkillUp { skill, value } = &entry.event {
+            let skill = skill.trim();
+            if skill.is_empty() {
+                return;
+            }
+            self.rises += 1;
+            let cur = self.best.entry(skill.to_string()).or_default();
+            *cur = (*cur).max(*value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    fn players(text: &str) -> PlayerCollector {
+        let mut c = PlayerCollector::new();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+        }
+        c
+    }
+
+    /// The ordinary line, with everything stated.
+    #[test]
+    fn a_who_line_names_a_player() {
+        let c = players("[Tue Jul 28 18:26:30 2026] [5 MNK/MAG] Firooz (Iksar)  ZONE: Befallen (befallen)  \n");
+        let p = &c.seen()["Firooz"];
+        assert_eq!(p.level, 5);
+        assert_eq!(p.classes, vec!["MNK", "MAG"]);
+        assert_eq!(p.race, "Iksar");
+    }
+
+    /// Anonymous still names a player, which is the fact the roster is for.
+    #[test]
+    fn an_anonymous_entry_is_still_a_person() {
+        let c = players("[Tue Jul 28 18:26:30 2026] [ANONYMOUS] Sneaky\n");
+        assert!(c.seen().contains_key("Sneaky"));
+        assert_eq!(c.seen()["Sneaky"].level, 0, "not stated, not level zero");
+        assert_eq!(c.anonymous_rows, 1);
+    }
+
+    /// And it must not erase what a fuller reading already established.
+    #[test]
+    fn anonymity_does_not_overwrite_a_known_level() {
+        let c = players(
+            "[Tue Jul 28 18:26:30 2026] [42 SHM] Sneaky (Ogre)\n\
+             [Tue Jul 28 19:26:30 2026] [ANONYMOUS] Sneaky\n",
+        );
+        assert_eq!(c.seen()["Sneaky"].level, 42);
+    }
+
+    /// A character levels, so the newest full reading wins.
+    #[test]
+    fn the_latest_reading_wins() {
+        let c = players(
+            "[Tue Jul 28 18:26:30 2026] [5 SHM] Serene (Ogre)\n\
+             [Tue Jul 28 19:26:30 2026] [10 SHM/WIZ] Serene (Ogre)\n",
+        );
+        assert_eq!(c.seen()["Serene"].level, 10);
+        assert_eq!(c.seen()["Serene"].classes, vec!["SHM", "WIZ"]);
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    /// A skill only goes up, so a lower reading is older rather than wrong.
+    #[test]
+    fn the_highest_reading_is_kept_whatever_order_they_arrive_in() {
+        let mut c = SkillCollector::new();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        let text = "\
+[Tue Jul 28 15:03:13 2026] You have become better at Baking! (21)
+[Tue Jul 28 15:04:13 2026] You have become better at Baking! (35)
+[Tue Jul 28 15:05:13 2026] You have become better at Baking! (30)
+[Tue Jul 28 15:06:13 2026] You have become better at Brewing! (12)
+";
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+        }
+        assert_eq!(c.best()["Baking"], 35);
+        assert_eq!(c.best()["Brewing"], 12);
+        assert_eq!(c.rises, 4);
+    }
+}

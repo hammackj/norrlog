@@ -64,6 +64,7 @@ enum RuleId {
     GroupLeft,
     LevelUp,
     WhoEntry,
+    WhoAnonymous,
     AbilityPointsGained,
     AbilityFirstRank,
     AbilityPointsSpent,
@@ -642,7 +643,18 @@ static RULES: &[(RuleId, &str)] = &[
     // brackets nor, in some client versions, the trailing zone.
     (
         RuleId::WhoEntry,
-        r"^\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z]+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+        r"^(?:AFK +)?\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z`']+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+    ),
+    // "[ANONYMOUS] Sneaky" — level, class and race withheld, name still
+    // given. Still a WhoEntry, because the fact that matters is that this
+    // name belongs to a player: the roster exists to keep people out of the
+    // bestiary, and somebody hiding their level is exactly as much a person
+    // as somebody who is not. Level 0 is "not stated", as it is elsewhere.
+    //
+    // Two of these in a 151 MB log, and both were lost.
+    (
+        RuleId::WhoAnonymous,
+        r"^(?:AFK +)?\[ANONYMOUS\] (?P<name>[A-Za-z`']+)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
     ),
     // ---- Abilities / items --------------------------------------------------
     // "You can use the ability Rampage again in 8 minute(s) 54 seconds."
@@ -1124,6 +1136,14 @@ impl Parser {
                 RuleId::GroupLeft => Event::GroupChange {
                     who: self.actor(g("who").unwrap_or_default()),
                     joined: false,
+                },
+                RuleId::WhoAnonymous => Event::WhoEntry {
+                    level: 0,
+                    classes: String::new(),
+                    name: g("name").unwrap_or_default().to_string(),
+                    race: String::new(),
+                    guild: g("guild").unwrap_or_default().to_string(),
+                    zone: g("zone").unwrap_or_default().to_string(),
                 },
                 RuleId::WhoEntry => Event::WhoEntry {
                     level: num("level") as u32,

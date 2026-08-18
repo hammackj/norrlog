@@ -32,7 +32,10 @@ pub mod tradeskill;
 pub mod zone;
 
 pub use class::{Class, ClassDetector, ClassScore};
-pub use collect::{ConsiderCollector, Considered};
+pub use collect::{
+    ConsiderCollector, Considered, FactionCause, FactionCollector, FactionMoves, Player,
+    PlayerCollector, SkillCollector,
+};
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
 pub use event::{
     Actor, Coin, DamageKind, Event, Flags, LogEntry, LootDisposition, SpellbookChangeKind,
