@@ -46,6 +46,7 @@ enum RuleId {
     LootPlain,
     CoinFromCorpse,
     MerchantSale,
+    ZoneRuleNotice,
     ZoneEntered,
     CastStartYou,
     SingStartYou,
@@ -330,6 +331,19 @@ static RULES: &[(RuleId, &str)] = &[
         r"^You receive (?P<coin>.+?) from (?P<merchant>.+?) for the (?P<item>.+?)\.$",
     ),
     // ---- World / progression ------------------------------------------------
+    // The client reuses this sentence for rule announcements that are not
+    // places: "You have entered an area where Bind Affinity is allowed."
+    // Taking one as a zone files kills under somewhere that does not exist
+    // and splits the real zone's tally in two.
+    //
+    // Caught by an earlier rule rather than by a negative lookahead, which
+    // this regex engine does not have, and rather than by every reader
+    // filtering the zone name in turn — which is what they were all doing.
+    // Rule order is precedence, so this wins.
+    (
+        RuleId::ZoneRuleNotice,
+        r"^You have entered an? (?:area|zone) [^.]*\.$",
+    ),
     (RuleId::ZoneEntered, r"^You have entered (?P<zone>.+?)\.$"),
     (
         RuleId::CastStartYou,
@@ -1272,7 +1286,9 @@ impl Parser {
                     actor: self.actor(g("actor").unwrap_or_default()),
                     text: g("text").unwrap_or_default().to_string(),
                 },
-                RuleId::SystemAutoAttack | RuleId::SystemMessage => Event::System {
+                RuleId::ZoneRuleNotice
+                | RuleId::SystemAutoAttack
+                | RuleId::SystemMessage => Event::System {
                     text: body.to_string(),
                 },
             };
@@ -2474,5 +2490,49 @@ mod consider_tests {
         let e = ev("A woodland lion sneers at you contemptuously -- \
                     looks kind of dangerous. (Lvl: 12)");
         assert_eq!(e, Event::Unknown, "{e:?}");
+    }
+}
+
+#[cfg(test)]
+mod zone_notice_tests {
+    use super::*;
+    use crate::event::Event;
+
+    fn ev(body: &str) -> Event {
+        Parser::new("Tharn").parse_body(body)
+    }
+
+    /// A place is a place.
+    #[test]
+    fn entering_a_zone_is_a_zone_change() {
+        match ev("You have entered The Oasis of Marr.") {
+            Event::ZoneChange { zone } => assert_eq!(zone, "The Oasis of Marr"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// And a rule announcement is not, however much it reads like one.
+    ///
+    /// Two of these are in the log. Read as zones they file kills under a
+    /// place that does not exist, and split the real zone's tally in two.
+    #[test]
+    fn entering_an_area_rule_is_not_a_place() {
+        for line in [
+            "You have entered an area where Bind Affinity is allowed.",
+            "You have entered an area where levitation effects do not function.",
+        ] {
+            assert!(
+                matches!(ev(line), Event::System { .. }),
+                "{line} became {:?}",
+                ev(line)
+            );
+        }
+    }
+
+    /// A zone whose own name starts with "area" would still be one, but none
+    /// do; the guard is deliberately narrow to the client's two sentences.
+    #[test]
+    fn the_guard_does_not_swallow_an_ordinary_name() {
+        assert!(matches!(ev("You have entered Areana.") , Event::ZoneChange { .. }));
     }
 }
