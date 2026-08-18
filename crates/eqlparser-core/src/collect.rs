@@ -1665,6 +1665,42 @@ impl Observer for QuestCollector {
 /// distinction rather than presenting a partial tally as a complete one.
 pub struct AaCollector {
     exp: crate::experience::ExpTracker,
+    ladder: Vec<AaStep>,
+    running: BTreeMap<String, u32>,
+}
+
+/// One rung of an ability's ladder, as the log stated it.
+///
+/// [`crate::experience::ExpTracker`] folds every purchase of an ability into
+/// one row holding the rank reached and the total paid, which is what a
+/// character sheet wants. It is not what a *price list* wants: the cost of
+/// going from rank 2 to rank 3 is only visible in the difference between two
+/// rungs, and the fold throws the earlier ones away.
+///
+/// The parser's history database happened to keep them, because its rows are
+/// keyed on the rank and it never forgets — so parsing the same log on four
+/// different evenings left four rows and the prices could be read off them.
+/// That is accumulation standing in for evidence, and it stops working the
+/// moment a log is read once. The log itself states every purchase:
+///
+/// ```text
+/// You have improved Circular Breathing 3 at a cost of 4 ability points.
+/// ```
+///
+/// so the ladder is recoverable in one pass, which is what this is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AaStep {
+    /// Folded, so a toggle's two halves are one ability.
+    pub ability: String,
+    /// The client's ladder position, which for a toggle counts two rungs per
+    /// rank — see [`AaCollector`].
+    pub client_rank: u32,
+    /// Points paid for this rung alone.
+    pub cost: u32,
+    /// Points paid for this ability up to and including this rung, which is
+    /// what the history database's `spent` column holds.
+    pub spent_so_far: u32,
+    pub at: i64,
 }
 
 impl Default for AaCollector {
@@ -1677,7 +1713,14 @@ impl AaCollector {
     pub fn new() -> Self {
         Self {
             exp: crate::experience::ExpTracker::default(),
+            ladder: Vec::new(),
+            running: BTreeMap::new(),
         }
+    }
+
+    /// Every rung the log stated, in the order it stated them.
+    pub fn ladder(&self) -> &[AaStep] {
+        &self.ladder
     }
 
     pub fn purchases(&self) -> Vec<crate::experience::AaPurchase> {
@@ -1708,6 +1751,22 @@ impl Observer for AaCollector {
                 self.exp.on_ability_points(entry.timestamp, *points, *unspent)
             }
             Event::AbilityPointsSpent { ability, rank, cost } => {
+                // Folded to the one ability the player bought, the same way
+                // the tracker folds it, so a toggle's two halves do not read
+                // as two ladders.
+                let name = match crate::aa::toggle_parts(ability) {
+                    Some((base, _)) => base.to_string(),
+                    None => ability.to_string(),
+                };
+                let run = self.running.entry(name.to_lowercase()).or_insert(0);
+                *run += *cost;
+                self.ladder.push(AaStep {
+                    ability: name,
+                    client_rank: *rank,
+                    cost: *cost,
+                    spent_so_far: *run,
+                    at: entry.timestamp,
+                });
                 self.exp.on_ability_spent(entry.timestamp, ability, *rank, *cost)
             }
             _ => {}
