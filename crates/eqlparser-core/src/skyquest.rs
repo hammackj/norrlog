@@ -601,21 +601,11 @@ fn island_of(source: &str) -> Option<&'static str> {
 /// `+1` Amethyst Amulet and a `+2` Silvery Ring were both accepted by their
 /// givers — so a graded drop counts in full toward the quest that wants it.
 ///
-/// Only a trailing `+` followed by digits is stripped. Nothing else in the
-/// name is touched, so items that merely contain a `+` keep it.
+/// The rule itself lives in [`crate::drops::canonical_item`], next to the
+/// article-stripping its NPC counterpart does; a second copy here would be a
+/// second thing to keep true.
 fn item_key(name: &str) -> String {
-    let n = name.trim();
-    let base = match n.rsplit_once('+') {
-        Some((head, grade))
-            if !head.is_empty()
-                && !grade.is_empty()
-                && grade.bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            head.trim_end()
-        }
-        _ => n,
-    };
-    base.to_lowercase()
+    crate::drops::canonical_item(name).to_lowercase()
 }
 
 /// Pull `[bracketed keywords]` out of a giver's line.

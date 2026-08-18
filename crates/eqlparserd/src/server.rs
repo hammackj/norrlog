@@ -664,6 +664,11 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                         zones,
                         looted,
                         quantity,
+                        // The stored table never recorded which grades were
+                        // seen, only the counts, so history cannot supply a
+                        // breakdown. Empty says that; a fabricated all-grade-0
+                        // row would claim every historical drop was ungraded.
+                        grades: Vec::new(),
                         first_seen,
                         last_seen,
                     };

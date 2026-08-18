@@ -16,6 +16,18 @@
 //!   is therefore a floor on the drop rate, never the rate itself.
 //! * Only kills you were part of are counted at all.
 //!
+//! # Grades
+//!
+//! Drops arrive graded — `Woven Skull Cap +1`, `Silvery Ring +2` — and the
+//! grade is a bonus rolled onto the same item, not a different item. Around a
+//! third of looted lines carry one, so filing them apart splits a single drop
+//! into a row per grade and divides its sighting count between them.
+//!
+//! The item is therefore keyed on its ungraded name, and the grades seen are
+//! kept alongside the count rather than thrown away: which grades a creature
+//! has been seen dropping is worth knowing, and folding them into one row is
+//! what makes the count answer "how often does this drop at all".
+//!
 //! So this keeps the two numbers side by side — times looted, and kills seen —
 //! and computes no rate from them. A consumer that wants one can divide, and
 //! must say what it is dividing.
@@ -49,6 +61,9 @@ pub struct DropSighting {
     /// here: corpses you never looted are counted as kills, so any rate
     /// derived from this is a floor.
     pub kills: u64,
+    /// Grades seen on this drop, as (grade, times), lowest first. Grade 0 is
+    /// an ungraded drop. Sums to `looted`.
+    pub grades: Vec<(u32, u64)>,
     pub first_seen: i64,
     pub last_seen: i64,
 }
@@ -64,6 +79,8 @@ pub struct ItemDrops {
     /// Times looted, across every source.
     pub looted: u64,
     pub quantity: u64,
+    /// Grades seen across every source, as (grade, times), lowest first.
+    pub grades: Vec<(u32, u64)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -81,6 +98,7 @@ struct Sighting {
     zones: std::collections::BTreeSet<String>,
     looted: u64,
     quantity: u64,
+    grades: std::collections::BTreeMap<u32, u64>,
     first_seen: i64,
     last_seen: i64,
 }
@@ -89,9 +107,9 @@ struct Sighting {
 #[derive(Debug, Default)]
 pub struct DropTracker {
     game: Game,
-    /// item key -> npc key -> sighting.
+    /// ungraded item key -> npc key -> sighting.
     items: HashMap<String, HashMap<String, Sighting>>,
-    /// Display name per item key, as the client last wrote it.
+    /// Display name per item key, ungraded, as the client last wrote it.
     names: HashMap<String, String>,
     /// npc key -> (display name, kills seen).
     kills: HashMap<String, (String, u64)>,
@@ -106,6 +124,37 @@ pub fn canonical_npc(name: &str) -> &str {
         }
     }
     n
+}
+
+/// Split an item name into its base name and the `+N` grade rolled onto it.
+///
+/// Returns the name unchanged with no grade when there is none. Only a
+/// trailing `+` followed by digits counts, so a name that merely contains a
+/// `+` keeps it whole.
+///
+/// The grade is a bonus on the same item — a `+1` Amethyst Amulet is accepted
+/// by the NPC that wants an Amethyst Amulet — so it identifies a roll, never
+/// an item.
+pub fn split_grade(name: &str) -> (&str, Option<u32>) {
+    let n = name.trim();
+    if let Some((head, grade)) = n.rsplit_once('+') {
+        let head = head.trim_end();
+        if !head.is_empty() {
+            if let Ok(g) = grade.parse::<u32>() {
+                return (head, Some(g));
+            }
+        }
+    }
+    (n, None)
+}
+
+/// An item's name with any `+N` grade removed — its identity, as opposed to
+/// the particular roll that dropped.
+///
+/// The counterpart to [`canonical_npc`]: both strip something the client
+/// writes that is not part of what the thing *is*.
+pub fn canonical_item(name: &str) -> &str {
+    split_grade(name).0
 }
 
 impl DropTracker {
@@ -137,8 +186,12 @@ impl DropTracker {
         if item.is_empty() || npc.is_empty() {
             return;
         }
-        let item_key = item.to_lowercase();
-        self.names.insert(item_key.clone(), item.to_string());
+        // Keyed on the ungraded name so every grade of an item is one row,
+        // and the display name follows suit — a table headed "Woven Skull Cap
+        // +1" would name one roll as though it were the item.
+        let (base, grade) = split_grade(item);
+        let item_key = base.to_lowercase();
+        self.names.insert(item_key.clone(), base.to_string());
 
         let e = self
             .items
@@ -151,6 +204,7 @@ impl DropTracker {
                 ..Default::default()
             });
         e.looted += 1;
+        *e.grades.entry(grade.unwrap_or(0)).or_insert(0) += 1;
         // A stacked drop is one sighting of several items, and both numbers
         // matter: how often it drops, and how much of it.
         e.quantity += quantity.max(1);
@@ -188,6 +242,7 @@ impl DropTracker {
                         looted: s.looted,
                         quantity: s.quantity,
                         kills: self.kills.get(npc_key).map(|(_, n)| *n).unwrap_or(0),
+                        grades: s.grades.iter().map(|(g, n)| (*g, *n)).collect(),
                         first_seen: s.first_seen,
                         last_seen: s.last_seen,
                     })
@@ -198,6 +253,14 @@ impl DropTracker {
                     game: self.game,
                     looted: sources.iter().map(|s| s.looted).sum(),
                     quantity: sources.iter().map(|s| s.quantity).sum(),
+                    grades: {
+                        let mut all: std::collections::BTreeMap<u32, u64> =
+                            std::collections::BTreeMap::new();
+                        for (g, n) in sources.iter().flat_map(|s| s.grades.iter()) {
+                            *all.entry(*g).or_insert(0) += n;
+                        }
+                        all.into_iter().collect()
+                    },
                     sources,
                 }
             })
@@ -264,6 +327,50 @@ mod tests {
             "both zones kept"
         );
         assert_eq!((ore.sources[0].first_seen, ore.sources[0].last_seen), (100, 200));
+    }
+
+    /// A grade is a roll on an item, not another item — filing them apart
+    /// splits one drop into a row per grade and divides its count.
+    #[test]
+    fn grades_of_an_item_are_one_drop() {
+        let mut t = DropTracker::new(Game::EverQuestLegends);
+        t.on_drop(100, "Woven Skull Cap +1", 1, "Keeper of Souls", None);
+        t.on_drop(200, "Woven Skull Cap", 1, "Keeper of Souls", None);
+        t.on_drop(300, "Woven Skull Cap +1", 1, "Keeper of Souls", None);
+        t.on_drop(400, "Woven Skull Cap +2", 1, "a pegasus", None);
+
+        let r = t.report();
+        assert_eq!(r.items.len(), 1, "one item, not three: {:?}", r.items);
+        let cap = &r.items[0];
+        assert_eq!(cap.item, "Woven Skull Cap", "named for the item, not a roll");
+        assert_eq!(cap.looted, 4);
+        // Nothing is lost by folding: the grades are still on the record.
+        assert_eq!(cap.grades, vec![(0, 1), (1, 2), (2, 1)]);
+        assert_eq!(cap.sources.len(), 2);
+        let kos = cap.sources.iter().find(|s| s.npc == "Keeper of Souls").unwrap();
+        assert_eq!(kos.looted, 3);
+        assert_eq!(kos.grades, vec![(0, 1), (1, 2)], "per creature, too");
+        assert_eq!((kos.first_seen, kos.last_seen), (100, 300));
+    }
+
+    /// An item only ever seen graded still has to be findable by its name.
+    #[test]
+    fn an_item_never_seen_ungraded_is_still_the_item() {
+        let mut t = DropTracker::new(Game::EverQuestLegends);
+        t.on_drop(100, "Grey Damask Cloak +1", 1, "Gorgalosk", None);
+        assert_eq!(t.sources_for("Grey Damask Cloak").len(), 1);
+        assert_eq!(t.report().items[0].grades, vec![(1, 1)]);
+    }
+
+    /// Only a trailing grade is a grade; a `+` in the name is part of it.
+    #[test]
+    fn a_plus_elsewhere_in_a_name_is_not_a_grade() {
+        assert_eq!(split_grade("Woven Skull Cap +1"), ("Woven Skull Cap", Some(1)));
+        assert_eq!(split_grade("Woven Skull Cap+12"), ("Woven Skull Cap", Some(12)));
+        assert_eq!(split_grade("Woven Skull Cap"), ("Woven Skull Cap", None));
+        assert_eq!(split_grade("Wand of +Swords"), ("Wand of +Swords", None));
+        assert_eq!(split_grade("+1"), ("+1", None));
+        assert_eq!(canonical_item("Silvery Ring +2"), "Silvery Ring");
     }
 
     /// Kills are the denominator, and are counted whether or not the corpse

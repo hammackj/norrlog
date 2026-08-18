@@ -1048,7 +1048,7 @@ impl Store {
              FROM item_drops GROUP BY game, lower(item), lower(npc)
              ORDER BY SUM(looted) DESC",
         )?;
-        let rows = stmt
+        let rows: Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)> = stmt
             .query_map([], |r| {
                 let zones: Option<String> = r.get(3)?;
                 let mut zones: Vec<String> = zones
@@ -1071,7 +1071,37 @@ impl Store {
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+
+        // Drops are keyed on the ungraded name now, but rows written before
+        // that are still on file under "Woven Skull Cap +1" and SQL groups
+        // them apart. Folding on the way out as well as on the way in means
+        // the history reads correctly without rewriting it: every stored
+        // observation stays exactly as it was recorded.
+        let mut folded: std::collections::HashMap<(String, String, String), usize> =
+            std::collections::HashMap::new();
+        let mut out: Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)> = Vec::new();
+        for (game, item, npc, zones, looted, quantity, first, last) in rows {
+            let base = eqlparser_core::drops::canonical_item(&item).to_string();
+            let key = (game.clone(), base.to_lowercase(), npc.to_lowercase());
+            match folded.get(&key) {
+                Some(&idx) => {
+                    let e = &mut out[idx];
+                    e.3.extend(zones);
+                    e.3.sort();
+                    e.3.dedup();
+                    e.4 += looted;
+                    e.5 += quantity;
+                    e.6 = e.6.min(first);
+                    e.7 = e.7.max(last);
+                }
+                None => {
+                    folded.insert(key, out.len());
+                    out.push((game, base, npc, zones, looted, quantity, first, last));
+                }
+            }
+        }
+        out.sort_by(|a, b| b.4.cmp(&a.4).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        Ok(out)
     }
 
     /// What level to assume for a log that has not said yet.
