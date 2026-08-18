@@ -1634,3 +1634,83 @@ impl Observer for QuestCollector {
         }
     }
 }
+
+/// Alternate advancement: what was bought, and what it cost.
+///
+/// The log states a purchase outright — the ability, the rank reached and the
+/// points paid — which makes this the one place a *price* can be observed
+/// rather than read out of a catalogue.
+///
+/// # Two ranks, and they are not interchangeable
+///
+/// A toggle AA is one ability the client walks up two interleaved ladders —
+/// Symphonic Aura buys at "Disabled" 3, 5, 7, 9 for three points each and
+/// hands back "Enabled" 2, 4, 6, 8, 10 for nothing. So the client's ladder
+/// position reaches 10 where the player has five ranks.
+///
+/// [`AaPurchase`] keeps both. `rank` is what the player has and `client_rank`
+/// is where the client counts them, and which one a consumer wants depends on
+/// what it is lining the number up against: a price list numbered the way the
+/// client numbers it needs `client_rank`, and anything describing the
+/// character needs `rank`. Reading the wrong one lands every observation on
+/// the wrong rung.
+///
+/// [`AaPurchase`]: crate::experience::AaPurchase
+///
+/// # A floor, not a total
+///
+/// It only sees purchases made while a log was running. A character who
+/// bought half their abilities before anybody started logging shows those
+/// ranks as unlogged, and [`crate::experience::AaPurchase`] keeps that
+/// distinction rather than presenting a partial tally as a complete one.
+pub struct AaCollector {
+    exp: crate::experience::ExpTracker,
+}
+
+impl Default for AaCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AaCollector {
+    pub fn new() -> Self {
+        Self {
+            exp: crate::experience::ExpTracker::default(),
+        }
+    }
+
+    pub fn purchases(&self) -> Vec<crate::experience::AaPurchase> {
+        self.exp.aa_purchases()
+    }
+
+    /// Lifetime points earned, as the client has stated them.
+    pub fn earned(&self) -> u32 {
+        self.exp.aa_earned()
+    }
+
+    /// Points in hand, which is the client's own figure rather than a
+    /// subtraction — earned minus spent is wrong the moment a purchase
+    /// happened off-log.
+    pub fn unspent(&self) -> u32 {
+        self.exp.aa_unspent()
+    }
+}
+
+impl Observer for AaCollector {
+    fn name(&self) -> &'static str {
+        "aa"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
+        match &entry.event {
+            Event::AbilityPointsGained { points, unspent } => {
+                self.exp.on_ability_points(entry.timestamp, *points, *unspent)
+            }
+            Event::AbilityPointsSpent { ability, rank, cost } => {
+                self.exp.on_ability_spent(entry.timestamp, ability, *rank, *cost)
+            }
+            _ => {}
+        }
+    }
+}
