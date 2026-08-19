@@ -66,6 +66,10 @@ pub struct AbilityStats {
     /// thirty undifferentiated rows.
     #[serde(default)]
     pub kind: String,
+    /// True when this ability was used on yourself — a health-for-mana trade
+    /// rather than damage aimed at anything.
+    #[serde(default)]
+    pub self_inflicted: bool,
 }
 
 /// Which of the three groups a mechanism belongs to.
@@ -74,7 +78,14 @@ pub struct AbilityStats {
 /// weapon skills are another; thorns and damage shields are neither — they are
 /// output you did not choose to make, so lumping them into either would
 /// misrepresent both.
-pub fn ability_group(kind: &str) -> &'static str {
+pub fn ability_group(kind: &str, self_inflicted: bool) -> &'static str {
+    // A spell you cast on yourself for a price — Cannibalization trading
+    // health for mana — is a cost, not output. Grouping it with your nukes put
+    // it in the same column as damage aimed at something, where it competed
+    // for the top of the list with the things actually killing the boss.
+    if self_inflicted {
+        return "Other";
+    }
     match kind {
         "melee" => "Melee",
         "damage shield" => "Other",
@@ -123,6 +134,10 @@ pub struct ActorStats {
     pub name: String,
     pub damage_done: u64,
     pub damage_taken: u64,
+    /// Damage you dealt to yourself. Part of `damage_done`, and subtracted
+    /// back out wherever the question is how much you put into something else.
+    #[serde(default)]
+    pub self_damage: u64,
     pub healing_done: u64,
     pub healing_received: u64,
     pub hits: u64,
@@ -292,6 +307,7 @@ impl ActorStats {
     pub fn merge_from(&mut self, o: &ActorStats) {
         self.damage_done += o.damage_done;
         self.damage_taken += o.damage_taken;
+        self.self_damage += o.self_damage;
         self.healing_done += o.healing_done;
         self.healing_received += o.healing_received;
         self.hits += o.hits;
@@ -797,12 +813,29 @@ impl Encounter {
     /// a headline larger than everything you and the pet dealt put together.
     /// Damage done to it *before* the charm still counts, because then it
     /// really was the enemy.
-    pub fn damage_to_enemies(&self) -> u64 {
+    pub fn damage_absorbed_by_enemies(&self) -> u64 {
         self.actors
             .values()
             .filter(|s| s.damaged_by_you)
             .map(|s| s.damage_taken - s.damage_taken_while_charmed)
             .sum()
+    }
+
+    /// What you and your pets put into the enemy.
+    ///
+    /// Measured from the output side — your damage plus your pets' — rather
+    /// than from what enemies absorbed. The two differ whenever anything else
+    /// is hitting the same target: another player, their pet, a mob feuding
+    /// with yours. Absorbed damage is a fair account of the fight but a poor
+    /// account of *you*, and this figure sits beside your own numbers, so it
+    /// answers the question actually being asked of it.
+    ///
+    /// Self-inflicted damage comes back out. Cannibalization trades health for
+    /// mana; it is output that was never aimed at anything, and leaving it in
+    /// credited a mana tick as damage to the boss.
+    pub fn damage_to_enemies(&self) -> u64 {
+        self.your_damage_with_pets()
+            .saturating_sub(self.actors.get("you").map(|s| s.self_damage).unwrap_or(0))
     }
 
     /// Damage absorbed by you and anything fighting alongside you.
@@ -1492,6 +1525,9 @@ impl EncounterTracker {
                 let ability_label = ability_name.clone();
                 let mut incoming: Option<IncomingHit> = None;
                 let src_is_you = source.is_you();
+                // A spell cast on yourself for a price. Its damage is real and
+                // stays in the totals, but it was never aimed at anything.
+                let hit_yourself = src_is_you && target.is_you();
                 {
                     let s = enc.entry(source, &player);
                     s.damage_done += *amount;
@@ -1524,7 +1560,13 @@ impl EncounterTracker {
                     if a.kind.is_empty() {
                         a.kind = kind_label(*kind).to_string();
                     }
+                    if hit_yourself {
+                        a.self_inflicted = true;
+                    }
                     a.record_hit(*amount, crit);
+                    if hit_yourself {
+                        s.self_damage += *amount;
+                    }
                 }
                 if src_is_you {
                     let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
@@ -2117,6 +2159,57 @@ mod tests {
             enc.total_damage(),
             "every point lands on one side or the other"
         );
+    }
+
+    /// The headline is your side's output, not everything the boss absorbed.
+    /// Another player pounding the same target must not inflate your number.
+    #[test]
+    fn damage_to_enemies_is_your_side_only() {
+        let encs = run(&[
+            (100, "You slash a giant for 100 points of damage."),
+            (101, "Kallous slashes a giant for 900 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        assert_eq!(e.damage_to_enemies(), 100, "yours, not Kallous's");
+        assert_eq!(
+            e.damage_absorbed_by_enemies(),
+            1000,
+            "the giant did absorb all of it, and that is still available"
+        );
+    }
+
+    /// Cannibalization trades health for mana. It is damage, but it was never
+    /// aimed at anything, so it is neither damage to the enemy nor a spell in
+    /// the output breakdown.
+    #[test]
+    fn self_inflicted_damage_is_not_damage_to_the_enemy() {
+        let encs = run(&[
+            (100, "You slash a giant for 100 points of damage."),
+            (
+                101,
+                "You hit yourself for 60 points of unresistable damage by Cannibalization I.",
+            ),
+            (110, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        let you = e.actors.get("you").unwrap();
+        assert_eq!(you.damage_done, 160, "it is still damage you dealt");
+        assert_eq!(you.self_damage, 60);
+        assert_eq!(e.damage_to_enemies(), 100, "but none of it reached a giant");
+
+        let cann = you.by_ability.get("Cannibalization I").expect("recorded");
+        assert!(cann.self_inflicted);
+        assert_eq!(
+            ability_group(&cann.kind, cann.self_inflicted),
+            "Other",
+            "a cost, not output"
+        );
+        let slash = you.by_ability.get("slash").or_else(|| you.by_ability.get("melee"));
+        if let Some(sl) = slash {
+            assert!(!sl.self_inflicted);
+            assert_eq!(ability_group(&sl.kind, sl.self_inflicted), "Melee");
+        }
     }
 
     /// "What is hitting me" has to be accumulated on the receiving actor: an

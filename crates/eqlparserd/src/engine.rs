@@ -2716,7 +2716,7 @@ impl Engine {
                 continue;
             }
             groups
-                .entry(eqlparser_core::encounter::ability_group(&a.kind))
+                .entry(eqlparser_core::encounter::ability_group(&a.kind, a.self_inflicted))
                 .or_default()
                 .push(GroupedAbility {
                     name: name.clone(),

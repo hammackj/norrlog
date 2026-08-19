@@ -127,6 +127,14 @@ impl TaskRecord {
         }
         if self.weekly {
             let since = crate::lockout::week_start(now);
+            // A weekly task is only outstanding if you are actually holding
+            // it. Zoning into the raid zone is what assigns one, so a task
+            // taken and finished three weeks ago is not work in front of you —
+            // it is a thing you did. Reading "not completed since the reset" on
+            // its own listed every weekly ever assigned as to-do, for ever.
+            if self.assigned.is_some_and(|a| a < since) {
+                return false;
+            }
             return !self.completions.iter().any(|c| c.at >= since);
         }
         if !self.steps.is_empty() {
@@ -464,12 +472,17 @@ mod tests {
         assert_eq!(rec.completions.len(), 1);
         assert!(!rec.still_to_do, "handed in since the reset");
 
-        // The same record, asked about a later week, is outstanding again.
+        // After the reset the boss is killable again, but the task is not
+        // back in your log until you zone in and are given it. Availability is
+        // the lockout grid's question; this list is what you are carrying.
         let next_week = 1_786_527_545 + 8 * 24 * 60 * 60;
         assert!(
-            rec.outstanding(next_week),
-            "a weekly comes back after its reset"
+            !rec.outstanding(next_week),
+            "the reset makes the boss available, not the task assigned"
         );
+        // Zoning in next week does put it back.
+        t.on_assigned(next_week, "Potential of the Void - Lord Nagafen - Weekly");
+        assert!(t.report().tasks[0].outstanding(next_week + 60));
     }
 
     /// A one-off with objectives is outstanding until every one is ticked, not
@@ -688,5 +701,37 @@ mod tests {
         t.on_achievement(100, "Level 49");
         t.on_achievement(200, "Level 50");
         assert_eq!(t.report().achievements[0].name, "Level 50");
+    }
+
+    /// A weekly task you have not taken this week is not work in front of you.
+    ///
+    /// These are assigned by zoning into the raid zone, so one finished in an
+    /// earlier week and not picked up since is done, not pending. Judging on
+    /// "no completion since the reset" alone left every weekly ever assigned
+    /// sitting on the dashboard as to-do.
+    #[test]
+    fn a_weekly_not_taken_this_week_is_not_outstanding() {
+        use crate::lockout::week_start;
+        let mut t = TaskTracker::new();
+        let old = 1_785_300_000; // some earlier week
+        let now = old + 21 * 86_400;
+        t.on_assigned(old, "Potential of the Void - Lady Vox - Weekly");
+        t.on_updated(old + 60, "Potential of the Void - Lady Vox - Weekly");
+
+        // Taken and finished this week.
+        let this_week = week_start(now) + 3600;
+        t.on_assigned(this_week, "Potential of the Void - Innoruuk - Weekly");
+        t.on_updated(this_week + 60, "Potential of the Void - Innoruuk - Weekly");
+
+        // Taken this week, boss still standing.
+        t.on_assigned(this_week + 100, "Potential of the Void - Master Yael - Weekly");
+
+        let by = |r: &TaskReport, n: &str| {
+            r.tasks.iter().find(|t| t.name.contains(n)).unwrap().still_to_do
+        };
+        let r = t.report();
+        assert!(!by(&r, "Lady Vox"), "an old week's task is done, not pending");
+        assert!(!by(&r, "Innoruuk"), "finished this week");
+        assert!(by(&r, "Master Yael"), "taken this week and unfinished");
     }
 }
