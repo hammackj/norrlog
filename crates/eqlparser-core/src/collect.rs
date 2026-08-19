@@ -1773,3 +1773,219 @@ impl Observer for AaCollector {
         }
     }
 }
+
+/// Where a creature was standing when it died.
+///
+/// A `Marker` is curated: somebody typed `--EQLCartographer--Banker` at the
+/// spot because they decided that spot was worth a pin. This is the opposite
+/// — every kill the player happened to `/loc` beside, kept whether or not
+/// anybody has decided it matters. 45 of 593 creatures have a marker; the
+/// point of this is the other 548.
+///
+/// **Many rows per creature is the shape, not a defect.** A creature with
+/// four spawn points produces four clusters, and that is the map worth
+/// drawing. Nothing here dedupes or averages: two sightings twenty units
+/// apart are two sightings, and whether they are one spawn or two is a
+/// question for whatever draws them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreatureSpot {
+    pub name: String,
+    pub zone: String,
+    pub zone_short: String,
+    /// **Map space, not `/loc` space.** Same transform a `Marker` gets.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// When the creature died.
+    pub at: i64,
+    /// Seconds between the death and the `/loc`.
+    ///
+    /// The whole reliability of the row. A player standing on a corpse and
+    /// typing `/loc` is within melee range of where the thing stood; one who
+    /// walked for a minute first is somewhere else entirely. Carried rather
+    /// than thresholded here so the reader can decide: the collector keeps
+    /// anything inside [`SPOT_WINDOW`] and says how close it was.
+    pub gap: i64,
+}
+
+/// How long after a death a `/loc` can still describe where it stood.
+///
+/// Ten seconds. A corpse is looted in about that, so it is the window in
+/// which a player has plausibly not moved, and it is short enough that
+/// walking away disqualifies itself. Measured against the log this was
+/// written for: of 7,560 kills, 19 have a `/loc` within five seconds and 155
+/// within thirty, so nothing here recovers a useful dataset from logs
+/// already recorded. It exists so that a player who starts typing `/loc`
+/// after a kill builds one from here on.
+pub const SPOT_WINDOW: i64 = 10;
+
+/// Every kill the player stood over and measured.
+///
+/// See [`CreatureSpot`]. The rule is one line long and the reason it is not
+/// shorter is [`SPOT_WINDOW`].
+#[derive(Debug, Default)]
+pub struct SpotCollector {
+    spots: Vec<CreatureSpot>,
+    /// The last death, waiting for a `/loc` to describe it.
+    pending: Option<(String, i64)>,
+    zone: String,
+    zone_short: String,
+}
+
+impl SpotCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn spots(&self) -> &[CreatureSpot] {
+        &self.spots
+    }
+}
+
+impl Observer for SpotCollector {
+    fn name(&self) -> &'static str {
+        "spots"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
+        match &entry.event {
+            Event::ZoneChange { zone } => {
+                let z = crate::zone::Zone::parse(zone);
+                self.zone = z.name.clone();
+                self.zone_short.clear();
+                self.pending = None;
+            }
+            // `/who` is where a zone's shortname comes from; nothing else
+            // states it. Same source `MarkerCollector` uses.
+            Event::WhoEntry { zone, .. } if !zone.is_empty() => {
+                let (_, short) = split_zone(zone);
+                if !short.is_empty() {
+                    self.zone_short = short;
+                }
+            }
+            Event::Death { victim, killer } => {
+                // Only what the player killed. A groupmate's kill is a
+                // position too, but the player was not necessarily standing
+                // there, and this rule rests entirely on where they stood.
+                if matches!(killer, Some(Actor::You)) {
+                    if let Actor::Named(n) = victim {
+                        self.pending = Some((n.clone(), entry.timestamp));
+                    }
+                }
+            }
+            Event::Location { x, y, z } => {
+                let Some((name, at)) = self.pending.clone() else { return };
+                let gap = entry.timestamp - at;
+                if !(0..=SPOT_WINDOW).contains(&gap) {
+                    return;
+                }
+                self.spots.push(CreatureSpot {
+                    name: strip_article(&name).to_string(),
+                    zone: self.zone.clone(),
+                    zone_short: self.zone_short.clone(),
+                    // `/loc` prints (worldX, worldY, z) and a map file is in
+                    // (-worldY, -worldX, z). The same transform a marker
+                    // gets, and for the same documented reason.
+                    x: -y,
+                    y: -x,
+                    z: *z,
+                    at,
+                    gap,
+                });
+                // One spot per death. A second `/loc` describes the same
+                // corpse, not a second sighting.
+                self.pending = None;
+            }
+            _ => {}
+        }
+        let _ = cx;
+    }
+}
+
+#[cfg(test)]
+mod spot_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    fn spots(text: &str) -> Vec<CreatureSpot> {
+        let mut c = SpotCollector::new();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+        }
+        c.spots().to_vec()
+    }
+
+    /// A kill you stood over and measured, and the transform on the way in.
+    #[test]
+    fn a_loc_after_your_kill_places_the_creature() {
+        let got = spots("\
+[Wed Aug 19 10:00:00 2026] You have entered Befallen.
+[Wed Aug 19 10:00:01 2026] Players in EverQuest Legends:
+[Wed Aug 19 10:00:01 2026] [50 WAR] Tharn (Ogre) ZONE: Befallen (befallen)
+[Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
+[Wed Aug 19 10:00:12 2026] Your Location is 179.17, -144.70, -20.17
+");
+        assert_eq!(got.len(), 1, "{got:?}");
+        let s = &got[0];
+        assert_eq!(s.name, "decaying skeleton", "the article goes, as everywhere else");
+        assert_eq!(s.zone, "Befallen");
+        assert_eq!(s.zone_short, "befallen");
+        // map(x, y, z) = (-loc2, -loc1, loc3). Same rule a marker gets, and
+        // getting it wrong is what once put 16 of 45 markers outside their
+        // own zone's geometry.
+        assert_eq!((s.x, s.y, s.z), (144.70, -179.17, -20.17));
+        assert_eq!(s.gap, 2, "and it says how far the reading is from the death");
+    }
+
+    /// The window is the whole reliability of the row.
+    #[test]
+    fn a_loc_long_after_the_kill_describes_somewhere_else() {
+        let got = spots("\
+[Wed Aug 19 10:00:00 2026] You have entered Befallen.
+[Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
+[Wed Aug 19 10:01:30 2026] Your Location is 179.17, -144.70, -20.17
+");
+        assert!(got.is_empty(), "eighty seconds of walking is not a position, {got:?}");
+    }
+
+    /// Only what you killed. A groupmate's kill happened where *they* stood.
+    #[test]
+    fn somebody_elses_kill_is_not_your_position() {
+        let got = spots("\
+[Wed Aug 19 10:00:00 2026] You have entered Befallen.
+[Wed Aug 19 10:00:10 2026] Daveynub has slain a decaying skeleton!
+[Wed Aug 19 10:00:12 2026] Your Location is 179.17, -144.70, -20.17
+");
+        assert!(got.is_empty(), "{got:?}");
+    }
+
+    /// Many rows per creature is the shape. Four spawn points are four
+    /// clusters, and nothing here averages them into one wrong answer.
+    #[test]
+    fn one_creature_can_stand_in_several_places() {
+        let got = spots("\
+[Wed Aug 19 10:00:00 2026] You have entered Befallen.
+[Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
+[Wed Aug 19 10:00:11 2026] Your Location is 100.00, 100.00, 0.00
+[Wed Aug 19 10:05:10 2026] You have slain a decaying skeleton!
+[Wed Aug 19 10:05:11 2026] Your Location is 900.00, 900.00, 0.00
+");
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_ne!((got[0].x, got[0].y), (got[1].x, got[1].y));
+    }
+
+    /// A second `/loc` describes the same corpse, not a second sighting.
+    #[test]
+    fn one_death_gives_one_spot() {
+        let got = spots("\
+[Wed Aug 19 10:00:00 2026] You have entered Befallen.
+[Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
+[Wed Aug 19 10:00:11 2026] Your Location is 100.00, 100.00, 0.00
+[Wed Aug 19 10:00:13 2026] Your Location is 100.00, 100.00, 0.00
+");
+        assert_eq!(got.len(), 1, "{got:?}");
+    }
+}
