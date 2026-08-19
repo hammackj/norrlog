@@ -1390,6 +1390,33 @@ impl EncounterTracker {
             Event::CastStart { source, spell, .. } if source.is_you() => {
                 self.note_cast(entry.timestamp, spell);
             }
+            // A pet's casts, on the same footing as your own. Its procs are
+            // the bulk of what a summoned pet contributes, and counting the
+            // hits without the casts left no way to see how many landed.
+            //
+            // Only inside an open fight and only for something already known
+            // to be yours: a cast by a passing creature is not your pet's, and
+            // opening a fight on one would make every caster in earshot a
+            // combatant.
+            Event::CastStart { source, spell, .. } => {
+                let key = source.key();
+                let mine = self
+                    .pet_owners
+                    .get(&key)
+                    .is_some_and(|o| *o == self.player)
+                    || self.charmed.contains_key(&key);
+                if !mine {
+                    return None;
+                }
+                let player = self.player.clone();
+                if let Some(enc) = self.current.as_mut() {
+                    enc.entry(source, &player)
+                        .by_ability
+                        .entry(spell.to_string())
+                        .or_default()
+                        .casts += 1;
+                }
+            }
             Event::PetLeader { pet, leader } => {
                 // A creature that names a leader is a pet by definition. It
                 // was also taken as proof of *summoning*, on the reasoning
@@ -1864,7 +1891,10 @@ impl EncounterTracker {
             *since = ends_at.unwrap_or(*since);
         }
 
-        let enc = self.current.take()?;
+        let mut enc = self.current.take()?;
+        for st in enc.actors.values_mut() {
+            fold_proc_casts(st);
+        }
         if enc.is_significant() {
             Some(enc)
         } else {
@@ -1878,6 +1908,46 @@ impl EncounterTracker {
     /// Close any open encounter at end of input.
     pub fn flush(&mut self) -> Option<Encounter> {
         self.close()
+    }
+}
+
+/// Fold a proc's casts onto the row its damage landed under.
+///
+/// A proc is cast by its ranked name and lands by its base one: the buff
+/// Spirit of the Puma casts `Puma Maw II`, and the hit reads
+/// "for 154 points of prismatic damage by Puma Maw". That produced two rows —
+/// eighteen casts and no damage, eighteen hits and no casts — so the output
+/// list carried a phantom ability doing nothing, and the real one looked as
+/// though it had never been cast.
+///
+/// Only cast-only rows are folded, and only onto a row that took damage under
+/// the base name. Most spells land under the name they were cast with —
+/// Envenomed Bolt X does — and folding those would split one ability in two
+/// rather than join two into one.
+fn fold_proc_casts(st: &mut ActorStats) {
+    let folds: Vec<(String, String)> = st
+        .by_ability
+        .iter()
+        .filter(|(_, a)| a.casts > 0 && a.total == 0 && a.hits == 0)
+        .filter_map(|(name, _)| {
+            let base = crate::spell::base_spell_name(name);
+            if base == name.as_str() {
+                return None;
+            }
+            let base = base.to_string();
+            st.by_ability
+                .get(&base)
+                .filter(|t| t.total > 0)
+                .map(|_| (name.clone(), base))
+        })
+        .collect();
+    for (ranked, base) in folds {
+        let Some(from) = st.by_ability.remove(&ranked) else {
+            continue;
+        };
+        if let Some(to) = st.by_ability.get_mut(&base) {
+            to.casts += from.casts;
+        }
     }
 }
 
@@ -2210,6 +2280,62 @@ mod tests {
             assert!(!sl.self_inflicted);
             assert_eq!(ability_group(&sl.kind, sl.self_inflicted), "Melee");
         }
+    }
+
+    /// A proc is cast under its ranked name and lands under its base one, so
+    /// it was being reported as two abilities: one that was cast and never
+    /// hit, one that hit and was never cast.
+    #[test]
+    fn a_procs_casts_land_on_the_row_its_damage_did() {
+        let encs = run(&[
+            (100, "You begin casting Puma Maw II."),
+            (101, "You hit a giant for 154 points of prismatic damage by Puma Maw."),
+            (102, "You begin casting Puma Maw II."),
+            (103, "You hit a giant for 154 points of prismatic damage by Puma Maw."),
+            // A spell that lands under the name it was cast with must not be
+            // folded — that would split one ability into two.
+            (104, "You begin casting Envenomed Bolt X."),
+            (105, "You hit a giant for 400 points of poison damage by Envenomed Bolt X."),
+            (110, "You have slain a giant!"),
+        ]);
+        let you = encs[0].actors.get("you").unwrap();
+        assert!(
+            !you.by_ability.contains_key("Puma Maw II"),
+            "no phantom row: {:?}",
+            you.by_ability.keys().collect::<Vec<_>>()
+        );
+        let puma = you.by_ability.get("Puma Maw").expect("the proc");
+        assert_eq!((puma.hits, puma.casts, puma.total), (2, 2, 308));
+
+        let bolt = you.by_ability.get("Envenomed Bolt X").expect("unfolded");
+        assert_eq!((bolt.hits, bolt.casts, bolt.total), (1, 1, 400));
+        assert!(!you.by_ability.contains_key("Envenomed Bolt"));
+    }
+
+    /// A pet's procs are most of what it contributes, so its casts count too.
+    #[test]
+    fn a_pets_casts_are_recorded_like_your_own() {
+        let encs = run(&[
+            (100, "Venobtik says, 'My leader is Tharn.'"),
+            (101, "Venobtik slashes a giant for 40 points of damage."),
+            (102, "Venobtik begins casting Puma Maw II."),
+            (103, "Venobtik hit a giant for 154 points of prismatic damage by Puma Maw."),
+            (110, "You have slain a giant!"),
+        ]);
+        let pet = encs[0].actors.get("venobtik").expect("the pet");
+        let puma = pet.by_ability.get("Puma Maw").expect("its proc");
+        assert_eq!((puma.hits, puma.casts, puma.total), (1, 1, 154));
+
+        // A creature that is not yours contributes nothing here.
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (101, "A wandering shaman begins casting Puma Maw II."),
+            (110, "You have slain a giant!"),
+        ]);
+        assert!(
+            !encs[0].actors.contains_key("a wandering shaman"),
+            "a passing caster is not a combatant"
+        );
     }
 
     /// "What is hitting me" has to be accumulated on the receiving actor: an
