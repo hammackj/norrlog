@@ -43,13 +43,17 @@ struct Config {
     eqdb: Vec<String>,
 }
 
-/// Where to look for the companion site when nothing says otherwise: the local
-/// development instance first, then the published site.
+/// Where to look for the companion site when nothing says otherwise.
 ///
-/// Local first so that working on the site is what you see in the app without
-/// having to say so; published second so that anyone who is not running a copy
-/// still gets item data.
-const DEFAULT_EQDB: &[&str] = &["http://localhost:8788", "https://eqldb.hammackj.com"];
+/// The published site, and only it, now that there is one. A local instance
+/// was tried first while the site was being built, which was right then and is
+/// wrong now: it meant whoever happened to be running a copy on port 8788 got
+/// different answers from everyone else, and a half-built local copy silently
+/// took precedence over the finished article.
+///
+/// Developing against a local instance is still a `--eqdb http://localhost:8788`
+/// away — deliberately something you say rather than something you get.
+const DEFAULT_EQDB: &[&str] = &["https://eqldb.hammackj.com"];
 
 fn usage() -> ! {
     eprintln!(
@@ -71,11 +75,12 @@ OPTIONS:
                        Everything the daemon records is tagged with it.
     --port <n>         HTTP port (default 8777).
     --eqdb <url>       Origin of the eqdb companion site, used for item
-                       tooltips. May be given more than once, or as a
-                       comma-separated list, and is tried in order; also read
-                       from $EQLPARSER_EQDB. Defaults to a local instance then
-                       https://eqldb.hammackj.com. When none can be reached the
-                       bundled item data is used, so this is never required.
+                       tooltips (default https://eqldb.hammackj.com, or
+                       $EQLPARSER_EQDB). May be given more than once, or as a
+                       comma-separated list, and is tried in order — pass a
+                       local instance to develop against one. When none can be
+                       reached the bundled item data is used, so this is never
+                       required.
 
 ENDPOINTS:
     /                  Status page with overlay setup instructions

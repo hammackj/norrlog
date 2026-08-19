@@ -84,12 +84,14 @@ impl ItemDb {
     /// `bases` are origins to try in order, e.g. the local instance followed
     /// by the published site.
     ///
-    /// A list rather than one origin because both are right at different
-    /// times, and which is right must not depend on a rebuild. Developing
-    /// against a local copy, the local one answers; once it is not running,
-    /// the published site does. The cost of a wrong guess is a refused
-    /// connection, which is measured in microseconds — far cheaper than
-    /// shipping a default that is wrong for half the people who run this.
+    /// A list rather than one origin so that a local instance can be put in
+    /// front of the published site without a rebuild. The default is the
+    /// published site alone: an origin that answers differently depending on
+    /// what happens to be listening on the developer's machine is not a data
+    /// source, it is a coin toss.
+    ///
+    /// The cost of an origin that cannot be reached is a refused connection,
+    /// measured in microseconds, and the next one in the list is tried.
     pub fn new(bases: Vec<String>) -> Self {
         ItemDb {
             bases: bases
@@ -295,6 +297,11 @@ mod tests {
             "https://eqldb.hammackj.com".into(),
         ]);
         assert_eq!(db.base(), "http://localhost:8788", "trailing slash trimmed");
+        // The shipped default is the published site and nothing else.
+        assert_eq!(
+            ItemDb::new(vec!["https://eqldb.hammackj.com".into()]).base(),
+            "https://eqldb.hammackj.com"
+        );
         let empty = ItemDb::new(vec![]);
         assert_eq!(empty.base(), "");
     }
