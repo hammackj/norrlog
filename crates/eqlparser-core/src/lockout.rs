@@ -187,15 +187,55 @@ pub struct LockoutReport {
 /// The reward currency the void bosses hand out, and how many a week you can
 /// earn.
 ///
-/// The client writes only "You have been given: Void-Touched Potential" — no
-/// source, no quantity — so a grant is evidence that one was earned and not
-/// evidence of what earned it. The cap is not stated anywhere in the log
-/// either; it is read off play, where four consecutive weeks each produced
-/// exactly three and further boss kills in the same week produced none.
+/// The item line itself says nothing about where it came from — the client
+/// writes "You have been given: Void-Touched Potential" with no source and no
+/// quantity. The task does. Zoning into a raid zone assigns
+/// `Potential of the Void - <boss> - Weekly`, and killing the boss updates it
+/// at the same second the item arrives, so the pair together says both that
+/// one was earned and what earned it.
+///
+/// The cap is not stated anywhere. It is read off play: four consecutive weeks
+/// produced exactly three each, and further boss kills in those weeks produced
+/// none.
 pub const VOID_CURRENCY: &str = "Void-Touched Potential";
 
 /// How many [`VOID_CURRENCY`] can be earned in one weekly period.
 pub const VOID_CURRENCY_CAP: u32 = 3;
+
+/// The task family that pays out [`VOID_CURRENCY`], as the client names it.
+const VOID_TASK_PREFIX: &str = "Potential of the Void - ";
+const VOID_TASK_SUFFIX: &str = " - Weekly";
+
+/// Which boss a void task is for, if it is one.
+///
+/// The task writes the boss the way the quest text does — "Cazic Thule"
+/// without the hyphen, "Innoruuk" without the title — which is exactly what
+/// the alias table already resolves.
+pub fn void_task_boss(task: &str) -> Option<&'static str> {
+    let t = task.trim();
+    let inner = t
+        .strip_prefix(VOID_TASK_PREFIX)?
+        .strip_suffix(VOID_TASK_SUFFIX)?;
+    canonical_boss(inner)
+}
+
+/// One void reward, and the boss whose task paid it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoidGrant {
+    pub at: i64,
+    /// The boss whose task this was. `None` when a reward arrived with no void
+    /// task completing alongside it — the item is still evidence it was
+    /// earned, so it is counted, but nothing says what paid it.
+    pub boss: Option<String>,
+}
+
+/// A void task taken but not yet paid out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoidTask {
+    pub boss: String,
+    /// When you zoned in and picked it up.
+    pub assigned: i64,
+}
 
 /// Progress against the weekly cap on [`VOID_CURRENCY`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -205,11 +245,14 @@ pub struct VoidCurrency {
     pub cap: u32,
     /// Still available before the cap, this week.
     pub remaining: u32,
-    /// When each one this week arrived, oldest first.
-    pub this_week: Vec<i64>,
-    /// Every grant ever seen in the log, oldest first. The cap is weekly, so
-    /// the history is what shows a week was missed.
-    pub all_time: Vec<i64>,
+    /// What arrived this week, oldest first.
+    pub this_week: Vec<VoidGrant>,
+    /// Tasks taken this week that have not paid out — you zoned in and the
+    /// boss is still standing.
+    pub open_this_week: Vec<VoidTask>,
+    /// Every grant ever seen. The cap is weekly, so the history is what shows
+    /// a week was missed.
+    pub all_time: usize,
 }
 
 /// Days since the Unix epoch for a timestamp.
@@ -249,6 +292,11 @@ pub struct LockoutTracker {
     kills: Vec<BossKill>,
     /// When each [`VOID_CURRENCY`] grant arrived.
     void_grants: Vec<i64>,
+    /// Void tasks taken, as (when, boss).
+    void_taken: Vec<(i64, String)>,
+    /// Void tasks completed, as (when, boss). The completion lands on the same
+    /// second as the reward, which is what ties a grant to a boss.
+    void_done: Vec<(i64, String)>,
 }
 
 impl LockoutTracker {
@@ -409,19 +457,82 @@ impl LockoutTracker {
         self.void_grants.sort_unstable();
     }
 
+    /// Note a void task being taken — which is what zoning into its raid
+    /// zone does.
+    pub fn on_task_assigned(&mut self, timestamp: i64, task: &str) {
+        if let Some(boss) = void_task_boss(task) {
+            self.void_taken.push((timestamp, boss.to_string()));
+        }
+    }
+
+    /// Note a void task advancing.
+    ///
+    /// These tasks have one step, and it lands on the same second as the
+    /// reward, so an update is a completion. Recorded separately from the
+    /// reward rather than counted as one: the item is what the cap is on, and
+    /// inferring one from the other would double-count the moment a task ever
+    /// gains a second step.
+    pub fn on_task_updated(&mut self, timestamp: i64, task: &str) {
+        if let Some(boss) = void_task_boss(task) {
+            self.void_done.push((timestamp, boss.to_string()));
+        }
+    }
+
     /// Every grant seen, for persisting across sessions.
     pub fn void_grant_log(&self) -> &[i64] {
         &self.void_grants
     }
 
+    /// The boss whose void task completed at `at`, if one did.
+    ///
+    /// Matched on the second, because the completion and the reward are
+    /// written together. A window would be worse than useless here: two of
+    /// these can be finished minutes apart, and a loose match would credit the
+    /// wrong boss rather than admit it did not know.
+    fn boss_paying_at(&self, at: i64) -> Option<String> {
+        self.void_done
+            .iter()
+            .find(|(t, _)| *t == at)
+            .map(|(_, b)| b.clone())
+    }
+
     fn void_currency(&self, week_start: i64) -> VoidCurrency {
-        let this_week: Vec<i64> = self
+        let week_end = week_start + 7 * DAY;
+        let in_week = |t: i64| t >= week_start && t < week_end;
+
+        let this_week: Vec<VoidGrant> = self
             .void_grants
             .iter()
             .copied()
-            .filter(|t| *t >= week_start && *t < week_start + 7 * DAY)
+            .filter(|t| in_week(*t))
+            .map(|at| VoidGrant {
+                boss: self.boss_paying_at(at),
+                at,
+            })
             .collect();
         let earned = this_week.len() as u32;
+
+        // A task taken whose boss has not paid this week. Keyed on the boss
+        // rather than the task instance because re-entering the zone assigns
+        // it again, and three visits to a boss you have not killed is one
+        // piece of unfinished business, not three.
+        let paid: std::collections::BTreeSet<&str> = self
+            .void_done
+            .iter()
+            .filter(|(t, _)| in_week(*t))
+            .map(|(_, b)| b.as_str())
+            .collect();
+        let mut open: Vec<VoidTask> = Vec::new();
+        for (at, boss) in self.void_taken.iter().filter(|(t, _)| in_week(*t)) {
+            if paid.contains(boss.as_str()) || open.iter().any(|o| o.boss == *boss) {
+                continue;
+            }
+            open.push(VoidTask {
+                boss: boss.clone(),
+                assigned: *at,
+            });
+        }
+
         VoidCurrency {
             earned_this_week: earned,
             cap: VOID_CURRENCY_CAP,
@@ -430,7 +541,8 @@ impl LockoutTracker {
             // left", not a negative.
             remaining: VOID_CURRENCY_CAP.saturating_sub(earned),
             this_week,
-            all_time: self.void_grants.clone(),
+            open_this_week: open,
+            all_time: self.void_grants.len(),
         }
     }
 }
@@ -721,12 +833,84 @@ mod tests {
         assert_eq!(v.cap, VOID_CURRENCY_CAP);
         assert_eq!(v.remaining, 0, "capped out");
         assert_eq!(v.this_week.len(), 3);
-        assert_eq!(v.all_time.len(), 4, "last week's is still on the record");
+        assert_eq!(v.all_time, 4, "last week's is still on the record");
 
         // The following week starts clean.
         let next = t.report(TUE_RESET + 7 * DAY + 3600).void_currency;
         assert_eq!(next.earned_this_week, 0);
         assert_eq!(next.remaining, VOID_CURRENCY_CAP);
+    }
+
+    /// The reward line names no source; the task does. Zoning in assigns
+    /// `Potential of the Void - <boss> - Weekly`, and it completes on the same
+    /// second the item arrives.
+    #[test]
+    fn a_void_reward_is_attributed_to_the_task_that_paid_it() {
+        let mut t = LockoutTracker::new();
+        let at = TUE_RESET + 3600;
+        t.on_task_assigned(at - 600, "Potential of the Void - Master Yael - Weekly");
+        t.on_task_updated(at, "Potential of the Void - Master Yael - Weekly");
+        t.on_item_granted(at, VOID_CURRENCY);
+
+        // A second zone-in with the boss still standing.
+        t.on_task_assigned(at + 1000, "Potential of the Void - Lady Vox - Weekly");
+
+        let v = t.report(at + 2000).void_currency;
+        assert_eq!(v.earned_this_week, 1);
+        assert_eq!(v.remaining, 2);
+        assert_eq!(v.this_week[0].boss.as_deref(), Some("Master Yael"));
+        assert_eq!(
+            v.open_this_week.iter().map(|o| o.boss.as_str()).collect::<Vec<_>>(),
+            vec!["Lady Vox"],
+            "taken, not yet paid"
+        );
+
+        // Re-entering the zone re-assigns the same task; that is still one
+        // piece of unfinished business.
+        t.on_task_assigned(at + 1500, "Potential of the Void - Lady Vox - Weekly");
+        assert_eq!(t.report(at + 2000).void_currency.open_this_week.len(), 1);
+
+        // Once it pays, it is no longer open.
+        t.on_task_updated(at + 3000, "Potential of the Void - Lady Vox - Weekly");
+        t.on_item_granted(at + 3000, VOID_CURRENCY);
+        let v = t.report(at + 4000).void_currency;
+        assert!(v.open_this_week.is_empty());
+        assert_eq!(v.earned_this_week, 2);
+        assert_eq!(v.this_week[1].boss.as_deref(), Some("Lady Vox"));
+    }
+
+    /// The task writes bosses the way the quest text does, not the way the
+    /// kill line does.
+    #[test]
+    fn void_task_names_resolve_to_tracked_bosses() {
+        let b = |s: &str| void_task_boss(s);
+        assert_eq!(
+            b("Potential of the Void - Cazic Thule - Weekly"),
+            Some("Cazic-Thule"),
+            "the task drops the hyphen"
+        );
+        assert_eq!(
+            b("Potential of the Void - Innoruuk - Weekly"),
+            Some("Innoruuk"),
+            "and the title"
+        );
+        assert_eq!(
+            b("Potential of the Void - Phinigel Autropos - Weekly"),
+            Some("Phinigel Autropos")
+        );
+        // Anything else assigned that week is not a void task.
+        assert_eq!(b("Slay the Gnolls - Weekly"), None);
+        assert_eq!(b("Potential of the Void - Somebody Else - Weekly"), None);
+    }
+
+    /// A reward with no task completing beside it is still a reward.
+    #[test]
+    fn an_unattributed_reward_still_counts_against_the_cap() {
+        let mut t = LockoutTracker::new();
+        t.on_item_granted(TUE_RESET + 60, VOID_CURRENCY);
+        let v = t.report(TUE_RESET + 120).void_currency;
+        assert_eq!(v.earned_this_week, 1, "the cap is on the item");
+        assert_eq!(v.this_week[0].boss, None, "but nothing says what paid it");
     }
 
     /// Killing the boss's pet is not killing the boss.

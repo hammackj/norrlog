@@ -1039,8 +1039,14 @@ impl Engine {
             Event::ItemGranted { item } => {
                 self.lockouts.on_item_granted(entry.timestamp, item)
             }
-            Event::TaskAssigned { task } => self.tasks.on_assigned(entry.timestamp, task),
-            Event::TaskUpdated { task } => self.tasks.on_updated(entry.timestamp, task),
+            Event::TaskAssigned { task } => {
+                self.tasks.on_assigned(entry.timestamp, task);
+                self.lockouts.on_task_assigned(entry.timestamp, task);
+            }
+            Event::TaskUpdated { task } => {
+                self.tasks.on_updated(entry.timestamp, task);
+                self.lockouts.on_task_updated(entry.timestamp, task);
+            }
             Event::EffectWoreOffTarget { spell, target } => {
                 if self.fading_effect_ends_a_charm(spell) {
                     self.tracker.set_charmed(entry.timestamp, target, false);
