@@ -77,6 +77,7 @@ enum RuleId {
     ResistedGeneric,
     SkillUp,
     TaskAssigned,
+    ItemGranted,
     TaskUpdated,
     AchievementEarned,
     CraftSuccess,
@@ -506,6 +507,12 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::TaskAssigned,
         r"^You have been assigned the task '(?P<task>.+)'\.$",
+    ),
+    // No trailing period on this one, unlike almost every other line the
+    // client writes.
+    (
+        RuleId::ItemGranted,
+        r"^You have been given: (?P<item>.+?)\.?$",
     ),
     (
         RuleId::TaskUpdated,
@@ -1207,6 +1214,9 @@ impl Parser {
                 },
                 RuleId::TaskAssigned => Event::TaskAssigned {
                     task: g("task").unwrap_or_default().to_string(),
+                },
+                RuleId::ItemGranted => Event::ItemGranted {
+                    item: g("item").unwrap_or_default().trim().to_string(),
                 },
                 RuleId::TaskUpdated => Event::TaskUpdated {
                     task: g("task").unwrap_or_default().to_string(),

@@ -1036,6 +1036,9 @@ impl Engine {
                     }
                 }
             }
+            Event::ItemGranted { item } => {
+                self.lockouts.on_item_granted(entry.timestamp, item)
+            }
             Event::TaskAssigned { task } => self.tasks.on_assigned(entry.timestamp, task),
             Event::TaskUpdated { task } => self.tasks.on_updated(entry.timestamp, task),
             Event::EffectWoreOffTarget { spell, target } => {

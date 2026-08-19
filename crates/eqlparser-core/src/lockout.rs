@@ -66,6 +66,10 @@ pub const TRACKED_BOSSES: &[(&str, &[&str])] = &[
     ("Cazic-Thule", &["cazic-thule", "cazic thule"]),
     ("Lord Nagafen", &["lord nagafen", "nagafen"]),
     ("Lady Vox", &["lady vox", "vox"]),
+    // Kedge Keep's named. "Phinigel Autropos pet" is a different creature and
+    // is left out by the exact-name match, as it must be — killing the pet is
+    // not killing the boss.
+    ("Phinigel Autropos", &["phinigel autropos", "phinigel"]),
     // The log writes the full title, "Innoruuk, the Prince of Hate".
     (
         "Innoruuk",
@@ -176,6 +180,36 @@ pub struct LockoutReport {
     pub kills_today: usize,
     /// The class build currently doing the killing, e.g. "WAR/DRU/BRD".
     pub current_build: String,
+    /// Progress against the weekly cap on the void reward currency.
+    pub void_currency: VoidCurrency,
+}
+
+/// The reward currency the void bosses hand out, and how many a week you can
+/// earn.
+///
+/// The client writes only "You have been given: Void-Touched Potential" — no
+/// source, no quantity — so a grant is evidence that one was earned and not
+/// evidence of what earned it. The cap is not stated anywhere in the log
+/// either; it is read off play, where four consecutive weeks each produced
+/// exactly three and further boss kills in the same week produced none.
+pub const VOID_CURRENCY: &str = "Void-Touched Potential";
+
+/// How many [`VOID_CURRENCY`] can be earned in one weekly period.
+pub const VOID_CURRENCY_CAP: u32 = 3;
+
+/// Progress against the weekly cap on [`VOID_CURRENCY`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VoidCurrency {
+    /// Earned since the current weekly reset.
+    pub earned_this_week: u32,
+    pub cap: u32,
+    /// Still available before the cap, this week.
+    pub remaining: u32,
+    /// When each one this week arrived, oldest first.
+    pub this_week: Vec<i64>,
+    /// Every grant ever seen in the log, oldest first. The cap is weekly, so
+    /// the history is what shows a week was missed.
+    pub all_time: Vec<i64>,
 }
 
 /// Days since the Unix epoch for a timestamp.
@@ -213,6 +247,8 @@ pub fn week_start(now: i64) -> i64 {
 #[derive(Debug, Default)]
 pub struct LockoutTracker {
     kills: Vec<BossKill>,
+    /// When each [`VOID_CURRENCY`] grant arrived.
+    void_grants: Vec<i64>,
 }
 
 impl LockoutTracker {
@@ -356,6 +392,45 @@ impl LockoutTracker {
             kills_today: self.kills_between(ds, ds + DAY),
             // Filled in by the caller, which owns the class detector.
             current_build: String::new(),
+            void_currency: self.void_currency(ws),
+        }
+    }
+
+    /// Note a [`VOID_CURRENCY`] grant.
+    ///
+    /// Only that one item. Everything is handed over with the same line, and a
+    /// tally that counted quest rewards and tradeskill returns alongside it
+    /// would answer no question at all.
+    pub fn on_item_granted(&mut self, timestamp: i64, item: &str) {
+        if !item.trim().eq_ignore_ascii_case(VOID_CURRENCY) {
+            return;
+        }
+        self.void_grants.push(timestamp);
+        self.void_grants.sort_unstable();
+    }
+
+    /// Every grant seen, for persisting across sessions.
+    pub fn void_grant_log(&self) -> &[i64] {
+        &self.void_grants
+    }
+
+    fn void_currency(&self, week_start: i64) -> VoidCurrency {
+        let this_week: Vec<i64> = self
+            .void_grants
+            .iter()
+            .copied()
+            .filter(|t| *t >= week_start && *t < week_start + 7 * DAY)
+            .collect();
+        let earned = this_week.len() as u32;
+        VoidCurrency {
+            earned_this_week: earned,
+            cap: VOID_CURRENCY_CAP,
+            // Saturating, because the cap is read off play rather than stated:
+            // if a week ever produces a fourth, the right answer is "none
+            // left", not a negative.
+            remaining: VOID_CURRENCY_CAP.saturating_sub(earned),
+            this_week,
+            all_time: self.void_grants.clone(),
         }
     }
 }
@@ -619,6 +694,46 @@ mod tests {
             TRACKED_BOSSES.len() * (MAX_DIFFICULTY as usize + 1)
         );
         assert_eq!(r.weekly_cleared, 0);
-        assert_eq!(r.bosses.len(), 5);
+        assert_eq!(r.bosses.len(), TRACKED_BOSSES.len());
+        assert!(
+            r.bosses.iter().any(|b| b == "Phinigel Autropos"),
+            "Kedge Keep's named is tracked too: {:?}",
+            r.bosses
+        );
+    }
+
+    /// The void currency is capped weekly, and the log states neither the cap
+    /// nor what earned a grant — only that one arrived.
+    #[test]
+    fn void_currency_counts_against_the_weekly_cap() {
+        let mut t = LockoutTracker::new();
+        // Three in the week, which is the cap.
+        for at in [TUE_RESET + 3600, TUE_RESET + 2 * DAY, TUE_RESET + 3 * DAY] {
+            t.on_item_granted(at, VOID_CURRENCY);
+        }
+        // Last week's does not count toward this one.
+        t.on_item_granted(TUE_RESET - DAY, VOID_CURRENCY);
+        // Nor does anything else handed to you.
+        t.on_item_granted(TUE_RESET + 4 * DAY, "Mote of Major Potential");
+
+        let v = t.report(TUE_RESET + 4 * DAY).void_currency;
+        assert_eq!(v.earned_this_week, 3);
+        assert_eq!(v.cap, VOID_CURRENCY_CAP);
+        assert_eq!(v.remaining, 0, "capped out");
+        assert_eq!(v.this_week.len(), 3);
+        assert_eq!(v.all_time.len(), 4, "last week's is still on the record");
+
+        // The following week starts clean.
+        let next = t.report(TUE_RESET + 7 * DAY + 3600).void_currency;
+        assert_eq!(next.earned_this_week, 0);
+        assert_eq!(next.remaining, VOID_CURRENCY_CAP);
+    }
+
+    /// Killing the boss's pet is not killing the boss.
+    #[test]
+    fn phinigels_pet_is_not_phinigel() {
+        assert_eq!(canonical_boss("Phinigel Autropos"), Some("Phinigel Autropos"));
+        assert_eq!(canonical_boss("phinigel"), Some("Phinigel Autropos"));
+        assert_eq!(canonical_boss("Phinigel Autropos pet"), None);
     }
 }

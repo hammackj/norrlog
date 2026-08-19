@@ -575,6 +575,13 @@ pub enum Event {
     RecipeLearned { recipe: String },
     /// A task was assigned.
     TaskAssigned { task: String },
+    /// An item handed straight to you rather than looted from a corpse.
+    ///
+    /// Quest and reward currency arrives this way — the client writes only
+    /// "You have been given: <item>", with no source, no quantity and no
+    /// corpse. It is therefore evidence that something was earned, and not
+    /// evidence of what earned it.
+    ItemGranted { item: String },
     /// A task advanced. The client gives no objective text, so each of these
     /// is simply one step completed.
     TaskUpdated { task: String },
