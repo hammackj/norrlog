@@ -72,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/quests/export", get(export_quests))
         .route("/api/aa", get(aa))
         .route("/api/item", get(item_lookup))
+        .route("/api/item-icon", get(item_icon))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
@@ -1451,6 +1452,35 @@ async fn item_lookup(
     .into_response()
 }
 
+/// An item icon sheet, fetched from the companion site and passed through.
+///
+/// Exists so the window's content-security policy names this daemon and
+/// nothing else. The site is moving from localhost to a public domain, and a
+/// policy that lists origins would need editing — and a rebuild — every time
+/// that changed.
+async fn item_icon(
+    State(s): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let path = q.get("path").cloned().unwrap_or_default();
+    match s.itemdb.icon(&path).await {
+        Some((content_type, bytes)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type),
+                // The sheets are static and the daemon caches them anyway;
+                // this stops the window re-asking as panels redraw.
+                (header::CACHE_CONTROL, "public, max-age=3600".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        // A missing icon is not an error worth a red line in the console: the
+        // card simply renders without one.
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn wiki() -> Response {
     (
         StatusCode::OK,
@@ -1573,9 +1603,9 @@ mod tests {
             // An origin nothing is listening on: the tests must never depend
             // on the companion site being up, and this proves the fallback is
             // what they exercise.
-            itemdb: Arc::new(crate::itemdb::ItemDb::new(
+            itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![
                 "http://127.0.0.1:1".to_string(),
-            )),
+            ])),
         }
     }
 

@@ -35,16 +35,21 @@ struct Config {
     /// Which game the log is from, when declared. Left `None` to infer it
     /// from the install path.
     game: Option<Game>,
-    /// Origin of the eqdb companion site, which serves item reference data.
+    /// Origins of the eqdb companion site, tried in order.
     ///
-    /// Defaults to the local development instance. It is a setting rather than
-    /// a constant because the site is going to be published, and pointing this
-    /// at the public one must not need a rebuild.
-    eqdb: String,
+    /// A list, because both defaults are right at different times: a local
+    /// instance while the site is being worked on, and the published one
+    /// otherwise. A wrong guess costs a refused connection.
+    eqdb: Vec<String>,
 }
 
-/// Where to look for the companion site when nothing says otherwise.
-const DEFAULT_EQDB: &str = "http://localhost:8788";
+/// Where to look for the companion site when nothing says otherwise: the local
+/// development instance first, then the published site.
+///
+/// Local first so that working on the site is what you see in the app without
+/// having to say so; published second so that anyone who is not running a copy
+/// still gets item data.
+const DEFAULT_EQDB: &[&str] = &["http://localhost:8788", "https://eqldb.hammackj.com"];
 
 fn usage() -> ! {
     eprintln!(
@@ -66,9 +71,11 @@ OPTIONS:
                        Everything the daemon records is tagged with it.
     --port <n>         HTTP port (default 8777).
     --eqdb <url>       Origin of the eqdb companion site, used for item
-                       tooltips (default http://localhost:8788, or $EQLPARSER_EQDB).
-                       When it cannot be reached the bundled item data is used
-                       instead, so this is never required.
+                       tooltips. May be given more than once, or as a
+                       comma-separated list, and is tried in order; also read
+                       from $EQLPARSER_EQDB. Defaults to a local instance then
+                       https://eqldb.hammackj.com. When none can be reached the
+                       bundled item data is used, so this is never required.
 
 ENDPOINTS:
     /                  Status page with overlay setup instructions
@@ -82,6 +89,15 @@ ENDPOINTS:
     std::process::exit(2)
 }
 
+/// Split a comma-separated list of origins, dropping blanks.
+fn split_origins(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn parse_args() -> Config {
     let mut cfg = Config {
         log: None,
@@ -89,8 +105,13 @@ fn parse_args() -> Config {
         game_dir: None,
         port: DEFAULT_PORT,
         game: None,
-        eqdb: std::env::var("EQLPARSER_EQDB").unwrap_or_else(|_| DEFAULT_EQDB.to_string()),
+        eqdb: std::env::var("EQLPARSER_EQDB")
+            .ok()
+            .map(|v| split_origins(&v))
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_EQDB.iter().map(|s| s.to_string()).collect()),
     };
+    let mut saw_eqdb = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -115,7 +136,15 @@ fn parse_args() -> Config {
             }
             "--eqdb" => {
                 if let Some(u) = args.next() {
-                    cfg.eqdb = u;
+                    // Repeating the flag adds an origin rather than replacing
+                    // the last one, but the first `--eqdb` replaces the
+                    // defaults: having asked for a specific site, being
+                    // silently fallen back to another is not what was meant.
+                    if !saw_eqdb {
+                        cfg.eqdb.clear();
+                        saw_eqdb = true;
+                    }
+                    cfg.eqdb.extend(split_origins(&u));
                 }
             }
             "-h" | "--help" => usage(),
@@ -448,7 +477,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
-            eqdb: DEFAULT_EQDB.to_string(),
+            eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -464,7 +493,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
-            eqdb: DEFAULT_EQDB.to_string(),
+            eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
         };
         assert!(resolve_log(&cfg).is_err());
     }

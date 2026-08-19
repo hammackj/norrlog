@@ -70,26 +70,119 @@ enum Cached {
 
 /// Looks items up on the site, remembering what it finds.
 pub struct ItemDb {
-    base: String,
+    /// Origins to try, in order. See [`ItemDb::new`].
+    bases: Vec<String>,
+    /// Whichever origin last answered, so the caller can say where a card's
+    /// facts came from and so icons are fetched from the same place.
+    live: Mutex<Option<String>>,
     client: reqwest::Client,
     cache: Mutex<HashMap<String, (Instant, Cached)>>,
+    icons: Mutex<HashMap<String, (Instant, Option<(String, Vec<u8>)>)>>,
 }
 
 impl ItemDb {
-    /// `base` is the site's origin, e.g. `http://localhost:8788`.
-    pub fn new(base: String) -> Self {
+    /// `bases` are origins to try in order, e.g. the local instance followed
+    /// by the published site.
+    ///
+    /// A list rather than one origin because both are right at different
+    /// times, and which is right must not depend on a rebuild. Developing
+    /// against a local copy, the local one answers; once it is not running,
+    /// the published site does. The cost of a wrong guess is a refused
+    /// connection, which is measured in microseconds — far cheaper than
+    /// shipping a default that is wrong for half the people who run this.
+    pub fn new(bases: Vec<String>) -> Self {
         ItemDb {
-            base: base.trim_end_matches('/').to_string(),
+            bases: bases
+                .into_iter()
+                .map(|b| b.trim_end_matches('/').to_string())
+                .filter(|b| !b.is_empty())
+                .collect(),
+            live: Mutex::new(None),
             client: reqwest::Client::builder()
                 .timeout(TIMEOUT)
                 .build()
                 .unwrap_or_default(),
             cache: Mutex::new(HashMap::new()),
+            icons: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn base(&self) -> &str {
-        &self.base
+    /// The origin that last answered, or the first configured one before
+    /// anything has.
+    pub fn base(&self) -> String {
+        self.live
+            .lock()
+            .ok()
+            .and_then(|l| l.clone())
+            .or_else(|| self.bases.first().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Fetch an icon sheet through us rather than letting the window fetch it.
+    ///
+    /// The window's content-security policy would otherwise have to name every
+    /// origin the site might ever be served from, and it is about to move from
+    /// localhost to a public domain. Proxying means the policy names only this
+    /// daemon and never changes again.
+    ///
+    /// `path` is the site-relative path eqdb gave us. Only its own static
+    /// assets are fetched: this must not become a way to ask the daemon to
+    /// retrieve arbitrary URLs on the caller's behalf.
+    pub async fn icon(&self, path: &str) -> Option<(String, Vec<u8>)> {
+        if !path.starts_with("/static/") || path.contains("..") {
+            return None;
+        }
+        if let Some(hit) = self.cached_icon(path) {
+            return hit;
+        }
+        let mut found = None;
+        for base in self.origins() {
+            let url = format!("{base}{path}");
+            if let Ok(r) = self.client.get(&url).send().await {
+                if r.status().is_success() {
+                    let ct = r
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("image/png")
+                        .to_string();
+                    if let Ok(bytes) = r.bytes().await {
+                        found = Some((ct, bytes.to_vec()));
+                        break;
+                    }
+                }
+            }
+        }
+        if let Ok(mut c) = self.icons.lock() {
+            c.insert(path.to_string(), (Instant::now(), found.clone()));
+        }
+        found
+    }
+
+    fn cached_icon(&self, path: &str) -> Option<Option<(String, Vec<u8>)>> {
+        let c = self.icons.lock().ok()?;
+        let (at, entry) = c.get(path)?;
+        let ttl = if entry.is_some() { HIT_TTL } else { MISS_TTL };
+        if at.elapsed() > ttl {
+            return None;
+        }
+        Some(entry.clone())
+    }
+
+    /// The origins to try, most-recently-successful first — so once one has
+    /// answered, the others are not dialled again on every lookup.
+    fn origins(&self) -> Vec<String> {
+        let live = self.live.lock().ok().and_then(|l| l.clone());
+        let mut out: Vec<String> = Vec::with_capacity(self.bases.len());
+        if let Some(l) = live {
+            out.push(l);
+        }
+        for b in &self.bases {
+            if !out.contains(b) {
+                out.push(b.clone());
+            }
+        }
+        out
     }
 
     /// Look one item up by the name the client writes.
@@ -105,14 +198,23 @@ impl ItemDb {
         if let Some(v) = self.cached(&key) {
             return v;
         }
-        let url = format!("{}/api/item?name={}", self.base, key);
-        let found = match self.client.get(&url).send().await {
-            Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
-            _ => None,
-        };
-        // The site answers 200 with `count: 0` for a name it does not know,
-        // which is a miss and not a hit with nothing in it.
-        let found = found.filter(|v| v.get("count").and_then(Value::as_u64).unwrap_or(0) > 0);
+        let mut found = None;
+        for base in self.origins() {
+            let url = format!("{base}/api/item?name={key}");
+            let got = match self.client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+                _ => continue,
+            };
+            // The site answers 200 with `count: 0` for a name it does not
+            // know. That is an answer from a reachable site, so the origin is
+            // live even though the item is a miss — remember it either way, or
+            // every unknown name re-dials the whole list.
+            if let Ok(mut l) = self.live.lock() {
+                *l = Some(base.clone());
+            }
+            found = got.filter(|v| v.get("count").and_then(Value::as_u64).unwrap_or(0) > 0);
+            break;
+        }
         self.remember(key, found.clone());
         found
     }
@@ -162,6 +264,39 @@ mod tests {
         assert_eq!(slug("  Fine Steel Long Sword  "), "fine_steel_long_sword");
         assert_eq!(slug("!!!"), "");
         assert_eq!(slug(""), "");
+    }
+
+    /// The origin list is tried in order, and only the paths eqdb serves its
+    /// own assets from are ever fetched.
+    #[test]
+    fn the_icon_proxy_refuses_anything_that_is_not_a_site_asset() {
+        let db = ItemDb::new(vec!["http://127.0.0.1:1".into()]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Not under /static/, so it is not asked for at all — this must not
+        // become a way to have the daemon fetch arbitrary URLs.
+        assert!(rt.block_on(db.icon("/etc/passwd")).is_none());
+        assert!(rt.block_on(db.icon("/api/item?name=x")).is_none());
+        assert!(rt.block_on(db.icon("/static/../secret")).is_none());
+        assert!(rt.block_on(db.icon("")).is_none());
+        // A legitimate path is attempted, and fails only because nothing is
+        // listening.
+        assert!(rt.block_on(db.icon("/static/items/042.png")).is_none());
+    }
+
+    /// Configuring one origin must not leave the defaults behind it: having
+    /// named a site, silently falling back to another is not what was meant.
+    #[test]
+    fn base_reports_the_first_configured_origin_before_anything_answers() {
+        let db = ItemDb::new(vec![
+            "http://localhost:8788/".into(),
+            "https://eqldb.hammackj.com".into(),
+        ]);
+        assert_eq!(db.base(), "http://localhost:8788", "trailing slash trimmed");
+        let empty = ItemDb::new(vec![]);
+        assert_eq!(empty.base(), "");
     }
 
     /// A graded drop is the same item to the site as it is to the tracker.
