@@ -1438,6 +1438,27 @@ impl EncounterTracker {
                         self.end_charm(entry.timestamp, source, true);
                         src_charmed = false;
                     }
+                    // Pet attribution is remembered across fights on purpose:
+                    // the line naming an owner comes once and the pet fights
+                    // all evening. A charmed mob gets that record too, and it
+                    // outlives the charm by however long the log runs — a
+                    // flighty fiend charmed on 31 July was still filed as your
+                    // pet on 19 August, its damage credited to you while it
+                    // was beating on you in the same fight.
+                    //
+                    // Being hit by it settles the question. Something you
+                    // summoned cannot turn on you, so only the creatures that
+                    // can lose the record; a summoned pet keeps its owner
+                    // through anything.
+                    if !self.summoned.contains(&source.key()) {
+                        self.pet_owners.remove(&source.key());
+                        if let Some(enc) = self.current.as_mut() {
+                            if let Some(st) = enc.actors.get_mut(&source.key()) {
+                                st.owned_by_you = false;
+                                st.owner = None;
+                            }
+                        }
+                    }
                 }
                 // A pet is summoned once and fights all evening, while the
                 // line that named its owner came in some earlier pull. Carry
@@ -3076,6 +3097,46 @@ mod tests {
         assert_eq!(later.owner.as_deref(), Some("Tharn"));
         assert!(later.owned_by_you);
         assert_eq!(encs[1].your_damage_with_pets(), 90);
+    }
+
+    /// The reported case: a mob charmed weeks ago was still being credited as
+    /// your pet while it fought you.
+    ///
+    /// Carrying pet attribution forward is right for a summoned pet, which is
+    /// yours until it dies. A charmed mob gets the same record and the charm
+    /// ends long before the log does — a flighty fiend charmed on 31 July was
+    /// still filed as the player's pet on 19 August, appearing as their pet in
+    /// a fight where it was hitting them, while the actual summoned pet went
+    /// unlisted.
+    #[test]
+    fn a_former_charm_that_turns_on_you_stops_being_your_pet() {
+        let encs = run(&[
+            // It announces itself while charmed, and fights for you.
+            (100, "A flighty fiend told you, 'Attacking a giant Master.'"),
+            (101, "A flighty fiend slashes a giant for 40 points of damage."),
+            (110, "You have slain a giant!"),
+            // A separate fight, weeks later in log time. The charm is long
+            // gone and it is an enemy again.
+            (9000, "You slash a flighty fiend for 30 points of damage."),
+            (9001, "A flighty fiend hits YOU for 25 points of damage."),
+            (9002, "A flighty fiend slashes Master Yael for 10 points of damage."),
+            (9010, "You have slain a flighty fiend!"),
+        ]);
+        assert_eq!(encs.len(), 2);
+
+        let then = encs[0].actors.get("a flighty fiend").expect("the pet");
+        assert!(then.is_yours(), "it really was yours at the time");
+        assert_eq!(encs[0].your_damage_with_pets(), 40);
+
+        let now = encs[1].actors.get("a flighty fiend").expect("the enemy");
+        assert!(!now.owned_by_you, "it turned on you; it is not your pet");
+        assert_eq!(now.owner, None);
+        assert!(
+            !encs[1].your_pets().iter().any(|p| p.name.to_lowercase() == "a flighty fiend"),
+            "and it is not listed among your pets"
+        );
+        // Its swing at the boss is not your damage either.
+        assert_eq!(encs[1].your_damage_with_pets(), 30, "only your own 30");
     }
 
     /// A pet with a generated name that was never asked `/pet leader` is
