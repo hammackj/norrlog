@@ -1446,16 +1446,34 @@ impl EncounterTracker {
                     // pet on 19 August, its damage credited to you while it
                     // was beating on you in the same fight.
                     //
-                    // Being hit by it settles the question. Something you
-                    // summoned cannot turn on you, so only the creatures that
-                    // can lose the record; a summoned pet keeps its owner
-                    // through anything.
-                    if !self.summoned.contains(&source.key()) {
+                    // Being hit by it settles the question, whatever the
+                    // record says and however it was arrived at. Nothing of
+                    // your own turns on you.
+                    //
+                    // That has to include the `summoned` brand. It is inferred
+                    // — `/pet leader` answers "My leader is Tharn" for a charmed
+                    // mob just as readily as for a conjured one, so the verdict
+                    // rests on whether the charm was known to be held at that
+                    // instant, and a charm the log never named is not. A fire
+                    // giant warrior charmed on 12 August was asked `/pet
+                    // leader` a moment after its charm lapsed, was recorded as
+                    // summoned for good, and a week later was still the
+                    // player's pet in Nagafen's Lair while fighting them.
+                    //
+                    // Only what was attributed to *you* is dropped. Another
+                    // player's pet hitting you says nothing about whose it is.
+                    let was_yours = self
+                        .pet_owners
+                        .get(&source.key())
+                        .is_some_and(|o| *o == player);
+                    if was_yours {
                         self.pet_owners.remove(&source.key());
+                        self.summoned.remove(&source.key());
                         if let Some(enc) = self.current.as_mut() {
                             if let Some(st) = enc.actors.get_mut(&source.key()) {
                                 st.owned_by_you = false;
                                 st.owner = None;
+                                st.summoned = false;
                             }
                         }
                     }
@@ -3137,6 +3155,57 @@ mod tests {
         );
         // Its swing at the boss is not your damage either.
         assert_eq!(encs[1].your_damage_with_pets(), 30, "only your own 30");
+    }
+
+    /// `/pet leader` answers for a charmed mob too, so the summoned verdict
+    /// it produces can be wrong — and being wrong used to be permanent.
+    ///
+    /// The reported case: a fire giant warrior charmed on 12 August was asked
+    /// `/pet leader` just after its charm lapsed, so it was branded summoned
+    /// for good. A week later it was still listed as the player's pet, in a
+    /// Nagafen's Lair fight where it was hitting them.
+    #[test]
+    fn a_mistaken_summoned_brand_does_not_survive_being_attacked() {
+        let encs = run(&[
+            // Charmed, announced, then the charm lapses and `/pet leader` is
+            // typed — which files it as summoned.
+            (100, "A fire giant warrior told you, 'Attacking a giant Master.'"),
+            (101, "A fire giant warrior slashes a giant for 40 points of damage."),
+            (150, "A fire giant warrior hits YOU for 10 points of damage."),
+            (151, "A fire giant warrior says, 'My leader is Tharn.'"),
+            (160, "You have slain a giant!"),
+            // A later fight: it is an enemy, not a pet.
+            (9000, "You slash a fire giant warrior for 30 points of damage."),
+            (9001, "A fire giant warrior hits YOU for 25 points of damage."),
+            (9002, "A fire giant warrior slashes Warlord Skarlon for 15 points of damage."),
+            (9010, "You have slain a fire giant warrior!"),
+        ]);
+        // The idle gaps split this into three: the charmed pull, the one
+        // where `/pet leader` was typed, and the fight a week later.
+        let last = encs.last().expect("the later fight");
+        let now = last.actors.get("a fire giant warrior").expect("the enemy");
+        assert!(!now.owned_by_you, "it is fighting you, not for you");
+        assert!(!now.summoned, "the brand was inferred, and it was wrong");
+        assert_eq!(now.owner, None);
+        assert!(
+            !last.your_pets().iter().any(|p| p.name.to_lowercase().contains("fire giant")),
+            "and it is not listed among your pets"
+        );
+        assert_eq!(last.your_damage_with_pets(), 30, "only your own 30");
+    }
+
+    /// Another player's pet hitting you says nothing about whose it is.
+    #[test]
+    fn being_hit_by_someone_elses_pet_does_not_disown_it() {
+        let encs = run(&[
+            (100, "Gabeker says, 'My leader is Kallous.'"),
+            (101, "Gabeker slashes a giant for 10 points of damage."),
+            (102, "Gabeker hits YOU for 5 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        let g = encs[0].actors.get("gabeker").expect("their pet");
+        assert_eq!(g.owner.as_deref(), Some("Kallous"), "still theirs");
+        assert!(!g.owned_by_you);
     }
 
     /// A pet with a generated name that was never asked `/pet leader` is
