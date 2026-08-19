@@ -5,6 +5,7 @@
 //! process, so there is a single source of truth for what is happening in game.
 
 mod engine;
+mod itemdb;
 mod server;
 mod store;
 mod tail;
@@ -34,7 +35,16 @@ struct Config {
     /// Which game the log is from, when declared. Left `None` to infer it
     /// from the install path.
     game: Option<Game>,
+    /// Origin of the eqdb companion site, which serves item reference data.
+    ///
+    /// Defaults to the local development instance. It is a setting rather than
+    /// a constant because the site is going to be published, and pointing this
+    /// at the public one must not need a rebuild.
+    eqdb: String,
 }
+
+/// Where to look for the companion site when nothing says otherwise.
+const DEFAULT_EQDB: &str = "http://localhost:8788";
 
 fn usage() -> ! {
     eprintln!(
@@ -55,6 +65,10 @@ OPTIONS:
                        when omitted, and left unknown if that says nothing.
                        Everything the daemon records is tagged with it.
     --port <n>         HTTP port (default 8777).
+    --eqdb <url>       Origin of the eqdb companion site, used for item
+                       tooltips (default http://localhost:8788, or $EQLPARSER_EQDB).
+                       When it cannot be reached the bundled item data is used
+                       instead, so this is never required.
 
 ENDPOINTS:
     /                  Status page with overlay setup instructions
@@ -75,6 +89,7 @@ fn parse_args() -> Config {
         game_dir: None,
         port: DEFAULT_PORT,
         game: None,
+        eqdb: std::env::var("EQLPARSER_EQDB").unwrap_or_else(|_| DEFAULT_EQDB.to_string()),
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -97,6 +112,11 @@ fn parse_args() -> Config {
                     .next()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(DEFAULT_PORT)
+            }
+            "--eqdb" => {
+                if let Some(u) = args.next() {
+                    cfg.eqdb = u;
+                }
             }
             "-h" | "--help" => usage(),
             other => {
@@ -266,6 +286,7 @@ async fn main() -> anyhow::Result<()> {
         snapshot,
         updates,
         store: history,
+        itemdb: std::sync::Arc::new(crate::itemdb::ItemDb::new(cfg.eqdb.clone())),
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
@@ -427,6 +448,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
+            eqdb: DEFAULT_EQDB.to_string(),
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -442,6 +464,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
+            eqdb: DEFAULT_EQDB.to_string(),
         };
         assert!(resolve_log(&cfg).is_err());
     }

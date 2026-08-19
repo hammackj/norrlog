@@ -32,6 +32,9 @@ pub struct AppState {
     pub snapshot: Arc<RwLock<Snapshot>>,
     /// Fires whenever a new snapshot is published.
     pub updates: broadcast::Sender<()>,
+    /// Item reference data from the eqdb companion site, with the bundled
+    /// data behind it.
+    pub itemdb: Arc<crate::itemdb::ItemDb>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -68,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/quests/delete", post(delete_quest))
         .route("/api/quests/export", get(export_quests))
         .route("/api/aa", get(aa))
+        .route("/api/item", get(item_lookup))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
@@ -1405,6 +1409,48 @@ async fn aa(State(s): State<AppState>) -> Json<eqlparser_core::aa::AaReport> {
 /// Served as one map rather than folded into the Sky payload, so rewards and
 /// quest items share a single lookup and the quest response stays about
 /// progress.
+/// One item, for a tooltip.
+///
+/// Answers from eqdb when it can and from the bundled data when it cannot, and
+/// says which in `source` — a tooltip drawn from a file inside this binary and
+/// one drawn from the live site are not the same claim, and the panel should
+/// be able to say so.
+///
+/// Always 200. A name nothing knows about is a normal outcome, not an error:
+/// the client writes plenty of item names no reference has ever heard of.
+async fn item_lookup(
+    State(s): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let raw = q.get("name").cloned().unwrap_or_default();
+    // Graded drops are the same item; the tracker already folds them and the
+    // site only knows the ungraded name.
+    let name = eqlparser_core::drops::canonical_item(&raw).to_string();
+
+    let live = s.itemdb.item(&name).await;
+    // The bundled entry rides along even on a hit. The two sources do not
+    // cover the same ground: eqdb knows where an item drops and what it is
+    // used in, while the shipped data has an icon for items eqdb has none for
+    // yet. Handing both over lets the tooltip prefer the live answer field by
+    // field without this endpoint deciding which fields matter.
+    let bundled: Option<serde_json::Value> = serde_json::from_str::<serde_json::Value>(WIKI_ITEMS)
+        .ok()
+        .and_then(|m| m.get(&name.to_lowercase()).cloned());
+    let source = match (&live, &bundled) {
+        (Some(_), _) => "eqdb",
+        (None, Some(_)) => "bundled",
+        (None, None) => "unknown",
+    };
+    Json(serde_json::json!({
+        "name": name,
+        "source": source,
+        "base": s.itemdb.base(),
+        "eqdb": live,
+        "wiki": bundled,
+    }))
+    .into_response()
+}
+
 async fn wiki() -> Response {
     (
         StatusCode::OK,
@@ -1524,6 +1570,12 @@ mod tests {
             engine: Arc::new(Mutex::new(engine)),
             snapshot: Arc::new(RwLock::new(snap)),
             updates: tx,
+            // An origin nothing is listening on: the tests must never depend
+            // on the companion site being up, and this proves the fallback is
+            // what they exercise.
+            itemdb: Arc::new(crate::itemdb::ItemDb::new(
+                "http://127.0.0.1:1".to_string(),
+            )),
         }
     }
 
