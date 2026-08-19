@@ -203,6 +203,16 @@ pub struct ActorStats {
     /// `damage_done` so a charmed mob's contribution can be credited to you
     /// without double counting it in the encounter total.
     pub damage_while_charmed: u64,
+    /// Damage this actor absorbed while charmed by you — that is, while it was
+    /// fighting on your side rather than against you.
+    ///
+    /// The mirror of `damage_while_charmed`, and needed for the same reason. A
+    /// charmed mob keeps `damaged_by_you` from the pull that landed the charm,
+    /// so without this the boss beating on your pet counted as damage your
+    /// side put into the enemy — and the headline could exceed everything you
+    /// and the pet dealt.
+    #[serde(default)]
+    pub damage_taken_while_charmed: u64,
     /// The player this creature fights for, when it is a pet.
     ///
     /// Covers your own pets and other people's. Charmed mobs of yours get an
@@ -299,6 +309,7 @@ impl ActorStats {
         self.charmed_seconds += o.charmed_seconds;
         self.charm_breaks += o.charm_breaks;
         self.damage_while_charmed += o.damage_while_charmed;
+        self.damage_taken_while_charmed += o.damage_taken_while_charmed;
         self.damaged_by_you |= o.damaged_by_you;
         self.healed_by_you |= o.healed_by_you;
         self.charmed_by_you |= o.charmed_by_you;
@@ -778,20 +789,36 @@ impl Encounter {
     /// This is the figure a damage meter is usually asked for: how much your
     /// side put into the enemy. Measured from what enemies *took* rather than
     /// what allies *dealt*, so damage from an unidentified ally still counts.
+    ///
+    /// What a creature absorbed while charmed by you is not part of it. A
+    /// charmed mob was an enemy before the charm landed, and keeps
+    /// `damaged_by_you` from then on, so counting everything it took meant the
+    /// boss hitting your own pet was scored as damage into the enemy — leaving
+    /// a headline larger than everything you and the pet dealt put together.
+    /// Damage done to it *before* the charm still counts, because then it
+    /// really was the enemy.
     pub fn damage_to_enemies(&self) -> u64 {
         self.actors
             .values()
             .filter(|s| s.damaged_by_you)
-            .map(|s| s.damage_taken)
+            .map(|s| s.damage_taken - s.damage_taken_while_charmed)
             .sum()
     }
 
     /// Damage absorbed by you and anything fighting alongside you.
+    ///
+    /// Includes what your charmed pets took while they were holding, which is
+    /// the half [`Self::damage_to_enemies`] sets aside.
     pub fn damage_to_allies(&self) -> u64 {
         self.actors
             .values()
-            .filter(|s| !s.damaged_by_you)
-            .map(|s| s.damage_taken)
+            .map(|s| {
+                if s.damaged_by_you {
+                    s.damage_taken_while_charmed
+                } else {
+                    s.damage_taken
+                }
+            })
             .sum()
     }
 
@@ -1387,6 +1414,9 @@ impl EncounterTracker {
                 let crit = flags.is_crit();
                 let player = self.player.clone();
                 let mut src_charmed = self.charmed.contains_key(&source.key());
+                // The target's own charm state, which is what decides
+                // whether a hit landing on it was landing on an enemy.
+                let tgt_charmed = self.charmed.contains_key(&target.key());
                 // Blows in either direction count: the game gives you no way to
                 // attack a pet of your own summoning, so having swung at a
                 // creature says it was an enemy just as plainly as being hit
@@ -1476,6 +1506,9 @@ impl EncounterTracker {
                         .unwrap_or_else(|| source.display(&player));
                     let t = enc.entry(target, &player);
                     t.damage_taken += *amount;
+                    if tgt_charmed {
+                        t.damage_taken_while_charmed += *amount;
+                    }
                     *t.damage_taken_by_kind.entry(label).or_default() += *amount;
                     let ai = t.damage_taken_by_ability.entry(ability_in).or_default();
                     if ai.kind.is_empty() {
@@ -1992,6 +2025,59 @@ mod tests {
             "your 100 plus the charmed pet's 400"
         );
         assert_eq!(e.damage_to_allies(), 50);
+    }
+
+    /// The reported case: with a charmed pet, "damage to enemy" read higher
+    /// than everything the player and the pet had dealt.
+    ///
+    /// A charmed mob keeps `damaged_by_you` from the pull that landed the
+    /// charm, so every hit the boss put into the pet was being scored as
+    /// damage into the enemy. Damage dealt to it *before* the charm is a
+    /// different matter and still counts — then it really was the enemy.
+    #[test]
+    fn a_boss_beating_on_your_charmed_pet_is_not_damage_to_the_enemy() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        let push = |t: &mut EncounterTracker, ts: i64, line: &str| {
+            for e in &entries(&[(ts, line)]) {
+                t.push(e);
+            }
+        };
+        // You soften the imp up, then charm it.
+        push(&mut t, 100, "You slash An imp protector for 70 points of damage.");
+        t.set_charmed(101, &imp, true);
+        // Now it fights for you, and the boss turns on it.
+        push(&mut t, 102, "You slash a fire giant for 100 points of damage.");
+        push(
+            &mut t,
+            103,
+            "An imp protector slashes a fire giant for 400 points of damage.",
+        );
+        push(&mut t, 104, "A fire giant hits An imp protector for 250 points of damage.");
+        push(&mut t, 105, "A fire giant hits YOU for 50 points of damage.");
+        let enc = t.flush().expect("encounter");
+
+        // The giant absorbed 500; the imp absorbed 70 while it was still an
+        // enemy. The 250 it took as your pet is not damage into the enemy.
+        assert_eq!(
+            enc.damage_to_enemies(),
+            570,
+            "500 into the giant, 70 into the imp before it was charmed"
+        );
+        // And it is not more than your side actually dealt.
+        assert!(
+            enc.damage_to_enemies() <= enc.your_damage_with_pets() + 70,
+            "to_enemies {} must not exceed what you and the pet dealt",
+            enc.damage_to_enemies()
+        );
+        // Your side absorbed the rest: your 50 plus the pet's 250.
+        assert_eq!(enc.damage_to_allies(), 300);
+        // Nothing is lost between the two halves.
+        assert_eq!(
+            enc.damage_to_enemies() + enc.damage_to_allies(),
+            enc.total_damage(),
+            "every point lands on one side or the other"
+        );
     }
 
     /// "What is hitting me" has to be accumulated on the receiving actor: an
