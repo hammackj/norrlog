@@ -269,6 +269,13 @@ pub struct Totals {
     pub kills: usize,
     pub deaths: u64,
     pub items_looted: usize,
+    /// Sessions seen in this log, and the seconds spent inside them. The
+    /// denominator for any "per hour" figure, since the log's own span counts
+    /// the days the game was closed.
+    #[serde(default)]
+    pub sessions: u32,
+    #[serde(default)]
+    pub played_seconds: i64,
     /// Coin taken directly from corpses.
     pub coin_copper: u64,
     /// Coin from items auto-sold on pickup — a large share of real income.
@@ -651,6 +658,14 @@ pub struct Engine {
     last_timestamp: i64,
     /// When the current play session began.
     session_start: i64,
+    /// Sessions seen so far, and the seconds inside them.
+    ///
+    /// A rate needs a denominator, and the log's span is the wrong one: it
+    /// includes every hour the game was not running. These count only the
+    /// stretches the log was being written, so "per hour" means an hour of
+    /// playing rather than an hour of the calendar.
+    sessions: u32,
+    played_seconds: i64,
     /// Whether a logon has been seen, after which gaps stop being used.
     seen_logon: bool,
     /// Difference between log time and system time, learned once we are
@@ -736,6 +751,8 @@ impl Engine {
             player,
             last_timestamp: 0,
             session_start: 0,
+            sessions: 0,
+            played_seconds: 0,
             seen_logon: false,
             clock_offset: None,
             live: false,
@@ -803,6 +820,35 @@ impl Engine {
             (true, Some(off)) => (system_now() + off).max(self.last_timestamp),
             _ => self.last_timestamp,
         }
+    }
+
+    /// Start a session at `at`, closing out the one before it.
+    ///
+    /// Called from both boundaries — the logon line the client states, and the
+    /// long silence inferred when no logon has been seen — so the count and the
+    /// played total cannot disagree about what a session is.
+    fn begin_session(&mut self, at: i64) {
+        self.session_start = at;
+    }
+
+    /// Seconds of play.
+    ///
+    /// The sum of the gaps between consecutive lines that are shorter than
+    /// [`SESSION_GAP_SECONDS`]. Deliberately not derived from session starts:
+    /// `session_start` stops moving once a logon line has been seen — after
+    /// that the client states its own boundaries — and a log whose logons are
+    /// sparse would count every night the game was closed as time played. It
+    /// did: 536 hours over a 23-day log, which is 23 hours a day.
+    ///
+    /// Counting only the short gaps needs no notion of where a session begins,
+    /// which is why it cannot drift from one.
+    pub fn played_seconds(&self) -> i64 {
+        self.played_seconds
+    }
+
+    /// Sittings the log covers: one, plus a break for every long silence.
+    pub fn sessions(&self) -> u32 {
+        self.sessions.max(1)
     }
 
     /// The spell file this binary loaded, for callers that need to place a
@@ -907,10 +953,22 @@ impl Engine {
             if self.last_timestamp > 0
                 && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS
             {
-                self.session_start = entry.timestamp;
+                self.begin_session(entry.timestamp);
             } else if self.session_start == 0 {
-                self.session_start = entry.timestamp;
+                self.begin_session(entry.timestamp);
             }
+        }
+        // Time played, and how many sittings it took. A gap longer than the
+        // threshold is the game being shut, so it is neither.
+        if self.last_timestamp > 0 {
+            let gap = entry.timestamp - self.last_timestamp;
+            if gap > SESSION_GAP_SECONDS {
+                self.sessions += 1;
+            } else if gap > 0 {
+                self.played_seconds += gap;
+            }
+        } else {
+            self.sessions = 1;
         }
         self.last_timestamp = entry.timestamp;
         // Keep the log/system clock relationship current while following live;
@@ -1105,7 +1163,7 @@ impl Engine {
                 }
             }
             Event::LoggedOn => {
-                self.session_start = entry.timestamp;
+                self.begin_session(entry.timestamp);
                 self.seen_logon = true;
             }
             Event::Tell { from, to, message } => {
@@ -2869,6 +2927,8 @@ impl Engine {
             encounters: self.encounters.len() + usize::from(in_progress.is_some()),
             ..Default::default()
         };
+        totals.sessions = self.sessions();
+        totals.played_seconds = self.played_seconds();
         totals.coin_copper = self.coin_from_corpses;
         totals.coin_from_sales_copper = self.coin_from_sales;
         totals.coin_total_copper = self.coin_from_corpses + self.coin_from_sales;
@@ -3553,6 +3613,43 @@ mod tests {
         assert!(
             cell.last_kill.is_some(),
             "a boss you fought counts even when the pet lands the blow"
+        );
+    }
+
+    /// A rate needs a denominator, and the log's span is not it: it counts the
+    /// days the game was closed. These count only the stretches being written.
+    #[test]
+    fn sessions_and_played_time_skip_the_gaps() {
+        let mut e = engine();
+        // Ten minutes of play.
+        e.push_line("[Tue Jul 28 12:00:00 2026] You slash a rat for 1 point of damage.");
+        e.push_line("[Tue Jul 28 12:10:00 2026] You slash a rat for 1 point of damage.");
+        assert_eq!(e.sessions(), 1);
+        assert_eq!(e.played_seconds(), 600);
+
+        // A short pause is the same session; the gap threshold is 30 minutes.
+        e.push_line("[Tue Jul 28 12:25:00 2026] You slash a rat for 1 point of damage.");
+        assert_eq!(e.sessions(), 1);
+        assert_eq!(e.played_seconds(), 1_500);
+
+        // Two days off, then five more minutes: a second session, and none of
+        // the two days counted.
+        e.push_line("[Thu Jul 30 09:00:00 2026] You slash a rat for 1 point of damage.");
+        e.push_line("[Thu Jul 30 09:05:00 2026] You slash a rat for 1 point of damage.");
+        assert_eq!(e.sessions(), 2);
+        assert_eq!(e.played_seconds(), 1_500 + 300, "the gap is not play");
+
+        // And a logon partway through does not stop the accounting: the
+        // client stating its own boundary is about where a session starts,
+        // not about what counts as time played.
+        e.push_line("[Thu Jul 30 09:06:00 2026] Welcome to EverQuest!");
+        e.push_line("[Fri Jul 31 20:00:00 2026] You slash a rat for 1 point of damage.");
+        e.push_line("[Fri Jul 31 20:02:00 2026] You slash a rat for 1 point of damage.");
+        assert_eq!(e.sessions(), 3, "a day and a half off is another sitting");
+        assert_eq!(
+            e.played_seconds(),
+            1_500 + 300 + 60 + 120,
+            "still only the short gaps"
         );
     }
 
