@@ -51,6 +51,21 @@ pub struct MeterRow {
     /// mechanism from an ordinary `Critical` and the melee rate alone cannot
     /// say which one a paladin's biggest hits came from.
     pub crit_by_flag: Vec<(String, u64)>,
+    /// Extra-attack and reaction flags, as (flag, swings), most frequent
+    /// first — Flurry, Riposte, Rampage, Finishing Blow. Counted over hits and
+    /// misses alike; see `ActorStats::swings_by_flag`.
+    #[serde(default)]
+    pub swings_by_flag: Vec<(String, u64)>,
+    /// Melee swings, the denominator those flags are a rate against.
+    #[serde(default)]
+    pub melee_swings: u64,
+    /// What became of this actor's own swings: (outcome, count), covering
+    /// landed, missed, and each way a target turned one aside.
+    #[serde(default)]
+    pub offence_outcomes: Vec<(String, u64)>,
+    /// The same for swings aimed at this actor — its defence.
+    #[serde(default)]
+    pub defence_outcomes: Vec<(String, u64)>,
     /// Heals cast and how many crit. Kept apart from `crit_rate`, which is
     /// damage: a healer who never swings would otherwise have no crit rate.
     pub heals: u64,
@@ -2719,6 +2734,58 @@ impl Engine {
                 taken_share: s.damage_taken as f64 / total_taken_f,
                 healing_received: s.healing_received,
                 crit_rate: s.crit_rate(),
+                swings_by_flag: {
+                    // Crit flags are already reported on their own, and a
+                    // "Critical" here would sit beside Flurry as though they
+                    // answered the same question.
+                    let mut v: Vec<(String, u64)> = s
+                        .swings_by_flag
+                        .iter()
+                        .filter(|(f, _)| {
+                            !["Critical", "Crippling Blow", "Deadly Strike", "Slay Undead"]
+                                .iter()
+                                .any(|k| f.eq_ignore_ascii_case(k))
+                        })
+                        .map(|(f, n)| (f.clone(), *n))
+                        .collect();
+                    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                    v
+                },
+                // Two ledgers of the same shape: what happened to the swings
+                // this actor threw, and to the swings thrown at it. A plain
+                // miss is kept apart from a parry on purpose — one is failing
+                // to connect, the other is the target succeeding, and a
+                // defence that eats a third of your swings is a different
+                // problem from poor accuracy.
+                offence_outcomes: {
+                    let stopped: u64 = s.swings_stopped_by.values().sum();
+                    let mut v = vec![
+                        ("landed".to_string(), s.hits),
+                        ("missed".to_string(), s.misses.saturating_sub(stopped)),
+                    ];
+                    v.extend(s.swings_stopped_by.iter().map(|(k, n)| (k.clone(), *n)));
+                    v.retain(|(_, n)| *n > 0);
+                    v
+                },
+                defence_outcomes: {
+                    let avoided: u64 = s.avoided_by.values().sum();
+                    let mut v = vec![
+                        ("landed".to_string(), s.damage_taken_hits()),
+                        (
+                            "missed".to_string(),
+                            s.attacks_missed.saturating_sub(avoided),
+                        ),
+                    ];
+                    v.extend(s.avoided_by.iter().map(|(k, n)| (k.clone(), *n)));
+                    v.retain(|(_, n)| *n > 0);
+                    v
+                },
+                melee_swings: s
+                    .hits_by_kind
+                    .get("melee")
+                    .copied()
+                    .unwrap_or(0)
+                    + s.misses,
                 crit_by_kind: s
                     .crit_breakdown()
                     .into_iter()

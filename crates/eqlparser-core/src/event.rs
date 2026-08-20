@@ -166,6 +166,11 @@ impl Flags {
         }
     }
 
+    /// Every flag on this hit, as the client wrote them.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(String::as_str)
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.0.iter().any(|f| f.eq_ignore_ascii_case(name))
     }
@@ -487,6 +492,10 @@ pub enum Event {
         target: Actor,
         /// "block", "parry", "dodge", "riposte".
         how: String,
+        /// The client marks these too — a flurry that gets parried still
+        /// fired, and counting the mechanic only when it connects reports it
+        /// firing less often than it does.
+        flags: Flags,
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },

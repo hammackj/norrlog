@@ -214,6 +214,31 @@ pub struct ActorStats {
     /// rate against undead is a different mechanic from an ordinary critical,
     /// and the slay hits are often the largest of the fight.
     pub crits_by_flag: HashMap<String, u64>,
+    /// Every flag the client wrote on a swing, hit or miss.
+    ///
+    /// Separate from `crits_by_flag`, which counts only the flags that mean a
+    /// critical. Flurry, Riposte, Rampage and Finishing Blow are extra attacks
+    /// or reactions rather than bigger ones, and asking how often you flurry is
+    /// a different question from asking how often you crit.
+    ///
+    /// Misses count. A flurry that misses still happened — leaving it out
+    /// would report the mechanic firing less often than it does, which is the
+    /// opposite of what the number is for.
+    #[serde(default)]
+    pub swings_by_flag: HashMap<String, u64>,
+    /// How this actor's own swings were turned aside, by mechanism — dodge,
+    /// parry, block, riposte. Its offence.
+    ///
+    /// A plain miss is not here: it is already counted in `misses`, and it is
+    /// a different fact. Missing is you failing to connect; being parried is
+    /// the target succeeding, and a defence that stops a third of your swings
+    /// is worth telling apart from an accuracy problem.
+    #[serde(default)]
+    pub swings_stopped_by: HashMap<String, u64>,
+    /// How this actor turned swings aside, by the same mechanisms. Its
+    /// defence.
+    #[serde(default)]
+    pub avoided_by: HashMap<String, u64>,
     /// True if the logging character damaged this actor — strong evidence it
     /// is an enemy.
     pub damaged_by_you: bool,
@@ -359,6 +384,9 @@ impl ActorStats {
         merge_counts(&mut self.hits_by_kind, &o.hits_by_kind);
         merge_counts(&mut self.crits_by_kind, &o.crits_by_kind);
         merge_counts(&mut self.crits_by_flag, &o.crits_by_flag);
+        merge_counts(&mut self.swings_by_flag, &o.swings_by_flag);
+        merge_counts(&mut self.swings_stopped_by, &o.swings_stopped_by);
+        merge_counts(&mut self.avoided_by, &o.avoided_by);
         merge_abilities(&mut self.by_ability, &o.by_ability);
         merge_abilities(&mut self.damage_taken_by_ability, &o.damage_taken_by_ability);
         merge_abilities(&mut self.healing_by_spell, &o.healing_by_spell);
@@ -1652,6 +1680,9 @@ impl EncounterTracker {
                     let label = kind_label(*kind).to_string();
                     *s.damage_by_kind.entry(label.clone()).or_default() += *amount;
                     *s.hits_by_kind.entry(label.clone()).or_default() += 1;
+                    for f in flags.names() {
+                        *s.swings_by_flag.entry(f.to_string()).or_default() += 1;
+                    }
                     if crit {
                         *s.crits_by_kind.entry(label).or_default() += 1;
                         // Also by cause. A hit can carry more than one crit
@@ -1735,7 +1766,7 @@ impl EncounterTracker {
                 source,
                 target,
                 ability,
-                ..
+                flags,
             } => {
                 self.ensure_open(entry.timestamp);
                 let player = self.player.clone();
@@ -1745,6 +1776,10 @@ impl EncounterTracker {
                     let s = enc.entry(source, &player);
                     s.misses += 1;
                     s.by_ability.entry(name.clone()).or_default().misses += 1;
+                    // A flurry that misses is still a flurry.
+                    for f in flags.names() {
+                        *s.swings_by_flag.entry(f.to_string()).or_default() += 1;
+                    }
                 }
                 if source.is_you() {
                     enc.note_timeline(entry.timestamp, &name, Outcome::Miss, 0, "melee");
@@ -1753,12 +1788,29 @@ impl EncounterTracker {
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
             }
-            Event::Avoided { source, target, .. } => {
+            Event::Avoided {
+                source,
+                target,
+                how,
+                flags,
+            } => {
                 self.ensure_open(entry.timestamp);
                 let player = self.player.clone();
                 let enc = self.current.as_mut().unwrap();
-                enc.entry(source, &player).misses += 1;
-                enc.entry(target, &player).avoided += 1;
+                {
+                    let s = enc.entry(source, &player);
+                    s.misses += 1;
+                    *s.swings_stopped_by.entry(how.clone()).or_default() += 1;
+                    // A flurry stopped by a parry still flurried.
+                    for f in flags.names() {
+                        *s.swings_by_flag.entry(f.to_string()).or_default() += 1;
+                    }
+                }
+                {
+                    let t = enc.entry(target, &player);
+                    t.avoided += 1;
+                    *t.avoided_by.entry(how.clone()).or_default() += 1;
+                }
                 // Counted as a miss on the timeline for the same reason the
                 // meter counts it as one: from your side, the swing produced
                 // nothing. The log names no ability on these lines.

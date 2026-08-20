@@ -73,6 +73,7 @@ enum RuleId {
     AbilityListDescription,
     AbilityListCost,
     Avoided,
+    AvoidedByYou,
     ResistedYours,
     ResistedGeneric,
     SkillUp,
@@ -235,7 +236,17 @@ static RULES: &[(RuleId, &str)] = &[
     // "An imp protector tries to hit YOU, but YOU block!"
     (
         RuleId::Avoided,
-        r"^(?P<src>.+?) tries to {VERB}(?: on)? (?P<tgt>.+?), but (?P<defender>.+?) (?P<how>blocks?|parr(?:y|ies)|dodges?|ripostes?)!$",
+        r"^(?P<src>.+?) tries to {VERB}(?: on)? (?P<tgt>.+?), but (?P<defender>.+?) (?P<how>blocks?|parr(?:y|ies)|dodges?|ripostes?)!(?: \((?P<flags>[^)]*)\))?$",
+    ),
+    // The same line with you as the attacker. The client conjugates for the
+    // second person — "You try to" against "X tries to" — exactly as it does
+    // for a miss, which has had two rules from the start. This one did not,
+    // so every swing of yours that was dodged, parried or blocked parsed as
+    // Unknown: 21,889 lines in the reference log, and your own avoidance
+    // figures had nothing in them.
+    (
+        RuleId::AvoidedByYou,
+        r"^You try to {VERB}(?: on)? (?P<tgt>.+?), but (?P<defender>.+?) (?P<how>blocks?|parr(?:y|ies)|dodges?|ripostes?)!(?: \((?P<flags>[^)]*)\))?$",
     ),
     // ---- Resists ------------------------------------------------------------
     (
@@ -1199,6 +1210,13 @@ impl Parser {
                     source: self.actor(g("src").unwrap_or_default()),
                     target: self.actor(g("tgt").unwrap_or_default()),
                     how: normalise_avoidance(g("how").unwrap_or_default()),
+                    flags: Flags::parse(g("flags")),
+                },
+                RuleId::AvoidedByYou => Event::Avoided {
+                    source: Actor::You,
+                    target: self.actor(g("tgt").unwrap_or_default()),
+                    how: normalise_avoidance(g("how").unwrap_or_default()),
+                    flags: Flags::parse(g("flags")),
                 },
                 RuleId::ResistedYours => Event::Resisted {
                     target: self.actor(g("tgt").unwrap_or_default()),
@@ -1415,6 +1433,48 @@ mod tests {
 
     fn p() -> Parser {
         Parser::new("Tharn")
+    }
+
+    /// The client conjugates for the second person, and only the third-person
+    /// form was ever matched — so every swing of yours that was dodged,
+    /// parried or blocked parsed as Unknown.
+    #[test]
+    fn your_own_swings_can_be_avoided_too() {
+        let both = |body: &str| p().parse_body(body);
+        match both("You try to slash Maestro of Rancor, but Maestro of Rancor parries!") {
+            Event::Avoided {
+                source,
+                target,
+                how,
+                ..
+            } => {
+                assert!(source.is_you());
+                assert_eq!(target.display("Tharn"), "Maestro of Rancor");
+                assert_eq!(how, "parry");
+            }
+            other => panic!("expected Avoided, got {other:?}"),
+        }
+        // The third-person form still works, and still names its defender.
+        match both("A giant tries to hit YOU, but YOU parry!") {
+            Event::Avoided { source, how, .. } => {
+                assert_eq!(source.display("Tharn"), "A giant");
+                assert_eq!(how, "parry");
+            }
+            other => panic!("expected Avoided, got {other:?}"),
+        }
+        // A flurry that gets parried still flurried.
+        match both("You try to slash a giant, but a giant dodges! (Flurry)") {
+            Event::Avoided { how, flags, .. } => {
+                assert_eq!(how, "dodge");
+                assert!(flags.has("Flurry"));
+            }
+            other => panic!("expected Avoided, got {other:?}"),
+        }
+        // And a plain miss is still a miss, not an avoidance.
+        assert!(matches!(
+            both("You try to slash a giant, but miss!"),
+            Event::Miss { .. }
+        ));
     }
 
     #[test]
