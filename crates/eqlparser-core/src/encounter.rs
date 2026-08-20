@@ -641,6 +641,9 @@ pub struct Encounter {
     /// not a skill you pressed, and mixing the two makes the lanes unreadable.
     #[serde(default)]
     pub timeline: Vec<TimelineEvent>,
+    /// Stance and invocation changes made during the fight.
+    #[serde(default)]
+    pub marks: Vec<TimelineMark>,
     /// Events that happened but were not recorded, because the fight ran past
     /// [`TIMELINE_MAX`]. Reported rather than hidden: a truncated timeline that
     /// looks complete would misread as a lull.
@@ -686,6 +689,27 @@ pub struct TimelineEvent {
     pub outcome: Outcome,
     /// Zero for anything that did not land.
     pub amount: u64,
+    /// The mechanism — "melee", "spell", "dot", "damage shield". Empty for a
+    /// cast or a resist, which landed nothing to classify.
+    ///
+    /// Carried so a damage-over-time effect can be drawn as the span it
+    /// occupied rather than as the moments it ticked: uptime is the question a
+    /// dot raises, and a row of dots does not answer it.
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// A moment worth marking on the timeline that is not damage.
+///
+/// Stance and invocation changes: both are deliberate acts mid-fight whose
+/// effect is on everything after them, so they belong as a line across the
+/// chart rather than as a lane of their own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineMark {
+    pub at: i64,
+    /// "stance" or "invocation".
+    pub kind: String,
+    pub label: String,
 }
 
 /// One creature's share of a fight.
@@ -767,7 +791,14 @@ impl Encounter {
     }
 
     /// Record one of your actions on the timeline, if there is room.
-    fn note_timeline(&mut self, at: i64, ability: &str, outcome: Outcome, amount: u64) {
+    fn note_timeline(
+        &mut self,
+        at: i64,
+        ability: &str,
+        outcome: Outcome,
+        amount: u64,
+        kind: &str,
+    ) {
         if self.timeline.len() >= TIMELINE_MAX {
             self.timeline_dropped += 1;
             return;
@@ -777,8 +808,10 @@ impl Encounter {
             ability: ability.to_string(),
             outcome,
             amount,
+            kind: kind.to_string(),
         });
     }
+
 
     /// Wall-clock length. Floored at one second so a burst fight that starts
     /// and ends within the same log second cannot divide by zero.
@@ -1262,6 +1295,23 @@ impl EncounterTracker {
     /// breaks and is recast constantly, and a mob that fought for you at any
     /// point in a fight should read as a pet for the whole of it rather than
     /// flickering between pet and enemy.
+    /// Mark a stance or invocation change on the timeline.
+    ///
+    /// Only inside a fight: swapping between pulls is ordinary housekeeping,
+    /// and marking it would put a line on every chart for something that
+    /// happened while nothing was going on.
+    pub fn note_mark(&mut self, at: i64, kind: &str, label: &str) {
+        if let Some(enc) = self.current.as_mut() {
+            if enc.marks.len() < TIMELINE_MAX {
+                enc.marks.push(TimelineMark {
+                    at,
+                    kind: kind.to_string(),
+                    label: label.to_string(),
+                });
+            }
+        }
+    }
+
     pub fn set_charmed(&mut self, timestamp: i64, actor: &Actor, charmed: bool) {
         let key = actor.key();
         if charmed {
@@ -1473,7 +1523,7 @@ impl EncounterTracker {
                         .or_default() += 1;
                     // The client only reports resists of your own spells, so
                     // this needs no source check.
-                    enc.note_timeline(entry.timestamp, spell, Outcome::Resist, 0);
+                    enc.note_timeline(entry.timestamp, spell, Outcome::Resist, 0, "");
                 }
             }
             Event::Damage {
@@ -1619,7 +1669,7 @@ impl EncounterTracker {
                 }
                 if src_is_you {
                     let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
-                    enc.note_timeline(entry.timestamp, &ability_label, outcome, *amount);
+                    enc.note_timeline(entry.timestamp, &ability_label, outcome, *amount, kind_label(*kind));
                 }
                 {
                     let label = kind_label(*kind).to_string();
@@ -1686,7 +1736,7 @@ impl EncounterTracker {
                     s.by_ability.entry(name.clone()).or_default().misses += 1;
                 }
                 if source.is_you() {
-                    enc.note_timeline(entry.timestamp, &name, Outcome::Miss, 0);
+                    enc.note_timeline(entry.timestamp, &name, Outcome::Miss, 0, "melee");
                 }
                 enc.entry(target, &player).attacks_missed += 1;
                 self.last_combat = entry.timestamp;
@@ -1702,7 +1752,7 @@ impl EncounterTracker {
                 // meter counts it as one: from your side, the swing produced
                 // nothing. The log names no ability on these lines.
                 if source.is_you() {
-                    enc.note_timeline(entry.timestamp, "melee", Outcome::Miss, 0);
+                    enc.note_timeline(entry.timestamp, "melee", Outcome::Miss, 0, "melee");
                 }
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
@@ -1846,6 +1896,7 @@ impl EncounterTracker {
     fn ensure_open(&mut self, timestamp: i64) {
         if self.current.is_none() {
             self.current = Some(Encounter {
+                marks: Vec::new(),
                 id: self.next_id,
                 zone: self.zone.clone(),
                 start: timestamp,

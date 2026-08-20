@@ -1239,6 +1239,9 @@ impl Engine {
             Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
+                // An invocation swap changes what you are, so a fight either
+                // side of one is two different characters' damage.
+                self.tracker.note_mark(entry.timestamp, "invocation", name);
             }
             Event::AbilityListEntry { id, ability } => {
                 self.aa.on_entry(*id, ability);
@@ -1274,7 +1277,12 @@ impl Engine {
                     }
                 }
             }
-            Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
+            Event::StanceChanged { stance } => {
+                self.bestiary.on_stance(stance);
+                // Mid-fight it is a decision worth seeing against the damage
+                // either side of it.
+                self.tracker.note_mark(entry.timestamp, "stance", stance);
+            }
             Event::LevelUp { level } => {
                 // The grants for this level were printed a moment ago, before
                 // the line that says which level it is.
@@ -2439,6 +2447,9 @@ impl Engine {
             coin_copper: 0,
             resists: std::collections::HashMap::new(),
             timeline: Vec::new(),
+            // A merged view spans many fights, so a mark from one of them
+            // would sit at a moment the merged chart does not have.
+            marks: Vec::new(),
             timeline_dropped: 0,
             timeline_retained: false,
         };
