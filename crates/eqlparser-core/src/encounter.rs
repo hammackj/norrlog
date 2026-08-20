@@ -138,6 +138,20 @@ pub struct ActorStats {
     /// back out wherever the question is how much you put into something else.
     #[serde(default)]
     pub self_damage: u64,
+    /// True when at least two creatures in this fight answered to this name.
+    ///
+    /// The log gives no instance id, so identically-named creatures are one
+    /// row and nothing can separate them. What *can* be known is that they
+    /// were more than one: a creature attacking or killing something with its
+    /// own name is proof, and a charming class produces that constantly —
+    /// your charmed fire giant warrior fighting another fire giant warrior.
+    ///
+    /// The row's totals then pool both sides, and if either was yours the
+    /// whole row is marked as yours. This flag does not fix that. It says the
+    /// number cannot be read as one creature's, which is the difference
+    /// between a wrong figure and an honest one.
+    #[serde(default)]
+    pub name_shared: bool,
     pub healing_done: u64,
     pub healing_received: u64,
     pub hits: u64,
@@ -308,6 +322,7 @@ impl ActorStats {
         self.damage_done += o.damage_done;
         self.damage_taken += o.damage_taken;
         self.self_damage += o.self_damage;
+        self.name_shared |= o.name_shared;
         self.healing_done += o.healing_done;
         self.healing_received += o.healing_received;
         self.hits += o.hits;
@@ -1555,6 +1570,10 @@ impl EncounterTracker {
                 // A spell cast on yourself for a price. Its damage is real and
                 // stays in the totals, but it was never aimed at anything.
                 let hit_yourself = src_is_you && target.is_you();
+                // Two creatures of the same name, proved by one attacking the
+                // other: the log writes both as the same actor, so this line
+                // is the only evidence they were ever two.
+                let shared_name = !src_is_you && source.key() == target.key();
                 {
                     let s = enc.entry(source, &player);
                     s.damage_done += *amount;
@@ -1589,6 +1608,9 @@ impl EncounterTracker {
                     }
                     if hit_yourself {
                         a.self_inflicted = true;
+                    }
+                    if shared_name {
+                        s.name_shared = true;
                     }
                     a.record_hit(*amount, crit);
                     if hit_yourself {
@@ -1740,7 +1762,20 @@ impl EncounterTracker {
                 self.ensure_open(entry.timestamp);
                 let player = self.player.clone();
                 let enc = self.current.as_mut().unwrap();
-                enc.entry(victim, &player).deaths += 1;
+                // A creature killed by something of its own name is the same
+                // proof a same-name attack is, and it is the last thing the
+                // pair does — worth catching, since a short fight may produce
+                // no attack line naming both.
+                let shared_name = killer
+                    .as_ref()
+                    .is_some_and(|k| !k.is_you() && k.key() == victim.key());
+                {
+                    let v = enc.entry(victim, &player);
+                    v.deaths += 1;
+                    if shared_name {
+                        v.name_shared = true;
+                    }
+                }
                 if let Some(k) = killer {
                     enc.entry(k, &player).killing_blows += 1;
                 }
@@ -2336,6 +2371,52 @@ mod tests {
             !encs[0].actors.contains_key("a wandering shaman"),
             "a passing caster is not a combatant"
         );
+    }
+
+    /// Two creatures with one name are one row, and nothing in the log can
+    /// separate them. What the log does say is that they were two.
+    #[test]
+    fn a_creature_fighting_its_own_name_marks_the_row_as_shared() {
+        let encs = run(&[
+            (100, "You slash a fire giant warrior for 100 points of damage."),
+            // Your charmed one, fighting another of the same name. The log
+            // writes both as the same actor.
+            (
+                101,
+                "A fire giant warrior hits a fire giant warrior for 196 points of damage.",
+            ),
+            (110, "You have slain a fire giant warrior!"),
+        ]);
+        let giant = encs[0].actors.get("a fire giant warrior").unwrap();
+        assert!(giant.name_shared, "the row pools at least two creatures");
+
+        // A creature hitting something else is not evidence of anything.
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (101, "A giant hits a rat for 5 points of damage."),
+            (110, "You have slain a giant!"),
+        ]);
+        assert!(!encs[0].actors.get("a giant").unwrap().name_shared);
+        assert!(!encs[0].actors.get("a rat").unwrap().name_shared);
+    }
+
+    /// A short fight may produce no attack line naming both, but the kill line
+    /// still does.
+    #[test]
+    fn a_creature_slain_by_its_own_name_marks_the_row_as_shared() {
+        let encs = run(&[
+            (100, "You slash an imp protector for 10 points of damage."),
+            (101, "An imp protector has been slain by an imp protector!"),
+        ]);
+        let imp = encs[0].actors.get("an imp protector").unwrap();
+        assert!(imp.name_shared);
+
+        // Your own killing blow says nothing about how many there were.
+        let encs = run(&[
+            (100, "You slash a rat for 10 points of damage."),
+            (101, "A rat has been slain by Tharn!"),
+        ]);
+        assert!(!encs[0].actors.get("a rat").unwrap().name_shared);
     }
 
     /// "What is hitting me" has to be accumulated on the receiving actor: an

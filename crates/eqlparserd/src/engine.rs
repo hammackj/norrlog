@@ -75,6 +75,11 @@ pub struct MeterRow {
     /// precedence over `is_enemy` in the UI: a charmed creature is an enemy by
     /// origin but fights for you, and its damage counts toward your total.
     pub is_pet: bool,
+    /// At least two creatures in the fight answered to this name, so the row's
+    /// numbers pool them and cannot be read as one creature's. See
+    /// `ActorStats::name_shared`.
+    #[serde(default)]
+    pub name_shared: bool,
     /// "charmed", "summoned", "pet", or absent when this is not a pet.
     ///
     /// Charmed and summoned are worth telling apart on screen: a charm can
@@ -2630,6 +2635,7 @@ impl Engine {
                 is_you: key == "you",
                 is_enemy: s.damaged_by_you && !s.charmed_by_you && !s.summoned,
                 is_pet: s.is_yours(),
+                name_shared: s.name_shared,
                 pet_kind: match (s.summoned, s.charm_seen, s.is_yours()) {
                     (true, _, _) => Some("summoned"),
                     (false, true, _) => Some("charmed"),
