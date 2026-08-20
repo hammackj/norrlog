@@ -207,6 +207,8 @@ impl Store {
     }
 
     /// An in-memory database, for tests.
+    /// A store with no file behind it, for tests.
+    #[cfg(test)]
     pub fn in_memory() -> Result<Store> {
         let mut s = Store {
             conn: Connection::open_in_memory()?,
@@ -914,6 +916,12 @@ impl Store {
     ///
     /// Used by the importer, so re-importing never overwrites what someone has
     /// since written. Returns whether it was inserted.
+    /// Write a quest only if its name is new, leaving an existing one
+    /// alone. Nothing calls this: `save_quest` upserts, which is what the
+    /// import path wants. Kept because the two have genuinely different
+    /// semantics and the choice will come back the first time a crawl and a
+    /// hand edit disagree.
+    #[allow(dead_code)]
     pub fn add_quest_if_new(&mut self, q: &QuestRecord) -> Result<bool> {
         let n = self.conn.execute(
             "INSERT OR IGNORE INTO quests (name, data, updated) VALUES (?1,?2,?3)",
@@ -935,6 +943,10 @@ impl Store {
             .collect())
     }
 
+    /// One quest by name. Nothing calls this — the server reads them all
+    /// and filters — but a single-quest read is the obvious next need and
+    /// the query is trivial.
+    #[allow(dead_code)]
     pub fn quest(&self, name: &str) -> Result<Option<QuestRecord>> {
         let mut stmt = self
             .conn
@@ -1605,6 +1617,9 @@ impl Store {
     }
 
     /// Encounters matching a boss name, for per-raid averages.
+    /// Encounters whose title matches, for tests. The server searches
+    /// through its own paginated query rather than this.
+    #[cfg(test)]
     pub fn encounters_named(&self, like: &str) -> Result<Vec<StoredEncounter>> {
         let mut stmt = self.conn.prepare(
             "SELECT start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build, difficulty

@@ -1435,7 +1435,7 @@ mod tests {
     /// first loaded. Both are the player naming their loadout.
     #[test]
     fn spell_set_saved_counts_as_much_as_loaded() {
-        let mut p = Parser::new("Tharn");
+        let p = Parser::new("Tharn");
         for (line, want) in [
             ("Spell set WAR / DRU / ZERK saved.", "WAR / DRU / ZERK"),
             (

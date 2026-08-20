@@ -696,6 +696,9 @@ const RECENT_LINES: usize = 400;
 const TIMELINE_ENCOUNTERS: usize = 25;
 
 impl Engine {
+    /// Only the tests build an engine without declaring a game; the daemon
+    /// always knows one, or knows that it does not.
+    #[cfg(test)]
     pub fn new(player: String, spell_db: SpellDb) -> Engine {
         Engine::with_game(player, spell_db, Game::Unknown)
     }
@@ -2406,6 +2409,9 @@ impl Engine {
     }
 
     /// Aggregate every looted item across the log, most recent first.
+    /// The whole log's loot. The server always asks for a window, so this
+    /// unbounded form exists for the tests.
+    #[cfg(test)]
     pub fn loot_tally(&self) -> Vec<LootTally> {
         self.loot_tally_since(None)
     }
