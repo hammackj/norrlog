@@ -797,6 +797,12 @@ impl Engine {
         }
     }
 
+    /// The spell file this binary loaded, for callers that need to place a
+    /// name without going through the resolver's cast history.
+    pub fn spell_db(&self) -> &eqlparser_core::spell::SpellDb {
+        self.resolver.db()
+    }
+
     /// Feed one raw log line.
     pub fn push_line(&mut self, line: &str) {
         let Some(entry) = self.parser.parse_line(line) else {

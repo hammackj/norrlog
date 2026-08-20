@@ -73,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/aa", get(aa))
         .route("/api/item", get(item_lookup))
         .route("/api/item-icon", get(item_icon))
+        .route("/api/spell", get(spell_lookup))
         .route("/api/sky", get(sky).post(define_sky_quest))
         .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
@@ -1448,6 +1449,63 @@ async fn item_lookup(
         "base": s.itemdb.base(),
         "eqdb": live,
         "wiki": bundled,
+    }))
+    .into_response()
+}
+
+/// One spell, for a tooltip.
+///
+/// The name is resolved against the local spell file first so the site can be
+/// asked by id: ranks share a display name, and "Puma Maw II" and "Puma Maw
+/// III" are one word to a text search but different spells to a player reading
+/// a tooltip. Only when the file cannot place the name does this fall back to
+/// asking by name.
+///
+/// The local file answers on its own too — which classes can cast it and at
+/// what level — so a tooltip still has something to show when the site is
+/// unreachable.
+async fn spell_lookup(
+    State(s): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let name = q.get("name").cloned().unwrap_or_default();
+    if name.trim().is_empty() {
+        return Json(serde_json::json!({ "name": name, "source": "unknown" })).into_response();
+    }
+
+    // What this binary knows by itself, from spells_us.txt.
+    let (id, local) = {
+        let engine = s.engine.lock().unwrap();
+        let db = engine.spell_db();
+        let base = eqlparser_core::spell::base_spell_name(&name);
+        let mut ids = db.candidates_for_name(&name).to_vec();
+        if ids.is_empty() {
+            ids = db.candidates_for_name(base).to_vec();
+        }
+        let first = ids.first().copied();
+        let local = first.and_then(|i| db.get(i)).map(|sp| {
+            serde_json::json!({
+                "id": sp.id,
+                "name": sp.name,
+                "is_charm": sp.is_charm,
+                "classes": db.class_levels_for_name(&sp.name),
+            })
+        });
+        (first, local)
+    };
+
+    let live = s.itemdb.spell(id, &name).await;
+    let source = match (&live, &local) {
+        (Some(_), _) => "eqdb",
+        (None, Some(_)) => "local",
+        (None, None) => "unknown",
+    };
+    Json(serde_json::json!({
+        "name": name,
+        "source": source,
+        "base": s.itemdb.base(),
+        "eqdb": live,
+        "local": local,
     }))
     .into_response()
 }

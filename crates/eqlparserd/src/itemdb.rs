@@ -63,6 +63,22 @@ pub fn slug(name: &str) -> String {
     out
 }
 
+/// Percent-encode a query value. Small by hand rather than pulling a crate in
+/// for one call: spell names carry spaces, apostrophes and backticks.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 enum Cached {
     Hit(Value),
     Miss,
@@ -221,6 +237,55 @@ impl ItemDb {
         found
     }
 
+    /// Look a spell up, by the site's own id when we know it.
+    ///
+    /// The id is the precise question — ranks share a display name and the
+    /// site cannot tell "Puma Maw II" from "Puma Maw III" by text — so the
+    /// caller resolves it against the local spell file first and only falls
+    /// back to asking by name.
+    ///
+    /// Note the asymmetry with items, which are looked up by slug: spells are
+    /// asked for by their display name exactly as the client writes it. That
+    /// is the site's shape, not ours.
+    pub async fn spell(&self, id: Option<u32>, name: &str) -> Option<Value> {
+        let key = match id {
+            Some(i) => format!("spell:{i}"),
+            None => format!("spell:name:{}", name.to_lowercase()),
+        };
+        if let Some(v) = self.cached(&key) {
+            return v;
+        }
+        let mut found = None;
+        for base in self.origins() {
+            let url = match id {
+                Some(i) => format!("{base}/api/spell/{i}"),
+                None => format!(
+                    "{base}/api/spell?name={}",
+                    urlencode(name)
+                ),
+            };
+            let got = match self.client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+                _ => continue,
+            };
+            if let Ok(mut l) = self.live.lock() {
+                *l = Some(base.clone());
+            }
+            // By id the payload is the spell itself; by name it is a match
+            // list, which is a miss when empty.
+            found = got.filter(|v| {
+                if id.is_some() {
+                    v.get("id").is_some()
+                } else {
+                    v.get("count").and_then(Value::as_u64).unwrap_or(0) > 0
+                }
+            });
+            break;
+        }
+        self.remember(key, found.clone());
+        found
+    }
+
     fn cached(&self, key: &str) -> Option<Option<Value>> {
         let cache = self.cache.lock().ok()?;
         let (at, entry) = cache.get(key)?;
@@ -266,6 +331,14 @@ mod tests {
         assert_eq!(slug("  Fine Steel Long Sword  "), "fine_steel_long_sword");
         assert_eq!(slug("!!!"), "");
         assert_eq!(slug(""), "");
+    }
+
+    #[test]
+    fn query_values_are_escaped() {
+        assert_eq!(urlencode("Puma Maw"), "Puma%20Maw");
+        assert_eq!(urlencode("Al`Kabor's Cap"), "Al%60Kabor%27s%20Cap");
+        assert_eq!(urlencode("Selo's Chords"), "Selo%27s%20Chords");
+        assert_eq!(urlencode("plain"), "plain");
     }
 
     /// The origin list is tried in order, and only the paths eqdb serves its

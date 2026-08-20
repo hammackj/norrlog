@@ -1334,6 +1334,25 @@ impl Parser {
 /// EverQuest timestamps carry no timezone. Rather than guess one, we interpret
 /// them as UTC. Every downstream use is a difference or an ordering, both of
 /// which are unaffected, and it keeps ingestion immune to DST discontinuities.
+///
+/// # The one rule this imposes
+///
+/// The result is not a real instant. It is the client's wall clock read as
+/// though it were UTC, so it sits a whole timezone offset away from
+/// `SystemTime::now()`. Comparing the two directly is wrong by hours and looks
+/// plausible, which is the dangerous combination: every finished fight reads
+/// as still running, every lockout as freshly reset.
+///
+/// Two bridges exist and one of them must be used:
+///
+/// * `Engine::now()` — wall clock carried into this domain by a calibrated
+///   offset, which is also what makes timers keep counting during a lull.
+/// * `nowLog()` in the renderer — the same conversion, using the browser's
+///   timezone offset.
+///
+/// Formatting follows the same rule: the window prints these with
+/// `toISOString()`, so what is on screen is the clock the player was looking
+/// at when the line was written.
 pub fn split_timestamp(line: &str) -> Option<(i64, &str)> {
     let rest = line.strip_prefix('[')?;
     let close = rest.find(']')?;
