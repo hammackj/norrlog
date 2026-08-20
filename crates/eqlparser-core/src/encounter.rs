@@ -1975,6 +1975,15 @@ impl EncounterTracker {
             });
             self.next_id += 1;
             self.last_combat = timestamp;
+            // A charm held across the gap between fights keeps running, but
+            // its clock must restart here. Leaving it at the previous fight's
+            // end counted the lull as charmed time: a 42-second pull reported
+            // 73 charmed seconds, and `charm_uptime` capped that to a tidy
+            // "100% of the fight, breaking 1 time" — a sentence that cannot be
+            // true, sitting on top of a figure that was not either.
+            for since in self.charm_since.values_mut() {
+                *since = timestamp;
+            }
             // The cast that started the pull happened before anything had been
             // damaged, so there was no encounter to count it against. Crediting
             // it here is the difference between "you cast this five times" and
@@ -2034,8 +2043,11 @@ impl EncounterTracker {
                 }
             }
         }
-        // Charm survives the fight boundary in the game, but the interval
-        // clock restarts with the next encounter.
+        // Charm survives the fight boundary in the game. The interval clock
+        // does not: `ensure_open` restarts it at the next fight's first line,
+        // so the lull in between is nobody's charmed time. Parking it at this
+        // fight's end keeps the value sane for anything that reads it before
+        // then.
         for since in self.charm_since.values_mut() {
             *since = ends_at.unwrap_or(*since);
         }
@@ -2531,6 +2543,56 @@ mod tests {
             (101, "A rat has been slain by Tharn!"),
         ]);
         assert!(!encs[0].actors.get("a rat").unwrap().name_shared);
+    }
+
+    /// A charm held across the gap between two fights must not bill the gap to
+    /// the second one.
+    ///
+    /// The clock used to be parked at the first fight's end and picked up
+    /// again by the second, so the lull counted as charmed time — 73 charmed
+    /// seconds inside a 42-second pull, capped on the way out to a flat 100%
+    /// and printed as "held 100% of the fight, breaking 1 time", which cannot
+    /// be true.
+    #[test]
+    fn a_charm_across_a_lull_does_not_bill_the_lull() {
+        let mut t = EncounterTracker::new("Tharn");
+        let imp = Actor::Named("An imp protector".into());
+        let hit = |t: &mut EncounterTracker, ts: i64| {
+            for e in &entries(&[(ts, "You slash a rat for 1 point of damage.")]) {
+                t.push(e);
+            }
+        };
+        // A short fight with the charm up throughout.
+        hit(&mut t, 100);
+        t.set_charmed(100, &imp, true);
+        hit(&mut t, 110);
+        let first = t.flush().expect("first fight");
+        assert_eq!(first.duration(), 10);
+        assert_eq!(
+            first.actors.get("an imp protector").unwrap().charmed_seconds,
+            10
+        );
+
+        // Five minutes of nothing, then another short fight with the same
+        // charm still held and the pet swinging in it — a charmed pet that
+        // does nothing gets no row, so it has to act for there to be anything
+        // to bill.
+        hit(&mut t, 410);
+        for e in &entries(&[(
+            415,
+            "An imp protector slashes a rat for 5 points of damage.",
+        )]) {
+            t.push(e);
+        }
+        hit(&mut t, 420);
+        let second = t.flush().expect("second fight");
+        assert_eq!(second.duration(), 10);
+        let held = second.actors.get("an imp protector").unwrap().charmed_seconds;
+        assert_eq!(held, 10, "the five-minute lull is not charmed time");
+        assert!(
+            second.charm_uptime() <= 1.0,
+            "and the uptime needs no cap to stay sane"
+        );
     }
 
     /// A mob that died early in a long pull keeps its row, so a live meter
