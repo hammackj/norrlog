@@ -259,10 +259,7 @@ impl ItemDb {
         for base in self.origins() {
             let url = match id {
                 Some(i) => format!("{base}/api/spell/{i}"),
-                None => format!(
-                    "{base}/api/spell?name={}",
-                    urlencode(name)
-                ),
+                None => format!("{base}/api/spell?name={}", urlencode(name)),
             };
             let got = match self.client.get(&url).send().await {
                 Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
@@ -326,7 +323,10 @@ mod tests {
         // Punctuation collapses rather than doubling the separator.
         assert_eq!(slug("Djarn's Amethyst Ring"), "djarn_s_amethyst_ring");
         assert_eq!(slug("Spiritualist`s Ring"), "spiritualist_s_ring");
-        assert_eq!(slug("Staff of Elemental Mastery: Air"), "staff_of_elemental_mastery_air");
+        assert_eq!(
+            slug("Staff of Elemental Mastery: Air"),
+            "staff_of_elemental_mastery_air"
+        );
         // Leading and trailing punctuation leaves no stray underscore.
         assert_eq!(slug("  Fine Steel Long Sword  "), "fine_steel_long_sword");
         assert_eq!(slug("!!!"), "");
@@ -383,7 +383,10 @@ mod tests {
     #[test]
     fn a_grade_is_not_part_of_the_slug() {
         use eqlparser_core::drops::canonical_item;
-        assert_eq!(slug(canonical_item("Woven Skull Cap +1")), "woven_skull_cap");
+        assert_eq!(
+            slug(canonical_item("Woven Skull Cap +1")),
+            "woven_skull_cap"
+        );
         assert_eq!(slug(canonical_item("Silvery Ring +2")), "silvery_ring");
     }
 }

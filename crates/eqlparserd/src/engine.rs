@@ -11,8 +11,8 @@ use eqlparser_core::bestiary::{Bestiary, BestiaryReport, CreatureKind, HealthSam
 use eqlparser_core::class::{ClassDetector, ClassScore};
 use eqlparser_core::drops::{DropReport, DropTracker};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
-use eqlparser_core::game::Game;
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
+use eqlparser_core::game::Game;
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::npc::{NpcReport, NpcTracker};
 use eqlparser_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
@@ -926,7 +926,12 @@ impl Engine {
         // them and they are filed as what they are: spells handed over
         // without a level being gained, which is what a change of invocation
         // does -- 24 at once, every spell the new classes already qualify for.
-        if entry.timestamp > self.pending_grants.first().map_or(i64::MAX, |g| g.0 + GRANT_WINDOW) {
+        if entry.timestamp
+            > self
+                .pending_grants
+                .first()
+                .map_or(i64::MAX, |g| g.0 + GRANT_WINDOW)
+        {
             self.file_grants(entry.timestamp, 0);
         }
 
@@ -1050,9 +1055,7 @@ impl Engine {
                     }
                 }
             }
-            Event::ItemGranted { item } => {
-                self.lockouts.on_item_granted(entry.timestamp, item)
-            }
+            Event::ItemGranted { item } => self.lockouts.on_item_granted(entry.timestamp, item),
             Event::TaskAssigned { task } => {
                 self.tasks.on_assigned(entry.timestamp, task);
                 self.lockouts.on_task_assigned(entry.timestamp, task);
@@ -1291,47 +1294,62 @@ impl Engine {
                         self.bestiary.on_your_death(entry.timestamp, k);
                     }
                 }
-                // Credit is by *participation*, not the killing blow. The game
-                // attributes the final hit to whoever landed it, which for a
-                // charming class is routinely your own charmed pet:
-                //   "Innoruuk, the Prince of Hate has been slain by Innoruuk`s Chosen!"
-                //   "Lady Vox has been slain by a priest of Nagafen!"
-                // Requiring your own killing blow silently discarded those
-                // kills from both experience attribution and boss lockouts.
-                let fought_it = self
-                    .tracker
-                    .current()
-                    .and_then(|e| e.actors.get(&victim.key()))
-                    .is_some_and(|s| s.damaged_by_you);
-                if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
-                    let name = victim.display(&self.player);
-                    self.exp.on_kill(entry.timestamp, &name);
-                    // The denominator for every drop this creature did or did
-                    // not yield. Counted whether or not the corpse was looted,
-                    // which is what makes a sighting count a floor.
-                    self.drops.on_kill(&name);
-                    // Closes out the damage accumulated into it, which becomes
-                    // a lower bound on its health.
-                    self.bestiary.on_kill(entry.timestamp, &name);
-                    // Difficulty comes from the zone, so use the zone we were
-                    // in when it died, not wherever we ended up later.
-                    let was_raid_target =
-                        self.lockouts
-                            .on_kill(entry.timestamp, &name, self.tracker.current_zone());
-                    // Only raid targets. "Something died" is every other line
-                    // in the log and would make the alert worthless.
-                    if was_raid_target {
-                        self.alerts
-                            .on_signal(entry.timestamp, Signal::BossKilled { boss: &name });
+                // Everything below is about a creature you killed, so your own
+                // death is not it. Without this guard the credit check passed
+                // on your death — a damage shield or thorns is enough to mark
+                // you as damaged by you — and you were recorded as a creature
+                // you had killed. That reached npc_kills and the bestiary, and
+                // worst, experience attribution, where a death was counted as
+                // a kill.
+                //
+                // Found by comparing CombatCollector against history.db over
+                // the reference log: 580 creatures matched, plus one row for
+                // the player. The collector has the check in an else already.
+                else {
+                    // Credit is by *participation*, not the killing blow. The game
+                    // attributes the final hit to whoever landed it, which for a
+                    // charming class is routinely your own charmed pet:
+                    //   "Innoruuk, the Prince of Hate has been slain by Innoruuk`s Chosen!"
+                    //   "Lady Vox has been slain by a priest of Nagafen!"
+                    // Requiring your own killing blow silently discarded those
+                    // kills from both experience attribution and boss lockouts.
+                    let fought_it = self
+                        .tracker
+                        .current()
+                        .and_then(|e| e.actors.get(&victim.key()))
+                        .is_some_and(|s| s.damaged_by_you);
+                    if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
+                        let name = victim.display(&self.player);
+                        self.exp.on_kill(entry.timestamp, &name);
+                        // The denominator for every drop this creature did or did
+                        // not yield. Counted whether or not the corpse was looted,
+                        // which is what makes a sighting count a floor.
+                        self.drops.on_kill(&name);
+                        // Closes out the damage accumulated into it, which becomes
+                        // a lower bound on its health.
+                        self.bestiary.on_kill(entry.timestamp, &name);
+                        // Difficulty comes from the zone, so use the zone we were
+                        // in when it died, not wherever we ended up later.
+                        let was_raid_target = self.lockouts.on_kill(
+                            entry.timestamp,
+                            &name,
+                            self.tracker.current_zone(),
+                        );
+                        // Only raid targets. "Something died" is every other line
+                        // in the log and would make the alert worthless.
+                        if was_raid_target {
+                            self.alerts
+                                .on_signal(entry.timestamp, Signal::BossKilled { boss: &name });
+                        }
+                        // Lets a following "task has been updated" say which step.
+                        self.tasks.on_kill(entry.timestamp, &name);
                     }
-                    // Lets a following "task has been updated" say which step.
-                    self.tasks.on_kill(entry.timestamp, &name);
-                }
-                // Sky island nameds are counted regardless of who landed the
-                // blow, on the same participation basis as everything else.
-                if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
-                    self.sky
-                        .on_kill(entry.timestamp, &victim.display(&self.player));
+                    // Sky island nameds are counted regardless of who landed the
+                    // blow, on the same participation basis as everything else.
+                    if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
+                        self.sky
+                            .on_kill(entry.timestamp, &victim.display(&self.player));
+                    }
                 }
             }
             Event::ZoneChange { zone } => {
@@ -1429,7 +1447,12 @@ impl Engine {
     fn file_grants(&mut self, _now: i64, level: u32) {
         for (at, spell) in std::mem::take(&mut self.pending_grants) {
             let build = self.build_label(at);
-            self.grants.push(crate::store::StoredGrant { spell, level, at, build });
+            self.grants.push(crate::store::StoredGrant {
+                spell,
+                level,
+                at,
+                build,
+            });
         }
     }
 
@@ -1838,7 +1861,10 @@ impl Engine {
     fn spell_restricts_to(&self, spell: &str) -> Option<CreatureKind> {
         let db = self.resolver.db();
         let ids = db.candidates_for_name(eqlparser_core::spell::base_spell_name(spell));
-        let mut kinds = ids.iter().filter_map(|id| db.get(*id)).map(|s| s.restricted_to);
+        let mut kinds = ids
+            .iter()
+            .filter_map(|id| db.get(*id))
+            .map(|s| s.restricted_to);
         let first = kinds.next()??;
         if kinds.all(|k| k == Some(first)) {
             Some(first)
@@ -1864,13 +1890,8 @@ impl Engine {
         }
         // Two of the three failure lines name nobody and no spell, so a text
         // rule on them could not say what failed. This one can.
-        self.alerts.on_signal(
-            at,
-            Signal::CharmResisted {
-                target,
-                how: kind,
-            },
-        );
+        self.alerts
+            .on_signal(at, Signal::CharmResisted { target, how: kind });
     }
 
     /// Your deaths, newest first, each with the blows that caused it.
@@ -2347,8 +2368,7 @@ impl Engine {
     pub fn session_summary(&self, zone_only: bool) -> (EncounterSummary, usize, i64) {
         let zone = self.tracker.current_zone();
         let in_session = |e: &&Encounter| {
-            e.start >= self.session_start
-                && (!zone_only || e.zone.as_deref() == zone)
+            e.start >= self.session_start && (!zone_only || e.zone.as_deref() == zone)
         };
         let mut merged = Encounter {
             id: 0,
@@ -2714,7 +2734,11 @@ impl Engine {
             } else {
                 Vec::new()
             },
-            mobs: if with_meter { enc.per_mob() } else { Vec::new() },
+            mobs: if with_meter {
+                enc.per_mob()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -2734,7 +2758,10 @@ impl Engine {
                 continue;
             }
             groups
-                .entry(eqlparser_core::encounter::ability_group(&a.kind, a.self_inflicted))
+                .entry(eqlparser_core::encounter::ability_group(
+                    &a.kind,
+                    a.self_inflicted,
+                ))
                 .or_default()
                 .push(GroupedAbility {
                     name: name.clone(),
@@ -3529,6 +3556,44 @@ mod tests {
         );
     }
 
+    /// Dying is not killing something. A damage shield or thorns marks you as
+    /// damaged by you, which used to be enough for your own death to pass the
+    /// participation check and record you as a creature you had killed —
+    /// reaching npc_kills, the bestiary, and experience attribution.
+    #[test]
+    fn your_own_death_is_not_a_kill() {
+        let mut e = engine();
+        for line in [
+            // The bestiary is keyed per zone, so it records nothing until one
+            // is known.
+            "[Tue Jul 28 11:59:59 2026] You have entered Nagafen's Lair.",
+            "[Tue Jul 28 12:00:00 2026] A fire giant hits YOU for 100 points of damage.",
+            "[Tue Jul 28 12:00:01 2026] A fire giant is pierced by YOUR thorns for 12 points of non-melee damage.",
+            "[Tue Jul 28 12:00:02 2026] You have been slain by a fire giant!",
+        ] {
+            e.push_line(line);
+        }
+        assert!(
+            !e.bestiary_report().npcs.iter().any(|c| c.name == "Tharn"),
+            "the player is not a creature you killed: {:?}",
+            e.bestiary_report()
+                .npcs
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>()
+        );
+        // What killed you is still recorded — under the canonical name, which
+        // drops the client's article.
+        let npcs = e.bestiary_report().npcs;
+        assert_eq!(
+            npcs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["fire giant"],
+            "the giant, and only the giant"
+        );
+        assert_eq!(npcs[0].deaths_to_it, 1);
+        assert_eq!(npcs[0].kills, 0, "you did not kill it; it killed you");
+    }
+
     /// A boss dying with no involvement from you must not clear your lockout.
     #[test]
     fn a_kill_you_had_no_part_in_does_not_count() {
@@ -3774,7 +3839,11 @@ mod tests {
         assert_eq!(summary.your_damage, 500);
         assert_eq!(summary.your_damage_taken, 100);
         // The giant is one actor across both fights, not two rows.
-        let giants = summary.meter.iter().filter(|r| r.name.contains("giant")).count();
+        let giants = summary
+            .meter
+            .iter()
+            .filter(|r| r.name.contains("giant"))
+            .count();
         assert_eq!(giants, 1);
     }
 

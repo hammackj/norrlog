@@ -238,10 +238,7 @@ async fn encounters(
         // only runs on what survived them.
         .filter(|e| {
             q.build.as_deref().is_none_or(|want| {
-                build_matches(
-                    want,
-                    &engine.build_label(e.start + (e.end - e.start) / 2),
-                )
+                build_matches(want, &engine.build_label(e.start + (e.end - e.start) / 2))
             })
         })
         .collect();
@@ -284,9 +281,9 @@ async fn export_encounters(
             None => true,
         })
         .filter(|e| {
-            q.search.as_deref().is_none_or(|sc| {
-                e.title().to_lowercase().contains(&sc.to_lowercase())
-            })
+            q.search
+                .as_deref()
+                .is_none_or(|sc| e.title().to_lowercase().contains(&sc.to_lowercase()))
         })
         .filter(|e| {
             q.difficulty.is_none_or(|d| {
@@ -379,7 +376,11 @@ fn render_encounters_markdown(encs: &[crate::engine::EncounterSummary]) -> Strin
             } else {
                 String::new()
             },
-            if e.build.is_empty() { "unknown" } else { &e.build },
+            if e.build.is_empty() {
+                "unknown"
+            } else {
+                &e.build
+            },
         ));
         out.push_str(&format!(
             "- **You** {} damage, {:.0} dps · {} taken · {} deaths\n",
@@ -418,7 +419,9 @@ fn render_encounters_markdown(encs: &[crate::engine::EncounterSummary]) -> Strin
         }
 
         if !e.resists.is_empty() {
-            out.push_str("\n### Resisted\n\n| Spell | Resisted | Landed | Rate |\n|---|--:|--:|--:|\n");
+            out.push_str(
+                "\n### Resisted\n\n| Spell | Resisted | Landed | Rate |\n|---|--:|--:|--:|\n",
+            );
             for r in &e.resists {
                 out.push_str(&format!(
                     "| {} | {} | {} | {} |\n",
@@ -710,9 +713,7 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
             // already contains this log's contribution, so it replaces rather
             // than adds to what the engine reported.
             if let Ok(rows) = st.all_vendors() {
-                for (game, item, merchant, zone, unit_copper, bought, quoted, last_bought)
-                    in rows
-                {
+                for (game, item, merchant, zone, unit_copper, bought, quoted, last_bought) in rows {
                     if game != db.game.slug() {
                         continue;
                     }
@@ -753,12 +754,10 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
         }
     }
     for e in &mut db.items {
-        e.sold_by
-            .sort_by_key(|v| std::cmp::Reverse(v.unit_copper));
+        e.sold_by.sort_by_key(|v| std::cmp::Reverse(v.unit_copper));
     }
     for e in &mut db.items {
-        e.dropped_by
-            .sort_by_key(|d| std::cmp::Reverse(d.looted));
+        e.dropped_by.sort_by_key(|d| std::cmp::Reverse(d.looted));
     }
     db.items.sort_by_key(|e| e.item.to_lowercase());
     db.kills.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -776,11 +775,7 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
 async fn bestiary(State(s): State<AppState>) -> Json<eqlparser_core::bestiary::BestiaryReport> {
     let (live, live_health, game) = {
         let e = s.engine.lock().unwrap();
-        (
-            e.bestiary_report(),
-            e.bestiary_health_samples(),
-            e.game(),
-        )
+        (e.bestiary_report(), e.bestiary_health_samples(), e.game())
     };
 
     let Some(store) = &s.store else {
@@ -799,10 +794,7 @@ async fn bestiary(State(s): State<AppState>) -> Json<eqlparser_core::bestiary::B
     let health = [live_health, stored_health].concat();
     Json(eqlparser_core::bestiary::BestiaryReport {
         game,
-        npcs: eqlparser_core::bestiary::merge(
-            live.npcs.into_iter().chain(stored),
-            &health,
-        ),
+        npcs: eqlparser_core::bestiary::merge(live.npcs.into_iter().chain(stored), &health),
     })
 }
 
@@ -902,11 +894,7 @@ async fn put_alert(
         if let Err(e) = store.lock().unwrap().put_alert(&rule, now) {
             // The rule is live either way; say plainly that it will not
             // survive a restart rather than pretend it saved.
-            return (
-                StatusCode::OK,
-                format!("active, but not saved: {e}"),
-            )
-                .into_response();
+            return (StatusCode::OK, format!("active, but not saved: {e}")).into_response();
         }
     }
     // Hand back the stored rule so the client sees a pattern error straight
@@ -923,10 +911,7 @@ struct AlertIdRequest {
     id: String,
 }
 
-async fn delete_alert(
-    State(s): State<AppState>,
-    Json(req): Json<AlertIdRequest>,
-) -> Response {
+async fn delete_alert(State(s): State<AppState>, Json(req): Json<AlertIdRequest>) -> Response {
     {
         let mut engine = s.engine.lock().unwrap();
         engine.remove_alert_rule(&req.id);
@@ -969,7 +954,10 @@ struct ScopeQuery {
 /// encounter held in memory, and paying that on each publish would put it on
 /// the path the overlay and the WebSocket share. The dashboard asks for it
 /// only while the scope switch is on it.
-async fn session(State(s): State<AppState>, Query(q): Query<ScopeQuery>) -> Json<serde_json::Value> {
+async fn session(
+    State(s): State<AppState>,
+    Query(q): Query<ScopeQuery>,
+) -> Json<serde_json::Value> {
     let zone_only = q.scope.as_deref() == Some("zone");
     let engine = s.engine.lock().unwrap();
     let (summary, fights, combat) = engine.session_summary(zone_only);
@@ -1662,7 +1650,7 @@ mod tests {
             // on the companion site being up, and this proves the fallback is
             // what they exercise.
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![
-                "http://127.0.0.1:1".to_string(),
+                "http://127.0.0.1:1".to_string()
             ])),
         }
     }

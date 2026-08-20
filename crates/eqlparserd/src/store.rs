@@ -232,12 +232,15 @@ impl Store {
     fn add_encounter_difficulty(&mut self) -> Result<()> {
         let present: bool = self
             .conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('encounters') WHERE name='difficulty'")?
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('encounters') WHERE name='difficulty'",
+            )?
             .query_row([], |r| r.get::<_, i64>(0))?
             > 0;
         if !present {
-            self.conn
-                .execute_batch("ALTER TABLE encounters ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0")?;
+            self.conn.execute_batch(
+                "ALTER TABLE encounters ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         Ok(())
     }
@@ -1053,7 +1056,9 @@ impl Store {
     /// last_seen)`. The game stays in the key: totals are per game, never
     /// pooled across the two.
     #[allow(clippy::type_complexity)]
-    pub fn all_drops(&self) -> Result<Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)>> {
+    pub fn all_drops(
+        &self,
+    ) -> Result<Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT game, item, npc, group_concat(zones, '|'),
                     SUM(looted), SUM(quantity), MIN(first_seen), MAX(last_seen)
@@ -1508,9 +1513,7 @@ impl Store {
     /// recent one seen rather than a sum or an average, since it is what that
     /// merchant charges today.
     #[allow(clippy::type_complexity)]
-    pub fn all_vendors(
-        &self,
-    ) -> Result<Vec<(String, String, String, String, u64, u64, u64, i64)>> {
+    pub fn all_vendors(&self) -> Result<Vec<(String, String, String, String, u64, u64, u64, i64)>> {
         // SQLite resolves the bare columns beside a MAX() aggregate from the
         // row that produced the maximum, which is exactly the "price as of the
         // most recent sighting" wanted here.
@@ -1799,19 +1802,34 @@ mod tests {
 
         assert_eq!(merged.len(), 1, "one creature across both logs: {merged:?}");
         let p = &merged[0];
-        assert_eq!(p.kills, 3, "a second flush of the same log must not double it");
+        assert_eq!(
+            p.kills, 3,
+            "a second flush of the same log must not double it"
+        );
         assert_eq!(p.zone, "Nagafen's Lair");
-        assert_eq!((p.mode, p.difficulty), (eqlparser_core::zone::Mode::Solo, 4));
+        assert_eq!(
+            (p.mode, p.difficulty),
+            (eqlparser_core::zone::Mode::Solo, 4)
+        );
         assert_eq!((p.first_seen, p.last_seen), (100, 900));
         assert_eq!(
-            (p.health_samples, p.health_min, p.health_median, p.health_max),
+            (
+                p.health_samples,
+                p.health_min,
+                p.health_median,
+                p.health_max
+            ),
             (3, 20000, 22000, 24000),
             "every sample kept, and the median taken over all of them"
         );
         // Melee round-trips with the pairing intact, stance and all.
         assert_eq!(p.melee.len(), 1);
         assert_eq!(
-            (p.melee[0].character.as_str(), p.melee[0].level, p.melee[0].stance.as_str()),
+            (
+                p.melee[0].character.as_str(),
+                p.melee[0].level,
+                p.melee[0].stance.as_str()
+            ),
             ("Tharn", 50, "defensive")
         );
         assert_eq!(p.melee[0].swings, 3);
@@ -1835,7 +1853,10 @@ mod tests {
             .bestiary_excluding("everquest-legends", "/logs/live.txt")
             .unwrap();
         // Only the old log came back...
-        assert_eq!(eqlparser_core::bestiary::merge(profiles.clone(), &health)[0].kills, 1);
+        assert_eq!(
+            eqlparser_core::bestiary::merge(profiles.clone(), &health)[0].kills,
+            1
+        );
 
         // ...so adding the engine's own view gives each kill exactly once.
         let combined = eqlparser_core::bestiary::merge(
@@ -1930,8 +1951,18 @@ mod tests {
     #[test]
     fn stored_tiers_stay_separate_creatures() {
         let mut s = Store::in_memory().unwrap();
-        let (t1, t1_hp) = bestiary("Tharn", "Nagafen's Lair - Solo 1 (Awakened)", 50, &[(100, 5000)]);
-        let (t4, t4_hp) = bestiary("Tharn", "Nagafen's Lair - Solo 4 (Refined)", 50, &[(200, 30000)]);
+        let (t1, t1_hp) = bestiary(
+            "Tharn",
+            "Nagafen's Lair - Solo 1 (Awakened)",
+            50,
+            &[(100, 5000)],
+        );
+        let (t4, t4_hp) = bestiary(
+            "Tharn",
+            "Nagafen's Lair - Solo 4 (Refined)",
+            50,
+            &[(200, 30000)],
+        );
         s.put_bestiary("everquest-legends", "/logs/one.txt", &t1, &t1_hp)
             .unwrap();
         s.put_bestiary("everquest-legends", "/logs/one.txt", &t4, &t4_hp)
@@ -1939,15 +1970,24 @@ mod tests {
 
         let (profiles, health) = s.bestiary_excluding("everquest-legends", "/none").unwrap();
         let merged = eqlparser_core::bestiary::merge(profiles, &health);
-        assert_eq!(merged.len(), 2, "same name and place, two tiers: {merged:?}");
+        assert_eq!(
+            merged.len(),
+            2,
+            "same name and place, two tiers: {merged:?}"
+        );
         let easy = merged.iter().find(|p| p.difficulty == 1).unwrap();
         let hard = merged.iter().find(|p| p.difficulty == 4).unwrap();
         assert_eq!((easy.health_median, hard.health_median), (5000, 30000));
     }
 
-    fn price(item: &str, merchant: &str, zone: &str, copper: u64, bought: u64, at: i64)
-        -> eqlparser_core::tradeskill::ItemPrice
-    {
+    fn price(
+        item: &str,
+        merchant: &str,
+        zone: &str,
+        copper: u64,
+        bought: u64,
+        at: i64,
+    ) -> eqlparser_core::tradeskill::ItemPrice {
         eqlparser_core::tradeskill::ItemPrice {
             item: item.into(),
             unit_copper: copper,
@@ -2005,8 +2045,16 @@ mod tests {
                    bought = excluded.bought,
                    last_bought = excluded.last_bought",
                 params![
-                    "everquest-legends", who, server, "/logs/a.txt",
-                    "Elf Leaf", "Isslana", "The Oasis of Marr", 500i64, 0i64, 20i64
+                    "everquest-legends",
+                    who,
+                    server,
+                    "/logs/a.txt",
+                    "Elf Leaf",
+                    "Isslana",
+                    "The Oasis of Marr",
+                    500i64,
+                    0i64,
+                    20i64
                 ],
             )
             .unwrap();
@@ -2024,8 +2072,14 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(quoted, 3, "an older writer erased a column it never knew about");
-        assert_eq!(last, 20, "the columns it does know about should still update");
+        assert_eq!(
+            quoted, 3,
+            "an older writer erased a column it never knew about"
+        );
+        assert_eq!(
+            last, 20,
+            "the columns it does know about should still update"
+        );
     }
 
     /// Merchant prices have to survive the log they came from. Re-reading one
@@ -2038,19 +2092,52 @@ mod tests {
         let log_a = "/logs/eqlog_Tharn_freeport.txt";
         let log_b = "/logs/eqlog_Alt_freeport.txt";
 
-        s.put_vendors("everquest-legends", log_a,
-            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 654, 1000, 100)]).unwrap();
+        s.put_vendors(
+            "everquest-legends",
+            log_a,
+            &[price(
+                "Duskglow Vine",
+                "Sithgok",
+                "Innothule Swamp",
+                654,
+                1000,
+                100,
+            )],
+        )
+        .unwrap();
         // The same log read again: same keys, so the row is replaced.
-        s.put_vendors("everquest-legends", log_a,
-            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 654, 1000, 100)]).unwrap();
+        s.put_vendors(
+            "everquest-legends",
+            log_a,
+            &[price(
+                "Duskglow Vine",
+                "Sithgok",
+                "Innothule Swamp",
+                654,
+                1000,
+                100,
+            )],
+        )
+        .unwrap();
 
         let v = s.all_vendors().unwrap();
         assert_eq!(v.len(), 1, "a re-parse is not a second set of purchases");
         assert_eq!(v[0].5, 1000, "still a thousand, not two");
 
         // A different log is genuinely more data, and adds.
-        s.put_vendors("everquest-legends", log_b,
-            &[price("Duskglow Vine", "Sithgok", "Innothule Swamp", 700, 500, 200)]).unwrap();
+        s.put_vendors(
+            "everquest-legends",
+            log_b,
+            &[price(
+                "Duskglow Vine",
+                "Sithgok",
+                "Innothule Swamp",
+                700,
+                500,
+                200,
+            )],
+        )
+        .unwrap();
         let v = s.all_vendors().unwrap();
         assert_eq!(v.len(), 1, "one merchant, one item");
         assert_eq!(v[0].5, 1500, "both logs' purchases");
@@ -2063,10 +2150,32 @@ mod tests {
     #[test]
     fn vendor_prices_are_not_pooled_across_games() {
         let mut s = Store::in_memory().unwrap();
-        s.put_vendors("everquest", "/logs/a.txt",
-            &[price("Water Flask", "Clork", "Innothule Swamp", 10, 100, 100)]).unwrap();
-        s.put_vendors("everquest-legends", "/logs/b.txt",
-            &[price("Water Flask", "Clork", "Innothule Swamp", 99, 100, 100)]).unwrap();
+        s.put_vendors(
+            "everquest",
+            "/logs/a.txt",
+            &[price(
+                "Water Flask",
+                "Clork",
+                "Innothule Swamp",
+                10,
+                100,
+                100,
+            )],
+        )
+        .unwrap();
+        s.put_vendors(
+            "everquest-legends",
+            "/logs/b.txt",
+            &[price(
+                "Water Flask",
+                "Clork",
+                "Innothule Swamp",
+                99,
+                100,
+                100,
+            )],
+        )
+        .unwrap();
 
         let v = s.all_vendors().unwrap();
         assert_eq!(v.len(), 2, "one row per game: {v:?}");
