@@ -138,6 +138,14 @@ pub struct ActorStats {
     /// back out wherever the question is how much you put into something else.
     #[serde(default)]
     pub self_damage: u64,
+    /// When this actor last dealt or took damage.
+    ///
+    /// A fight is one encounter until combat stops, so a mob killed early in a
+    /// long pull keeps its row for the rest of it — correct for the totals,
+    /// misleading on a live meter, where a name sitting there reads as
+    /// something still up. This is what lets a view fade what has gone quiet.
+    #[serde(default)]
+    pub last_action: i64,
     /// True when at least two creatures in this fight answered to this name.
     ///
     /// The log gives no instance id, so identically-named creatures are one
@@ -323,6 +331,7 @@ impl ActorStats {
         self.damage_taken += o.damage_taken;
         self.self_damage += o.self_damage;
         self.name_shared |= o.name_shared;
+        self.last_action = self.last_action.max(o.last_action);
         self.healing_done += o.healing_done;
         self.healing_received += o.healing_received;
         self.hits += o.hits;
@@ -1662,6 +1671,7 @@ impl EncounterTracker {
                     if shared_name {
                         s.name_shared = true;
                     }
+                    s.last_action = entry.timestamp;
                     a.record_hit(*amount, crit);
                     if hit_yourself {
                         s.self_damage += *amount;
@@ -1686,6 +1696,7 @@ impl EncounterTracker {
                         .unwrap_or_else(|| source.display(&player));
                     let t = enc.entry(target, &player);
                     t.damage_taken += *amount;
+                    t.last_action = entry.timestamp;
                     if tgt_charmed {
                         t.damage_taken_while_charmed += *amount;
                     }
@@ -2468,6 +2479,37 @@ mod tests {
             (101, "A rat has been slain by Tharn!"),
         ]);
         assert!(!encs[0].actors.get("a rat").unwrap().name_shared);
+    }
+
+    /// A mob that died early in a long pull keeps its row, so a live meter
+    /// needs to know how long ago each actor last did anything.
+    #[test]
+    fn an_actor_records_when_it_last_did_something() {
+        let encs = run(&[
+            (100, "You slash a rat for 10 points of damage."),
+            (101, "A rat hits YOU for 5 points of damage."),
+            (102, "You have slain a rat!"),
+            // The fight carries on against something else. Kept inside the
+            // 12-second idle timeout, or this would be two encounters and the
+            // point — one fight, one row gone quiet — would be lost.
+            (110, "You slash a giant for 40 points of damage."),
+            (118, "A giant hits YOU for 20 points of damage."),
+            (120, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        let rat = e.actors.get("a rat").unwrap();
+        let giant = e.actors.get("a giant").unwrap();
+        let you = e.actors.get("you").unwrap();
+
+        assert_eq!(encs.len(), 1, "one fight, or the test proves nothing");
+        assert_eq!(rat.last_action, 101, "its last blow, not the fight's end");
+        assert_eq!(giant.last_action, 118);
+        assert_eq!(you.last_action, 118, "both dealing and taking count");
+
+        // Which is what a view fades against: the rat has been quiet for
+        // nineteen of the fight's twenty seconds, the giant for two.
+        assert_eq!(e.end - rat.last_action, 19);
+        assert_eq!(e.end - giant.last_action, 2);
     }
 
     /// "What is hitting me" has to be accumulated on the receiving actor: an

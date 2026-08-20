@@ -552,6 +552,16 @@
     return out.filter((r) => !absorbed.has(r));
   }
 
+  /* How long a row stays at full strength, and how it fades after that.
+
+     Eight seconds because a fight has lulls — a caster between spells, a mob
+     mid-swing — and blinking at every one of them would make the meter
+     restless. By half a minute of nothing it is down to a third, which reads
+     as "was here" without pretending to be gone. */
+  const STALE_AFTER = 8;
+  const STALE_FADE = 22;
+  const STALE_FLOOR = 0.34;
+
   function renderRows(enc) {
     let meter = foldPets(enc.meter || []);
     if (opt.selfOnly) meter = meter.filter((r) => r.is_you);
@@ -583,7 +593,24 @@
                 r.pet_kind === "charmed" ? "charmed" : "pet"
               }${!r.is_pet && r.pet_owner ? " " + esc(r.pet_owner) : ""}</span>`
             : "";
-        return `<div class="${cls.join(" ")}" style="--share:${(r.share * 100).toFixed(1)}%">
+        // Fade what has gone quiet. A fight is one encounter until combat
+        // stops, so a mob killed in the first ten seconds of a three-minute
+        // pull keeps its row for the rest of it. That is right for the totals
+        // and wrong on a live meter, where a name sitting at full strength
+        // reads as something still standing there.
+        //
+        // Faded rather than dropped: its damage is still part of the fight,
+        // and a row vanishing mid-pull is worse than one going quiet. Measured
+        // against the encounter's own end, which advances with the log, so no
+        // wall clock is involved.
+        const quiet = r.last_action ? Math.max(0, (enc.end || 0) - r.last_action) : 0;
+        const fade =
+          quiet <= STALE_AFTER
+            ? 1
+            : Math.max(STALE_FLOOR, 1 - (quiet - STALE_AFTER) / STALE_FADE);
+        return `<div class="${cls.join(" ")}" style="--share:${(r.share * 100).toFixed(1)}%${
+          fade < 1 ? `;opacity:${fade.toFixed(2)}` : ""
+        }">
           <span class="name">${esc(r.name)}${tag}</span>
           <span class="nums">
             ${critCell(r)}

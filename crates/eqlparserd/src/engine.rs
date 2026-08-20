@@ -80,6 +80,11 @@ pub struct MeterRow {
     /// `ActorStats::name_shared`.
     #[serde(default)]
     pub name_shared: bool,
+    /// When this actor last dealt or took damage, in the log's clock. Compare
+    /// against the encounter's `end` for seconds since; see
+    /// `ActorStats::last_action`.
+    #[serde(default)]
+    pub last_action: i64,
     /// "charmed", "summoned", "pet", or absent when this is not a pet.
     ///
     /// Charmed and summoned are worth telling apart on screen: a charm can
@@ -2731,6 +2736,7 @@ impl Engine {
                 is_enemy: s.damaged_by_you && !s.charmed_by_you && !s.summoned,
                 is_pet: s.is_yours(),
                 name_shared: s.name_shared,
+                last_action: s.last_action,
                 pet_kind: match (s.summoned, s.charm_seen, s.is_yours()) {
                     (true, _, _) => Some("summoned"),
                     (false, true, _) => Some("charmed"),
