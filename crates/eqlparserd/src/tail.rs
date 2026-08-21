@@ -129,13 +129,12 @@ impl Follower {
         // to find one that parses.
         let window = len.min(1 << 16);
         file.seek(SeekFrom::Start(len - window))?;
-        let mut buf = String::new();
-        {
+        let buf = {
             use std::io::Read;
             let mut raw = Vec::new();
             file.take(window).read_to_end(&mut raw)?;
-            buf = String::from_utf8_lossy(&raw).into_owned();
-        }
+            String::from_utf8_lossy(&raw).into_owned()
+        };
         Ok(buf
             .lines()
             .rev()
