@@ -41,6 +41,30 @@ struct Config {
     /// instance while the site is being worked on, and the published one
     /// otherwise. A wrong guess costs a refused connection.
     eqdb: Vec<String>,
+    /// How far back to read on startup, in seconds. `None` reads everything.
+    since: Option<i64>,
+}
+
+/// Parse a load window: `2h`, `4h`, `8h`, `1d`, `2d`, `all`.
+///
+/// Deliberately a small vocabulary rather than a duration parser. The choice
+/// is offered as a handful of buttons, and accepting `90m` here would mean a
+/// setting the window picker cannot show.
+fn parse_since(raw: &str) -> Option<Option<i64>> {
+    let r = raw.trim().to_lowercase();
+    if r == "all" || r.is_empty() {
+        return Some(None);
+    }
+    let (num, unit) = r.split_at(r.len().checked_sub(1)?);
+    let n: i64 = num.parse().ok()?;
+    if n <= 0 {
+        return None;
+    }
+    match unit {
+        "h" => Some(Some(n * 3600)),
+        "d" => Some(Some(n * 86_400)),
+        _ => None,
+    }
 }
 
 /// Where to look for the companion site when nothing says otherwise.
@@ -74,6 +98,12 @@ OPTIONS:
                        when omitted, and left unknown if that says nothing.
                        Everything the daemon records is tagged with it.
     --port <n>         HTTP port (default 8777).
+    --since <window>   How much of the log to read on startup: 2h, 4h, 8h, 1d,
+                       2d, or all (default). A shorter window starts faster,
+                       at the cost of every figure derived from the log — a
+                       two-hour window means two hours of loot, kills and
+                       encounters, not a lifetime of them. Durable history in
+                       the database is unaffected.
     --eqdb <url>       Origin of the eqdb companion site, used for item
                        tooltips (default https://eqldb.hammackj.com, or
                        $EQLPARSER_EQDB). May be given more than once, or as a
@@ -110,6 +140,7 @@ fn parse_args() -> Config {
         game_dir: None,
         port: DEFAULT_PORT,
         game: None,
+        since: None,
         eqdb: std::env::var("EQLPARSER_EQDB")
             .ok()
             .map(|v| split_origins(&v))
@@ -138,6 +169,18 @@ fn parse_args() -> Config {
                     .next()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(DEFAULT_PORT)
+            }
+            "--since" => {
+                let raw = args.next().unwrap_or_default();
+                match parse_since(&raw) {
+                    Some(v) => cfg.since = v,
+                    None => {
+                        eprintln!(
+                            "[eqlparserd] unknown --since {raw:?}; expected 2h, 4h, 8h, 1d, 2d or all"
+                        );
+                        usage()
+                    }
+                }
             }
             "--eqdb" => {
                 if let Some(u) = args.next() {
@@ -305,8 +348,9 @@ async fn main() -> anyhow::Result<()> {
     ));
     let (updates, _) = broadcast::channel(64);
 
-    spawn_follower(
+    spawn_follower_since(
         log_path.clone(),
+        cfg.since,
         Arc::clone(&engine),
         Arc::clone(&snapshot),
         updates.clone(),
@@ -392,15 +436,29 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
     let _ = st.note_source(&path.to_string_lossy(), bytes, now);
 }
 
-fn spawn_follower(
+fn spawn_follower_since(
     path: PathBuf,
+    since: Option<i64>,
     engine: Arc<Mutex<Engine>>,
     snapshot: Arc<RwLock<engine::Snapshot>>,
     updates: broadcast::Sender<()>,
     store: Option<Arc<Mutex<store::Store>>>,
 ) {
     std::thread::spawn(move || {
-        let mut follower = match tail::Follower::open(&path) {
+        // A window is measured from the log's own end, not the wall clock:
+        // the two are a timezone apart, and a log last written yesterday would
+        // otherwise come back empty.
+        let cutoff = since.and_then(|secs| {
+            tail::Follower::last_timestamp(&path)
+                .ok()
+                .flatten()
+                .map(|end| end - secs)
+        });
+        let opened = match cutoff {
+            Some(c) => tail::Follower::open_since(&path, c),
+            None => tail::Follower::open(&path),
+        };
+        let mut follower = match opened {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("[eqlparserd] cannot open {}: {e}", path.display());
@@ -482,6 +540,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
+            since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
         };
         assert_eq!(
@@ -498,6 +557,7 @@ mod tests {
             game_dir: None,
             port: DEFAULT_PORT,
             game: None,
+            since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
         };
         assert!(resolve_log(&cfg).is_err());
@@ -510,4 +570,24 @@ mod tests {
             Some("Tharn")
         );
     }
+    /// A small vocabulary on purpose: the picker offers these and nothing
+    /// else, so accepting `90m` would mean a setting it cannot show.
+    #[test]
+    fn the_load_window_accepts_what_the_picker_offers() {
+        assert_eq!(parse_since("2h"), Some(Some(7_200)));
+        assert_eq!(parse_since("8h"), Some(Some(28_800)));
+        assert_eq!(parse_since("1d"), Some(Some(86_400)));
+        assert_eq!(parse_since("2d"), Some(Some(172_800)));
+        assert_eq!(parse_since("all"), Some(None));
+        assert_eq!(parse_since(""), Some(None));
+        assert_eq!(parse_since("ALL"), Some(None));
+        // Rejected rather than quietly reinterpreted.
+        assert_eq!(parse_since("90m"), None);
+        assert_eq!(parse_since("0h"), None);
+        assert_eq!(parse_since("-2h"), None);
+        assert_eq!(parse_since("h"), None);
+        assert_eq!(parse_since("banana"), None);
+    }
+
+
 }

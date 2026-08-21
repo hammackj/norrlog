@@ -70,6 +70,108 @@ impl Follower {
         })
     }
 
+    /// Open, skipping everything written before `cutoff`.
+    ///
+    /// The log is chronological, so the first line at or after the cutoff can
+    /// be found by bisecting the file rather than reading it: at 163 MB and
+    /// 2.4 million lines, reading to find the boundary would cost most of what
+    /// skipping it saves.
+    ///
+    /// The seek lands mid-line, so it winds forward to the next newline before
+    /// reading a timestamp — a partial line has no timestamp to compare, and
+    /// treating one as the boundary would cut a fight in half.
+    ///
+    /// Falls back to the whole file if nothing can be read or no line carries
+    /// a timestamp. A window that cannot be honoured is better served by too
+    /// much history than by none.
+    pub fn open_since(path: impl Into<PathBuf>, cutoff: i64) -> anyhow::Result<Follower> {
+        let mut f = Follower::open(path)?;
+        let len = f.reader.get_ref().metadata()?.len();
+        if len == 0 {
+            return Ok(f);
+        }
+
+        // Bisect on byte offset for the first line at or after the cutoff.
+        let (mut lo, mut hi) = (0u64, len);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match Follower::first_timestamp_at(f.reader.get_mut(), mid)? {
+                // No timestamp between here and the end: everything at or
+                // after `mid` is unusable, so the answer is to its left.
+                None => hi = mid,
+                Some((at, _)) if at >= cutoff => hi = mid,
+                Some(_) => lo = mid + 1,
+            }
+        }
+        let start = match Follower::first_timestamp_at(f.reader.get_mut(), lo)? {
+            Some((_, offset)) => offset,
+            None => 0,
+        };
+        f.reader.get_mut().seek(SeekFrom::Start(start))?;
+        f.reader = BufReader::with_capacity(1 << 20, f.reader.into_inner());
+        f.position = start;
+        Ok(f)
+    }
+
+    /// The timestamp of the last line carrying one, without reading the file.
+    ///
+    /// A window is measured from the end of the log rather than from the wall
+    /// clock: log times are the client's own clock read as UTC and sit a
+    /// timezone away from `SystemTime::now()`, so "the last two hours" against
+    /// the system clock could select nothing at all.
+    pub fn last_timestamp(path: &Path) -> anyhow::Result<Option<i64>> {
+        let mut file = File::open(path)?;
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Ok(None);
+        }
+        // The tail is enough: a line is a few hundred bytes and this only has
+        // to find one that parses.
+        let window = len.min(1 << 16);
+        file.seek(SeekFrom::Start(len - window))?;
+        let mut buf = String::new();
+        {
+            use std::io::Read;
+            let mut raw = Vec::new();
+            file.take(window).read_to_end(&mut raw)?;
+            buf = String::from_utf8_lossy(&raw).into_owned();
+        }
+        Ok(buf
+            .lines()
+            .rev()
+            .find_map(|l| eqlparser_core::parser::split_timestamp(l.trim_end()).map(|(ts, _)| ts)))
+    }
+
+    /// The timestamp of the first complete line at or after `offset`, and
+    /// where that line begins.
+    fn first_timestamp_at(file: &mut File, offset: u64) -> anyhow::Result<Option<(i64, u64)>> {
+        file.seek(SeekFrom::Start(offset))?;
+        let mut reader = BufReader::with_capacity(1 << 16, file);
+        let mut line = String::new();
+        let mut at = offset;
+        // Anything but the very start begins mid-line; discard the remainder.
+        if offset > 0 {
+            let n = reader.read_line(&mut line)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            at += n as u64;
+            line.clear();
+        }
+        for _ in 0..64 {
+            let n = reader.read_line(&mut line)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if let Some((ts, _)) = eqlparser_core::parser::split_timestamp(line.trim_end()) {
+                return Ok(Some((ts, at)));
+            }
+            at += n as u64;
+            line.clear();
+        }
+        Ok(None)
+    }
+
     /// Read every complete line currently available, calling `on_line` for each.
     ///
     /// Returns the number of lines consumed. A trailing partial line is left
