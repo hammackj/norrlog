@@ -1651,8 +1651,10 @@ impl Engine {
 
     /// Where declarations are stored between runs.
     fn marks_path() -> Option<std::path::PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join(".config/eqlparser/buff-marks.json"))
+        // Hand-made state, not derived: this is a correction nothing can
+        // regenerate, so it goes to the config directory rather than beside
+        // the rebuildable database. See `crate::paths`.
+        crate::paths::config_file("buff-marks.json")
     }
 
     fn save_marks(&self) {
@@ -2225,8 +2227,10 @@ impl Engine {
     }
 
     fn sky_path() -> Option<std::path::PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join(".config/eqlparser/sky-quests.json"))
+        // Hand-made state, not derived: this is a correction nothing can
+        // regenerate, so it goes to the config directory rather than beside
+        // the rebuildable database. See `crate::paths`.
+        crate::paths::config_file("sky-quests.json")
     }
 
     fn save_sky_quests(&self) {
@@ -2270,8 +2274,10 @@ impl Engine {
     /// objectives, so this is knowledge the player supplies and we must not
     /// lose on restart.
     fn task_defs_path() -> Option<std::path::PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join(".config/eqlparser/tasks.json"))
+        // Hand-made state, not derived: this is a correction nothing can
+        // regenerate, so it goes to the config directory rather than beside
+        // the rebuildable database. See `crate::paths`.
+        crate::paths::config_file("tasks.json")
     }
 
     fn save_task_defs(&self) {

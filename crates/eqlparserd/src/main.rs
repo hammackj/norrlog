@@ -6,6 +6,7 @@
 
 mod engine;
 mod itemdb;
+mod paths;
 mod server;
 mod store;
 mod tail;
@@ -269,7 +270,19 @@ async fn main() -> anyhow::Result<()> {
 
     // History outlives any one log file. Opened before the follower starts so
     // the first flush after catch-up has somewhere to go.
-    let history = match store::Store::open_as(&history_path(), &player, &server) {
+    // A path that cannot be anchored is an error like any other, and lands in
+    // the same "running without it" branch. Before, it became the *relative*
+    // path `.config/eqlparser/history.db`: the database followed the working
+    // directory, so a daemon started from elsewhere found an empty history and
+    // accumulated nothing — which reads as a parsing fault, not a path one.
+    let history = match history_path()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no absolute home directory; set HOME, or XDG_DATA_HOME"
+            )
+        })
+        .and_then(|db| store::Store::open_as(&db, &player, &server))
+    {
         Ok(s) => {
             if let Ok((k, e, l)) = s.counts() {
                 eprintln!(
@@ -385,11 +398,8 @@ async fn main() -> anyhow::Result<()> {
 /// nothing — a different character means a different log and, in practice, a
 /// different install; mixing two would need a character column and has no user
 /// asking for it yet.
-fn history_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".config/eqlparser/history.db")
+fn history_path() -> Option<PathBuf> {
+    paths::data_file("history.db")
 }
 
 /// Write derived history to the store.
