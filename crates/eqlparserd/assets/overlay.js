@@ -739,6 +739,27 @@
 
      At the cap the bar disappears and the panel becomes an AA readout, which
      is the only thing still moving. */
+  /* A span that may be long.
+
+     `dur` is built for a fight and renders m:ss, which is right for a
+     countdown of minutes and absurd for an estimate that can run to days —
+     a quiet hour would put "60000:00" on the overlay. Above an hour this
+     coarsens rather than growing the minute count without bound. */
+  function longDur(sec, coarse) {
+    sec = Math.max(0, Math.round(sec));
+    // An estimate of a whole level does not want seconds: "21m" is the claim
+    // being made, and "21:15" implies a precision the rate does not have.
+    if (sec < 3600) return coarse ? `${Math.max(1, Math.round(sec / 60))}m` : dur(sec);
+    const h = Math.floor(sec / 3600);
+    if (h < 24) {
+      const m = Math.round((sec % 3600) / 60);
+      return m ? `${h}h ${m}m` : `${h}h`;
+    }
+    const d = Math.floor(h / 24);
+    const r = h % 24;
+    return r ? `${d}d ${r}h` : `${d}d`;
+  }
+
   function renderXp(snap) {
     const x = snap.exp;
     if (!x) return;
@@ -758,9 +779,16 @@
     if (!capped && x.rate_per_hour > 0)
       bits.push(`<b>${x.rate_per_hour.toFixed(1)}</b> %/hr`);
     if (x.aa_per_hour > 0) bits.push(`<b>${x.aa_per_hour.toFixed(1)}</b> AA/hr`);
+    // What a whole level costs at this rate, which is the planning number —
+    // "how long until the next one" answers tonight, "how long a level takes"
+    // answers whether to start one. Derived rather than sent: it is the same
+    // rate the line already carries, turned over.
+    if (!capped && x.rate_per_hour > 0)
+      bits.push(`<b>${longDur((100 / x.rate_per_hour) * 3600, true)}</b>/level`);
     el.xpMeta.innerHTML = bits.join(" &middot; ");
     const pct = Math.max(0, Math.min(100, x.percent));
-    const eta = x.seconds_to_next_level != null ? dur(x.seconds_to_next_level) : "—";
+    const eta =
+      x.seconds_to_next_level != null ? longDur(x.seconds_to_next_level) : "—";
     const levelRow = capped
       ? ""
       : `<div class="row you" style="--share:${pct.toFixed(1)}%">
