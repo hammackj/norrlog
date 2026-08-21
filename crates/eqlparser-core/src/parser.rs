@@ -77,6 +77,9 @@ enum RuleId {
     ResistedYours,
     ResistedGeneric,
     SkillUp,
+    Stunned,
+    StunEnded,
+    StunAvoided,
     TaskAssigned,
     ItemGranted,
     TaskUpdated,
@@ -514,6 +517,17 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::SpellGranted,
         r"^You have been granted the following spell: (?P<spell>.+?)\.$",
     ),
+    // ---- Stuns --------------------------------------------------------------
+    // Start and end are a matched pair in the log — 845 of each across the
+    // reference log — so the two bound a span. Time stunned is time not
+    // attacking, which is the one thing a damage meter cannot see any other
+    // way.
+    (RuleId::Stunned, r"^You are stunned!$"),
+    (
+        RuleId::StunEnded,
+        r"^(?:You are no longer stunned\.|You overcome the stun!)$",
+    ),
+    (RuleId::StunAvoided, r"^You avoid the stunning blow\.$"),
     // ---- Tasks and achievements ---------------------------------------------
     (
         RuleId::TaskAssigned,
@@ -1230,6 +1244,9 @@ impl Parser {
                     skill: g("skill").unwrap_or_default().to_string(),
                     value: num("value") as u32,
                 },
+                RuleId::Stunned => Event::Stunned,
+                RuleId::StunEnded => Event::StunEnded,
+                RuleId::StunAvoided => Event::StunAvoided,
                 RuleId::TaskAssigned => Event::TaskAssigned {
                     task: g("task").unwrap_or_default().to_string(),
                 },

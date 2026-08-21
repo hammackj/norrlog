@@ -239,6 +239,18 @@ pub struct ActorStats {
     /// defence.
     #[serde(default)]
     pub avoided_by: HashMap<String, u64>,
+    /// Seconds spent stunned, and how many stuns landed or were shrugged off.
+    ///
+    /// Time stunned is time not attacking, and it is the one gap in a damage
+    /// meter that has no other explanation — a fight where the numbers look
+    /// poor reads very differently once you can see twelve of its sixty
+    /// seconds were spent unable to act.
+    #[serde(default)]
+    pub stunned_seconds: i64,
+    #[serde(default)]
+    pub stuns: u32,
+    #[serde(default)]
+    pub stuns_avoided: u32,
     /// True if the logging character damaged this actor — strong evidence it
     /// is an enemy.
     pub damaged_by_you: bool,
@@ -357,6 +369,9 @@ impl ActorStats {
         self.self_damage += o.self_damage;
         self.name_shared |= o.name_shared;
         self.last_action = self.last_action.max(o.last_action);
+        self.stunned_seconds += o.stunned_seconds;
+        self.stuns += o.stuns;
+        self.stuns_avoided += o.stuns_avoided;
         self.healing_done += o.healing_done;
         self.healing_received += o.healing_received;
         self.hits += o.hits;
@@ -1224,6 +1239,8 @@ pub struct EncounterTracker {
     charmed: std::collections::HashMap<String, String>,
     /// When the charm currently held on each creature began.
     charm_since: std::collections::HashMap<String, i64>,
+    /// When the stun currently on you began, if one is.
+    stunned_since: Option<i64>,
     /// Pet actor key -> the display name of the player it belongs to.
     ///
     /// On the tracker rather than the encounter because a pet outlives any one
@@ -1266,6 +1283,7 @@ impl EncounterTracker {
             last_combat: 0,
             charmed: std::collections::HashMap::new(),
             charm_since: std::collections::HashMap::new(),
+            stunned_since: None,
             pet_owners: std::collections::HashMap::new(),
             summoned: std::collections::HashSet::new(),
             hostile: std::collections::HashSet::new(),
@@ -1428,6 +1446,33 @@ impl EncounterTracker {
         }
 
         match &entry.event {
+            // A stun is only worth recording inside a fight — being stunned
+            // by an ambush while running somewhere is not a gap in anyone's
+            // damage.
+            Event::Stunned => {
+                if self.current.is_some() {
+                    self.stunned_since = Some(entry.timestamp);
+                    let player = self.player.clone();
+                    if let Some(enc) = self.current.as_mut() {
+                        enc.entry(&Actor::You, &player).stuns += 1;
+                    }
+                }
+            }
+            Event::StunEnded => {
+                if let Some(since) = self.stunned_since.take() {
+                    let player = self.player.clone();
+                    if let Some(enc) = self.current.as_mut() {
+                        enc.entry(&Actor::You, &player).stunned_seconds +=
+                            (entry.timestamp - since).max(0);
+                    }
+                }
+            }
+            Event::StunAvoided => {
+                let player = self.player.clone();
+                if let Some(enc) = self.current.as_mut() {
+                    enc.entry(&Actor::You, &player).stuns_avoided += 1;
+                }
+            }
             Event::ZoneChange { zone } => {
                 // You cannot still be fighting something in a zone you left.
                 let z = self.close();
@@ -2052,6 +2097,17 @@ impl EncounterTracker {
             *since = ends_at.unwrap_or(*since);
         }
 
+        // A stun still on you when the fight ends counts up to that moment —
+        // the same reason a charm does. Dying stunned is the common case and
+        // would otherwise report zero.
+        if let (Some(since), Some(end)) = (self.stunned_since, ends_at) {
+            let player = self.player.clone();
+            if let Some(enc) = self.current.as_mut() {
+                enc.entry(&Actor::You, &player).stunned_seconds += (end - since).max(0);
+            }
+            self.stunned_since = Some(end);
+        }
+
         let mut enc = self.current.take()?;
         for st in enc.actors.values_mut() {
             fold_proc_casts(st);
@@ -2592,6 +2648,45 @@ mod tests {
         assert!(
             second.charm_uptime() <= 1.0,
             "and the uptime needs no cap to stay sane"
+        );
+    }
+
+    /// Time stunned is time not attacking, and the client states the start and
+    /// the end as a pair, so the span is measurable rather than guessed.
+    #[test]
+    fn a_stun_is_counted_as_the_time_it_cost() {
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (102, "You are stunned!"),
+            (108, "You are no longer stunned."),
+            (109, "You avoid the stunning blow."),
+            (110, "You slash a giant for 10 points of damage."),
+            (112, "You have slain a giant!"),
+        ]);
+        let you = encs[0].actors.get("you").unwrap();
+        assert_eq!(you.stunned_seconds, 6, "102 to 108");
+        assert_eq!(you.stuns, 1);
+        assert_eq!(you.stuns_avoided, 1);
+
+        // Overcoming it early ends the span just the same.
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (101, "You are stunned!"),
+            (103, "You overcome the stun!"),
+            (110, "You have slain a giant!"),
+        ]);
+        assert_eq!(encs[0].actors.get("you").unwrap().stunned_seconds, 2);
+
+        // A stun still on you when the fight ends counts up to that moment.
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (104, "You are stunned!"),
+            (110, "A giant hits YOU for 10 points of damage."),
+        ]);
+        assert_eq!(
+            encs[0].actors.get("you").unwrap().stunned_seconds,
+            6,
+            "104 to the fight's end at 110"
         );
     }
 

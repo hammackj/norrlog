@@ -100,6 +100,14 @@ pub struct MeterRow {
     /// `ActorStats::last_action`.
     #[serde(default)]
     pub last_action: i64,
+    /// Seconds this actor spent stunned in the fight, and the stuns behind it.
+    /// Only ever populated for you — the client states nobody else's.
+    #[serde(default)]
+    pub stunned_seconds: i64,
+    #[serde(default)]
+    pub stuns: u32,
+    #[serde(default)]
+    pub stuns_avoided: u32,
     /// "charmed", "summoned", "pet", or absent when this is not a pet.
     ///
     /// Charmed and summoned are worth telling apart on screen: a charm can
@@ -2804,6 +2812,9 @@ impl Engine {
                 is_pet: s.is_yours(),
                 name_shared: s.name_shared,
                 last_action: s.last_action,
+                stunned_seconds: s.stunned_seconds,
+                stuns: s.stuns,
+                stuns_avoided: s.stuns_avoided,
                 pet_kind: match (s.summoned, s.charm_seen, s.is_yours()) {
                     (true, _, _) => Some("summoned"),
                     (false, true, _) => Some("charmed"),

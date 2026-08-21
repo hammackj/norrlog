@@ -499,6 +499,13 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// You were stunned. The client states the start and the end as a pair,
+    /// so the two together are a measurable span rather than a count.
+    Stunned,
+    /// The stun ended, either by expiring or by being overcome.
+    StunEnded,
+    /// A stun was thrown at you and did not take hold.
+    StunAvoided,
     /// The character logged in. Starts a play session.
     LoggedOn,
     /// An item handed to an NPC. Several may precede one [`Event::TradeComplete`].
