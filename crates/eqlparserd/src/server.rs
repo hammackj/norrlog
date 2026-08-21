@@ -1655,6 +1655,53 @@ mod tests {
         }
     }
 
+    /// The overlay's panels and the Settings tickboxes are two lists in two
+    /// files, and they drift. A comment above the second one already said
+    /// "adding one to the overlay means adding it here", and the `motes` panel
+    /// was still added to one and not the other — leaving it reachable only by
+    /// typing it into the options string by hand.
+    ///
+    /// So the lists are checked against each other rather than trusted.
+    #[test]
+    fn every_overlay_panel_is_offered_in_settings() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let renderer = root.join("gui/renderer/app.js");
+        let Ok(app_js) = std::fs::read_to_string(&renderer) else {
+            // The daemon is usable without the desktop app beside it; a
+            // missing renderer is not this test's business to fail over.
+            return;
+        };
+
+        let panels = |src: &str, pat: &str| -> std::collections::BTreeSet<String> {
+            let mut out = std::collections::BTreeSet::new();
+            let mut rest = src;
+            while let Some(i) = rest.find(pat) {
+                rest = &rest[i + pat.len()..];
+                if let Some(j) = rest.find('"') {
+                    let name = &rest[..j];
+                    if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+            out
+        };
+
+        let in_overlay = panels(OVERLAY_JS, "panels.includes(\"");
+        let in_settings = panels(&app_js, "[\"");
+        assert!(!in_overlay.is_empty(), "found no panels in the overlay");
+
+        let missing: Vec<&String> = in_overlay.difference(&in_settings).collect();
+        assert!(
+            missing.is_empty(),
+            "the overlay has panels Settings cannot switch on: {missing:?} \
+             — add them to OVERLAY_PANELS in gui/renderer/app.js"
+        );
+    }
+
     const SAMPLE: &[&str] = &[
         "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
         "[Tue Jul 28 14:00:01 2026] You slash a lesser mummy for 100 points of damage.",

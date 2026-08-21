@@ -525,6 +525,11 @@ pub struct Snapshot {
     pub session_motes: Vec<(String, u64)>,
     #[serde(default)]
     pub session_motes_total: u64,
+    /// Seconds the current sitting has been going, so a per-hour figure can be
+    /// worked out without a second request. Measured against the log's own
+    /// clock — the wall clock is a timezone away from it.
+    #[serde(default)]
+    pub session_seconds: i64,
     pub buffs: Vec<BuffInfo>,
     /// Passively recast songs. Bards run up to five at once.
     pub auras: Vec<BuffInfo>,
@@ -3132,6 +3137,7 @@ impl Engine {
                 v
             },
             session_motes_total: self.session_motes.values().sum(),
+            session_seconds: (self.last_timestamp - self.session_start).max(0),
             buffs,
             auras,
             debuffs,

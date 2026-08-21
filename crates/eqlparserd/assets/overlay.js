@@ -579,7 +579,13 @@
   function renderMotes(snap) {
     const rows = snap.session_motes || [];
     const total = snap.session_motes_total || 0;
-    el.motesMeta.textContent = total ? `${total} this session` : "";
+    // A rate as well as a count: on a farming night the question is whether
+    // this hour is better than the last one, which a running total cannot
+    // answer. Held back until the sitting is long enough to mean something —
+    // three motes in the first four minutes is not 45 an hour.
+    const hours = (snap.session_seconds || 0) / 3600;
+    const rate = total && hours >= 0.25 ? ` · ${(total / hours).toFixed(1)}/hr` : "";
+    el.motesMeta.textContent = total ? `${total} this session${rate}` : "";
     if (!rows.length) {
       el.motesRows.innerHTML = '<div class="empty">None yet</div>';
       return;
