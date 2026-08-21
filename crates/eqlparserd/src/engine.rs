@@ -514,6 +514,17 @@ pub struct Snapshot {
     pub current: Option<EncounterSummary>,
     /// Completed fights, newest first.
     pub recent: Vec<EncounterSummary>,
+    /// Motes looted this session, biggest tier last, with the total.
+    ///
+    /// Carried on the snapshot rather than fetched: the overlay renders from
+    /// this and nothing else, and a second poll loop for one panel would be a
+    /// second thing to keep in step. Kept as a running tally so the cost is a
+    /// map bump per looted line rather than a walk of every item on every
+    /// snapshot.
+    #[serde(default)]
+    pub session_motes: Vec<(String, u64)>,
+    #[serde(default)]
+    pub session_motes_total: u64,
     pub buffs: Vec<BuffInfo>,
     /// Passively recast songs. Bards run up to five at once.
     pub auras: Vec<BuffInfo>,
@@ -562,6 +573,41 @@ const CHARM_FAILURE_WINDOW: i64 = 300;
 const CHARM_FAILURE_MAX: usize = 50;
 
 const AA_RATE_WINDOW: i64 = 2 * 3600;
+
+/// Rank a mote tier, so the panel reads in the order they are earned.
+///
+/// Unknown adjectives sort last rather than first: a tier nobody has taught
+/// this function about is more likely to be a new high one than a new low one.
+fn mote_tier(name: &str) -> u8 {
+    let n = name.to_lowercase();
+    for (i, tier) in [
+        "infinitesimal",
+        "minor",
+        "lesser",
+        "intermediate",
+        "greater",
+        "major",
+        "grand",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if n.contains(tier) {
+            return i as u8;
+        }
+    }
+    u8::MAX
+}
+
+/// Whether a looted item is a Mote of Potential.
+///
+/// Matched on the word rather than the full name because the tiers differ only
+/// by their adjective — Infinitesimal, Minor, Lesser, Major — and a new one
+/// would otherwise go uncounted until somebody noticed.
+fn is_mote(item: &str) -> bool {
+    item.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w.eq_ignore_ascii_case("mote"))
+}
 
 /// Wall-clock seconds since the Unix epoch.
 fn system_now() -> i64 {
@@ -686,6 +732,8 @@ pub struct Engine {
     last_timestamp: i64,
     /// When the current play session began.
     session_start: i64,
+    /// Motes looted since the current session began.
+    session_motes: std::collections::HashMap<String, u64>,
     /// Sessions seen so far, and the seconds inside them.
     ///
     /// A rate needs a denominator, and the log's span is the wrong one: it
@@ -779,6 +827,7 @@ impl Engine {
             player,
             last_timestamp: 0,
             session_start: 0,
+            session_motes: std::collections::HashMap::new(),
             sessions: 0,
             played_seconds: 0,
             seen_logon: false,
@@ -992,6 +1041,9 @@ impl Engine {
             let gap = entry.timestamp - self.last_timestamp;
             if gap > SESSION_GAP_SECONDS {
                 self.sessions += 1;
+                // A new sitting starts its own tally; the panel is "this
+                // session", not "since the daemon started".
+                self.session_motes.clear();
             } else if gap > 0 {
                 self.played_seconds += gap;
             }
@@ -1335,6 +1387,9 @@ impl Engine {
                 // Recorded here as well as inside the encounter, because loot
                 // frequently arrives after the fight has closed.
                 self.sky.on_loot(item, *quantity);
+                if is_mote(item) {
+                    *self.session_motes.entry(item.clone()).or_insert(0) += (*quantity).max(1);
+                }
 
                 // A named corpse that is not your own is a creature, and what
                 // came off it is a drop. Your own corpse is items going back
@@ -3068,6 +3123,15 @@ impl Engine {
             classes,
             current: self.tracker.current().map(|e| self.summarise(e, true)),
             recent,
+            session_motes: {
+                // Cheapest tier first, which is the order they are earned in
+                // and the order the desktop panel uses.
+                let mut v: Vec<(String, u64)> =
+                    self.session_motes.iter().map(|(k, n)| (k.clone(), *n)).collect();
+                v.sort_by(|a, b| mote_tier(&a.0).cmp(&mote_tier(&b.0)).then(a.0.cmp(&b.0)));
+                v
+            },
+            session_motes_total: self.session_motes.values().sum(),
             buffs,
             auras,
             debuffs,

@@ -5,7 +5,7 @@
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
- *                                 incoming, auras, buffs, debuffs
+ *                                 incoming, auras, buffs, debuffs, motes
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -80,6 +80,9 @@
     xpTitle: document.getElementById("xp-title"),
     xpMeta: document.getElementById("xp-meta"),
     xpRows: document.getElementById("xp-rows"),
+    motesPanel: document.getElementById("motes-panel"),
+    motesMeta: document.getElementById("motes-meta"),
+    motesRows: document.getElementById("motes-rows"),
     healPanel: document.getElementById("heal-panel"),
     healRows: document.getElementById("heal-rows"),
     takenPanel: document.getElementById("taken-panel"),
@@ -111,6 +114,7 @@
 
   if (!opt.panels.includes("meter")) el.meter.classList.add("hidden");
   if (!opt.panels.includes("xp")) el.xpPanel.classList.add("hidden");
+  if (opt.panels.includes("motes")) el.motesPanel.classList.remove("hidden");
   if (!opt.panels.includes("heals")) el.healPanel.classList.add("hidden");
   if (!opt.panels.includes("taken")) el.takenPanel.classList.add("hidden");
   if (!opt.panels.includes("auras")) el.auraPanel.classList.add("hidden");
@@ -503,6 +507,11 @@
       renderMetric(el.takenRows, enc, "damage_taken", null, "taken_share", "No damage taken");
       renderSub(snap, enc);
     }
+    // Outside the branch, like the trace below: motes accrue whether or not
+    // anything is being fought, and a panel that blanks between pulls would
+    // be reporting the fight rather than the session.
+    if (opt.panels.includes("motes")) renderMotes(snap);
+
     // Outside the branch: it has to see an idle tick to keep the trace moving
     // when you stop swinging, and to clear itself when the fight ends.
     renderDps(snap, opt.scope ? null : snap.current);
@@ -561,6 +570,30 @@
   const STALE_AFTER = 8;
   const STALE_FADE = 22;
   const STALE_FLOOR = 0.34;
+
+  /* Motes looted this sitting, cheapest tier first.
+
+     A bar per tier against the biggest, which makes the shape of a night
+     legible at a glance — a run of Infinitesimals reads differently from two
+     Majors even when the totals match. */
+  function renderMotes(snap) {
+    const rows = snap.session_motes || [];
+    const total = snap.session_motes_total || 0;
+    el.motesMeta.textContent = total ? `${total} this session` : "";
+    if (!rows.length) {
+      el.motesRows.innerHTML = '<div class="empty">None yet</div>';
+      return;
+    }
+    const max = Math.max(...rows.map(([, n]) => n), 1);
+    el.motesRows.innerHTML = rows
+      .map(
+        ([name, n]) => `<div class="row" style="--share:${((n / max) * 100).toFixed(1)}%">
+          <span class="name">${esc(name.replace(/^Mote of /i, ""))}</span>
+          <span class="nums"><span class="dmg">${n}</span></span>
+        </div>`
+      )
+      .join("");
+  }
 
   function renderRows(enc) {
     let meter = foldPets(enc.meter || []);
