@@ -406,3 +406,28 @@ body {
   background: rgb(var(--dim-rgb) / 0.22);
   color: var(--text-dim);
 }
+
+/* More panels than there is room for.
+
+   The desktop overlay grows to fit its content and stops at the edge of the
+   screen; an OBS source is whatever size it was made. Past that, something has
+   to be cut — but a panel that is simply absent reads as a bug rather than as
+   a window too small, so the bottom edge says so. */
+body.clipped::after {
+  content: "more below — fewer panels, or a taller window";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-align: right;
+  color: rgb(var(--dim-rgb) / 0.95);
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--scrim-rgb) / 0),
+    rgb(var(--scrim-rgb) / 0.92) 55%
+  );
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  pointer-events: none;
+}

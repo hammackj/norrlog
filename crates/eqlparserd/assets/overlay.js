@@ -507,6 +507,12 @@
       renderMetric(el.takenRows, enc, "damage_taken", null, "taken_share", "No damage taken");
       renderSub(snap, enc);
     }
+    // Enough panels will outgrow any window — the desktop overlay fits itself
+    // to its content but cannot exceed the screen, and an OBS source is
+    // whatever size it was made. Clipping is then unavoidable; clipping
+    // *silently* is not, and a panel that is simply missing reads as a bug.
+    markOverflow();
+
     // Outside the branch, like the trace below: motes accrue whether or not
     // anything is being fought, and a panel that blanks between pulls would
     // be reporting the fight rather than the session.
@@ -570,6 +576,15 @@
   const STALE_AFTER = 8;
   const STALE_FADE = 22;
   const STALE_FLOOR = 0.34;
+
+  /** Flag the page when it is taller than the space it has. */
+  function markOverflow() {
+    const app = document.getElementById("app");
+    if (!app) return;
+    const over = Math.ceil(app.getBoundingClientRect().height) - window.innerHeight > 2;
+    document.body.classList.toggle("clipped", over);
+  }
+  window.addEventListener("resize", markOverflow);
 
   /* Motes looted this sitting, cheapest tier first.
 
