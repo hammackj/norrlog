@@ -651,7 +651,10 @@ mod tests {
         let awakened = r
             .npcs
             .iter()
-            .find(|n| n.difficulty == 1 && n.mode == Mode::Group)
+            // Unmarked in the log, so the mode is not stated -- see
+            // `zone::Mode::Instance`. It read as Group until the client
+            // turned out to write that marker only sometimes.
+            .find(|n| n.difficulty == 1 && n.mode == Mode::Instance)
             .unwrap();
         assert_eq!(awakened.health_median, 400);
         // Same place, though — which is what makes a zone page possible.
@@ -785,7 +788,7 @@ mod tests {
         assert_eq!((s[0].at, s[0].hp), (100, 1200));
         assert_eq!((s[1].at, s[1].hp), (200, 30));
         assert_eq!(s[0].name, "skeleton");
-        assert_eq!((s[0].difficulty, s[0].mode), (2, Mode::Group));
+        assert_eq!((s[0].difficulty, s[0].mode), (2, Mode::Instance));
     }
 
     /// Two logs of the same creature are one creature. Counts add, the record

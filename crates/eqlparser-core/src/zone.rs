@@ -7,9 +7,27 @@
 //!
 //! ```text
 //! Nagafen's Lair                      the place itself, out in the world
-//! Nagafen's Lair 1 (Awakened)         a group instance of it, tier 1
-//! Nagafen's Lair - Solo 3 (Fused)     a solo instance of it, tier 3
+//! Nagafen's Lair 1 (Awakened)         an instance of it, tier 1, mode unsaid
+//! Nagafen's Lair - Group 2 (Adaptive) a group instance, said explicitly
+//! Nagafen's Lair - Solo 3 (Fused)     a solo instance, said explicitly
 //! ```
+//!
+//! **The second line does not say group.** It reads that way to anybody who
+//! knows EverQuest, and this crate read it that way for a long time, and it is
+//! wrong: the client writes the marker when it feels like it. Counted across
+//! five contributors' logs —
+//!
+//! ```text
+//! 435   no marker
+//! 282   - Solo
+//!  23   - Group
+//! ```
+//!
+//! — and the same instance appears both ways in one log weeks apart, `The
+//! Plane of Hate 1 (Awakened)` three times against `The Plane of Hate - Solo 1
+//! (Awakened)` once. So an unmarked tier is [`Mode::Instance`]: an instance
+//! whose mode the line does not carry. Inferring group from it put 31,179
+//! kills under a mode nobody had observed.
 //!
 //! Left as one string those are three unrelated zones, and no query can ask
 //! "does this drop in Nagafen's Lair at all" or "how does its loot change with
@@ -29,9 +47,13 @@
 //!
 //! # What cannot be known
 //!
-//! A group instance at tier 0, if such a thing exists, is written exactly like
-//! the open world zone. Nothing in the string distinguishes them, so it is read
-//! as open rather than guessed at.
+//! A group instance at tier 0 written *without* the marker is exactly the open
+//! world zone's string. Nothing in it distinguishes them, so it is read as open
+//! rather than guessed at.
+//!
+//! `Nagafen's Lair - Group` — marker, no tier — is a different case and is not
+//! in this section: the client has said which mode it is, and only the tier is
+//! missing. It reads as group at difficulty 0.
 
 use crate::game::Game;
 use serde::{Deserialize, Serialize};
@@ -63,6 +85,21 @@ pub enum Mode {
     Solo,
     /// A multiplayer instance.
     Group,
+    /// An instance whose tier the client stated and whose mode it did not.
+    ///
+    /// The client writes the marker inconsistently — `The Plane of Hate 1
+    /// (Awakened)` three times and `The Plane of Hate - Solo 1 (Awakened)`
+    /// once, in one log, weeks apart — so a tier with no marker is the same
+    /// instance with the mode left off, and which mode it was is not
+    /// recoverable from the line.
+    ///
+    /// This used to read as [`Mode::Group`], on the reasoning that an
+    /// instance which is not solo is a group one. That was fair while nothing
+    /// on file had ever written `- Group`; the client demonstrably does. The
+    /// result was 2,186 creature rows and 31,179 kills asserting a mode
+    /// nobody had observed, including a Solusek's Eye somebody had run solo
+    /// and the site filed under group.
+    Instance,
 }
 
 impl Mode {
@@ -71,6 +108,7 @@ impl Mode {
             Mode::Open => "open",
             Mode::Solo => "solo",
             Mode::Group => "group",
+            Mode::Instance => "instance",
         }
     }
 
@@ -85,6 +123,7 @@ impl Mode {
             "open" => Some(Mode::Open),
             "solo" => Some(Mode::Solo),
             "group" => Some(Mode::Group),
+            "instance" => Some(Mode::Instance),
             _ => None,
         }
     }
@@ -145,11 +184,27 @@ impl Zone {
         let mode = if let Some(stripped) = rest.strip_suffix(" - Solo") {
             rest = stripped;
             Mode::Solo
-        } else if difficulty > 0 {
-            // An instance that is not solo is a group one. A group instance at
-            // tier 0 would be written exactly like the open zone, so it cannot
-            // be told apart and is not guessed at.
+        } else if let Some(stripped) = rest.strip_suffix(" - Group") {
+            // The client writes this marker too, symmetrically with Solo, and
+            // for a long time nothing here had seen it: every log on hand
+            // wrote a group instance as the bare tiered form below, so the
+            // marker was never stripped and `The Plane of Fear - Group 4
+            // (Refined)` kept `- Group` in its *place* name.
+            //
+            // Downstream that is a zone in its own right. Five of them
+            // appeared on the site beside the real places — 113 creatures and
+            // 275 loot pairings filed under somewhere nobody can go, split
+            // from the place they belong to. Exactly the shape the tier fold
+            // was written to fix, on the half of the string it did not read.
+            rest = stripped;
             Mode::Group
+        } else if difficulty > 0 {
+            // A tier and no marker. Not a group instance -- see
+            // [`Mode::Instance`]. The client omits the marker far more often
+            // than it writes it (435 entries against 23 marked group and 282
+            // marked solo), and it omits it for instances it elsewhere marks
+            // both ways, so there is nothing here to infer from.
+            Mode::Instance
         } else {
             Mode::Open
         };
@@ -213,10 +268,14 @@ mod tests {
         assert_eq!((open.mode, open.difficulty), (Mode::Open, 0));
         assert!(!open.is_instance());
 
-        let group = Zone::parse("Nagafen's Lair 1 (Awakened)");
-        assert_eq!(group.name, "Nagafen's Lair");
-        assert_eq!((group.mode, group.difficulty), (Mode::Group, 1));
-        assert_eq!(group.modifier.as_deref(), Some("Awakened"));
+        // A tier and no marker. Not group -- the client omits the marker on
+        // instances it elsewhere marks solo, so this line does not say.
+        let unmarked = Zone::parse("Nagafen's Lair 1 (Awakened)");
+        assert_eq!(unmarked.name, "Nagafen's Lair");
+        assert_eq!((unmarked.mode, unmarked.difficulty), (Mode::Instance, 1));
+        assert_eq!(unmarked.modifier.as_deref(), Some("Awakened"));
+        assert!(unmarked.is_instance());
+        let group = unmarked;
 
         let solo = Zone::parse("Nagafen's Lair - Solo 3 (Fused)");
         assert_eq!(solo.name, "Nagafen's Lair");
@@ -225,6 +284,63 @@ mod tests {
         // All three are the same place, which is the entire point.
         assert_eq!(open.name, group.name);
         assert_eq!(open.name, solo.name);
+    }
+
+    /// The group marker is stripped, the same as the solo one.
+    ///
+    /// Verbatim from Amerzel's Rivervale log, which is the first on file to
+    /// write it. Without this the place kept the marker and `The Plane of
+    /// Fear - Group` became a zone beside `The Plane of Fear` — the same
+    /// creature's kills under two headings, each with a fraction of the count.
+    #[test]
+    fn the_group_marker_is_a_mode_not_a_place() {
+        for (label, tier, modifier) in [
+            ("Nagafen's Lair - Group 2 (Adaptive)", 2, Some("Adaptive")),
+            ("The Plane of Fear - Group 4 (Refined)", 4, Some("Refined")),
+            ("The Plane of Hate - Group 3 (Fused)", 3, Some("Fused")),
+        ] {
+            let z = Zone::parse(label);
+            assert_eq!((z.mode, z.difficulty), (Mode::Group, tier), "{label}");
+            assert_eq!(z.modifier.as_deref(), modifier, "{label}");
+            assert!(!z.name.contains(" - "), "{label} kept its marker: {}", z.name);
+        }
+
+        // The marked and unmarked spellings are *not* one variant, and this
+        // is the correction: they were folded together on the reasoning that
+        // an unmarked tier is a group one, which put solo runs under group.
+        // They are the same place at the same tier, played in a mode one line
+        // states and the other does not, and that difference is real.
+        assert_ne!(
+            Zone::parse("Nagafen's Lair - Group 2 (Adaptive)").variant_key(Game::EverQuestLegends),
+            Zone::parse("Nagafen's Lair 2 (Adaptive)").variant_key(Game::EverQuestLegends),
+        );
+        assert_eq!(
+            Zone::parse("Nagafen's Lair 2 (Adaptive)").mode,
+            Mode::Instance,
+        );
+        // The place is the same, which is what keeps them on one page.
+        assert_eq!(
+            Zone::parse("Nagafen's Lair - Group 2 (Adaptive)").name,
+            Zone::parse("Nagafen's Lair 2 (Adaptive)").name,
+        );
+    }
+
+    /// The marker without a tier says the mode and leaves the tier unknown.
+    ///
+    /// Distinct from the bare tierless string, which cannot say either. One
+    /// log writes `Nagafen's Lair - Group`, and reading that as the open world
+    /// zone — which is what happened before the marker was stripped at all —
+    /// files an instance's creatures out in the world.
+    #[test]
+    fn the_group_marker_without_a_tier_is_still_an_instance() {
+        let z = Zone::parse("Nagafen's Lair - Group");
+        assert_eq!(z.name, "Nagafen's Lair");
+        assert_eq!((z.mode, z.difficulty), (Mode::Group, 0));
+        assert!(z.is_instance());
+        assert_ne!(
+            z.variant_key(Game::EverQuestLegends),
+            Zone::parse("Nagafen's Lair").variant_key(Game::EverQuestLegends)
+        );
     }
 
     /// Solo at tier 0 is a real variant and must not collapse into the open
@@ -258,7 +374,7 @@ mod tests {
             let z = Zone::parse(&label);
             assert_eq!(z.name, "Innothule Swamp", "from {label}");
             assert_eq!(z.difficulty, *tier);
-            assert_eq!(z.mode, Mode::Group);
+            assert_eq!(z.mode, Mode::Instance, "a bare tier does not say which mode");
             assert!(z.tier_name_agrees(), "{label} should be self-consistent");
             assert_eq!(z.label, label, "the client's string is kept verbatim");
         }
@@ -324,8 +440,12 @@ mod tests {
 
         assert_eq!(places.len(), 62, "124 strings are 62 places");
         assert_eq!(modes[&Mode::Open], 61);
-        assert_eq!(modes[&Mode::Group], 38);
+        // These 38 were counted as group until the marker turned out to be
+        // something the client writes only sometimes. None of these strings
+        // carries one.
+        assert_eq!(modes[&Mode::Instance], 38);
         assert_eq!(modes[&Mode::Solo], 25);
+        assert_eq!(modes.get(&Mode::Group), None, "no string here is marked group");
 
         // The place with every variant: open, plus solo and group at each tier.
         let hate: Vec<Zone> = labels
