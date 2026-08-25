@@ -50,7 +50,25 @@ pub struct DropSighting {
     pub npc: String,
     /// Zones it was seen in, alphabetically. A creature can appear in more
     /// than one, and which zone a drop came from is worth keeping.
+    ///
+    /// Kept for callers that only want the names. It is the places below,
+    /// flattened, and it cannot say how many of `looted` came from each --
+    /// which is the whole reason `places` exists.
     pub zones: Vec<String>,
+    /// Where the item was looted, and how often in each.
+    ///
+    /// A sighting used to be one count for a creature-and-item tagged with
+    /// the set of zones it happened in. That is not an attribution: a black
+    /// wolf dropped 832 Chunk of Meat across three zones and the number was
+    /// one number, so nothing downstream could say whether the rate differs
+    /// between them. Splitting the count is the point.
+    ///
+    /// The instance tier is part of a place, not a detail of it. `Zone::parse`
+    /// already separates `solo` from `instance` and reads the difficulty, and
+    /// the bestiary keys creatures on exactly that -- so the numerator here
+    /// and the denominator there are grouped the same way, which is what
+    /// makes a rate mean anything.
+    pub places: Vec<DropPlace>,
     /// Times the item was looted from this creature.
     pub looted: u64,
     /// Total quantity looted, which exceeds `looted` for stacked drops.
@@ -92,10 +110,34 @@ pub struct DropReport {
     pub kills: Vec<(String, u64)>,
 }
 
+/// One place an item was seen dropping, and how often there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropPlace {
+    pub zone: String,
+    /// `open`, `solo` or `instance`, as `Zone::parse` reads it.
+    pub mode: String,
+    /// The instance tier. 0 in the open world.
+    pub difficulty: u8,
+    pub looted: u64,
+    pub quantity: u64,
+}
+
+/// A creature-and-item in one place: what a count now belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct PlaceKey {
+    npc: String,
+    zone: String,
+    mode: &'static str,
+    difficulty: u8,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Sighting {
     npc: String,
     zones: std::collections::BTreeSet<String>,
+    /// Per place, keyed the way `PlaceKey` is: counts that add up to
+    /// `looted` and `quantity` rather than sitting beside them.
+    places: std::collections::BTreeMap<PlaceKey, (u64, u64)>,
     looted: u64,
     quantity: u64,
     grades: std::collections::BTreeMap<u32, u64>,
@@ -211,7 +253,21 @@ impl DropTracker {
         e.last_seen = timestamp;
         if let Some(z) = zone {
             if !z.is_empty() {
-                e.zones.insert(z.to_string());
+                // Parsed, not stored raw. The label carries the mode and the
+                // tier -- `The Plane of Hate - Group`, an instance number --
+                // and `to_string()` on it threw both away, which is how one
+                // count came to stand for nine different fights.
+                let parsed = crate::zone::Zone::parse(z);
+                e.zones.insert(parsed.name.clone());
+                let k = PlaceKey {
+                    npc: npc.to_string(),
+                    zone: parsed.name,
+                    mode: parsed.mode.as_str(),
+                    difficulty: parsed.difficulty,
+                };
+                let slot = e.places.entry(k).or_insert((0, 0));
+                slot.0 += 1;
+                slot.1 += quantity.max(1);
             }
         }
     }
@@ -239,6 +295,17 @@ impl DropTracker {
                     .map(|(npc_key, s)| DropSighting {
                         npc: s.npc.clone(),
                         zones: s.zones.iter().cloned().collect(),
+                        places: s
+                            .places
+                            .iter()
+                            .map(|(k, (looted, quantity))| DropPlace {
+                                zone: k.zone.clone(),
+                                mode: k.mode.to_string(),
+                                difficulty: k.difficulty,
+                                looted: *looted,
+                                quantity: *quantity,
+                            })
+                            .collect(),
                         looted: s.looted,
                         quantity: s.quantity,
                         kills: self.kills.get(npc_key).map(|(_, n)| *n).unwrap_or(0),
@@ -399,5 +466,68 @@ mod tests {
         let r = t.report();
         assert!(r.items.is_empty());
         assert_eq!(r.kills, vec![("rat".to_string(), 1)]);
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    /// A count belongs to a place, not to a creature-and-item.
+    ///
+    /// The same wolf in two zones was one number tagged with both names, so
+    /// nothing downstream could say whether the rate differed between them.
+    /// It is two counts now, and they still add up to the total.
+    #[test]
+    fn a_drop_is_counted_where_it_happened() {
+        let mut t = DropTracker::default();
+        for _ in 0..3 {
+            t.on_drop(1_000, "Chunk of Meat", 1, "a black wolf", Some("East Commonlands"));
+        }
+        t.on_drop(1_100, "Chunk of Meat", 1, "a black wolf", Some("Misty Thicket"));
+        let r = t.report();
+        let s = &r.items[0].sources[0];
+
+        assert_eq!(s.looted, 4, "the total is unchanged");
+        assert_eq!(s.zones, ["East Commonlands", "Misty Thicket"], "and so is the set");
+        let mut by: Vec<(&str, u64)> =
+            s.places.iter().map(|p| (p.zone.as_str(), p.looted)).collect();
+        by.sort();
+        assert_eq!(by, [("East Commonlands", 3), ("Misty Thicket", 1)]);
+        assert_eq!(s.places.iter().map(|p| p.looted).sum::<u64>(), s.looted,
+                   "the places account for every loot");
+    }
+
+    /// The instance tier is part of the place, because it is part of the fight.
+    ///
+    /// `Zone::parse` reads the mode and the difficulty off the label, and the
+    /// bestiary keys creatures on exactly those — so a rate has a numerator
+    /// and a denominator grouped the same way. Storing the label as a string
+    /// threw both away and made nine different fights into one row.
+    #[test]
+    fn a_tier_is_part_of_the_place() {
+        let mut t = DropTracker::default();
+        t.on_drop(1_000, "Bloodmoon", 1, "Lord of Ire", Some("The Plane of Hate"));
+        t.on_drop(1_100, "Bloodmoon", 1, "Lord of Ire", Some("The Plane of Hate - Group"));
+        let r = t.report();
+        let s = &r.items[0].sources[0];
+
+        assert_eq!(s.zones, ["The Plane of Hate"], "one place by name");
+        assert_eq!(s.places.len(), 2, "two by mode");
+        let modes: std::collections::BTreeSet<&str> =
+            s.places.iter().map(|p| p.mode.as_str()).collect();
+        assert!(modes.len() == 2, "open and group are not the same fight: {modes:?}");
+        assert!(s.places.iter().all(|p| p.zone == "The Plane of Hate"),
+                "the mode comes off the label, the name stays whole");
+    }
+
+    /// A stacked drop is one loot of several items, in both places.
+    #[test]
+    fn a_place_carries_quantity_as_well_as_count() {
+        let mut t = DropTracker::default();
+        t.on_drop(1_000, "Bone Chips", 4, "a decaying skeleton", Some("Paineel"));
+        let r = t.report();
+        let p = &r.items[0].sources[0].places[0];
+        assert_eq!((p.looted, p.quantity), (1, 4));
     }
 }
