@@ -106,6 +106,19 @@ pub trait Observer {
     /// One parsed line, in context.
     fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>);
 
+    /// A fight finished, with everything it accumulated.
+    ///
+    /// `EncounterTracker::push` has always returned the encounter it just
+    /// closed and the feed threw it away, so an observer could see the fight
+    /// in progress through [`Context::encounter`] and never the finished
+    /// article. Anything wanting a whole fight -- its timeline, its actors,
+    /// what died -- had to keep a second tracker and re-derive it, which is
+    /// the duplication this feed exists to prevent.
+    ///
+    /// Called for every fight, including the last one, which closes when the
+    /// log ends rather than because anything in it said so.
+    fn on_encounter_end(&mut self, _enc: &crate::encounter::Encounter, _cx: &Context<'_>) {}
+
     /// The log ended.
     ///
     /// Anything being held pending has to be settled or dropped here. A
@@ -169,6 +182,16 @@ impl Feed {
             let Some(entry) = self.parser.parse_line(&line) else { continue };
             self.dispatch(&entry, to);
         }
+        // The last fight ends because the file did, not because anything in
+        // it said so. Without this every log silently loses its final
+        // encounter -- and the final encounter of a raid log is usually the
+        // one somebody wanted.
+        if let Some(done) = self.encounters.flush() {
+            let cx = self.context();
+            for o in to.iter_mut() {
+                o.on_encounter_end(&done, &cx);
+            }
+        }
         let cx = self.context();
         for o in to.iter_mut() {
             o.finish(&cx);
@@ -217,7 +240,21 @@ impl Feed {
                 o.on_entry(entry, &cx);
             }
         }
-        self.encounters.push(entry);
+        if let Some(done) = self.encounters.push(entry) {
+            // A fresh context: the one above borrowed the encounter that has
+            // just closed, and what an observer wants here is the state the
+            // *next* line will be read against.
+            let cx = Context {
+                player: &self.player,
+                game: self.game,
+                zone: self.zone.as_deref(),
+                gap,
+                encounter: self.encounters.current(),
+            };
+            for o in to.iter_mut() {
+                o.on_encounter_end(&done, &cx);
+            }
+        }
     }
 }
 
@@ -312,5 +349,67 @@ mod tests {
     #[test]
     fn the_end_of_the_log_is_announced() {
         assert!(run(LOG).finished);
+    }
+}
+
+#[cfg(test)]
+mod encounter_end_tests {
+    use super::*;
+    use crate::game::Game;
+
+    #[derive(Default)]
+    struct Fights {
+        ended: Vec<(u64, usize, i64)>,
+    }
+
+    impl Observer for Fights {
+        fn name(&self) -> &'static str {
+            "fights"
+        }
+        fn on_entry(&mut self, _e: &LogEntry, _cx: &Context<'_>) {}
+        fn on_encounter_end(&mut self, enc: &crate::encounter::Encounter, _cx: &Context<'_>) {
+            self.ended.push((enc.id, enc.timeline.len(), enc.end - enc.start));
+        }
+    }
+
+    /// A finished fight reaches an observer, with its timeline on it.
+    ///
+    /// The tracker has always returned the encounter it closed and the feed
+    /// discarded it, so the only fight an observer could see was the one in
+    /// progress. Anything wanting the whole article had to run a second
+    /// tracker — the duplication this feed was built to remove.
+    #[test]
+    fn a_finished_fight_reaches_the_observers() {
+        let mut f = Fights::default();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        let log = "\
+[Mon Aug 03 16:47:52 2026] You hit a dracoliche for 100 points of damage.
+[Mon Aug 03 16:47:53 2026] You hit a dracoliche for 120 points of damage.
+[Mon Aug 03 16:47:54 2026] You have slain a dracoliche!
+";
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut f];
+            feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
+        }
+        assert_eq!(f.ended.len(), 1, "one fight, closed by the log ending");
+        assert!(f.ended[0].1 > 0, "and it carries its timeline: {:?}", f.ended[0]);
+    }
+
+    /// The last fight is not lost when the file simply stops.
+    ///
+    /// Nothing in a log says "the raid is over". Without a flush at the end
+    /// every log drops its final encounter, which in a raid log is usually
+    /// the one somebody meant to keep.
+    #[test]
+    fn the_last_fight_is_closed_by_the_file_ending() {
+        let mut f = Fights::default();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        // No death, no idle gap: nothing here closes the fight but the EOF.
+        let log = "[Mon Aug 03 16:47:52 2026] You hit a dracoliche for 100 points of damage.\n";
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut f];
+            feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
+        }
+        assert_eq!(f.ended.len(), 1, "the open fight is closed and handed over");
     }
 }

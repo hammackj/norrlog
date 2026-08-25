@@ -678,6 +678,12 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                         // breakdown. Empty says that; a fabricated all-grade-0
                         // row would claim every historical drop was ungraded.
                         grades: Vec::new(),
+                        // Same reasoning, and the same shape of answer: the
+                        // stored table holds one count and a set of zone
+                        // names, so it cannot say how many came from where.
+                        // Empty is "not recorded", which is true of every
+                        // row written before drops carried a place.
+                        places: Vec::new(),
                         first_seen,
                         last_seen,
                     };
