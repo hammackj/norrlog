@@ -22,6 +22,19 @@ use std::collections::HashMap;
 /// pause but short enough to separate consecutive pulls.
 pub const DEFAULT_IDLE_TIMEOUT: i64 = 12;
 
+/// How long a fight stays open after the last thing in it died.
+///
+/// "You have slain a skeletal monk!" is the log stating outright that the
+/// fight is over, and waiting [`DEFAULT_IDLE_TIMEOUT`] on top of it only ever
+/// delayed the answer. What the wait is really for is the corpse: coin and
+/// loot arrive a second or two after the kill and belong to the fight that
+/// produced them. This is long enough for that and no longer.
+///
+/// Anything slower than this — a boss with six corpses to work through — still
+/// lands, on the far longer [`LOOT_GRACE_SECONDS`] the daemon applies after a
+/// fight has closed.
+pub const KILL_SETTLE_SECONDS: i64 = 5;
+
 /// How long before a fight opens a cast may still be counted as part of it.
 ///
 /// A pull usually starts with a spell, and nothing has been damaged yet when
@@ -254,6 +267,19 @@ pub struct ActorStats {
     /// True if the logging character damaged this actor — strong evidence it
     /// is an enemy.
     pub damaged_by_you: bool,
+    /// True if this actor swung at the logging character *in this fight*.
+    ///
+    /// The other half of "was it engaged", and deliberately per-encounter. The
+    /// tracker keeps a session-lifetime `hostile` set for telling a charmed mob
+    /// from a summoned pet, and that is the wrong question here: in a zone you
+    /// have been grinding, nearly every creature name has hit you at some point
+    /// in the session, so "has it ever been hostile" is true of the whole
+    /// bestiary and says nothing about the fight in progress. Reading it as
+    /// engagement meant a dozen bystanders — mobs buffing each other across the
+    /// room, never touched and never touching you — held every fight open
+    /// forever.
+    #[serde(default)]
+    pub fought_you: bool,
     /// True if the logging character healed this actor — strong evidence it is
     /// an ally.
     pub healed_by_you: bool,
@@ -696,6 +722,11 @@ pub struct Encounter {
     /// Stance and invocation changes made during the fight.
     #[serde(default)]
     pub marks: Vec<TimelineMark>,
+    /// Duration effects you landed on something, as spans. Fed by the engine,
+    /// which is where the spell database lives; the tracker cannot recognise
+    /// a landing phrase on its own.
+    #[serde(default)]
+    pub effects: Vec<TimelineEffect>,
     /// Events that happened but were not recorded, because the fight ran past
     /// [`TIMELINE_MAX`]. Reported rather than hidden: a truncated timeline that
     /// looks complete would misread as a lull.
@@ -762,6 +793,47 @@ pub struct TimelineMark {
     /// "stance" or "invocation".
     pub kind: String,
     pub label: String,
+}
+
+/// A duration effect you put on something, as the stretch it was running.
+///
+/// A slow is the clearest case: nothing about it is damage, so nothing about
+/// it reached the timeline at all, and the one question it raises — was it up
+/// for this fight or not — had no answer anywhere in the app. A damage-over-
+/// time effect had half an answer, inferred from the spacing of its ticks;
+/// this is the measured one, and it also covers the stretch after the last
+/// tick that inference cannot see.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEffect {
+    pub at: i64,
+    /// When it was due to run out, from the spell's own duration at the level
+    /// you cast it. An expectation, not an observation.
+    pub until: i64,
+    /// When it actually ended, when the log said so — a wear-off message, or
+    /// the target dying with it still on. `None` means nothing ever said, and
+    /// `until` is the best available guess.
+    #[serde(default)]
+    pub ended: Option<i64>,
+    pub spell: String,
+    pub target: String,
+    /// The game's own categorisation: "detrimental", "damage", and so on.
+    pub category: String,
+}
+
+impl TimelineEffect {
+    /// When the bar stops, given where the fight does.
+    ///
+    /// An observed ending is preferred to a predicted one, and neither is
+    /// allowed to run past the end of the fight being drawn.
+    pub fn ends_by(&self, fight_end: i64) -> i64 {
+        self.ended.unwrap_or(self.until).min(fight_end).max(self.at)
+    }
+
+    /// True when the log never said this ended — the bar is a prediction from
+    /// here on, and the UI says so rather than drawing it as fact.
+    pub fn is_predicted(&self) -> bool {
+        self.ended.is_none()
+    }
 }
 
 /// One creature's share of a fight.
@@ -1111,6 +1183,30 @@ impl Encounter {
             .unwrap_or_else(|| "Unknown encounter".to_string())
     }
 
+    /// Everything you fought here, hardest-hit first, without duplicates.
+    ///
+    /// [`title`](Self::title) names one creature and counts the rest as
+    /// "+N more", which is the right headline and a dead end for anyone
+    /// looking for a particular fight: two thirds of these encounters have
+    /// more than one opponent, so a mob is more often inside the "+N" than it
+    /// is in the title. Searching by name found 32% of the fights that
+    /// actually contained the named creature until this list backed it.
+    ///
+    /// Names only, and derived from `actors`, so it stays cheap enough to put
+    /// on every row of a long list — unlike [`per_mob`](Self::per_mob), which
+    /// carries a full breakdown per creature.
+    pub fn opponents(&self) -> Vec<String> {
+        let mut foes: Vec<(&str, u64)> = self
+            .actors
+            .values()
+            .filter(|s| s.damaged_by_you)
+            .map(|s| (s.name.as_str(), s.damage_taken))
+            .collect();
+        foes.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        foes.dedup_by(|a, b| a.0 == b.0);
+        foes.into_iter().map(|(n, _)| n.to_string()).collect()
+    }
+
     /// Whether anything worth reporting happened. Used to discard encounters
     /// opened by a stray miss.
     /// What got shrugged off in this fight, most-resisted first.
@@ -1367,6 +1463,63 @@ impl EncounterTracker {
         }
     }
 
+    /// Record a duration effect you landed, as a span.
+    ///
+    /// Fed by the engine: recognising a landing phrase needs the spell
+    /// database, which the tracker has no access to. Re-applying an effect
+    /// already running on the same target extends the one span rather than
+    /// stacking a second — the game refreshes, it does not stack, and two
+    /// overlapping bars would read as two effects.
+    pub fn note_effect(
+        &mut self,
+        at: i64,
+        until: i64,
+        spell: &str,
+        target: &str,
+        category: &str,
+    ) {
+        let Some(enc) = self.current.as_mut() else {
+            return;
+        };
+        if let Some(open) = enc.effects.iter_mut().find(|e| {
+            e.ended.is_none()
+                && e.target.eq_ignore_ascii_case(target)
+                && crate::spell::same_spell(&e.spell, spell)
+                && e.until >= at
+        }) {
+            open.until = until;
+            return;
+        }
+        if enc.effects.len() < TIMELINE_MAX {
+            enc.effects.push(TimelineEffect {
+                at,
+                until,
+                ended: None,
+                spell: spell.to_string(),
+                target: target.to_string(),
+                category: category.to_string(),
+            });
+        }
+    }
+
+    /// Close a running effect because the log said it ended.
+    ///
+    /// `spell` of `None` ends everything still on that target, which is what a
+    /// corpse means: nothing keeps ticking on something that is dead.
+    pub fn end_effect(&mut self, at: i64, target: &str, spell: Option<&str>) {
+        let Some(enc) = self.current.as_mut() else {
+            return;
+        };
+        for e in enc.effects.iter_mut() {
+            if e.ended.is_some() || !e.target.eq_ignore_ascii_case(target) {
+                continue;
+            }
+            if spell.is_none_or(|sp| crate::spell::same_spell(&e.spell, sp)) {
+                e.ended = Some(at.max(e.at));
+            }
+        }
+    }
+
     pub fn set_charmed(&mut self, timestamp: i64, actor: &Actor, charmed: bool) {
         let key = actor.key();
         if charmed {
@@ -1441,7 +1594,7 @@ impl EncounterTracker {
         // Close a stale encounter before doing anything else, so the closing
         // entry is attributed to the next fight rather than the previous one.
         let mut closed = None;
-        if self.current.is_some() && entry.timestamp - self.last_combat > self.idle_timeout {
+        if self.is_stale(entry.timestamp) || self.starts_a_new_fight(&entry.event) {
             closed = self.close();
         }
 
@@ -1553,7 +1706,16 @@ impl EncounterTracker {
                     .is_some_and(|o| *o == self.player)
                     || self.charmed.contains_key(&key);
                 if !mine {
-                    return None;
+                    // `closed`, not `None`: the idle check at the top of this
+                    // function may have just closed a fight, and returning
+                    // `None` threw it away. A dungeon is full of creatures
+                    // casting at each other, so the first line after a lull is
+                    // very often one of theirs — and that fight, kill and loot
+                    // and all, never reached the caller. 152 of 3388 fights
+                    // were missing from one character's history this way, and
+                    // six in ten across a caster-heavy stretch of Unrest.
+                    // The only trace it left was a gap in the encounter ids.
+                    return closed;
                 }
                 let player = self.player.clone();
                 if let Some(enc) = self.current.as_mut() {
@@ -1757,6 +1919,7 @@ impl EncounterTracker {
                     let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
                     enc.note_timeline(entry.timestamp, &ability_label, outcome, *amount, kind_label(*kind));
                 }
+                let mut engaged_you = false;
                 {
                     let label = kind_label(*kind).to_string();
                     let ability_in = ability
@@ -1789,6 +1952,10 @@ impl EncounterTracker {
                         t.damaged_by_you = true;
                     }
                     if target.is_you() {
+                        // Engagement in this fight, recorded on the attacker.
+                        // Set here rather than read off the session-wide
+                        // `hostile` set; see `fought_you`.
+                        engaged_you = true;
                         incoming = Some(IncomingHit {
                             at: entry.timestamp,
                             source: source_name,
@@ -1796,6 +1963,9 @@ impl EncounterTracker {
                             amount: *amount,
                         });
                     }
+                }
+                if engaged_you {
+                    enc.entry(source, &player).fought_you = true;
                 }
                 // Buffered outside the encounter so a death that opens its own
                 // encounter still has the run-up available.
@@ -1856,6 +2026,9 @@ impl EncounterTracker {
                     t.avoided += 1;
                     *t.avoided_by.entry(how.clone()).or_default() += 1;
                 }
+                if target.is_you() {
+                    enc.entry(source, &player).fought_you = true;
+                }
                 // Counted as a miss on the timeline for the same reason the
                 // meter counts it as one: from your side, the swing produced
                 // nothing. The log names no ability on these lines.
@@ -1888,6 +2061,11 @@ impl EncounterTracker {
                     if *over_time { "heal over time" } else { "heal" }.to_string()
                 });
                 let crit = flags.is_crit();
+                // The mechanism, recorded for the same reason damage records
+                // it: one cast of a heal-over-time lands a dozen ticks, and
+                // without knowing which rows are ticks their count reads as a
+                // count of casts.
+                let heal_kind = if *over_time { "hot" } else { "heal" };
                 {
                     let s = enc.entry(source, &player);
                     s.healing_done += *amount;
@@ -1903,10 +2081,20 @@ impl EncounterTracker {
                         s.healing_attempted += *full;
                         s.over_healing += full.saturating_sub(*amount);
                     }
-                    s.healing_by_spell
-                        .entry(spell_name)
-                        .or_default()
-                        .record_hit(*amount, crit);
+                    let a = s.healing_by_spell.entry(spell_name.clone()).or_default();
+                    if a.kind.is_empty() {
+                        a.kind = heal_kind.to_string();
+                    }
+                    a.record_hit(*amount, crit);
+                }
+                // Your own healing on the timeline, on the same footing as
+                // your damage. A heal-over-time is a duration effect like any
+                // other and its lane is drawn as the stretch it ran, which is
+                // the question it raises; before this, healing had no place on
+                // the chart at all.
+                if src_is_you {
+                    let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
+                    enc.note_timeline(entry.timestamp, &spell_name, outcome, *amount, heal_kind);
                 }
                 {
                     let t = enc.entry(target, &player);
@@ -1964,11 +2152,19 @@ impl EncounterTracker {
                 });
                 self.last_combat = entry.timestamp;
                 enc.end = entry.timestamp;
+                // Nothing keeps running on a corpse, so every span still open
+                // on it stops here rather than being drawn to its predicted
+                // end well past the kill.
+                {
+                    let name = victim.display(&self.player);
+                    self.end_effect(entry.timestamp, &name, None);
+                }
                 // A corpse is not a pet. Nothing else would ever drop it: the
                 // live set is deliberately kept across encounters, and a dead
                 // creature casts no more spells to wear off, so without this
                 // the charm outlives the kill for the rest of the session.
                 self.end_charm(entry.timestamp, victim, false);
+
             }
             Event::Loot {
                 item,
@@ -2005,6 +2201,7 @@ impl EncounterTracker {
         if self.current.is_none() {
             self.current = Some(Encounter {
                 marks: Vec::new(),
+                effects: Vec::new(),
                 id: self.next_id,
                 zone: self.zone.clone(),
                 start: timestamp,
@@ -2111,6 +2308,7 @@ impl EncounterTracker {
         let mut enc = self.current.take()?;
         for st in enc.actors.values_mut() {
             fold_proc_casts(st);
+            fold_heal_casts(st);
         }
         if enc.is_significant() {
             Some(enc)
@@ -2125,6 +2323,127 @@ impl EncounterTracker {
     /// Close any open encounter at end of input.
     pub fn flush(&mut self) -> Option<Encounter> {
         self.close()
+    }
+
+    /// Has everything you were fighting died?
+    ///
+    /// The test for whether a kill was *the* kill. Engagement is proven in
+    /// either direction — you hit it, or it hit you — because a creature
+    /// beating on you that you have not swung at yet is still very much part
+    /// of the fight. Anything holding for you is excluded: a charmed mob is on
+    /// your side while the charm lasts, and a pet was never an enemy.
+    ///
+    /// A corpse is required, not merely an absence of live enemies. A fight
+    /// whose opponent is a creature your charmed pet is beating on has no
+    /// *engaged* enemy at all by this definition, and treating that as a win
+    /// would cut every charm fight short at the first lull.
+    fn fight_is_won(&self) -> bool {
+        let Some(enc) = self.current.as_ref() else {
+            return false;
+        };
+        let mut killed_one = false;
+        for (key, s) in &enc.actors {
+            if key == "you" || s.is_yours() || self.charmed.contains_key(key) {
+                continue;
+            }
+            // Engaged in *this* fight. Bystanders — the dozen creatures
+            // buffing each other across the room, never touched and never
+            // touching you — are not what the fight is waiting on.
+            if !(s.damaged_by_you || s.fought_you) {
+                continue;
+            }
+            if s.deaths == 0 {
+                return false;
+            }
+            killed_one = true;
+        }
+        killed_one
+    }
+
+    /// Does this line belong to the *next* fight rather than this one?
+    ///
+    /// A won fight stays open for a few seconds so the corpse can pay out.
+    /// That window was also absorbing the next pull: chain-pulling a dungeon,
+    /// where the next creature is on you within a second or two of the last
+    /// one dying, produced a single encounter that ran for as long as the
+    /// player kept pulling — 400 seconds and nine creatures in one Castle of
+    /// Mistmoore chain. Nothing showed up in the history until the chain
+    /// finally broke, and when it did it was one row containing eight mobs
+    /// that had nothing to do with each other.
+    ///
+    /// So the settle window admits loot and coin, and nothing else. A creature
+    /// swinging in it starts a new fight — unless it is already here and still
+    /// alive, which is what keeps a charmed pet's own target, and a dying
+    /// mob's last damage-shield tick, from splitting anything.
+    fn starts_a_new_fight(&self, event: &crate::event::Event) -> bool {
+        use crate::event::Event;
+        if !self.fight_is_won() {
+            return false;
+        }
+        let Some(enc) = self.current.as_ref() else {
+            return false;
+        };
+        let others: Vec<String> = match event {
+            Event::Damage { source, target, .. }
+            | Event::Miss { source, target, .. }
+            | Event::Avoided { source, target, .. } => {
+                vec![source.key(), target.key()]
+            }
+            Event::Death { victim, .. } => vec![victim.key()],
+            // Loot, coin, casts, everything else: the point of the window.
+            _ => return false,
+        };
+        others.iter().any(|k| {
+            if k == "you" || self.charmed.contains_key(k) {
+                return false;
+            }
+            if enc.actors.get(k).is_some_and(|s| s.is_yours()) {
+                return false;
+            }
+            // Absent, a corpse, or a bystander only now joining in. A
+            // creature of the same name swinging again is a different one,
+            // since the log gives no way to tell two of them apart.
+            enc.actors
+                .get(k)
+                .is_none_or(|s| s.deaths > 0 || !(s.damaged_by_you || s.fought_you))
+        })
+    }
+
+    /// Has the open fight finished?
+    ///
+    /// Two deadlines, because "the fight is over" is knowable two ways. When
+    /// everything you were fighting is dead the log has *said* so, and all
+    /// that is left to wait for is the corpse: [`KILL_SETTLE_SECONDS`], long
+    /// enough for the coin and the loot to arrive on the encounter they came
+    /// from. Otherwise the fight ended without a kill — the mob fled, you
+    /// gated out — and only silence proves it, which takes the full
+    /// [`idle_timeout`](Self::with_idle_timeout).
+    ///
+    /// Deliberately computed rather than latched at the kill: an add that
+    /// wades in after the last corpse is an enemy still standing again, and
+    /// the window widens back out on its own.
+    fn is_stale(&self, now: i64) -> bool {
+        if self.current.is_none() {
+            return false;
+        }
+        let quiet = now - self.last_combat;
+        if self.fight_is_won() {
+            quiet > KILL_SETTLE_SECONDS
+        } else {
+            quiet > self.idle_timeout
+        }
+    }
+
+    /// Close a fight that has finished, without waiting for another line.
+    ///
+    /// `push` can only notice a fight has ended when the next line arrives to
+    /// prompt it, which is fine for a log read from a file and useless for one
+    /// followed live: stop fighting and stand still and nothing is written, so
+    /// the fight stayed open and stayed out of the history for as long as the
+    /// player kept quiet. Called on the daemon's tick, which runs whether or
+    /// not the log said anything.
+    pub fn close_if_idle(&mut self, now: i64) -> Option<Encounter> {
+        self.is_stale(now).then(|| self.close()).flatten()
     }
 }
 
@@ -2165,6 +2484,30 @@ fn fold_proc_casts(st: &mut ActorStats) {
         if let Some(to) = st.by_ability.get_mut(&base) {
             to.casts += from.casts;
         }
+    }
+}
+
+/// Give each healing spell the number of times it was actually cast.
+///
+/// Casts are counted from the line that begins them, which lands in
+/// `by_ability` — the damage breakdown — because nothing at that moment says
+/// whether the spell will heal or hurt. The healing breakdown therefore had no
+/// cast count at all, and the column showing its landings was read as one: a
+/// heal-over-time cast once and ticking twelve times reported twelve casts.
+///
+/// Matched on the base name, since the log writes the rank on the cast line
+/// (`Superior Healing IV`) and the heal line may not.
+fn fold_heal_casts(st: &mut ActorStats) {
+    if st.healing_by_spell.is_empty() {
+        return;
+    }
+    for (name, heal) in st.healing_by_spell.iter_mut() {
+        heal.casts = st
+            .by_ability
+            .iter()
+            .filter(|(cast_name, _)| crate::spell::same_spell(cast_name, name))
+            .map(|(_, a)| a.casts)
+            .sum();
     }
 }
 
@@ -2236,6 +2579,302 @@ mod tests {
         assert_eq!(encs.len(), 2, "gap should split the fights");
         assert_eq!(encs[0].total_damage(), 50);
         assert_eq!(encs[1].total_damage(), 70);
+    }
+
+    /// A fight closed by the idle gap survives whatever line happened to
+    /// close it.
+    ///
+    /// The idle check runs at the top of `push` and hands its verdict to
+    /// whichever arm the closing line falls into. The `CastStart` arm returned
+    /// `None` outright for a cast that was not yours or your pet's, throwing
+    /// the closed fight away. A dungeon is full of creatures casting at each
+    /// other, so the first line after a lull is very often one of theirs: on
+    /// a real log this lost 152 fights of 3388, kills and loot included, and
+    /// six in every ten through a caster-heavy stretch of Unrest. A gap in the
+    /// encounter ids was the only trace it left.
+    #[test]
+    fn a_stranger_casting_does_not_swallow_the_fight_it_closes() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 50 points of damage."),
+            (105, "You have slain a lesser mummy!"),
+            // Well past the idle timeout, and cast by nothing of yours.
+            (400, "A greater dark bone begins casting Healing."),
+            (405, "You slash a giant rat for 70 points of damage."),
+            (410, "You have slain a giant rat!"),
+        ]);
+        assert_eq!(encs.len(), 2, "the first fight must not be lost: {encs:?}");
+        assert_eq!(encs[0].total_damage(), 50);
+        assert_eq!(encs[1].total_damage(), 70);
+    }
+
+    /// The killing blow ends the fight, without waiting out the idle timeout.
+    ///
+    /// "You have slain a skeletal monk!" is the log stating the fight is over.
+    /// It was ignored: the encounter stayed open for a further twelve seconds
+    /// of silence, and then only closed when some later line arrived to
+    /// prompt it. Live, that meant the fight you had just won was missing from
+    /// the history until something else happened.
+    #[test]
+    fn the_last_kill_ends_the_fight() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[
+            (100, "You slash a lesser mummy for 50 points of damage."),
+            (105, "You have slain a lesser mummy!"),
+        ]) {
+            assert!(t.push(&e).is_none(), "nothing closes while it is being fought");
+        }
+        // Inside the settle window the corpse is still being looted.
+        assert!(t.close_if_idle(108).is_none(), "too soon: loot is still arriving");
+        let done = t.close_if_idle(111).expect("the fight is over and should close");
+        assert_eq!(done.total_damage(), 50);
+    }
+
+    /// Coin and loot off the corpse still land on the fight that produced it.
+    ///
+    /// The whole point of waiting at all after the killing blow. Closing on
+    /// the death line itself dropped both.
+    #[test]
+    fn the_corpse_still_pays_out_after_the_killing_blow() {
+        let encs = run(&[
+            (100, "You slash Lord Nagafen for 10 points of damage."),
+            (101, "You have slain Lord Nagafen!"),
+            (103, "You receive 12 platinum, 3 silver and 4 copper from the corpse."),
+            (104, "--You have looted a Cloak of Flames +3 from Lord Nagafen's corpse.--"),
+        ]);
+        assert_eq!(encs.len(), 1);
+        assert_eq!(encs[0].coin_copper, 12_034);
+        assert_eq!(encs[0].loot.len(), 1);
+    }
+
+    /// Chain-pulling makes a chain of fights, not one enormous one.
+    ///
+    /// The settle window after a kill is for the corpse, not for the next
+    /// pull. A creature arriving inside it used to join the fight that had
+    /// already been won, and since the next one always arrived inside it, a
+    /// Castle of Mistmoore chain came out as a single 400-second encounter
+    /// with nine unrelated creatures in it — invisible in the list until the
+    /// player finally stopped pulling.
+    #[test]
+    fn the_next_pull_is_a_new_fight_not_a_longer_one() {
+        let encs = run(&[
+            (100, "You slash a will pillager for 100 points of damage."),
+            (102, "You have slain a will pillager!"),
+            // Two seconds later, well inside the settle window.
+            (104, "A jeering gargoyle hits YOU for 20 points of damage."),
+            (105, "You slash a jeering gargoyle for 90 points of damage."),
+            (107, "You have slain a jeering gargoyle!"),
+        ]);
+        assert_eq!(encs.len(), 2, "two pulls, two fights: {encs:?}");
+        assert_eq!(encs[0].title(), "a will pillager");
+        assert_eq!(encs[0].total_damage(), 100, "the gargoyle is not in it");
+        assert_eq!(encs[1].title(), "a jeering gargoyle");
+    }
+
+    /// The corpse still pays out inside that window, which is what it is for.
+    #[test]
+    fn loot_in_the_settle_window_is_not_mistaken_for_a_new_fight() {
+        let encs = run(&[
+            (100, "You slash a will pillager for 100 points of damage."),
+            (102, "You have slain a will pillager!"),
+            (103, "You receive 2 gold and 5 copper from the corpse."),
+            (104, "--You have looted a Rusty Dagger from a will pillager\'s corpse.--"),
+        ]);
+        assert_eq!(encs.len(), 1, "loot and coin are not the next pull");
+        assert_eq!(encs[0].coin_copper, 205, "2 gold and 5 copper");
+        assert_eq!(encs[0].loot.len(), 1);
+    }
+
+    /// A duration effect is a span, and re-applying it extends the one span.
+    ///
+    /// The game refreshes an effect rather than stacking a second copy, so two
+    /// overlapping bars would say something that never happened.
+    #[test]
+    fn a_duration_effect_is_one_span_however_often_it_is_refreshed() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[(100, "You slash a will pillager for 10 points of damage.")]) {
+            t.push(&e);
+        }
+        t.note_effect(100, 124, "Mesmerization", "a will pillager", "detrimental");
+        t.note_effect(110, 134, "Mesmerization", "a will pillager", "detrimental");
+        let enc = t.flush().expect("a fight");
+        assert_eq!(enc.effects.len(), 1, "refreshed, not stacked: {:?}", enc.effects);
+        assert_eq!(enc.effects[0].at, 100, "still starts where it first landed");
+        assert_eq!(enc.effects[0].until, 134, "and runs to the refreshed end");
+    }
+
+    /// The same effect on two creatures is two spans.
+    #[test]
+    fn one_spell_on_two_creatures_is_two_spans() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[(100, "You slash a will pillager for 10 points of damage.")]) {
+            t.push(&e);
+        }
+        t.note_effect(100, 124, "Mesmerization", "a will pillager", "detrimental");
+        t.note_effect(100, 124, "Mesmerization", "a jeering gargoyle", "detrimental");
+        assert_eq!(t.flush().expect("a fight").effects.len(), 2);
+    }
+
+    /// Nothing keeps running on a corpse.
+    ///
+    /// Without this the bar is drawn to the spell file's expected end, well
+    /// past a kill that stopped it — an effect claimed to be up on something
+    /// that had been dead for twenty seconds.
+    #[test]
+    fn a_kill_ends_the_effects_on_what_it_killed() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[
+            (100, "You slash a will pillager for 10 points of damage."),
+            (101, "A jeering gargoyle hits YOU for 5 points of damage."),
+        ]) {
+            t.push(&e);
+        }
+        t.note_effect(100, 400, "Mesmerization", "a will pillager", "detrimental");
+        t.note_effect(100, 400, "Mesmerization", "a jeering gargoyle", "detrimental");
+        for e in entries(&[(105, "You have slain a will pillager!")]) {
+            t.push(&e);
+        }
+        let enc = t.flush().expect("a fight");
+        let pillager = enc.effects.iter().find(|e| e.target.contains("pillager")).unwrap();
+        let gargoyle = enc.effects.iter().find(|e| e.target.contains("gargoyle")).unwrap();
+        assert_eq!(pillager.ended, Some(105), "the corpse stopped it");
+        assert!(!pillager.is_predicted());
+        assert_eq!(gargoyle.ended, None, "the one still standing is unaffected");
+        assert!(gargoyle.is_predicted(), "and its end is still only expected");
+    }
+
+    /// A bar never runs past the end of the fight it is drawn on.
+    #[test]
+    fn a_span_is_clipped_to_the_fight() {
+        let fx = TimelineEffect {
+            at: 100,
+            until: 400,
+            ended: None,
+            spell: "Mesmerization".into(),
+            target: "a will pillager".into(),
+            category: "detrimental".into(),
+        };
+        assert_eq!(fx.ends_by(150), 150, "clipped to the fight, not the spell file");
+        assert_eq!(fx.ends_by(999), 400, "otherwise the expected end");
+    }
+
+    /// A heal-over-time is cast once, however many times it ticks.
+    ///
+    /// The healing table showed its landings in a column headed "Casts",
+    /// because casts were only ever counted into the damage breakdown and the
+    /// healing breakdown had none. One cast of a twelve-tick heal read as
+    /// twelve casts, and its average as an average per cast.
+    #[test]
+    fn a_heal_over_time_is_one_cast_and_many_ticks() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 10 points of damage."),
+            (101, "You begin casting Efflorescing Heal."),
+            (102, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            (108, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            // Healing alone does not sustain a fight, by design, so the
+            // fighting has to carry on for the third tick to fall inside it.
+            (110, "You slash a lesser mummy for 10 points of damage."),
+            (114, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+        ]);
+        let you = encs[0].actors.get("you").expect("you");
+        let hot = you
+            .healing_by_spell
+            .get("Efflorescing Heal")
+            .expect("the heal is recorded");
+        assert_eq!(hot.casts, 1, "cast once");
+        assert_eq!(hot.hits, 3, "ticked three times");
+        assert_eq!(hot.total, 450);
+        assert_eq!(hot.kind, "hot", "and it knows it is a heal over time");
+    }
+
+    /// A direct heal reports one cast per landing, as it always did.
+    #[test]
+    fn a_direct_heal_is_one_cast_per_landing() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 10 points of damage."),
+            (101, "You begin casting Superior Healing."),
+            (102, "You healed Tharn for 600 hit points by Superior Healing."),
+        ]);
+        let you = encs[0].actors.get("you").unwrap();
+        let heal = you.healing_by_spell.get("Superior Healing").unwrap();
+        assert_eq!(heal.casts, 1);
+        assert_eq!(heal.hits, 1);
+        assert_eq!(heal.kind, "heal");
+    }
+
+    /// Your healing reaches the timeline, so a heal-over-time can be drawn as
+    /// the stretch it ran rather than left off the chart entirely.
+    #[test]
+    fn your_healing_is_on_the_timeline() {
+        let encs = run(&[
+            (100, "You slash a lesser mummy for 10 points of damage."),
+            (102, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            (108, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            // Somebody else's heal is not one of your actions.
+            (109, "a priest of Nagafen healed Tharn for 630 hit points by Superior Healing."),
+        ]);
+        let hot: Vec<_> = encs[0]
+            .timeline
+            .iter()
+            .filter(|t| t.kind == "hot")
+            .collect();
+        assert_eq!(hot.len(), 2, "both ticks: {:?}", encs[0].timeline);
+        assert_eq!(hot[0].ability, "Efflorescing Heal");
+        assert!(
+            !encs[0].timeline.iter().any(|t| t.ability == "Superior Healing"),
+            "the timeline is your own actions only"
+        );
+    }
+
+    /// A fight that ends without a kill still waits out the full idle timeout.
+    ///
+    /// Nothing died, so nothing said the fight was over — the mob fled, or you
+    /// did. Only silence proves it, and silence takes longer to be sure of
+    /// than a corpse does.
+    #[test]
+    fn a_fight_with_no_corpse_waits_out_the_idle_timeout() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[(100, "You slash a lesser mummy for 50 points of damage.")]) {
+            t.push(&e);
+        }
+        assert!(t.close_if_idle(108).is_none(), "no kill, so the short window must not apply");
+        assert!(t.close_if_idle(113).is_some(), "the idle timeout still closes it");
+    }
+
+    /// A creature still on its feet holds the fight open, whoever else died.
+    ///
+    /// A pull with adds is one fight. Closing on the first corpse would
+    /// shatter it into one encounter per mob and scatter the meter with it.
+    #[test]
+    fn an_add_still_standing_keeps_the_fight_open() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[
+            (100, "You slash a lesser mummy for 50 points of damage."),
+            (101, "A giant rat hits YOU for 5 points of damage."),
+            (102, "You have slain a lesser mummy!"),
+        ]) {
+            t.push(&e);
+        }
+        assert!(
+            t.close_if_idle(108).is_none(),
+            "the rat is still hitting you: the fight is not over"
+        );
+    }
+
+    /// Your own death is not a win, and does not shorten anything.
+    #[test]
+    fn dying_does_not_end_the_fight_early() {
+        let mut t = EncounterTracker::new("Tharn");
+        for e in entries(&[
+            (100, "You slash a lesser mummy for 50 points of damage."),
+            (101, "A lesser mummy hits YOU for 500 points of damage."),
+            (102, "You have been slain by a lesser mummy!"),
+        ]) {
+            t.push(&e);
+        }
+        assert!(
+            t.close_if_idle(108).is_none(),
+            "what killed you is still standing"
+        );
     }
 
     #[test]
@@ -2697,10 +3336,11 @@ mod tests {
         let encs = run(&[
             (100, "You slash a rat for 10 points of damage."),
             (101, "A rat hits YOU for 5 points of damage."),
-            (102, "You have slain a rat!"),
-            // The fight carries on against something else. Kept inside the
-            // 12-second idle timeout, or this would be two encounters and the
-            // point — one fight, one row gone quiet — would be lost.
+            // The giant wades in before the rat is down, so the pull is still
+            // one fight when the first corpse drops — otherwise the kill ends
+            // it and the point, one fight with a row gone quiet, is lost.
+            (102, "A giant hits YOU for 20 points of damage."),
+            (103, "You have slain a rat!"),
             (110, "You slash a giant for 40 points of damage."),
             (118, "A giant hits YOU for 20 points of damage."),
             (120, "You have slain a giant!"),
@@ -3033,26 +3673,35 @@ mod tests {
     /// after the trash mob.
     #[test]
     fn title_names_the_toughest_kill_not_the_first() {
+        // Both engaged before either drops, which is what a raid looks like:
+        // the adds die during the boss fight, not before it starts.
         let encs = run(&[
             (
                 100,
                 "You slash a fire giant warrior for 500 points of damage.",
             ),
-            (101, "You have slain a fire giant warrior!"),
-            (102, "You slash Lord Nagafen for 9000 points of damage."),
+            (101, "You slash Lord Nagafen for 9000 points of damage."),
+            (102, "You have slain a fire giant warrior!"),
             (103, "You have slain Lord Nagafen!"),
         ]);
+        assert_eq!(encs.len(), 1, "one fight: the boss was up throughout");
         assert_eq!(encs[0].title(), "Lord Nagafen (+1 more)");
     }
 
     #[test]
     fn title_counts_distinct_opponents() {
+        // A bat nobody kills holds the fight open across both rats, so this
+        // stays the one encounter the dedup is about. Two creatures of one
+        // name are indistinguishable in the log and fold to a single actor
+        // with two deaths.
         let encs = run(&[
             (100, "You slash a rat for 10 points of damage."),
-            (101, "You have slain a rat!"),
-            (102, "You slash a rat for 10 points of damage."),
-            (103, "You have slain a rat!"),
+            (101, "A dusty bat hits YOU for 2 points of damage."),
+            (102, "You have slain a rat!"),
+            (103, "You slash a rat for 10 points of damage."),
+            (104, "You have slain a rat!"),
         ]);
+        assert_eq!(encs.len(), 1, "the bat is still up, so it is all one fight");
         assert_eq!(
             encs[0].title(),
             "a rat",

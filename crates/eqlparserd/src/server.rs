@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/snapshot", get(snapshot))
         .route("/api/encounters", get(encounters))
         .route("/api/encounters/{id}", get(encounter_detail))
+        .route("/api/mobs", get(mobs))
         .route("/api/loot", get(loot))
         .route("/api/loot/item", get(loot_item))
         .route("/api/classes", get(classes))
@@ -165,6 +166,21 @@ struct ListQuery {
     difficulty: Option<u8>,
 }
 
+/// Does this fight involve a creature the searcher named?
+///
+/// Matched against every opponent, not only the title. `title` names the
+/// creature that took the most damage and folds the rest into "+N more", so
+/// on a log where two thirds of fights have more than one opponent, a name
+/// search over titles alone found 32% of the fights that actually contained
+/// the creature. The one you are looking for is more often inside the "+N".
+fn search_matches(enc: &eqlparser_core::encounter::Encounter, needle: &str) -> bool {
+    enc.title().to_lowercase().contains(needle)
+        || enc
+            .opponents()
+            .iter()
+            .any(|o| o.to_lowercase().contains(needle))
+}
+
 /// Compare a requested build against a canonical label, ignoring order and
 /// separators, so "brd/dru/war", "WAR DRU BRD" and "WAR/DRU/BRD" all match.
 fn build_matches(want: &str, label: &str) -> bool {
@@ -199,7 +215,7 @@ async fn encounters(
         .rev()
         .filter(|e| {
             if let Some(sc) = &search {
-                if !e.title().to_lowercase().contains(sc) {
+                if !search_matches(e, sc) {
                     return false;
                 }
             }
@@ -256,6 +272,123 @@ async fn encounters(
     Json(serde_json::json!({ "total": total, "offset": offset, "encounters": page }))
 }
 
+/// One creature within one fight.
+///
+/// A fight is bounded by lulls, not by opponents, so a pull arrives as a
+/// single encounter with "+N more" in its title. That is the right unit for a
+/// meter — your damage over a pull is one number — and the wrong one for
+/// "how did I do against a skeletal monk", which is what this answers.
+#[derive(Debug, Clone, serde::Serialize)]
+struct MobRow {
+    /// The fight it belongs to, so a row still opens the whole encounter.
+    encounter_id: u64,
+    name: String,
+    zone: Option<String>,
+    start: i64,
+    /// The *fight's* duration. A creature inside a pull has no clock of its
+    /// own: the log records when an actor last acted but never when it first
+    /// did, and the timeline does not name targets. Reporting a share of the
+    /// fight's seconds as "its" duration, or dividing damage by it to make a
+    /// per-mob DPS, would be inventing the denominator. `shared_with` says
+    /// how far off the fight's own figures are instead.
+    duration: i64,
+    build: String,
+    difficulty: u8,
+    damage_done_to_it: u64,
+    damage_it_did: u64,
+    kills: u32,
+    loot: usize,
+    resists: u64,
+    /// Other creatures in the same fight. 0 means this row *is* the fight.
+    shared_with: usize,
+}
+
+/// The historical browser, one row per creature instead of per fight.
+///
+/// Same filters as `/api/encounters`, so the two are interchangeable views of
+/// the same question; `search` matches the creature's own name here, which is
+/// the whole point of the view.
+async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<serde_json::Value> {
+    let engine = s.engine.lock().unwrap();
+    let search = q.search.map(|v| v.to_lowercase());
+    let zone = q.zone.map(|v| v.to_lowercase());
+
+    let mut rows: Vec<MobRow> = Vec::new();
+    for e in engine.encounters().iter().rev() {
+        if let Some(z) = &zone {
+            if !e
+                .zone
+                .as_ref()
+                .is_some_and(|ez| ez.to_lowercase().contains(z))
+            {
+                continue;
+            }
+        }
+        if q.since.is_some_and(|t| e.end < t) || q.until.is_some_and(|t| e.start > t) {
+            continue;
+        }
+        if q.min_duration.is_some_and(|d| e.duration() < d) {
+            continue;
+        }
+        let difficulty = e
+            .zone
+            .as_deref()
+            .map(eqlparser_core::lockout::difficulty_of)
+            .unwrap_or(0);
+        if q.difficulty.is_some_and(|d| difficulty != d) {
+            continue;
+        }
+        let per_mob = e.per_mob();
+        // Matching creatures only. The rest of the pull is not what was asked
+        // for, and listing it would put the old problem back one level down.
+        let wanted: Vec<_> = per_mob
+            .iter()
+            .filter(|m| {
+                search
+                    .as_deref()
+                    .is_none_or(|sc| m.name.to_lowercase().contains(sc))
+            })
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        // Last and separately, as in `encounters`: resolving a build is dearer
+        // than any other test here, so it only runs on what survived them.
+        let build = engine.build_label(e.start + (e.end - e.start) / 2);
+        if q
+            .build
+            .as_deref()
+            .is_some_and(|want| !build_matches(want, &build))
+        {
+            continue;
+        }
+        let shared_with = per_mob.len().saturating_sub(1);
+        for m in wanted {
+            rows.push(MobRow {
+                encounter_id: e.id,
+                name: m.name.clone(),
+                zone: e.zone.clone(),
+                start: e.start,
+                duration: e.duration(),
+                build: build.clone(),
+                difficulty,
+                damage_done_to_it: m.damage_done_to_it,
+                damage_it_did: m.damage_it_did,
+                kills: m.kills,
+                loot: m.loot,
+                resists: m.resists,
+                shared_with,
+            });
+        }
+    }
+
+    let total = rows.len();
+    let offset = q.offset.unwrap_or(0);
+    let limit = q.limit.unwrap_or(100).min(1000);
+    let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
+    Json(serde_json::json!({ "total": total, "offset": offset, "mobs": page }))
+}
+
 /// Export chosen fights as a write-up.
 ///
 /// Takes the same filters as the browser plus an explicit `ids` list, so what
@@ -283,7 +416,7 @@ async fn export_encounters(
         .filter(|e| {
             q.search
                 .as_deref()
-                .is_none_or(|sc| e.title().to_lowercase().contains(&sc.to_lowercase()))
+                .is_none_or(|sc| search_matches(e, &sc.to_lowercase()))
         })
         .filter(|e| {
             q.difficulty.is_none_or(|d| {
@@ -1772,6 +1905,97 @@ mod tests {
         .await;
         assert_eq!(v["total"], 1);
         assert_eq!(v["encounters"][0]["title"], "a lesser mummy");
+    }
+
+    /// A creature folded into "+N more" is still findable by name.
+    ///
+    /// A fight is titled after whichever creature took the most damage, so a
+    /// pull with adds hides the rest behind a count. Searching titles alone
+    /// found 32% of the fights that actually contained the named creature on
+    /// a real log, where two thirds of fights have more than one opponent —
+    /// which reads as the parser having missed them.
+    #[tokio::test]
+    async fn search_finds_a_mob_the_title_folded_away() {
+        // One fight, two opponents: the rat took more damage, so it is the
+        // title and the bat is the "+1 more".
+        let s = state_with(&[
+            "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
+            "[Tue Jul 28 14:00:01 2026] You slash a giant rat for 100 points of damage.",
+            "[Tue Jul 28 14:00:02 2026] You slash a dusty bat for 10 points of damage.",
+            "[Tue Jul 28 14:00:03 2026] You have slain a dusty bat!",
+            "[Tue Jul 28 14:00:04 2026] You have slain a giant rat!",
+            // Far enough later to close the fight above: the list serves
+            // closed encounters, and nothing in a log says a pull is over.
+            "[Tue Jul 28 15:00:00 2026] You slash a lesser mummy for 5 points of damage.",
+        ]);
+        let query = |search: &str| ListQuery {
+            limit: None,
+            offset: None,
+            search: Some(search.into()),
+            zone: None,
+            since: None,
+            until: None,
+            min_duration: None,
+            build: None,
+            difficulty: None,
+        };
+
+        let Json(v) = encounters(State(s.clone()), Query(query("giant rat"))).await;
+        assert_eq!(v["total"], 1, "the titled mob was always findable");
+        assert_eq!(v["encounters"][0]["title"], "a giant rat (+1 more)");
+
+        let Json(v) = encounters(State(s), Query(query("dusty bat"))).await;
+        assert_eq!(v["total"], 1, "the folded-away mob must be findable too");
+        // And the row can say which creature matched, rather than showing a
+        // title with the searched name nowhere in it.
+        let foes = v["encounters"][0]["opponents"].as_array().unwrap();
+        assert!(
+            foes.iter().any(|o| o == "a dusty bat"),
+            "opponents should name every creature: {foes:?}"
+        );
+    }
+
+    /// A pull arrives as one row; asking for mobs breaks it into its creatures.
+    ///
+    /// The unit a fight is measured in and the unit it is looked for in are
+    /// not the same. A meter wants the pull — your damage over it is one
+    /// number — and "how did I do against a skeletal monk" wants the creature.
+    #[tokio::test]
+    async fn the_mobs_view_splits_a_pull_into_its_creatures() {
+        let s = state_with(&[
+            "[Tue Jul 28 14:00:00 2026] You have entered West Commonlands.",
+            "[Tue Jul 28 14:00:01 2026] You slash a giant rat for 100 points of damage.",
+            "[Tue Jul 28 14:00:02 2026] You slash a dusty bat for 10 points of damage.",
+            "[Tue Jul 28 14:00:03 2026] You have slain a dusty bat!",
+            "[Tue Jul 28 14:00:04 2026] You have slain a giant rat!",
+            "[Tue Jul 28 15:00:00 2026] You slash a lesser mummy for 5 points of damage.",
+        ]);
+        let query = |search: Option<&str>| ListQuery {
+            limit: None,
+            offset: None,
+            search: search.map(Into::into),
+            zone: None,
+            since: None,
+            until: None,
+            min_duration: None,
+            build: None,
+            difficulty: None,
+        };
+
+        // One fight, two creatures.
+        let Json(v) = encounters(State(s.clone()), Query(query(None))).await;
+        assert_eq!(v["total"], 1, "the pull is still one fight");
+        let Json(v) = mobs(State(s.clone()), Query(query(None))).await;
+        assert_eq!(v["total"], 2, "and two mobs");
+
+        // Asking for one creature returns that creature, not its whole pull.
+        let Json(v) = mobs(State(s), Query(query(Some("dusty bat")))).await;
+        assert_eq!(v["total"], 1);
+        let row = &v["mobs"][0];
+        assert_eq!(row["name"], "a dusty bat");
+        assert_eq!(row["damage_done_to_it"], 10, "its own damage, not the pull's");
+        assert_eq!(row["kills"], 1);
+        assert_eq!(row["shared_with"], 1, "and it says it shared the fight");
     }
 
     #[tokio::test]

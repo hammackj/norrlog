@@ -176,6 +176,11 @@ pub struct CharmReport {
 pub struct EncounterSummary {
     pub id: u64,
     pub title: String,
+    /// Everything you fought, hardest-hit first. `title` names one of these
+    /// and hides the rest behind "+N more"; this is what makes those findable,
+    /// and it is what `search` matches against.
+    #[serde(default)]
+    pub opponents: Vec<String>,
     pub zone: Option<String>,
     pub start: i64,
     pub end: i64,
@@ -996,6 +1001,18 @@ impl Engine {
     /// line marks it.
     pub fn tick(&mut self) {
         let now = self.now();
+        // A fight that ended without a kill — the mob fled, you gated out, you
+        // simply stopped — is closed by silence, and `push` can only notice
+        // silence when a line finally breaks it. Standing still after a pull
+        // writes nothing to the log, so the fight stayed open and stayed out
+        // of the history for as long as the player kept quiet: the reason the
+        // last fight took "a good minute" to appear. The tick runs regardless.
+        if self.live {
+            if let Some(done) = self.tracker.close_if_idle(now) {
+                self.encounters.push(done);
+                self.trim_timelines();
+            }
+        }
         // Permanents have no meaningful countdown, and auras re-land every few
         // seconds by design — warning about either would be constant noise.
         let watched: Vec<(String, i64)> = self
@@ -1208,6 +1225,11 @@ impl Engine {
                 self.lockouts.on_task_updated(entry.timestamp, task);
             }
             Event::EffectWoreOffTarget { spell, target } => {
+                // Where the span actually stops. Everything else about its
+                // length is the spell file's expectation; this is the log
+                // saying so.
+                let who = target.display(&self.player);
+                self.tracker.end_effect(entry.timestamp, &who, Some(spell));
                 if self.fading_effect_ends_a_charm(spell) {
                     self.tracker.set_charmed(entry.timestamp, target, false);
                     // The line names a fading spell, not a charm break; only
@@ -1238,6 +1260,8 @@ impl Engine {
                 self.note_charm_failure(entry.timestamp, &t, "immune", &sp);
             }
             Event::EffectLandedOnTarget { target, text } => {
+                let who = target.display(&self.player);
+                self.note_effect_landed(entry.timestamp, &who, text);
                 // The line names no spell, and eleven share this text — six
                 // charms, the rest mez and damage. So it counts as a charm
                 // only when a charm spell of yours landed moments earlier.
@@ -1516,6 +1540,14 @@ impl Engine {
                 self.exp.on_zone(entry.timestamp, zone);
                 self.npcs.on_zone(zone);
             }
+            // A handful of landing phrases are recognised as emotes — a dot
+            // landing writes "a pledge familiar staggers." — so they never
+            // reach the `Unknown` arm below where the rest are read.
+            Event::Emote { actor, text } => {
+                let who = actor.display(&self.player);
+                let phrase = format!(" {text}.");
+                self.note_effect_landed(entry.timestamp, &who, &phrase);
+            }
             Event::Unknown => {
                 // Effect flavour text is only recognisable via the spell
                 // database, so it arrives here rather than as a typed event.
@@ -1534,6 +1566,11 @@ impl Engine {
                     self.resolver.resolve_landing(entry.timestamp, body);
                 } else if self.resolver.db().is_fade_text(body) {
                     self.resolver.resolve_fade(body);
+                } else {
+                    // Something of yours landing on something else. A slow
+                    // deals no damage, so nothing about it ever reached the
+                    // timeline; this is where it gets there.
+                    self.note_effect_on_target(entry.timestamp, body);
                 }
             }
             _ => {}
@@ -1559,6 +1596,23 @@ impl Engine {
                         .any(|l| l.timestamp == rec.timestamp && l.item == rec.item);
                     if within_grace && !already {
                         last.loot.push(rec);
+                    }
+                }
+            }
+        }
+
+        // Coin picked up after its fight closed, on the same grace as the loot
+        // above. This used to be a rare case, because a fight stayed open long
+        // after its last corpse hit the floor; now that the killing blow ends
+        // it, the coin off that corpse nearly always arrives to a closed
+        // encounter, and the tracker's own arm would silently drop it.
+        if let Event::CoinLoot { coin } = &entry.event {
+            if self.tracker.current().is_none() {
+                if let Some(last) = self.encounters.last_mut() {
+                    if entry.timestamp - last.end
+                        <= eqlparser_core::encounter::LOOT_GRACE_SECONDS
+                    {
+                        last.coin_copper += coin.as_copper();
                     }
                 }
             }
@@ -1794,30 +1848,42 @@ impl Engine {
     /// silent — arrives only every few hours. Too tight a window simply loses
     /// it, and a shared-spell class takes the slot instead.
     pub(crate) fn build_label(&self, at: i64) -> String {
-        let mut trio = self.classes.trio_around(at, 24 * 3600);
+        let trio = self.current_loadout(at);
         if trio.len() < 3 {
             return String::new();
         }
-        // Canonical order, not the order the evidence happened to arrive in.
-        // The label is a grouping key: a spell set named "WAR / BRD / DRU" and
-        // another named "WAR / DRU / BRD - Buffs" describe the same build, and
-        // ordering by whichever was loaded last split one build into two in
-        // the kill history.
-        trio.sort_by_key(|c| c.class.index());
-        trio.iter()
-            .map(|c| c.class.abbrev())
-            .collect::<Vec<_>>()
-            .join("/")
+        trio.iter().map(|c| c.abbrev()).collect::<Vec<_>>().join("/")
     }
 
     /// The classes believed active at a moment, in canonical order.
+    ///
+    /// Canonical order, not the order the evidence happened to arrive in. The
+    /// label built from this is a grouping key: a spell set named
+    /// "WAR / BRD / DRU" and another named "WAR / DRU / BRD - Buffs" describe
+    /// the same build, and ordering by whichever was loaded last split one
+    /// build into two in the kill history.
+    ///
+    /// A declared spell set answers first. `trio_around` reaches the same
+    /// verdict when one exists — it consults the same table — but gets there
+    /// by tallying every piece of class evidence ever recorded, cloning a
+    /// reason string per entry, to attach scores and reasons that neither
+    /// caller here ever reads. On this character that is a full scan of tens
+    /// of thousands of observations, and `summarise` runs it once per row: a
+    /// 300-fight page cost two seconds, a build-filtered query forty-five,
+    /// all of it under the engine lock that the live tail also wants.
     fn current_loadout(&self, at: i64) -> Vec<eqlparser_core::class::Class> {
-        let mut trio: Vec<_> = self
+        let mut trio = self
             .classes
-            .trio_around(at, 24 * 3600)
-            .into_iter()
-            .map(|c| c.class)
-            .collect();
+            .declared_trio(at, 24 * 3600)
+            .unwrap_or_else(|| {
+                // Nothing declared near this moment: fall back to weighing the
+                // evidence, which is what the scores exist for.
+                self.classes
+                    .trio_around(at, 24 * 3600)
+                    .into_iter()
+                    .map(|c| c.class)
+                    .collect()
+            });
         trio.sort_by_key(|c| c.index());
         trio
     }
@@ -2130,6 +2196,93 @@ impl Engine {
             breaks: cur.map(|e| e.charm_breaks()).unwrap_or(0),
             failures,
         }
+    }
+
+    /// Record a duration effect of yours landing on a creature.
+    ///
+    /// The phrase alone is not enough to name the spell — several share one,
+    /// which is the whole reason charm detection pairs the text with a cast —
+    /// so the same pairing is required here: the spell must be one you cast
+    /// within the resolver's association window. Without that a mob slowing
+    /// itself, or a groupmate's slow, would be recorded as yours.
+    ///
+    /// Only effects with a real duration are kept. An instant detrimental has
+    /// no span to draw, and drawing it as a zero-length bar would say the
+    /// opposite of what it means.
+    fn note_effect_on_target(&mut self, timestamp: i64, body: &str) {
+        let Some((target, span)) = self
+            .resolver
+            .db()
+            .split_landing_on_other(body)
+            .and_then(|(t, ids)| self.resolve_span(timestamp, ids).map(|s| (t.to_string(), s)))
+        else {
+            return;
+        };
+        let (name, seconds, category) = span;
+        self.tracker
+            .note_effect(timestamp, timestamp + seconds, &name, &target, &category);
+    }
+
+    /// The same, for lines the parser already split for us.
+    ///
+    /// Most landing phrases never reach [`Self::note_effect_on_target`],
+    /// because they are not `Unknown`: `staggers` is one of a handful the
+    /// parser recognises as an emote, and `'s eyes glaze over.` has a rule of
+    /// its own for charm detection. They are landings all the same.
+    fn note_effect_landed(&mut self, timestamp: i64, target: &str, phrase: &str) {
+        // With and without the leading space: the spell file keeps it on some
+        // phrases (`'s eyes glaze over.`) and not others (`staggers.`), and an
+        // emote hands us the words with neither the space nor the full stop.
+        let db = self.resolver.db();
+        let ids = [phrase, phrase.trim_start()]
+            .into_iter()
+            .map(|p| db.candidates_for_landing_on_other(p))
+            .find(|ids| !ids.is_empty())
+            .unwrap_or(&[]);
+        let Some((name, seconds, category)) = self.resolve_span(timestamp, ids) else {
+            return;
+        };
+        self.tracker
+            .note_effect(timestamp, timestamp + seconds, &name, target, &category);
+    }
+
+    /// Pick the spell behind a landing, and how long it should run.
+    ///
+    /// The phrase alone is not enough to name the spell — `staggers.` belongs
+    /// to nearly six hundred of them, which is the whole reason charm
+    /// detection pairs the text with a cast — so the same pairing is required
+    /// here: the spell must be one you cast within the resolver's association
+    /// window. Without that, a mob slowing itself or a groupmate's slow would
+    /// be recorded as yours.
+    ///
+    /// The order of the tests is load-bearing. Six hundred candidates on a
+    /// line that appears thousands of times over a log is enough for this to
+    /// matter: the two field comparisons reject nearly all of them and cost
+    /// nothing, `cast_recently` searches, and building the category string is
+    /// left until there is a winner to build it for.
+    fn resolve_span(&self, timestamp: i64, ids: &[u32]) -> Option<(String, i64, String)> {
+        let db = self.resolver.db();
+        let level = self.resolver.level();
+        let best = ids
+            .iter()
+            .filter_map(|id| db.get(*id))
+            // Only effects with a real duration. An instant has no span to
+            // draw, and a zero-length bar would say the opposite of what it
+            // means; a permanent has no end worth drawing on one fight.
+            .filter(|sp| sp.is_timed_buff() && !sp.is_permanent())
+            .filter(|sp| self.resolver.cast_recently(timestamp, &sp.name))
+            // Longest of the candidates you actually cast: ranks of one spell
+            // share a phrase, and the one still in your book is the longer.
+            .max_by_key(|sp| sp.duration_seconds(level))?;
+        let seconds = best.duration_seconds(level);
+        if seconds <= 0 {
+            return None;
+        }
+        let category = serde_json::to_value(best.category())
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "other".to_string());
+        Some((best.name.clone(), seconds, category))
     }
 
     /// Whether a landing on someone else was a charm you cast.
@@ -2532,6 +2685,9 @@ impl Engine {
         };
         let mut merged = Encounter {
             id: 0,
+            // Deliberately not merged: a span belongs to the fight it was cast
+            // in, and a session-wide roll-up has no timeline to draw it on.
+            effects: Vec::new(),
             zone: zone.map(str::to_string),
             start: 0,
             end: 0,
@@ -2906,6 +3062,7 @@ impl Engine {
         EncounterSummary {
             id: enc.id,
             title: enc.title(),
+            opponents: enc.opponents(),
             zone: enc.zone.clone(),
             start: enc.start,
             end: enc.end,

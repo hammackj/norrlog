@@ -168,6 +168,18 @@ impl Spell {
 /// but ships the base name in `spells_us.txt`. Comparing them literally means
 /// no ranked spell ever matches its own cast, which silently costs the
 /// resolver its single strongest disambiguator.
+/// Bytes of a landing phrase used as its index key. Five, because that is the
+/// length of the shortest phrase the spell file ships.
+const LANDING_TAIL: usize = 5;
+
+/// The last [`LANDING_TAIL`] bytes of a string, when it has that many.
+fn landing_tail(s: &str) -> Option<[u8; LANDING_TAIL]> {
+    let b = s.as_bytes();
+    b.len()
+        .checked_sub(LANDING_TAIL)
+        .map(|from| <[u8; LANDING_TAIL]>::try_from(&b[from..]).unwrap())
+}
+
 pub fn same_spell(a: &str, b: &str) -> bool {
     base_spell_name(a).eq_ignore_ascii_case(base_spell_name(b))
 }
@@ -247,6 +259,15 @@ pub struct SpellDb {
     /// Landing text shown when a spell hits someone else, to spell ids. Shared
     /// by several spells, so callers must disambiguate.
     by_landed_on_other: HashMap<String, Vec<u32>>,
+    /// Landing phrases grouped by their last few bytes.
+    ///
+    /// What makes [`SpellDb::split_landing_on_other`] cheap enough to run on
+    /// every line the parser did not recognise — one in six of them, and a
+    /// three-million-line log has half a million. Scanning for the split point
+    /// instead cost four seconds of the initial parse. A line's own last bytes
+    /// are one hash lookup, and all but a handful of lines match no phrase at
+    /// all and stop there.
+    by_landed_tail: HashMap<[u8; LANDING_TAIL], Vec<String>>,
     by_fades: HashMap<String, Vec<u32>>,
     by_name: HashMap<String, Vec<u32>>,
 }
@@ -339,6 +360,15 @@ impl SpellDb {
         SpellDb {
             spells,
             by_landed_on_you,
+            by_landed_tail: {
+                let mut m: HashMap<[u8; LANDING_TAIL], Vec<String>> = HashMap::new();
+                for phrase in by_landed_on_other.keys() {
+                    if let Some(tail) = landing_tail(phrase) {
+                        m.entry(tail).or_default().push(phrase.clone());
+                    }
+                }
+                m
+            },
             by_landed_on_other,
             by_fades,
             by_name,
@@ -351,6 +381,7 @@ impl SpellDb {
             spells: HashMap::new(),
             by_landed_on_you: HashMap::new(),
             by_landed_on_other: HashMap::new(),
+            by_landed_tail: HashMap::new(),
             by_fades: HashMap::new(),
             by_name: HashMap::new(),
         }
@@ -550,6 +581,51 @@ impl SpellDb {
             .get(text)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Split `a will pillager's body starts to slow.` into the creature and
+    /// the spells that phrase could belong to.
+    ///
+    /// The index is keyed on the exact phrase, because that is what the spell
+    /// file ships; a log line is that phrase with a creature's name stuck on
+    /// the front. Rather than test the line against every phrase in the file —
+    /// tens of thousands of them, on every line that reached this far — the
+    /// split can only fall where the phrase begins, and a landing phrase
+    /// always begins either with the possessive or with a space. So the
+    /// candidate splits are few and each one is a single hash lookup.
+    ///
+    /// The longest match wins: `'s body starts to slow.` and ` starts to
+    /// slow.` would both match a creature named `Xicotl's body`, and the
+    /// longer phrase is the one that leaves a sensible name behind.
+    pub fn split_landing_on_other<'a>(&self, line: &'a str) -> Option<(&'a str, &[u32])> {
+        // Every landing phrase is a sentence, and its last bytes are the
+        // cheapest thing to reject a line on.
+        if !line.ends_with('.') {
+            return None;
+        }
+        let candidates = self.by_landed_tail.get(&landing_tail(line)?)?;
+        // The longest phrase that fits wins: `'s body starts to slow.` and
+        // ` starts to slow.` would both match a creature called `Xicotl's
+        // body`, and the longer one leaves a sensible name behind.
+        let mut best: Option<(&'a str, &[u32])> = None;
+        for phrase in candidates {
+            // Something has to be left over to be the target.
+            if phrase.len() >= line.len() || !line.ends_with(phrase.as_str()) {
+                continue;
+            }
+            let target = &line[..line.len() - phrase.len()];
+            // The split has to fall on a word boundary, or `a will pillager`
+            // could be cut mid-name by a phrase that merely happens to end the
+            // same way.
+            if !(target.ends_with(' ') || target.ends_with('\'') || phrase.starts_with([' ', '\''])) {
+                continue;
+            }
+            if best.is_none_or(|(t, _)| target.len() < t.len()) {
+                let ids = self.by_landed_on_other.get(phrase.as_str())?;
+                best = Some((target.trim_end(), ids.as_slice()));
+            }
+        }
+        best
     }
 
     pub fn candidates_for_fade(&self, text: &str) -> &[u32] {
