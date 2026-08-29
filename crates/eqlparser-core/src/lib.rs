@@ -23,6 +23,7 @@ pub mod game;
 pub mod lockout;
 pub mod npc;
 pub mod parser;
+pub mod procs;
 pub mod recipe;
 pub mod skyquest;
 pub mod spell;
@@ -41,6 +42,7 @@ pub use event::{
     Actor, Coin, DamageKind, Event, Flags, LogEntry, LootDisposition, SpellbookChangeKind,
 };
 pub use experience::{ExpSource, ExpTracker, LevelRecord};
+pub use procs::{ProcKind, ProcRegistry, ProcReport, ProcRow, ProcTracker};
 pub use feed::{Context, Feed, Observer};
 pub use lockout::{BossKill, LockoutReport, LockoutTracker};
 pub use parser::Parser;

@@ -695,9 +695,16 @@ static RULES: &[(RuleId, &str)] = &[
         r"^You can use the ability (?P<ability>.+?) again in (?:(?P<h>\d+) hour\(s\) )?(?P<m>\d+) minute\(s\) (?P<s>\d+) seconds?\.$",
     ),
     // "Your Djarn's Amethyst Ring (Exaltation) shimmers briefly."
+    //
+    // The item must begin with a capital, which is what keeps this off other
+    // sentences of the same shape. Guild achievements are written
+    // "Your guildmate Joseywales has completed Brewing (100) achievement." and
+    // were being read as the item "guildmate Joseywales has completed Brewing"
+    // proccing an effect called "100" — harmless while nothing consumed the
+    // event, and a row in the proc dashboard the moment something did.
     (
         RuleId::ItemProc,
-        r"^Your (?P<item>.+?) \((?P<effect>[^)]+)\) .+\.$",
+        r"^Your (?P<item>[A-Z][^()]*?) \((?P<effect>[^)]+)\) .+\.$",
     ),
     // ---- Cosmetic combat feedback ------------------------------------------
     (RuleId::EmoteWince, r"^(?P<actor>.+?) winces\.$"),
@@ -2506,6 +2513,21 @@ mod tests {
                 assert_eq!(remaining, 8 * 60 + 54);
             }
             other => panic!("expected cooldown, got {other:?}"),
+        }
+    }
+
+    /// A guildmate's achievement is the same shape as an item proc and is not
+    /// one. Read as one it invented an item and an effect, both from a
+    /// sentence about somebody else.
+    #[test]
+    fn a_guild_achievement_is_not_an_item_proc() {
+        for line in [
+            "Your guildmate Joseywales has completed Brewing (100) achievement.",
+            "Your guildmate Ixthy has completed Race Unlock - Human (Qeynos) achievement.",
+        ] {
+            if let Event::ItemProc { item, effect } = p().parse_body(line) {
+                panic!("read {line:?} as item {item:?} proccing {effect:?}")
+            }
         }
     }
 

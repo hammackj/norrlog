@@ -32,6 +32,15 @@ use std::path::Path;
 /// One EverQuest tick, the unit spell durations are expressed in.
 pub const TICK_SECONDS: i64 = 6;
 
+/// A proc one spell grants, and how it fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcGrant {
+    /// The spell that goes off.
+    pub spell: u32,
+    /// True when it fires off a weapon swing, false when off a cast.
+    pub on_melee: bool,
+}
+
 /// The subset of `spells_us.txt` we care about.
 #[derive(Debug, Clone)]
 pub struct Spell {
@@ -87,6 +96,14 @@ pub struct Spell {
     /// Verified against 31 known spells with no mismatches, so debuffs are
     /// classified from shipped data rather than guessed at from names.
     pub good_effect: u8,
+    /// Spells this one fires on its own: the procs it grants.
+    ///
+    /// A buff that adds a weapon proc names the proc in its effect table, so
+    /// which spells are procs and what granted them is shipped data rather
+    /// than something to be inferred from how often a name appears. Spirit of
+    /// the Puma carries `5|85|6908|400|100|0`, and 6908 is Puma Maw — exactly
+    /// the name its damage lands under.
+    pub procs: Vec<ProcGrant>,
 }
 
 /// Broad kind of effect, from the game's own categorisation.
@@ -434,6 +451,22 @@ impl SpellDb {
         // illusion-benefit link; 374 is the general "cast this too" effect.
         // Both carry the linked spell id in the slot's second base value.
         const SPA_APPLY: [&str; 2] = ["374", "475"];
+        // SPAs that grant a proc, and where in the slot the proc's spell id
+        // sits. The two groups disagree, and getting it wrong is silent:
+        //
+        //   85 / 419  add a melee proc, id in `base`; `base2` is a rate
+        //             modifier. Spirit of the Puma: `5|85|6908|400|100|0`.
+        //   340 / 383 cast on spell use, id in `base2`; `base` is a chance.
+        //             Tuyen's Chant of Flame: `4|340|100|22487|100|0`.
+        //
+        // Reading `base` for the second group yields 100, 50 or 1000 — all of
+        // which are real spell ids, so the mistake resolves to a plausible
+        // name (100 is Summon Throwing Dagger) rather than to nothing.
+        // Verified across the shipped file: every one of the 1,410 melee slots
+        // resolves from `base`, and every one of the 826 spell-use slots from
+        // `base2`.
+        const SPA_PROC_BASE: [&str; 2] = ["85", "419"];
+        const SPA_PROC_BASE2: [&str; 2] = ["340", "383"];
 
         let file = std::fs::File::open(path)?;
         let reader = BufReader::with_capacity(1 << 20, file);
@@ -490,6 +523,27 @@ impl SpellDb {
                                         return None;
                                     }
                                     p.get(3)?.parse::<u32>().ok().filter(|v| *v > 0)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    procs: f
+                        .get(F_EFFECTS)
+                        .map(|e| {
+                            e.split('$')
+                                .filter_map(|slot| {
+                                    let p: Vec<&str> = slot.split('|').collect();
+                                    let spa = *p.get(1)?;
+                                    let (at, on_melee) = if SPA_PROC_BASE.contains(&spa) {
+                                        (2, true)
+                                    } else if SPA_PROC_BASE2.contains(&spa) {
+                                        (3, false)
+                                    } else {
+                                        return None;
+                                    };
+                                    let spell =
+                                        p.get(at)?.parse::<u32>().ok().filter(|v| *v > 0)?;
+                                    Some(ProcGrant { spell, on_melee })
                                 })
                                 .collect()
                         })
@@ -559,6 +613,11 @@ impl SpellDb {
 
     pub fn is_empty(&self) -> bool {
         self.spells.is_empty()
+    }
+
+    /// Every spell in the database, in no particular order.
+    pub fn all(&self) -> impl Iterator<Item = &Spell> {
+        self.spells.values()
     }
 
     pub fn get(&self, id: u32) -> Option<&Spell> {
@@ -1278,6 +1337,7 @@ mod tests {
             category_id: 1,
             is_charm: false,
             linked: Vec::new(),
+            procs: Vec::new(),
         }
     }
 

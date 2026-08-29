@@ -15,6 +15,7 @@ use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord}
 use eqlparser_core::game::Game;
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::npc::{NpcReport, NpcTracker};
+use eqlparser_core::procs::{ProcRegistry, ProcReport, ProcTracker};
 use eqlparser_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
 use eqlparser_core::spell::{BuffMark, SpellDb, SpellResolver};
 use eqlparser_core::task::{TaskDef, TaskReport, TaskTracker};
@@ -695,6 +696,10 @@ pub struct Engine {
     /// Lifetime points spent, as read off the character sheet by the player.
     aa_spent_stated: Option<u32>,
     exp: ExpTracker,
+    /// Effects that fire on their own: weapon and buff procs, and worn item
+    /// procs. Which spells are procs comes from the spell file, so this knows
+    /// nothing until one is loaded.
+    procs: ProcTracker,
     /// Spells the game handed over, and the ones not yet attributed.
     ///
     /// Two fields because the log states the effect before the cause: the
@@ -816,6 +821,7 @@ impl Engine {
             class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
             aa_spent_stated: None,
             exp: ExpTracker::new(),
+            procs: ProcTracker::new(),
             grants: Vec::new(),
             pending_grants: Vec::new(),
             lockouts: LockoutTracker::new(),
@@ -847,6 +853,11 @@ impl Engine {
             recent_lines: VecDeque::new(),
             line_seq: 0,
         };
+        // Reads the proc tables out of the spell file it was just given. With
+        // no spell file this leaves the tracker empty, and it says so rather
+        // than reporting item procs as though they were the whole story.
+        let registry = ProcRegistry::from_spells(e.resolver.db());
+        e.procs.set_registry(registry);
         e.load_marks();
         e.load_task_defs();
         e.load_sky_quests();
@@ -1111,6 +1122,10 @@ impl Engine {
             Event::CastStart { source, spell, .. } if source.is_you() => {
                 self.resolver.note_cast(entry.timestamp, spell);
                 self.observe_class_spell(entry.timestamp, spell);
+                // A proc is written exactly like a cast, because the client
+                // considers it one. The tracker keeps only the names the spell
+                // file lists as procs and ignores the rest.
+                self.procs.on_cast(entry.timestamp, spell);
                 // Remember the charm being sung so a nameless failure line can
                 // be attributed. The target is unknown at cast time, so the
                 // creature currently being fought stands in for it.
@@ -1322,6 +1337,14 @@ impl Engine {
                             .on_swing(entry.timestamp, npc, Swing::Hit(*amount));
                     }
                 }
+                // What your own procs actually did. Only the total: an area
+                // proc writes one of these per creature it caught, so counting
+                // them would report its rate as many times the truth.
+                if source.is_you() {
+                    if let Some(a) = ability.as_deref() {
+                        self.procs.on_proc_damage(a, *amount);
+                    }
+                }
             }
             Event::Miss { source, target, .. } => {
                 if target.is_you() {
@@ -1385,6 +1408,9 @@ impl Engine {
                         self.classes.observe_who(entry.timestamp, &trio);
                     }
                 }
+            }
+            Event::ItemProc { item, effect } => {
+                self.procs.on_item_proc(entry.timestamp, item, effect);
             }
             Event::StanceChanged { stance } => {
                 self.bestiary.on_stance(stance);
@@ -2609,6 +2635,38 @@ impl Engine {
             .collect()
     }
 
+    /// Everything that fired on its own, rated per minute of combat.
+    ///
+    /// The denominator is combat time — the summed length of every fight —
+    /// rather than the span of the log, for the same reason the session meter
+    /// uses it: an evening is mostly running and buffing, and a proc rate
+    /// charged for that describes nothing. Both figures are returned so the UI
+    /// can show which one it divided by.
+    pub fn proc_report(&self) -> ProcReport {
+        let mut combat = 0i64;
+        for e in &self.encounters {
+            combat += e.duration();
+        }
+        if let Some(open) = self.tracker.current() {
+            combat += open.duration();
+        }
+        // The character's own classes, so a proc one of them can cast is set
+        // aside instead of being counted as something that fired by itself.
+        let loadout: Vec<(eqlparser_core::class::Class, u32)> = self
+            .classes
+            .classes_ever_declared()
+            .into_iter()
+            .map(|c| {
+                let level = self
+                    .class_levels
+                    .level_of(c)
+                    .unwrap_or_else(|| self.resolver.level());
+                (c, level)
+            })
+            .collect();
+        self.procs.report(&loadout, combat, self.played_seconds)
+    }
+
     /// Full experience report: per-level history plus the best zones and mobs.
     pub fn experience_report(&self, now: i64) -> ExperienceReport {
         let rate = self.exp.current_rate_per_hour(now);
@@ -3346,6 +3404,118 @@ mod tests {
         }
     }
 
+    /// An engine whose spell file says Spirit of the Puma grants Puma Maw,
+    /// which is the whole basis on which a proc is told from a cast.
+    fn proc_engine() -> Engine {
+        use eqlparser_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT};
+        use eqlparser_core::spell::Spell;
+        let mut proc = Spell {
+            id: 6908,
+            name: "Puma Maw".into(),
+            cast_time_ms: 0,
+            recovery_ms: 0,
+            recast_ms: 0,
+            duration_formula: 0,
+            duration_cap: 0,
+            mana: 0,
+            landed_on_you: None,
+            landed_on_other: None,
+            fades: None,
+            class_levels: [CLASS_CANNOT_CAST; CLASS_COUNT],
+            good_effect: 0,
+            category_id: 3,
+            is_charm: false,
+            restricted_to: None,
+            linked: Vec::new(),
+            procs: Vec::new(),
+        };
+        let mut buff = proc.clone();
+        buff.id = 6906;
+        buff.name = "Spirit of the Puma".into();
+        buff.procs = vec![eqlparser_core::spell::ProcGrant {
+            spell: 6908,
+            on_melee: true,
+        }];
+        proc.procs = Vec::new();
+        let mut m = std::collections::HashMap::new();
+        m.insert(buff.id, buff);
+        m.insert(proc.id, proc);
+        Engine::new("Tharn".to_string(), SpellDb::from_spells(m))
+    }
+
+    /// The whole pipeline: a proc's cast line counts, an ordinary cast does
+    /// not, an area proc's damage lines add damage without adding procs, and a
+    /// worn item's own line needs no spell data at all.
+    #[test]
+    fn procs_are_counted_from_cast_lines_and_rated_by_combat_time() {
+        let mut e = proc_engine();
+        feed(
+            &mut e,
+            &[
+                // One unbroken twenty-second fight: swings closer together
+                // than the idle timeout, so combat time is a known quantity.
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 500 points of damage.",
+                "[Tue Jul 28 14:00:00 2026] You begin casting Puma Maw II.",
+                // One proc, two creatures caught by it.
+                "[Tue Jul 28 14:00:00 2026] You hit a giant for 154 points of prismatic damage by Puma Maw.",
+                "[Tue Jul 28 14:00:00 2026] You hit a rat for 154 points of prismatic damage by Puma Maw.",
+                "[Tue Jul 28 14:00:05 2026] You begin casting Puma Maw II.",
+                // Not a proc: nothing in the spell file grants it.
+                "[Tue Jul 28 14:00:08 2026] You begin casting Inferno Shock VI.",
+                "[Tue Jul 28 14:00:10 2026] You slash a giant for 500 points of damage.",
+                "[Tue Jul 28 14:00:15 2026] Your Platinum Armband (Exaltation) flickers with a pale light.",
+                "[Tue Jul 28 14:00:20 2026] You slash a giant for 500 points of damage.",
+            ],
+        );
+
+        let r = e.proc_report();
+        assert!(r.have_spell_data);
+        let puma = r
+            .rows
+            .iter()
+            .find(|p| p.name == "Puma Maw")
+            .expect("the proc");
+        assert_eq!(puma.count, 2, "two cast lines, two procs");
+        assert_eq!(puma.hits, 2, "both creatures the first one caught");
+        assert_eq!(puma.damage, 308);
+        assert_eq!(puma.sources, vec!["Spirit of the Puma"]);
+
+        let band = r
+            .rows
+            .iter()
+            .find(|p| p.sources == vec!["Platinum Armband"])
+            .expect("the item proc");
+        assert_eq!(band.name, "Exaltation");
+        assert_eq!(band.count, 1);
+
+        assert!(
+            !r.rows.iter().any(|p| p.name.contains("Inferno")),
+            "a spell you cast is not a proc"
+        );
+        assert_eq!(r.total, 3);
+        // Twenty seconds of fighting: three procs is nine a minute.
+        assert_eq!(r.combat_seconds, 20);
+        assert!((r.per_minute - 9.0).abs() < 0.01, "got {}", r.per_minute);
+    }
+
+    /// With no spell file the weapon procs simply cannot be identified, and
+    /// the report has to say so rather than let item procs read as the total.
+    #[test]
+    fn without_a_spell_file_only_item_procs_are_claimed() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You begin casting Puma Maw II.",
+                "[Tue Jul 28 14:00:50 2026] Your Platinum Armband (Exaltation) flickers with a pale light.",
+            ],
+        );
+        let r = e.proc_report();
+        assert!(!r.have_spell_data, "and the UI warns on this");
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].name, "Exaltation");
+    }
+
     /// The log states the effect before the cause.
     ///
     /// Three grants, then the line saying which level they came with. Filing
@@ -3514,6 +3684,7 @@ mod tests {
             is_charm,
             restricted_to: None,
             linked: Vec::new(),
+            procs: Vec::new(),
         };
         let restricted = |id: u32, name: &str, to: CreatureKind| Spell {
             restricted_to: Some(to),

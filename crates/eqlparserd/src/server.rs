@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/loot/item", get(loot_item))
         .route("/api/classes", get(classes))
         .route("/api/experience", get(experience))
+        .route("/api/procs", get(procs))
         .route("/api/lockouts", get(lockouts))
         .route("/api/tradeskills", get(tradeskills))
         .route("/api/items", get(items))
@@ -671,6 +672,11 @@ async fn loot_item(State(s): State<AppState>, Query(q): Query<LootItemQuery>) ->
 }
 
 /// Level-progression analysis: per-level history, best zones, best mobs.
+/// Everything that fired on its own, and how often per minute of combat.
+async fn procs(State(s): State<AppState>) -> Json<eqlparser_core::procs::ProcReport> {
+    Json(s.engine.lock().unwrap().proc_report())
+}
+
 async fn experience(State(s): State<AppState>) -> Json<crate::engine::ExperienceReport> {
     let engine = s.engine.lock().unwrap();
     let now = engine.now();
