@@ -368,7 +368,13 @@ impl ExpTracker {
         self.zone_since = Some(timestamp);
     }
 
-    /// Credit elapsed time to the zone we are leaving.
+    /// Credit elapsed time in the current zone up to `now`.
+    ///
+    /// Called on every timestamped event, not only when the zone changes. A
+    /// zone that is settled up only on the way out accrues no time at all
+    /// while it is being camped, which is precisely when its rate is worth
+    /// watching: the best-zones ranking would sit unchanged for a whole
+    /// evening and then move all at once on the zone line.
     fn flush_zone_time(&mut self, now: i64) {
         if let (Some(z), Some(since)) = (self.zone.clone(), self.zone_since) {
             if now > since {
@@ -381,7 +387,13 @@ impl ExpTracker {
                     .seconds += now - since;
             }
         }
-        self.zone_since = Some(now);
+        // Never rewind. Log lines can share a second and occasionally arrive
+        // out of order; moving the mark backwards would credit the span it
+        // covers a second time.
+        self.zone_since = Some(match self.zone_since {
+            Some(since) => since.max(now),
+            None => now,
+        });
     }
 
     /// Note a kill by the logging character.
@@ -389,6 +401,7 @@ impl ExpTracker {
     /// Claims any experience logged in the moments just before, which is the
     /// normal ordering.
     pub fn on_kill(&mut self, timestamp: i64, mob: &str) {
+        self.flush_zone_time(timestamp);
         self.kills_total += 1;
 
         let cutoff = timestamp - KILL_ATTRIBUTION_WINDOW;
@@ -419,9 +432,13 @@ impl ExpTracker {
         self.kills_with_exp += 1;
         self.current.kills += 1;
         if let Some(z) = self.zone.clone() {
-            if let Some(e) = self.by_zone.get_mut(&z) {
-                e.kills += 1;
-            }
+            self.by_zone
+                .entry(z.clone())
+                .or_insert_with(|| ExpSource {
+                    name: z,
+                    ..Default::default()
+                })
+                .kills += 1;
         }
         let e = self
             .by_mob
@@ -440,6 +457,7 @@ impl ExpTracker {
     /// spent, so lifetime earned is accumulated separately from the per-event
     /// amounts rather than read off that figure.
     pub fn on_ability_points(&mut self, timestamp: i64, points: u32, unspent: u32) {
+        self.flush_zone_time(timestamp);
         // Award size is the only potion signal the client gives.
         self.last_gain_doubled = points > AA_BASE_AWARD;
         if self.last_gain_doubled {
@@ -711,6 +729,7 @@ impl ExpTracker {
 
     /// Note an experience gain.
     pub fn on_experience(&mut self, timestamp: i64, percent: f64) {
+        self.flush_zone_time(timestamp);
         if !self.current_started {
             self.current.started = timestamp;
             self.current_started = true;
@@ -1051,6 +1070,44 @@ mod tests {
         assert_eq!(lair.kills, 2);
         assert_eq!(lair.seconds, 3600);
         assert!((lair.percent_per_hour() - 10.0).abs() < 0.01);
+    }
+
+    /// The zone being camped right now must accrue time as the fight goes on,
+    /// not only when it is finally left. Otherwise the ranking sits empty for
+    /// the whole session it is meant to describe.
+    #[test]
+    fn the_current_zone_accrues_time_without_leaving_it() {
+        let mut t = ExpTracker::new();
+        t.on_zone(0, "Chardok");
+        // Half an hour of killing, still standing in the zone.
+        for i in 0..30 {
+            let at = i * 60;
+            t.on_kill(at, "an iksar");
+            t.on_experience(at + 1, 1.0);
+        }
+
+        let zones = t.zones_by_rate(10 * 60);
+        let chardok = zones
+            .iter()
+            .find(|z| z.name == "Chardok")
+            .expect("the zone being camped should be ranked");
+        assert_eq!(chardok.kills, 30);
+        assert_eq!(chardok.seconds, 29 * 60 + 1, "time up to the last event");
+        assert!((chardok.percent - 30.0).abs() < 1e-9);
+    }
+
+    /// The kill count must survive a kill logged before any experience in the
+    /// zone, which is the ordering that leaves `by_zone` with no entry yet.
+    #[test]
+    fn a_kill_before_any_zone_entry_is_still_counted() {
+        let mut t = ExpTracker::new();
+        t.on_zone(100, "Sebilis");
+        t.on_kill(100, "a froglok");
+        t.on_experience(100, 2.0);
+
+        let zones = t.zones_by_rate(0);
+        let seb = zones.iter().find(|z| z.name == "Sebilis").unwrap();
+        assert_eq!(seb.kills, 1);
     }
 
     #[test]
