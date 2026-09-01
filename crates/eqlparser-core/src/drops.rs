@@ -158,6 +158,12 @@ pub struct DropTracker {
 }
 
 /// Strip the article the client puts in front of a non-unique creature.
+///
+/// This is the creature's *identity*, not its name. "a fire goblin" and "fire
+/// goblin" are one creature and this is what makes them one. What the client
+/// actually wrote is a separate question — see [`npc_article`] — and both are
+/// worth keeping: the game calls it "a fire goblin" and a page that says
+/// "fire goblin" is using a name the game never prints.
 pub fn canonical_npc(name: &str) -> &str {
     let n = name.trim();
     for prefix in ["a ", "an ", "A ", "An "] {
@@ -166,6 +172,37 @@ pub fn canonical_npc(name: &str) -> &str {
         }
     }
     n
+}
+
+/// The article the client put in front of this name, lowercased, or `""`.
+///
+/// Lowercased because a capital here is grammar rather than the name: the
+/// same creature is "A lesser mummy" at the start of a line and "a lesser
+/// mummy" in the middle of one, and they are not two spellings of anything.
+///
+/// Read rather than derived. The a/an rule is about sound, not spelling, and
+/// the client is the authority on which one it uses -- deriving it would be
+/// inventing the one part of the name that is actually written down.
+pub fn npc_article(name: &str) -> &'static str {
+    let n = name.trim();
+    for (prefix, article) in [("a ", "a"), ("an ", "an"), ("A ", "a"), ("An ", "an")] {
+        if n.strip_prefix(prefix).is_some() {
+            return article;
+        }
+    }
+    ""
+}
+
+/// The name as the game prints it: the article, where the client used one,
+/// in front of the canonical name.
+///
+/// Empty article gives the name back unchanged, which is every proper noun --
+/// Lord Nagafen is not "a Lord Nagafen".
+pub fn spoken_npc(name: &str) -> String {
+    match npc_article(name) {
+        "" => canonical_npc(name).to_string(),
+        article => format!("{article} {}", canonical_npc(name)),
+    }
 }
 
 /// Split an item name into its base name and the `+N` grade rolled onto it.

@@ -1484,6 +1484,11 @@ impl Store {
                 melee: melee
                     .remove(&(src, zone.clone(), mode, difficulty, npc.clone()))
                     .unwrap_or_default(),
+                // The daemon's table stores the canonical name and has no
+                // column for the article, so the two are the same here. A
+                // profile read back out of it is identified correctly and
+                // simply does not know how the client spelt it.
+                key: eqlparser_core::drops::canonical_npc(&npc).to_string(),
                 name: npc,
                 zone,
                 mode: parsed_mode,

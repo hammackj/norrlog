@@ -191,10 +191,39 @@ impl MeleeAgainst {
     }
 }
 
+impl NpcProfile {
+    /// What identifies this creature, whatever the file it came from said.
+    ///
+    /// `key` where the profile carries one, and the name with its article
+    /// folded off otherwise — which is exactly what an older bundle's `name`
+    /// already held, so both read the same. Every merge, join and lookup goes
+    /// through this; `name` is for showing a reader.
+    pub fn identity(&self) -> String {
+        if self.key.is_empty() {
+            crate::drops::canonical_npc(&self.name).to_string()
+        } else {
+            self.key.clone()
+        }
+    }
+}
+
 /// Everything one log can say about one creature in one place.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NpcProfile {
+    /// The name as the game prints it, article and all -- "a fire goblin".
+    ///
+    /// This is what a page should show. It is not what identifies the
+    /// creature: the client writes the article on some lines and not others,
+    /// so two spellings of one creature would be two creatures if this were
+    /// the key. See `key`.
     pub name: String,
+    /// The identity: the same name with the article off.
+    ///
+    /// Every join, every lookup and every grouping goes through this. Default
+    /// for a bundle written before the two were separated, where `name` was
+    /// already the canonical form -- so an old file reads back as itself.
+    #[serde(default)]
+    pub key: String,
     pub zone: String,
     pub mode: Mode,
     pub difficulty: u8,
@@ -249,6 +278,11 @@ pub struct Bestiary {
     /// because these outlive the log they came from — a row in a database
     /// nobody can date back to a kill is a row nobody can check.
     health: HashMap<NpcKey, Vec<(i64, u64)>>,
+    /// The article the client wrote in front of each creature, where it wrote
+    /// one at all. Kept beside the profiles rather than on them because it is
+    /// learned from whichever line happens to carry it, which may not be the
+    /// line that created the profile.
+    articles: HashMap<NpcKey, String>,
 }
 
 /// The spread to report for a set of health samples: min, median, max.
@@ -296,18 +330,30 @@ impl Bestiary {
         self.stance = stance.to_lowercase();
     }
 
-    fn key(&self, npc: &str) -> Option<NpcKey> {
+    fn key(&mut self, npc: &str) -> Option<NpcKey> {
         let zone = self.zone.as_ref()?;
         let name = canonical_npc(npc).trim();
         if name.is_empty() {
             return None;
         }
-        Some(NpcKey {
+        let key = NpcKey {
             zone: zone.name.clone(),
             mode: zone.mode,
             difficulty: zone.difficulty,
             name: name.to_string(),
-        })
+        };
+        // Remembered here because this is the one place every raw name passes
+        // through, and by then the article is the only part about to be lost.
+        //
+        // First one wins, and only a line that actually carried an article
+        // gets a say: the client writes "You have slain a fire goblin!" and
+        // "Fire goblin hits you", and the second is the same creature with
+        // the article omitted rather than a creature without one.
+        let article = crate::drops::npc_article(npc);
+        if !article.is_empty() {
+            self.articles.entry(key.clone()).or_insert_with(|| article.to_string());
+        }
+        Some(key)
     }
 
     fn profile(&mut self, key: NpcKey, at: i64) -> &mut NpcProfile {
@@ -319,6 +365,10 @@ impl Bestiary {
         );
         let game = self.game;
         self.npcs.entry(key).or_insert_with(|| NpcProfile {
+            // Both hold the canonical form while the log is being read.
+            // `report` splits them, because the article may arrive on a later
+            // line than the one that first named this creature.
+            key: name.clone(),
             name,
             zone,
             mode,
@@ -472,6 +522,12 @@ impl Bestiary {
             .iter()
             .map(|(key, p)| {
                 let mut p = p.clone();
+                // The identity is what the profile was built under; the name
+                // is that plus whatever article the client was seen to use.
+                p.key = p.name.clone();
+                if let Some(article) = self.articles.get(key) {
+                    p.name = format!("{article} {}", p.key);
+                }
                 if let Some(samples) = self.health.get(key) {
                     let v: Vec<u64> = samples.iter().map(|(_, hp)| *hp).collect();
                     let (min, median, max) = health_spread(&v);
@@ -533,12 +589,17 @@ pub fn merge(
     let mut merged: HashMap<Key, NpcProfile> = HashMap::new();
 
     for mut p in profiles {
+        // On the identity, never on the name. The article is part of what a
+        // page shows and no part of who the creature is, so merging on the
+        // name would file "a fire goblin" and "fire goblin" as two creatures
+        // -- which is the bug `canonical_npc` was written to prevent, moved
+        // one level up.
         let key = (
             p.game,
             p.zone.clone(),
             p.mode,
             p.difficulty,
-            p.name.clone(),
+            p.identity(),
         );
         // Melee always goes through the folding path below, even for the first
         // profile of a creature. Inserting one wholesale would trust it to
@@ -551,6 +612,12 @@ pub fn merge(
                 merged.insert(key.clone(), p);
             }
             Some(into) => {
+                // The spelling that carries an article wins. One log that saw
+                // "a fire goblin" settles it for every log that only ever saw
+                // the bare form, the same way one proved body type does.
+                if into.identity() == into.name && p.identity() != p.name {
+                    into.name = p.name.clone();
+                }
                 into.kills += p.kills;
                 into.deaths_to_it += p.deaths_to_it;
                 into.max_hit = into.max_hit.max(p.max_hit);
@@ -591,8 +658,12 @@ pub fn merge(
     }
     let mut out: Vec<NpcProfile> = merged.into_values().collect();
     for p in &mut out {
+        // `HealthSample.name` is the canonical form, so this asks with the
+        // identity too. Asking with the name silently found nothing the
+        // moment the name grew an article, and a creature's whole health
+        // spread came back as zero.
         let samples = by_creature
-            .get(&(p.zone.clone(), p.mode, p.difficulty, p.name.clone()))
+            .get(&(p.zone.clone(), p.mode, p.difficulty, p.identity()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let (min, median, max) = health_spread(samples);
@@ -756,18 +827,58 @@ mod tests {
         assert!(b.report().npcs.is_empty(), "no zone, no creature");
     }
 
-    /// The article is the client's, not the creature's — the same rule the
-    /// drop tracker already follows, so the two agree about who is who.
+    /// The article is the client's, not the creature's — so it decides how
+    /// the creature is *shown* and never who it is.
+    ///
+    /// Two claims, and they used to be one. Folding the article settled the
+    /// identity correctly and threw the article away with it, so the game's
+    /// "a fire goblin" reached a page as "fire goblin" — a name the client
+    /// never prints. Both are kept now: `key` is what joins, `name` is what
+    /// a reader sees.
     #[test]
-    fn the_article_does_not_make_a_second_creature() {
+    fn the_article_names_a_creature_without_identifying_it() {
         let mut b = bestiary();
         b.on_zone("Innothule Swamp");
         b.on_kill(100, "a fire goblin");
         b.on_kill(200, "fire goblin");
         let r = b.report();
-        assert_eq!(r.npcs.len(), 1);
+        assert_eq!(r.npcs.len(), 1, "one creature, two spellings");
         assert_eq!(r.npcs[0].kills, 2);
-        assert_eq!(r.npcs[0].name, "fire goblin");
+        assert_eq!(r.npcs[0].key, "fire goblin", "the identity has no article");
+        assert_eq!(r.npcs[0].name, "a fire goblin", "the name is what the game says");
+    }
+
+    /// A creature the client never puts an article on keeps none.
+    ///
+    /// Lord Nagafen is not "a Lord Nagafen", and the article is read from the
+    /// log rather than derived, so a name that never carried one never gains
+    /// one.
+    #[test]
+    fn a_proper_name_is_left_alone() {
+        let mut b = bestiary();
+        b.on_zone("Nagafen's Lair");
+        b.on_kill(100, "Lord Nagafen");
+        let r = b.report();
+        assert_eq!(r.npcs[0].name, "Lord Nagafen");
+        assert_eq!(r.npcs[0].key, "Lord Nagafen");
+    }
+
+    /// "an" is read, not worked out from the spelling.
+    ///
+    /// The a/an rule is about sound and the client is the authority on which
+    /// it used. A capital is grammar rather than the name, so the article is
+    /// lowercased and a sentence-initial "An" does not become a second
+    /// spelling.
+    #[test]
+    fn the_article_is_read_from_the_line_and_lowercased() {
+        let mut b = bestiary();
+        b.on_zone("The Estate of Unrest");
+        b.on_kill(100, "An undead knight");
+        b.on_kill(200, "an undead knight");
+        let r = b.report();
+        assert_eq!(r.npcs.len(), 1);
+        assert_eq!(r.npcs[0].name, "an undead knight");
+        assert_eq!(r.npcs[0].key, "undead knight");
     }
 
     /// The samples are what persists, so each one has to carry the creature it

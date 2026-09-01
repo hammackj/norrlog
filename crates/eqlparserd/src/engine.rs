@@ -3726,12 +3726,12 @@ mod tests {
         let npcs = e.bestiary_report().npcs;
         let ghoul = npcs
             .iter()
-            .find(|n| n.name.eq_ignore_ascii_case("wan ghoul knight"))
+            .find(|n| n.identity().eq_ignore_ascii_case("wan ghoul knight"))
             .expect("the ghoul was damaged, so it is in the bestiary");
         assert_eq!(ghoul.kind, Some(CreatureKind::Undead));
         let spider = npcs
             .iter()
-            .find(|n| n.name.eq_ignore_ascii_case("giant spider"))
+            .find(|n| n.identity().eq_ignore_ascii_case("giant spider"))
             .expect("the spider too");
         assert_eq!(spider.kind, None, "nothing here proved anything about it");
     }
@@ -3751,7 +3751,7 @@ mod tests {
         let npcs = e.bestiary_report().npcs;
         let ghoul = npcs
             .iter()
-            .find(|n| n.name.eq_ignore_ascii_case("dar ghoul knight"))
+            .find(|n| n.identity().eq_ignore_ascii_case("dar ghoul knight"))
             .expect("in the bestiary");
         assert_eq!(ghoul.kind, Some(CreatureKind::Undead));
     }
@@ -3774,12 +3774,12 @@ mod tests {
         let npcs = e.bestiary_report().npcs;
         let elemental = npcs
             .iter()
-            .find(|n| n.name.eq_ignore_ascii_case("air elemental"))
+            .find(|n| n.identity().eq_ignore_ascii_case("air elemental"))
             .expect("in the bestiary");
         assert_eq!(elemental.kind, Some(CreatureKind::Summoned));
         let giant = npcs
             .iter()
-            .find(|n| n.name.eq_ignore_ascii_case("hill giant"))
+            .find(|n| n.identity().eq_ignore_ascii_case("hill giant"))
             .expect("in the bestiary");
         assert_eq!(giant.kind, None, "the cast spell cannot be identified");
     }
@@ -4178,14 +4178,16 @@ mod tests {
                 .map(|c| &c.name)
                 .collect::<Vec<_>>()
         );
-        // What killed you is still recorded — under the canonical name, which
-        // drops the client's article.
+        // What killed you is still recorded, under both names it has: the
+        // identity the article is folded out of, and the name the client
+        // actually wrote.
         let npcs = e.bestiary_report().npcs;
         assert_eq!(
-            npcs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            npcs.iter().map(|c| c.identity()).collect::<Vec<_>>(),
             vec!["fire giant"],
             "the giant, and only the giant"
         );
+        assert_eq!(npcs[0].name, "a fire giant", "as the death line spelt it");
         assert_eq!(npcs[0].deaths_to_it, 1);
         assert_eq!(npcs[0].kills, 0, "you did not kill it; it killed you");
     }
