@@ -428,7 +428,7 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
         .put_kills(&kills)
         .and_then(|_| st.put_encounters(&encs))
         .and_then(|_| st.put_levels(&levels))
-        .and_then(|_| st.put_aa(&aa))
+        .and_then(|_| st.put_aa(game.slug(), &aa))
         .and_then(|_| st.put_sky_turnins(&sky_turn_ins))
         .and_then(|_| st.put_grants(&grants))
         .and_then(|_| st.put_drops(game.slug(), &source, &drops))

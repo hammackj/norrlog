@@ -200,6 +200,7 @@ impl Store {
         };
         s.migrate()?;
         s.add_identity_columns()?;
+        s.add_aa_game()?;
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
@@ -217,10 +218,97 @@ impl Store {
         };
         s.migrate()?;
         s.add_identity_columns()?;
+        s.add_aa_game()?;
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         Ok(s)
+    }
+
+    /// Put the game in the AA table, once.
+    ///
+    /// `aa_purchases` was the last per-character table with no game on it,
+    /// and the only history table eqdb-export could not filter by game --
+    /// not because the query forgot to, but because there was no column to
+    /// filter on. One history holding a Legends character and an EverQuest
+    /// one therefore published both games' AA purchases to whichever site
+    /// asked.
+    ///
+    /// # Existing rows are not stamped with the current game
+    ///
+    /// `add_identity_columns` could backfill character and server from the
+    /// log in front of it, because back then the table could only hold that
+    /// log's rows. This one cannot: by the time a database needs this
+    /// migration it provably holds several characters on several servers,
+    /// and stamping them all with whichever log happens to be open is the
+    /// precise inference that caused the bug.
+    ///
+    /// So the game is *looked up* instead. The tables that already carry it
+    /// are keyed by character and server too, so a purchase by Tharn on
+    /// freeport takes the game from Tharn-on-freeport's own drops and kills.
+    /// Where those agree on exactly one game, that is evidence rather than a
+    /// guess. Where they say nothing, or disagree, the row keeps an empty
+    /// game: it is then skipped by anything filtering on one -- and comes
+    /// back correctly stamped the next time its log is parsed, since every
+    /// row here is re-derived from the log on each parse.
+    fn add_aa_game(&mut self) -> Result<()> {
+        let already: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('aa_purchases') WHERE name='game'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if already {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "
+            CREATE TABLE aa_purchases_v3 (
+                game TEXT NOT NULL DEFAULT '',
+                character TEXT NOT NULL, server TEXT NOT NULL,
+                ability TEXT NOT NULL, rank INTEGER NOT NULL,
+                spent INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (game, character, server, ability, rank)
+            );
+            ",
+        )?;
+        // One row per (character, server) that some game-carrying table can
+        // speak for, and only where it speaks with one voice.
+        tx.execute_batch(
+            "
+            CREATE TEMP TABLE aa_game_evidence AS
+            SELECT character, server, MIN(game) AS game
+            FROM (
+                SELECT DISTINCT character, server, game FROM item_drops
+                UNION SELECT DISTINCT character, server, game FROM npc_kills
+                UNION SELECT DISTINCT character, server, game FROM npc_profiles
+            )
+            WHERE game <> ''
+            GROUP BY lower(character), lower(server)
+            HAVING COUNT(DISTINCT game) = 1;
+            ",
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO aa_purchases_v3
+                 (game, character, server, ability, rank, spent, at)
+             SELECT COALESCE(
+                        (SELECT e.game FROM aa_game_evidence e
+                         WHERE lower(e.character) = lower(p.character)
+                           AND lower(e.server) = lower(p.server)),
+                        ''),
+                    p.character, p.server, p.ability, p.rank, p.spent, p.at
+             FROM aa_purchases p",
+            [],
+        )?;
+        tx.execute_batch(
+            "
+            DROP TABLE aa_purchases;
+            ALTER TABLE aa_purchases_v3 RENAME TO aa_purchases;
+            DROP TABLE aa_game_evidence;
+            ",
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Add the encounter difficulty column, once.
@@ -780,7 +868,15 @@ impl Store {
         Ok(levels.len())
     }
 
-    pub fn put_aa(&mut self, purchases: &[(String, u32, u32, i64)]) -> Result<usize> {
+    /// Record bought AA ranks, for one game.
+    ///
+    /// The game is passed in like it is for drops and vendors, and for the
+    /// same reason: this table is shared by every log the daemon has ever
+    /// been pointed at. Without it, a Legends character's 153 purchases were
+    /// indistinguishable from an EverQuest character's 30 and got exported
+    /// as one pile -- 69 abilities reached an EverQuest site that no
+    /// EverQuest client has ever listed.
+    pub fn put_aa(&mut self, game: &str, purchases: &[(String, u32, u32, i64)]) -> Result<usize> {
         let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
         {
@@ -798,11 +894,12 @@ impl Store {
                 params![c, sv],
             )?;
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO aa_purchases (character, server, ability, rank, spent, at)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
+                "INSERT OR REPLACE INTO aa_purchases
+                 (game, character, server, ability, rank, spent, at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
             )?;
             for (ability, rank, spent, at) in purchases {
-                stmt.execute(params![c, sv, ability, rank, spent, at])?;
+                stmt.execute(params![game, c, sv, ability, rank, spent, at])?;
             }
         }
         tx.commit()?;
@@ -2243,6 +2340,66 @@ mod tests {
         }
         let s = Store::open_as(&path, "Tharn", "freeport").unwrap();
         assert_eq!(s.kills().unwrap()[0].boss, "Cazic-Thule");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A history written before the AA table carried a game gets one filled
+    /// in from what each character's *own* kills say — never from whichever
+    /// log happens to be open when the migration runs.
+    #[test]
+    fn the_aa_game_is_backfilled_from_evidence() {
+        let dir = std::env::temp_dir().join("eqlparser-aa-game-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("history.db");
+
+        {
+            let s = Store::open_as(&path, "Orrin", "teek").unwrap();
+            // Two characters' purchases, and kills that say which game each
+            // of them plays. A third character has purchases and no kills:
+            // nothing can speak for it.
+            s.conn
+                .execute_batch(
+                    "
+                INSERT INTO npc_kills VALUES
+                    ('everquest-legends','Tharn','freeport','a.txt','a bat',1),
+                    ('everquest','Orrin','teek','b.txt','a rat',1);
+                INSERT INTO aa_purchases VALUES
+                    ('','Tharn','freeport','Unbound Cascade',1,0,10),
+                    ('','Orrin','teek','Mental Clarity',1,2,20),
+                    ('','Ghost','nowhere','Innate Run Speed',1,1,30);
+                -- Back to the shape it had before the game was a column.
+                CREATE TABLE aa_old (
+                    character TEXT NOT NULL, server TEXT NOT NULL,
+                    ability TEXT NOT NULL, rank INTEGER NOT NULL,
+                    spent INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (character, server, ability, rank)
+                );
+                INSERT INTO aa_old
+                    SELECT character, server, ability, rank, spent, at FROM aa_purchases;
+                DROP TABLE aa_purchases;
+                ALTER TABLE aa_old RENAME TO aa_purchases;
+                ",
+                )
+                .unwrap();
+        }
+
+        // Reopening as the EverQuest character runs the migration. The
+        // Legends rows must not become EverQuest ones just because that is
+        // who opened the database.
+        let s = Store::open_as(&path, "Orrin", "teek").unwrap();
+        let mut stmt = s
+            .conn
+            .prepare("SELECT game FROM aa_purchases WHERE character = ?1")
+            .unwrap();
+        let mut game_of = |who: &str| -> String {
+            stmt.query_row(params![who], |r| r.get::<_, String>(0)).unwrap()
+        };
+        assert_eq!(game_of("Tharn"), "everquest-legends");
+        assert_eq!(game_of("Orrin"), "everquest");
+        // Nothing could speak for this one, so it says nothing rather than
+        // claiming the game of the log that opened the database.
+        assert_eq!(game_of("Ghost"), "");
+        drop(stmt);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
