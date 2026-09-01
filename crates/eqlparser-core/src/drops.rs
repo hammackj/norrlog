@@ -261,6 +261,7 @@ impl DropTracker {
         npc: &str,
         zone: Option<&str>,
     ) {
+        let said = spoken_npc(npc);
         let npc = canonical_npc(npc);
         if item.is_empty() || npc.is_empty() {
             return;
@@ -282,6 +283,11 @@ impl DropTracker {
                 first_seen: timestamp,
                 ..Default::default()
             });
+        // What dropped it, named the way the client names it. `PlaceKey`
+        // below keeps the folded form, because that one is a key.
+        if said.len() > e.npc.len() {
+            e.npc = said.clone();
+        }
         e.looted += 1;
         *e.grades.entry(grade.unwrap_or(0)).or_insert(0) += 1;
         // A stacked drop is one sighting of several items, and both numbers
@@ -311,6 +317,7 @@ impl DropTracker {
 
     /// Record a creature killed, whether or not anything was looted from it.
     pub fn on_kill(&mut self, npc: &str) {
+        let said = spoken_npc(npc);
         let npc = canonical_npc(npc);
         if npc.is_empty() {
             return;
@@ -319,6 +326,17 @@ impl DropTracker {
             .kills
             .entry(npc.to_lowercase())
             .or_insert_with(|| (npc.to_string(), 0));
+        // The key stays folded and the display name takes the article, the
+        // same split the bestiary makes. Without it a kill tally named the
+        // creature `zol ghoul knight` while the bestiary beside it said
+        // `a zol ghoul knight`, and whichever table a page read from decided
+        // which name a reader saw.
+        //
+        // A spelling with an article replaces one without, because the
+        // client omits it on plenty of lines and its absence proves nothing.
+        if said.len() > e.0.len() {
+            e.0 = said;
+        }
         e.1 += 1;
     }
 
@@ -423,7 +441,9 @@ mod tests {
         assert_eq!(ore.looted, 3);
         assert_eq!(ore.quantity, 4, "one drop was a stack of two");
         assert_eq!(ore.sources.len(), 2, "the article does not make a second creature");
-        assert_eq!(ore.sources[0].npc, "fire goblin");
+        // One creature, named the way the client named it. The article
+        // settles nothing about identity and everything about the name.
+        assert_eq!(ore.sources[0].npc, "a fire goblin");
         assert_eq!(ore.sources[0].looted, 2);
         assert_eq!(
             ore.sources[0].zones,
@@ -491,7 +511,27 @@ mod tests {
         let r = t.report();
         let s = &r.items[0].sources[0];
         assert_eq!((s.looted, s.kills), (1, 10));
-        assert_eq!(r.kills, vec![("fire goblin".to_string(), 10)]);
+        assert_eq!(r.kills, vec![("a fire goblin".to_string(), 10)]);
+    }
+
+    /// A kill tally and the bestiary call a creature the same thing.
+    ///
+    /// They did not. The tracker folded the article into the display name as
+    /// well as into the key, so `kills` held `zol ghoul knight` while the
+    /// bestiary beside it held `a zol ghoul knight` — and which name a
+    /// reader saw depended on which table the page happened to read. The
+    /// key is still folded, which is what keeps the two spellings one
+    /// creature.
+    #[test]
+    fn a_kill_tally_keeps_the_article_and_keys_without_it() {
+        let mut t = DropTracker::new(Game::Unknown);
+        t.on_kill("a fire goblin");
+        // The client omits it on plenty of lines; that is not a second
+        // creature and not a reason to lose the name.
+        t.on_kill("fire goblin");
+        let r = t.report();
+        assert_eq!(r.kills, vec![("a fire goblin".to_string(), 2)],
+                   "one creature, counted twice, named as the game names it");
     }
 
     /// A creature killed but never seen dropping anything still belongs in the
@@ -502,7 +542,7 @@ mod tests {
         t.on_kill("a rat");
         let r = t.report();
         assert!(r.items.is_empty());
-        assert_eq!(r.kills, vec![("rat".to_string(), 1)]);
+        assert_eq!(r.kills, vec![("a rat".to_string(), 1)]);
     }
 }
 
