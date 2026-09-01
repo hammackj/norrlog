@@ -389,8 +389,8 @@ impl FactionCollector {
         match &self.offer {
             Some((key, at)) if p.when - *at >= 0 && p.when - *at <= TURNIN_WINDOW => {
                 let cause = FactionCause::TurnIn {
-                    npc: key.0.clone(),
-                    item: key.1.clone(),
+                    npc: self.display.get(&key.0).cloned().unwrap_or_else(|| key.0.clone()),
+                    item: self.display.get(&key.1).cloned().unwrap_or_else(|| key.1.clone()),
                 };
                 self.to_turnin += 1;
                 self.record(cause, &p.lines);
@@ -486,6 +486,17 @@ impl Observer for FactionCollector {
             }
             Event::TradeOffer { item, quantity, npc } => {
                 let key = (npc.trim().to_lowercase(), item.trim().to_lowercase());
+                // The key is folded and the name is not, the same split the
+                // kill above already makes. Without this a turn-in reached
+                // the page as `tiam khonsir` handing over `kobold molar`,
+                // because the folded key was doing double duty as the name.
+                // First spelling wins; they differ only in case.
+                self.display
+                    .entry(key.0.clone())
+                    .or_insert_with(|| npc.trim().to_string());
+                self.display
+                    .entry(key.1.clone())
+                    .or_insert_with(|| item.trim().to_string());
                 *self.offered.entry(key.clone()).or_default() += quantity.max(&1);
                 *self.handins.entry(key.clone()).or_default() += 1;
                 self.offer = Some((key, entry.timestamp));
@@ -591,9 +602,12 @@ mod faction_tests {
              [Thu Jul 30 11:00:02 2026] Your faction standing with New Sebilisian Expedition has been adjusted by 10.\n\
              [Thu Jul 30 11:00:03 2026] You gain experience! (0.100%)\n",
         );
+        // The cause carries the client's own spelling. The key it is
+        // counted under stays folded, which is what makes two spellings of
+        // one hand-in the same hand-in.
         let cause = FactionCause::TurnIn {
-            npc: "crusader iktra".into(),
-            item: "small piece of high quality ore".into(),
+            npc: "Crusader Iktra".into(),
+            item: "Small Piece of High Quality Ore".into(),
         };
         assert_eq!(c.to_turnin, 1);
         assert_eq!(c.moves()[&(cause, "New Sebilisian Expedition".into())].amounts[&10], 1);
