@@ -351,16 +351,6 @@ impl ExpTracker {
         v
     }
 
-    /// The level in progress, with its zone breakdown filled in.
-    ///
-    /// `current_record` returns the raw record, whose `zones` are only
-    /// populated when the level closes; this is the version worth displaying.
-    pub fn current_record_with_zones(&self) -> LevelRecord {
-        let mut r = self.current.clone();
-        r.zones = self.zone_shares();
-        r
-    }
-
     /// Note a zone change so time-in-zone can be attributed.
     pub fn on_zone(&mut self, timestamp: i64, zone: &str) {
         self.flush_zone_time(timestamp);

@@ -363,14 +363,6 @@ impl SkyTracker {
         });
     }
 
-    /// Everything a giver has told you, oldest first.
-    pub fn giver_lines(&self, giver: &str) -> Vec<GiverLine> {
-        self.giver_text
-            .get(&giver.to_lowercase())
-            .cloned()
-            .unwrap_or_default()
-    }
-
     /// Note something you said, which may be a quest trigger phrase.
     ///
     /// Matched as the whole utterance rather than a substring: the phrases are

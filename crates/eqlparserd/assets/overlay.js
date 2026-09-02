@@ -529,18 +529,39 @@
 
   // ---- formatting -------------------------------------------------------
 
+  /* These two must match `num` and `dur` in gui/renderer/app.js exactly.
+   *
+   * They are duplicated rather than shared because this page is served by the
+   * daemon and that one is loaded from disk by Electron, with no build step
+   * between them and a content-security policy that forbids the window
+   * fetching a script from the daemon. So the only thing keeping them in step
+   * is this note.
+   *
+   * They had already drifted, and it showed: under `?scope=session` the
+   * meter—s duration is an evening of combat, and this copy had no hours
+   * branch, so 4316 seconds read as "71:56" here against "1:11:56" in the
+   * app — one figure from one endpoint, formatted two ways. This copy also
+   * turned a missing number into "0" rather than a dash, which is the one
+   * thing a parser that reports floors must never do.
+   */
+
   /** Compact large damage numbers; overlays are narrow. */
   function num(n) {
+    if (n == null) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
     if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
     if (n >= 1e4) return (n / 1e3).toFixed(1) + "k";
-    return String(Math.round(n));
+    return Math.round(n).toLocaleString();
   }
 
   function dur(sec) {
-    sec = Math.max(0, Math.round(sec));
-    const m = Math.floor(sec / 60);
+    sec = Math.max(0, Math.round(sec || 0));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
     const s = sec % 60;
-    return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
+    if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    if (m) return `${m}:${String(s).padStart(2, "0")}`;
+    return `${s}s`;
   }
 
   /** Escape text before it reaches innerHTML: mob and player names are
@@ -822,10 +843,10 @@
      is the only thing still moving. */
   /* A span that may be long.
 
-     `dur` is built for a fight and renders m:ss, which is right for a
-     countdown of minutes and absurd for an estimate that can run to days —
-     a quiet hour would put "60000:00" on the overlay. Above an hour this
-     coarsens rather than growing the minute count without bound. */
+     `dur` counts every second, which is right for a fight and absurd for an
+     estimate that can run to days — a quiet hour would put "16:40:00" on
+     the overlay, claiming a precision the rate behind it does not have.
+     Above an hour this coarsens to hours and days instead. */
   function longDur(sec, coarse) {
     sec = Math.max(0, Math.round(sec));
     // An estimate of a whole level does not want seconds: "21m" is the claim

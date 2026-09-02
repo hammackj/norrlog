@@ -478,11 +478,6 @@ impl LockoutTracker {
         }
     }
 
-    /// Every grant seen, for persisting across sessions.
-    pub fn void_grant_log(&self) -> &[i64] {
-        &self.void_grants
-    }
-
     /// The boss whose void task completed at `at`, if one did.
     ///
     /// Matched on the second, because the completion and the reward are

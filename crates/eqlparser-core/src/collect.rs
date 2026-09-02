@@ -1589,11 +1589,6 @@ impl QuestCollector {
         self.tasks.define(def);
     }
 
-    /// The Sky chain's shape, likewise.
-    pub fn define_sky(&mut self, defs: Vec<crate::skyquest::SkyQuestDef>) {
-        self.sky.set_definitions(defs);
-    }
-
     pub fn tasks(&self) -> crate::task::TaskReport {
         self.tasks.report()
     }

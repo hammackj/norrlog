@@ -431,13 +431,6 @@ impl ClassDetector {
         self.evidence.len()
     }
 
-    /// Time range covered by the evidence, if any.
-    pub fn time_span(&self) -> Option<(i64, i64)> {
-        let min = self.evidence.iter().map(|e| e.timestamp).min()?;
-        let max = self.evidence.iter().map(|e| e.timestamp).max()?;
-        Some((min, max))
-    }
-
     /// Rank classes using only evidence within `[from, to]`.
     ///
     /// Scoping matters: a character's old spells and skills never leave the

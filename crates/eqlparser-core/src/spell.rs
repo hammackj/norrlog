@@ -1250,15 +1250,6 @@ impl SpellResolver {
         v
     }
 
-    /// Every active effect, auras included.
-    pub fn all_active(&self, now: i64) -> Vec<ActiveBuff> {
-        self.active
-            .iter()
-            .filter(|b| b.expires.is_none_or(|e| e > now))
-            .cloned()
-            .collect()
-    }
-
     pub fn clear_buffs(&mut self) {
         self.active.clear();
     }
