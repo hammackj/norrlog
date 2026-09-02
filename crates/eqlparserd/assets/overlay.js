@@ -434,6 +434,14 @@
      - Graded drops do not count. A `+1` has its own tooltip, so a picture of
        one is not a picture of the item the site is missing.
 
+     Two kinds of row, and the second is the point of the first being cheap to
+     check. An item on eqldb's wanted list is one the site knows about and has
+     no picture of. An item the site has never heard of at all cannot be on
+     that list by construction, and is the more valuable of the two: waiting
+     for eqldb to ask for it means waiting for somebody else to loot it first.
+     Those are asked about one at a time as they drop, and drawn in the enemy
+     colour so they do not read as more of the same.
+
      Capped at five rows. This sits over the game and competes with it for
      screen; anything longer is a list, and a list belongs in the window.
      Whatever is left over is counted in the header rather than dropped
@@ -461,7 +469,12 @@
       el.wantedMeta.textContent = extra > 0 ? `${d.total}, showing ${rows.length}` : "";
       el.wantedRows.innerHTML = rows
         .map((i) => {
-          const needs = (i.needs || []).join(" + ") || "a picture";
+          // An item the site has never seen outranks one it has merely asked
+          // about: nobody else can contribute it, and it is only yours for as
+          // long as it is in your bags or the link is in your chat.
+          const needs = i.new
+            ? "new \u2014 not on eqldb at all"
+            : (i.needs || []).join(" + ") || "a picture";
           // Held items are in your bags; the rest were auto-sold on pickup,
           // and the client left a clickable item link in chat that opens the
           // same tooltip. Both can be photographed, from different places, so
@@ -471,7 +484,7 @@
               ? `from ${i.source}`
               : "in your bags"
             : "sold \u2014 click the chat link";
-          return `<div class="row you" style="--share:100%">
+          return `<div class="row ${i.new ? "enemy" : "you"}" style="--share:100%">
             <span class="name">${esc(i.item)}</span>
             <span class="nums"><span class="dmg">${esc(needs)}</span></span>
           </div>

@@ -365,6 +365,48 @@ impl ItemDb {
         self.payloads.lock().ok()?.get(path).cloned()
     }
 
+    /// Does the site know this item at all?
+    ///
+    /// The wanted list can only name items eqdb has already seen. Something it
+    /// has never heard of is missing from that list *and* is the most valuable
+    /// thing you could photograph, so it has to be asked about separately.
+    ///
+    /// Three answers, and the third is why this exists rather than reusing
+    /// [`ItemDb::item`]: `Some(true)` the site has a record, `Some(false)` the
+    /// site answered and has none, `None` the site could not be reached.
+    /// `item` folds the last two together — a caller drawing a tooltip cannot
+    /// act on the difference — but here they are opposites. Treating an
+    /// unreachable site as "nobody has ever seen this" would mark every drop
+    /// as a discovery the moment the network hiccuped.
+    ///
+    /// Shares the lookup cache with `item`, so hovering an item and being
+    /// prompted about it cost one request between them.
+    pub async fn knows_item(&self, name: &str) -> Option<bool> {
+        let key = slug(name);
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(v) = self.cached(&key) {
+            return Some(v.is_some());
+        }
+        for base in self.origins() {
+            let url = format!("{base}/api/item?name={key}");
+            let got = match self.client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+                _ => continue,
+            };
+            // The site answered, so it is live even if the answer is "no".
+            if let Ok(mut l) = self.live.lock() {
+                *l = Some(base.clone());
+            }
+            let found = got.filter(|v| v.get("count").and_then(Value::as_u64).unwrap_or(0) > 0);
+            let known = found.is_some();
+            self.remember(key, found);
+            return Some(known);
+        }
+        None
+    }
+
     /// Look a spell up, by the site's own id when we know it.
     ///
     /// The id is the precise question — ranks share a display name and the

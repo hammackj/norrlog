@@ -1256,13 +1256,22 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
         (p, m)
     };
 
-    let rows: Vec<serde_json::Value> = pickups
+    let unmarked: Vec<&crate::engine::RecentPickup> = pickups
         .iter()
-        .zip(marks)
-        .filter(|(_, marked)| !marked)
-        .filter_map(|(p, _)| {
-            let it = index.get(&crate::itemdb::match_key(&p.item))?;
-            Some(serde_json::json!({
+        .zip(&marks)
+        .filter(|(_, marked)| !**marked)
+        .map(|(p, _)| p)
+        .collect();
+
+    // Already on the list: the site knows the item and is asking for a picture.
+    let mut wanted_rows: Vec<serde_json::Value> = Vec::new();
+    // Everything else is a candidate for being brand new, which the list
+    // cannot tell us about by construction — it only names items eqdb has
+    // already seen.
+    let mut unlisted: Vec<&crate::engine::RecentPickup> = Vec::new();
+    for p in unmarked {
+        match index.get(&crate::itemdb::match_key(&p.item)) {
+            Some(it) => wanted_rows.push(serde_json::json!({
                 "item": p.item,
                 "at": p.at,
                 "count": p.count,
@@ -1270,12 +1279,23 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
                 // Where to point the camera: your bags, or the item link the
                 // client wrote into chat as it sold the thing.
                 "held": p.held,
+                "new": false,
                 "slug": it.get("slug"),
                 "needs": it.get("needs"),
                 "seen": it.get("seen"),
-            }))
-        })
-        .collect();
+            })),
+            None => unlisted.push(p),
+        }
+    }
+
+    let new_rows = undiscovered(&s, unlisted).await;
+
+    // Undiscovered first. An item the site has never seen is the one nobody
+    // else can contribute, and the window for it is however long the thing
+    // stays in your bags or the link stays in your chat.
+    let total = new_rows.len() + wanted_rows.len();
+    let items: Vec<serde_json::Value> =
+        new_rows.into_iter().chain(wanted_rows).take(limit).collect();
 
     Json(serde_json::json!({
         "ok": true,
@@ -1283,10 +1303,68 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
         "age_seconds": age,
         // The full count, so a capped list can say what it is hiding rather
         // than quietly presenting five as the whole answer.
-        "total": rows.len(),
-        "items": rows.into_iter().take(limit).collect::<Vec<_>>(),
+        "total": total,
+        "items": items,
     }))
     .into_response()
+}
+
+/// The most lookups one request will spend hunting for undiscovered items.
+///
+/// A busy hour in a new zone can turn over a lot of distinct drops, and each
+/// unlisted one costs a request to the site. The cap bounds that; anything
+/// past it waits for the next poll, by which time the earlier answers are
+/// cached.
+const DISCOVERY_MAX: usize = 40;
+
+/// Of the recent drops the wanted list does not name, the ones the site has
+/// never heard of.
+///
+/// # Why this is separate from the wanted list
+///
+/// eqdb can only ask for a picture of an item it knows exists. A drop nobody
+/// has contributed yet is absent from the list for the same reason it is worth
+/// photographing: it is new. Waiting for the site to learn about it means
+/// waiting for someone else to loot it, write it up, and publish — by which
+/// time yours has been sold.
+///
+/// A lookup that cannot reach the site returns `None` and the item is skipped.
+/// "The site did not answer" is not evidence of discovery, and a panel that
+/// announced a dozen discoveries every time the network blinked would be worth
+/// less than no panel.
+async fn undiscovered(
+    s: &AppState,
+    candidates: Vec<&crate::engine::RecentPickup>,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for chunk in candidates.chunks(BRIEF_CONCURRENCY).take(DISCOVERY_MAX / BRIEF_CONCURRENCY + 1) {
+        let mut set = tokio::task::JoinSet::new();
+        for p in chunk {
+            let db = s.itemdb.clone();
+            let name = p.item.clone();
+            let row = serde_json::json!({
+                "item": p.item,
+                "at": p.at,
+                "count": p.count,
+                "source": p.source,
+                "held": p.held,
+                "new": true,
+                "slug": crate::itemdb::slug(&p.item),
+                // The site has nothing at all, so it needs everything.
+                "needs": ["tooltip", "icon"],
+                "seen": 0,
+            });
+            set.spawn(async move { (db.knows_item(&name).await, row) });
+        }
+        while let Some(Ok((known, row))) = set.join_next().await {
+            if known == Some(false) {
+                out.push(row);
+            }
+        }
+    }
+    // Newest first, as with the rest of the panel.
+    out.sort_by_key(|r| std::cmp::Reverse(r.get("at").and_then(|v| v.as_i64()).unwrap_or(0)));
+    out
 }
 
 // ---------------------------------------------------------------------------

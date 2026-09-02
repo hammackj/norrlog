@@ -148,12 +148,21 @@ Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
 `auras`, `buffs`, `debuffs`, `motes`, `charm`, `sky`, `wanted`. Several hide
 themselves when they have nothing to say.
 
-`wanted` is the odd one out: it lists items you have looted in the **last
-hour** that the companion site still has no tooltip or icon for. Graded `+N`
-drops are never offered — a `+1` has its own tooltip, so a picture of one is
-not the picture being asked for. Anything auto-sold *is* offered, marked
-"click the chat link": the client writes a clickable item link as it sells, and
-that link opens the same tooltip. The **Screenshots** tab in the GUI shows the same list in full,
+`wanted` is the odd one out. It lists items you have looted in the **last
+hour** that eqldb has no picture of, in two kinds:
+
+- **on the wanted list** — the site knows the item and is asking for a tooltip
+  or an icon.
+- **not on eqldb at all** — the site has never heard of it. These cannot appear
+  on the wanted list by construction, and are the more valuable of the two:
+  waiting for eqldb to ask means waiting for somebody else to loot it first.
+  Each unlisted drop is checked against the site as it happens, and a lookup
+  that cannot reach the site is skipped rather than announced as a discovery.
+
+Graded `+N` drops are never offered — a `+1` has its own tooltip, so a picture
+of one is not the picture being asked for. Anything auto-sold *is* offered,
+marked "click the chat link": the client writes a clickable item link as it
+sells, and that link opens the same tooltip. The **Screenshots** tab in the GUI shows the same list in full,
 grouped by zone, with the tickboxes that clear items off it.
 
 ## Plane of Sky
