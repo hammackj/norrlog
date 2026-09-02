@@ -306,8 +306,47 @@ fn keywords(text: &str) -> Vec<String> {
     out
 }
 
+/// Pull `[bracketed keywords]` out of a line of NPC dialogue.
+///
+/// The client marks a conversation's branch points by bracketing the words you
+/// can say back, and that syntax is the same wherever an NPC speaks. It lives
+/// here rather than in [`crate::task`] or [`crate::skyquest`] because both of
+/// those read the same dialogue and had grown their own identical copy of it —
+/// two parsers of one syntax, free to drift apart without anything noticing.
+///
+/// An unclosed bracket ends the scan rather than swallowing the rest of the
+/// line: a stray `[` is far likelier to be punctuation than the start of a
+/// keyword that runs to the end of a sentence.
+pub(crate) fn bracketed_keywords(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        let kw = after[..close].trim();
+        if !kw.is_empty() {
+            out.push(kw.to_string());
+        }
+        rest = &after[close + 1..];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    /// The syntax is the client's, and both the task tracker and the Sky
+    /// tracker depend on it reading the same way.
+    #[test]
+    fn keyword_extraction_handles_odd_text() {
+        assert!(bracketed_keywords("no brackets here").is_empty());
+        assert_eq!(bracketed_keywords("an [unclosed"), Vec::<String>::new());
+        assert_eq!(bracketed_keywords("[a] and [b]"), vec!["a", "b"]);
+        // Empty brackets are punctuation, not a keyword.
+        assert_eq!(bracketed_keywords("[] and [b]"), vec!["b"]);
+        // Surrounding whitespace is not part of the word you say back.
+        assert_eq!(bracketed_keywords("[ much experience ]"), vec!["much experience"]);
+    }
+
     use super::*;
 
     /// The shape of a real quest: hail, keyword, answer, turn-in, faction.

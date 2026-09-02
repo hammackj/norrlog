@@ -289,7 +289,7 @@ impl TaskTracker {
             at: timestamp,
             speaker: speaker.to_string(),
             text: text.to_string(),
-            keywords: extract_keywords(text),
+            keywords: crate::npc::bracketed_keywords(text),
         });
         let cutoff = timestamp - DIALOGUE_WINDOW;
         self.recent_dialogue.retain(|d| d.at >= cutoff);
@@ -439,21 +439,6 @@ fn match_step(steps: &[TaskStepDef], killed: &str) -> Option<usize> {
     })
 }
 
-/// Pull `[bracketed keywords]` out of NPC dialogue.
-fn extract_keywords(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(']') else { break };
-        let kw = after[..close].trim();
-        if !kw.is_empty() {
-            out.push(kw.to_string());
-        }
-        rest = &after[close + 1..];
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -686,13 +671,6 @@ mod tests {
         assert_eq!(task.steps_done(), 0, "progress resets");
         assert_eq!(task.steps.len(), 1, "definition survives");
         assert_eq!(task.dialogue.len(), 1, "guide material survives");
-    }
-
-    #[test]
-    fn keyword_extraction_handles_odd_text() {
-        assert!(extract_keywords("no brackets here").is_empty());
-        assert_eq!(extract_keywords("an [unclosed"), Vec::<String>::new());
-        assert_eq!(extract_keywords("[a] and [b]"), vec!["a", "b"]);
     }
 
     #[test]

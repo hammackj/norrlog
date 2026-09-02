@@ -359,7 +359,7 @@ impl SkyTracker {
         lines.push(GiverLine {
             at: timestamp,
             text: text.to_string(),
-            keywords: extract_sky_keywords(text),
+            keywords: crate::npc::bracketed_keywords(text),
         });
     }
 
@@ -600,21 +600,6 @@ fn item_key(name: &str) -> String {
     crate::drops::canonical_item(name).to_lowercase()
 }
 
-/// Pull `[bracketed keywords]` out of a giver's line.
-fn extract_sky_keywords(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(']') else { break };
-        let kw = after[..close].trim();
-        if !kw.is_empty() {
-            out.push(kw.to_string());
-        }
-        rest = &after[close + 1..];
-    }
-    out
-}
 
 /// The transcribed quest tables, shipped so a fresh install is useful.
 ///
