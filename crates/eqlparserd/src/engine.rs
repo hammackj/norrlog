@@ -406,6 +406,13 @@ pub struct RecentPickup {
     pub count: u64,
     /// The most recent corpse it came off, when the log named one.
     pub source: Option<String>,
+    /// Whether it is still in your bags.
+    ///
+    /// Not a filter, a label. Something auto-sold on pickup is gone from your
+    /// inventory but the client still writes a clickable item link into chat
+    /// for it, and that link opens the same tooltip — so it can be
+    /// photographed, just from a different place. The panel says which.
+    pub held: bool,
 }
 
 /// Level-progression analysis.
@@ -1892,32 +1899,35 @@ impl Engine {
 
     /// Items picked up since `since` that you could still photograph.
     ///
-    /// Three filters, each of which exists because the answer is useless
+    /// Two filters, each of which exists because the answer is useless
     /// without it:
     ///
     /// * **Ungraded only.** A `+1` is a different tooltip from the item it is
     ///   a roll of, so a screenshot of one is not a screenshot of the other.
     ///   Everywhere else in this program a grade is folded away as noise;
     ///   here it disqualifies the drop outright.
-    /// * **Still in hand.** Something auto-sold on pickup, or combined into
-    ///   something else, is gone — the camera cannot be pointed at it. Only
-    ///   [`LootFate::Kept`] and [`LootFate::Stored`] leave an item where you
-    ///   can inspect it.
-    /// * **Recent.** Bags fill and get emptied; an item looted this morning is
-    ///   a guess, not a fact. The caller picks the window.
+    /// * **Recent.** Bags fill and chat scrolls; an item looted this morning
+    ///   is a guess, not a fact. The caller picks the window.
+    ///
+    /// # What is deliberately *not* filtered
+    ///
+    /// Fate. This once dropped everything auto-sold or transmuted on pickup,
+    /// on the reasoning that you cannot photograph what you no longer have.
+    /// That was wrong about the game: the client writes a clickable item link
+    /// into chat as it sells, and the link opens the same tooltip. On a
+    /// character with auto-sell running it was also almost the whole list —
+    /// 111 of the 148 wanted items in one real log had only ever been sold, so
+    /// the panel stayed empty through exactly the sessions it existed for.
+    ///
+    /// [`RecentPickup::held`] carries the distinction instead, because it
+    /// changes where you point the camera rather than whether you can.
     ///
     /// One entry per item, carrying the most recent sighting.
-    ///
-    /// [`LootFate::Kept`]: eqlparser_core::encounter::LootFate::Kept
-    /// [`LootFate::Stored`]: eqlparser_core::encounter::LootFate::Stored
     pub fn recent_pickups(&self, since: i64) -> Vec<RecentPickup> {
         use eqlparser_core::encounter::LootFate;
         use std::collections::HashMap;
         let mut map: HashMap<String, RecentPickup> = HashMap::new();
         for l in self.all_loot.iter().filter(|l| l.timestamp >= since) {
-            if !matches!(l.fate, LootFate::Kept | LootFate::Stored) {
-                continue;
-            }
             if eqlparser_core::drops::split_grade(&l.item).1.is_some() {
                 continue;
             }
@@ -1930,8 +1940,12 @@ impl Engine {
                 at: 0,
                 count: 0,
                 source: None,
+                held: false,
             });
             e.count += l.quantity;
+            // Held if any copy inside the window is still yours: two dropped
+            // and one auto-sold means you have one to point at.
+            e.held |= matches!(l.fate, LootFate::Kept | LootFate::Stored);
             if l.timestamp >= e.at {
                 e.at = l.timestamp;
                 // The most recent corpse it came off, so the panel names one
@@ -4469,8 +4483,9 @@ mod tests {
         );
     }
 
-    /// The screenshot prompt is about what is in your bags right now, so it
-    /// answers a narrower question than the loot tally does.
+    /// The screenshot prompt is about what you could photograph right now,
+    /// which is a narrower question than the loot tally answers but a wider
+    /// one than "what is in your bags".
     #[test]
     fn recent_pickups_offer_only_what_you_could_still_photograph() {
         let mut e = engine();
@@ -4482,7 +4497,9 @@ mod tests {
                 "[Tue Jul 28 14:00:00 2026] --You have looted a Rusty Dagger from a rat's corpse.--",
                 // A roll of an item, not the item: its tooltip is its own.
                 "[Tue Jul 28 14:00:05 2026] --You have looted a Woven Skull Cap +1 from a rat's corpse.--",
-                // Gone the instant it was picked up.
+                // Auto-sold on pickup. Still offered: the client writes a
+                // clickable item link into chat as it sells, and that link
+                // opens the same tooltip.
                 "[Tue Jul 28 14:00:10 2026] You looted a Fire Beetle Eye from a fire beetle's corpse and sold it for 2 silver.",
                 // In a container, but still yours to inspect.
                 "[Tue Jul 28 14:00:15 2026] --You have looted 2 Spider Silk from a spider's corpse.--",
@@ -4496,11 +4513,36 @@ mod tests {
         assert!(names.contains(&"Spider Silk"), "stored: {names:?}");
         assert!(!names.contains(&"Stale Bread"), "outside the window: {names:?}");
         assert!(!names.contains(&"Woven Skull Cap +1"), "graded: {names:?}");
-        assert!(!names.contains(&"Fire Beetle Eye"), "sold on pickup: {names:?}");
+        assert!(names.contains(&"Fire Beetle Eye"), "sold, not gone: {names:?}");
+
         // Newest first, and the corpse it came off travels with it.
         assert_eq!(got.first().map(|p| p.item.as_str()), Some("Spider Silk"));
         let dagger = got.iter().find(|p| p.item == "Rusty Dagger").unwrap();
         assert_eq!(dagger.source.as_deref(), Some("a rat"));
+
+        // Fate is a label, not a filter: it says where to point the camera.
+        let held = |n: &str| got.iter().find(|p| p.item == n).unwrap().held;
+        assert!(held("Rusty Dagger"), "kept, so it is in your bags");
+        assert!(held("Spider Silk"), "stored, so it is still yours");
+        assert!(!held("Fire Beetle Eye"), "sold, so the chat link is the way in");
+    }
+
+    /// One of two dropped being auto-sold still leaves one to photograph.
+    #[test]
+    fn an_item_kept_once_counts_as_held_even_if_another_was_sold() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You looted a Rusty Dagger from a rat's corpse and sold it for 1 silver.",
+                "[Tue Jul 28 14:00:05 2026] --You have looted a Rusty Dagger from a rat's corpse.--",
+                "[Tue Jul 28 14:00:10 2026] You slash a rat for 1 points of damage.",
+            ],
+        );
+        let got = e.recent_pickups(e.now() - 3600);
+        let d = got.iter().find(|p| p.item == "Rusty Dagger").expect("dagger");
+        assert_eq!(d.count, 2);
+        assert!(d.held, "one of the two is still in your bags");
     }
 
     /// A tick is remembered by identity, not by the exact string that was

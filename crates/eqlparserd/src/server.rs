@@ -1267,6 +1267,9 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
                 "at": p.at,
                 "count": p.count,
                 "source": p.source,
+                // Where to point the camera: your bags, or the item link the
+                // client wrote into chat as it sold the thing.
+                "held": p.held,
                 "slug": it.get("slug"),
                 "needs": it.get("needs"),
                 "seen": it.get("seen"),
@@ -2353,12 +2356,26 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root");
-        let renderer = root.join("gui/renderer/app.js");
-        let Ok(app_js) = std::fs::read_to_string(&renderer) else {
+        // Every renderer module, not one named file: the list used to live in
+        // app.js and moved to settings.js when the renderer was split, which
+        // broke this test without anything being wrong with the app. What is
+        // being asked is "can the user switch this panel on anywhere", so ask
+        // it of the whole renderer.
+        let Ok(dir) = std::fs::read_dir(root.join("gui/renderer")) else {
             // The daemon is usable without the desktop app beside it; a
             // missing renderer is not this test's business to fail over.
             return;
         };
+        let app_js: String = dir
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "js"))
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if app_js.is_empty() {
+            return;
+        }
 
         let panels = |src: &str, pat: &str| -> std::collections::BTreeSet<String> {
             let mut out = std::collections::BTreeSet::new();
@@ -2383,7 +2400,7 @@ mod tests {
         assert!(
             missing.is_empty(),
             "the overlay has panels Settings cannot switch on: {missing:?} \
-             — add them to OVERLAY_PANELS in gui/renderer/app.js"
+             — add them to OVERLAY_PANELS in gui/renderer/settings.js"
         );
     }
 

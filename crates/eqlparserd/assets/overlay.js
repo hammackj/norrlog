@@ -462,7 +462,15 @@
       el.wantedRows.innerHTML = rows
         .map((i) => {
           const needs = (i.needs || []).join(" + ") || "a picture";
-          const from = i.source ? `from ${i.source}` : "in your bags";
+          // Held items are in your bags; the rest were auto-sold on pickup,
+          // and the client left a clickable item link in chat that opens the
+          // same tooltip. Both can be photographed, from different places, so
+          // the row says which rather than hiding the second kind.
+          const from = i.held
+            ? i.source
+              ? `from ${i.source}`
+              : "in your bags"
+            : "sold \u2014 click the chat link";
           return `<div class="row you" style="--share:100%">
             <span class="name">${esc(i.item)}</span>
             <span class="nums"><span class="dmg">${esc(needs)}</span></span>

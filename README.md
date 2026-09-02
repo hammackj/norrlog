@@ -149,11 +149,11 @@ Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
 themselves when they have nothing to say.
 
 `wanted` is the odd one out: it lists items you have looted in the **last
-hour** that the companion site still has no tooltip or icon for, so you can
-photograph one before it is sold. Graded `+N` drops are never offered — a `+1`
-has its own tooltip, so a picture of one is not the picture being asked for —
-and neither is anything auto-sold or transmuted on pickup, because it is
-already gone. The **Screenshots** tab in the GUI shows the same list in full,
+hour** that the companion site still has no tooltip or icon for. Graded `+N`
+drops are never offered — a `+1` has its own tooltip, so a picture of one is
+not the picture being asked for. Anything auto-sold *is* offered, marked
+"click the chat link": the client writes a clickable item link as it sells, and
+that link opens the same tooltip. The **Screenshots** tab in the GUI shows the same list in full,
 grouped by zone, with the tickboxes that clear items off it.
 
 ## Plane of Sky
