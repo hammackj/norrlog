@@ -6,12 +6,14 @@
 
 mod engine;
 mod itemdb;
+mod locks;
 mod paths;
 mod server;
 mod store;
 mod tail;
 
 use engine::Engine;
+use locks::{Guarded, Shared};
 use eqlparser_core::game::Game;
 use eqlparser_core::Parser;
 use server::AppState;
@@ -357,7 +359,7 @@ async fn main() -> anyhow::Result<()> {
 
     let engine = Arc::new(Mutex::new(engine));
     let snapshot = Arc::new(RwLock::new(
-        engine.lock().unwrap().snapshot(SNAPSHOT_RECENT),
+        engine.locked("engine").snapshot(SNAPSHOT_RECENT),
     ));
     let (updates, _) = broadcast::channel(64);
 
@@ -409,11 +411,11 @@ fn history_path() -> Option<PathBuf> {
 /// in effect, and a flush that now knows more (a build label that needed later
 /// evidence) improves the stored row.
 fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
-    let (kills, encs, levels, aa) = { engine.lock().unwrap().history_to_persist() };
-    let sky_turn_ins = { engine.lock().unwrap().sky_turn_ins() };
-    let grants = { engine.lock().unwrap().grants_to_persist() };
+    let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
+    let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
+    let grants = { engine.locked("engine").grants_to_persist() };
     let (drops, prices, game, bestiary, health) = {
-        let e = engine.lock().unwrap();
+        let e = engine.locked("engine");
         (
             e.drop_report(),
             e.tradeskill_report().prices,
@@ -423,7 +425,7 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
         )
     };
     let source = path.to_string_lossy().to_string();
-    let mut st = store.lock().unwrap();
+    let mut st = store.locked("history");
     if let Err(e) = st
         .put_kills(&kills)
         .and_then(|_| st.put_encounters(&encs))
@@ -480,7 +482,7 @@ fn spawn_follower_since(
         let start = std::time::Instant::now();
         let mut backlog = 0usize;
         {
-            let mut eng = engine.lock().unwrap();
+            let mut eng = engine.locked("engine");
             if let Err(e) = follower.read_available(|line| {
                 eng.push_line(line);
                 backlog += 1;
@@ -503,7 +505,7 @@ fn spawn_follower_since(
         loop {
             std::thread::sleep(tail::POLL_INTERVAL);
             {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.locked("engine");
                 if let Err(e) = follower.read_available(|line| eng.push_line(line)) {
                     eprintln!("[eqlparserd] read error: {e}");
                 }
@@ -532,8 +534,8 @@ fn publish(
     snapshot: &Arc<RwLock<engine::Snapshot>>,
     updates: &broadcast::Sender<()>,
 ) {
-    let snap = { engine.lock().unwrap().snapshot(SNAPSHOT_RECENT) };
-    *snapshot.write().unwrap() = snap;
+    let snap = { engine.locked("engine").snapshot(SNAPSHOT_RECENT) };
+    *snapshot.writing("snapshot") = snap;
     // No receivers is normal (nothing connected yet), so ignore send errors.
     let _ = updates.send(());
 }

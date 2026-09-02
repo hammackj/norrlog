@@ -5,6 +5,7 @@
 //! so the Electron windows and OBS all consume exactly the same page.
 
 use crate::engine::{Engine, Snapshot};
+use crate::locks::{Guarded, Shared};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxPath, Query, State};
 use axum::http::{header, StatusCode};
@@ -148,7 +149,7 @@ async fn overlay_js() -> Response {
 // ---------------------------------------------------------------------------
 
 async fn snapshot(State(s): State<AppState>) -> Json<Snapshot> {
-    Json(s.snapshot.read().unwrap().clone())
+    Json(s.snapshot.reading("snapshot").clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,7 +210,7 @@ async fn encounters(
     State(s): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let search = q.search.map(|v| v.to_lowercase());
     let zone = q.zone.map(|v| v.to_lowercase());
 
@@ -314,7 +315,7 @@ struct MobRow {
 /// the same question; `search` matches the creature's own name here, which is
 /// the whole point of the view.
 async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let search = q.search.map(|v| v.to_lowercase());
     let zone = q.zone.map(|v| v.to_lowercase());
 
@@ -404,7 +405,7 @@ async fn export_encounters(
     State(s): State<AppState>,
     Query(q): Query<ExportEncountersQuery>,
 ) -> Response {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let ids: Option<Vec<u64>> = q.ids.as_deref().map(|raw| {
         raw.split(',')
             .filter_map(|p| p.trim().parse::<u64>().ok())
@@ -604,7 +605,7 @@ fn render_encounters_csv(encs: &[crate::engine::EncounterSummary]) -> String {
 
 /// Full detail for one fight, including per-actor and per-ability breakdowns.
 async fn encounter_detail(State(s): State<AppState>, AxPath(id): AxPath<u64>) -> Response {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     match engine.encounter(id) {
         Some(e) => Json(serde_json::json!({
             "summary": engine.summarise(e, true),
@@ -643,7 +644,7 @@ impl LootQuery {
 }
 
 async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let start = engine.session_start();
     let tally = engine.loot_tally_since(q.session().then_some(start));
     Json(serde_json::json!({
@@ -668,7 +669,7 @@ struct LootItemQuery {
 /// contain slashes, apostrophes and plus signs, and routing on them means
 /// fighting the encoding for no benefit.
 async fn loot_item(State(s): State<AppState>, Query(q): Query<LootItemQuery>) -> Response {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     match engine.loot_detail(&q.item) {
         Some(d) => Json(d).into_response(),
         None => (StatusCode::NOT_FOUND, "no such item in this log").into_response(),
@@ -678,11 +679,11 @@ async fn loot_item(State(s): State<AppState>, Query(q): Query<LootItemQuery>) ->
 /// Level-progression analysis: per-level history, best zones, best mobs.
 /// Everything that fired on its own, and how often per minute of combat.
 async fn procs(State(s): State<AppState>) -> Json<eqlparser_core::procs::ProcReport> {
-    Json(s.engine.lock().unwrap().proc_report())
+    Json(s.engine.locked("engine").proc_report())
 }
 
 async fn experience(State(s): State<AppState>) -> Json<crate::engine::ExperienceReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let now = engine.now();
     Json(engine.experience_report(now))
 }
@@ -695,7 +696,7 @@ async fn experience(State(s): State<AppState>) -> Json<crate::engine::Experience
 async fn class_levels(
     State(s): State<AppState>,
 ) -> Json<eqlparser_core::classlevel::ClassLevelReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.class_level_report())
 }
 
@@ -714,7 +715,7 @@ async fn set_aa_spent(
     Json(body): Json<AaSpentBody>,
 ) -> Json<serde_json::Value> {
     let at = {
-        let mut engine = s.engine.lock().unwrap();
+        let mut engine = s.engine.locked("engine");
         engine.set_stated_aa_spent(body.spent);
         engine.now()
     };
@@ -753,7 +754,7 @@ async fn set_class_level(
         return Json(serde_json::json!({"ok": false, "error": "level out of range"}));
     }
     let at = {
-        let mut engine = s.engine.lock().unwrap();
+        let mut engine = s.engine.locked("engine");
         let at = engine.now();
         engine.set_stated_level(class, body.level, at);
         at
@@ -770,7 +771,7 @@ async fn set_class_level(
 
 /// Weekly/daily boss lockouts, as a boss x difficulty grid.
 async fn lockouts(State(s): State<AppState>) -> Json<eqlparser_core::lockout::LockoutReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let now = engine.now();
     Json(engine.lockout_report(now))
 }
@@ -779,7 +780,7 @@ async fn lockouts(State(s): State<AppState>) -> Json<eqlparser_core::lockout::Lo
 async fn tradeskills(
     State(s): State<AppState>,
 ) -> Json<eqlparser_core::tradeskill::TradeskillReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.tradeskill_report())
 }
 
@@ -790,7 +791,7 @@ async fn tradeskills(
 /// tools) and observed fields (drops, prices, combines) are kept in separate
 /// keys so a reader can always tell which is which.
 async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
-    let mut db = { s.engine.lock().unwrap().item_database() };
+    let mut db = { s.engine.locked("engine").item_database() };
 
     // Everything on file, not only what this log happens to contain — the
     // point of collecting is that it accumulates. Rows for other games are
@@ -923,7 +924,7 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
 /// flushes rather than up to a flush interval stale.
 async fn bestiary(State(s): State<AppState>) -> Json<eqlparser_core::bestiary::BestiaryReport> {
     let (live, live_health, game) = {
-        let e = s.engine.lock().unwrap();
+        let e = s.engine.locked("engine");
         (e.bestiary_report(), e.bestiary_health_samples(), e.game())
     };
 
@@ -949,7 +950,7 @@ async fn bestiary(State(s): State<AppState>) -> Json<eqlparser_core::bestiary::B
 
 /// What was seen dropping from what, with the kill counts behind it.
 async fn drops(State(s): State<AppState>) -> Json<eqlparser_core::drops::DropReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.drop_report())
 }
 
@@ -964,7 +965,7 @@ async fn incoming(
     State(s): State<AppState>,
     Query(q): Query<IncomingQuery>,
 ) -> Json<crate::engine::IncomingReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.incoming_report(q.encounter))
 }
 
@@ -976,7 +977,7 @@ struct MarkRequest {
 }
 
 async fn get_marks(State(s): State<AppState>) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let marks: Vec<_> = engine
         .buff_marks()
         .into_iter()
@@ -993,12 +994,12 @@ async fn set_mark(State(s): State<AppState>, Json(req): Json<MarkRequest>) -> Re
         _ => None,
     };
     {
-        let mut engine = s.engine.lock().unwrap();
+        let mut engine = s.engine.locked("engine");
         engine.set_buff_mark(&req.name, mark);
     }
     // Republish so every client reflects it without waiting for the next line.
-    let snap = { s.engine.lock().unwrap().snapshot(40) };
-    *s.snapshot.write().unwrap() = snap;
+    let snap = { s.engine.locked("engine").snapshot(40) };
+    *s.snapshot.writing("snapshot") = snap;
     let _ = s.updates.send(());
     (StatusCode::OK, "ok").into_response()
 }
@@ -1153,7 +1154,7 @@ async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Resp
     // The engine is locked only to read the marks, and never across the fetch
     // above: the follower thread holds this lock while ingesting lines.
     let (items, marked_total): (Vec<serde_json::Value>, usize) = {
-        let engine = s.engine.lock().unwrap();
+        let engine = s.engine.locked("engine");
         let marked_total = engine.screenshot_marks().len();
         let items = payload
             .get("items")
@@ -1210,7 +1211,7 @@ async fn set_wanted_mark(
     State(s): State<AppState>,
     Json(req): Json<WantedMarkRequest>,
 ) -> Response {
-    let mut engine = s.engine.lock().unwrap();
+    let mut engine = s.engine.locked("engine");
     engine.set_screenshot_mark(&req.item, req.have.unwrap_or(true));
     let have = engine.has_screenshot(&req.item);
     Json(serde_json::json!({ "ok": true, "item": req.item, "have": have })).into_response()
@@ -1248,7 +1249,7 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
     let index = wanted_index(&payload);
 
     let (pickups, marks): (Vec<crate::engine::RecentPickup>, Vec<bool>) = {
-        let engine = s.engine.lock().unwrap();
+        let engine = s.engine.locked("engine");
         let since = engine.now() - window;
         let p = engine.recent_pickups(since);
         let m = p.iter().map(|x| engine.has_screenshot(&x.item)).collect();
@@ -1295,7 +1296,7 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
 /// expression failed to compile comes back carrying its error — the store only
 /// knows what was written, not whether it works.
 async fn alerts(State(s): State<AppState>) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(serde_json::json!({
         "rules": engine.alert_rules(),
         "persisted": s.store.is_some(),
@@ -1314,7 +1315,7 @@ async fn put_alert(
         return (StatusCode::BAD_REQUEST, "an alert needs a name").into_response();
     }
     {
-        let mut engine = s.engine.lock().unwrap();
+        let mut engine = s.engine.locked("engine");
         engine.put_alert_rule(rule.clone());
     }
     if let Some(store) = &s.store {
@@ -1322,7 +1323,7 @@ async fn put_alert(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        if let Err(e) = store.lock().unwrap().put_alert(&rule, now) {
+        if let Err(e) = store.locked("history").put_alert(&rule, now) {
             // The rule is live either way; say plainly that it will not
             // survive a restart rather than pretend it saved.
             return (StatusCode::OK, format!("active, but not saved: {e}")).into_response();
@@ -1330,7 +1331,7 @@ async fn put_alert(
     }
     // Hand back the stored rule so the client sees a pattern error straight
     // away rather than on the next load.
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     match engine.alert_rules().iter().find(|r| r.id == rule.id) {
         Some(r) => Json(r).into_response(),
         None => (StatusCode::OK, "ok").into_response(),
@@ -1344,11 +1345,11 @@ struct AlertIdRequest {
 
 async fn delete_alert(State(s): State<AppState>, Json(req): Json<AlertIdRequest>) -> Response {
     {
-        let mut engine = s.engine.lock().unwrap();
+        let mut engine = s.engine.locked("engine");
         engine.remove_alert_rule(&req.id);
     }
     if let Some(store) = &s.store {
-        let _ = store.lock().unwrap().delete_alert(&req.id);
+        let _ = store.locked("history").delete_alert(&req.id);
     }
     (StatusCode::OK, "ok").into_response()
 }
@@ -1364,7 +1365,7 @@ struct SinceQuery {
 /// `since` is the highest sequence the client already has, so polling costs
 /// nothing when the log is quiet. Live lines only — see the engine.
 async fn lines(State(s): State<AppState>, Query(q): Query<SinceQuery>) -> Json<serde_json::Value> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let lines = engine.lines_since(q.since.unwrap_or(0));
     Json(serde_json::json!({
         "lines": lines,
@@ -1390,7 +1391,7 @@ async fn session(
     Query(q): Query<ScopeQuery>,
 ) -> Json<serde_json::Value> {
     let zone_only = q.scope.as_deref() == Some("zone");
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     let (summary, fights, combat) = engine.session_summary(zone_only);
     Json(serde_json::json!({
         "summary": summary,
@@ -1405,7 +1406,7 @@ async fn session(
 
 /// Assigned tasks with step counts, and achievements earned.
 async fn tasks(State(s): State<AppState>) -> Json<eqlparser_core::task::TaskReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.task_report())
 }
 
@@ -1415,7 +1416,7 @@ async fn define_task(
     State(s): State<AppState>,
     Json(def): Json<eqlparser_core::task::TaskDef>,
 ) -> Response {
-    let mut engine = s.engine.lock().unwrap();
+    let mut engine = s.engine.locked("engine");
     engine.define_task(def);
     (StatusCode::OK, "ok").into_response()
 }
@@ -1444,7 +1445,7 @@ async fn export(State(s): State<AppState>, Query(q): Query<ExportQuery>) -> Resp
             .into_response();
     };
     let stats = {
-        let st = store.lock().unwrap();
+        let st = store.locked("history");
         match st.raid_stats() {
             Ok(v) => v,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1648,7 +1649,7 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
             "reason": "history database could not be opened",
         }));
     };
-    let st = store.lock().unwrap();
+    let st = store.locked("history");
     let kills = st.kills().unwrap_or_default();
     let levels = st.levels().unwrap_or_default();
     let sources = st.sources().unwrap_or_default();
@@ -1666,7 +1667,7 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
 
 /// Captured NPC interactions, the raw material for a quest write-up.
 async fn npcs(State(s): State<AppState>) -> Json<eqlparser_core::npc::NpcReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.npc_report())
 }
 
@@ -1675,7 +1676,7 @@ async fn quests(State(s): State<AppState>) -> Json<serde_json::Value> {
     let Some(store) = &s.store else {
         return Json(serde_json::json!({ "available": false, "quests": [] }));
     };
-    let st = store.lock().unwrap();
+    let st = store.locked("history");
     Json(serde_json::json!({
         "available": true,
         "quests": st.quests().unwrap_or_default(),
@@ -1697,7 +1698,7 @@ async fn put_quest(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    match store.lock().unwrap().put_quest(&q) {
+    match store.locked("history").put_quest(&q) {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1712,7 +1713,7 @@ async fn delete_quest(State(s): State<AppState>, Json(b): Json<NameBody>) -> Res
     let Some(store) = &s.store else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no quest database").into_response();
     };
-    match store.lock().unwrap().delete_quest(&b.name) {
+    match store.locked("history").delete_quest(&b.name) {
         Ok(true) => (StatusCode::OK, "deleted").into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "no such quest").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1724,7 +1725,7 @@ async fn export_quests(State(s): State<AppState>) -> Response {
     let Some(store) = &s.store else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no quest database").into_response();
     };
-    let quests = store.lock().unwrap().quests().unwrap_or_default();
+    let quests = store.locked("history").quests().unwrap_or_default();
     let body = render_quests_markdown(&quests);
     (
         StatusCode::OK,
@@ -1803,25 +1804,25 @@ fn render_quests_markdown(quests: &[crate::store::QuestRecord]) -> String {
 
 /// Private conversations, threaded by correspondent.
 async fn tells(State(s): State<AppState>) -> Json<eqlparser_core::tells::TellReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.tell_report())
 }
 
 /// Your deaths, with what killed you.
 async fn deaths(State(s): State<AppState>) -> Json<crate::engine::DeathReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.death_report())
 }
 
 /// Charm state and recent charm failures, for the resist overlay.
 async fn charm(State(s): State<AppState>) -> Json<crate::engine::CharmReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.charm_report())
 }
 
 /// The AA catalogue read from `/alt list`.
 async fn aa(State(s): State<AppState>) -> Json<eqlparser_core::aa::AaReport> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.aa_report())
 }
 
@@ -1894,7 +1895,7 @@ async fn spell_lookup(
 
     // What this binary knows by itself, from spells_us.txt.
     let (id, local) = {
-        let engine = s.engine.lock().unwrap();
+        let engine = s.engine.locked("engine");
         let db = engine.spell_db();
         let base = eqlparser_core::spell::base_spell_name(&name);
         let mut ids = db.candidates_for_name(&name).to_vec();
@@ -1979,10 +1980,10 @@ struct SkyQuery {
 }
 
 async fn sky(State(s): State<AppState>, Query(q): Query<SkyQuery>) -> Response {
-    let mut report = { s.engine.lock().unwrap().sky_report() };
+    let mut report = { s.engine.locked("engine").sky_report() };
     // History spans every log ever parsed; the tracker only knows this one.
     if let Some(store) = &s.store {
-        if let Ok(stored) = store.lock().unwrap().sky_turnin_counts() {
+        if let Ok(stored) = store.locked("history").sky_turnin_counts() {
             Engine::apply_stored_turn_ins(&mut report, &stored);
         }
     }
@@ -2237,14 +2238,14 @@ async fn define_sky_quest(
     State(s): State<AppState>,
     Json(def): Json<eqlparser_core::skyquest::SkyQuestDef>,
 ) -> Response {
-    let mut engine = s.engine.lock().unwrap();
+    let mut engine = s.engine.locked("engine");
     engine.define_sky_quest(def);
     (StatusCode::OK, "ok").into_response()
 }
 
 /// Which bosses each class build has cleared.
 async fn builds(State(s): State<AppState>) -> Json<Vec<eqlparser_core::lockout::BuildRecord>> {
-    let engine = s.engine.lock().unwrap();
+    let engine = s.engine.locked("engine");
     Json(engine.build_history())
 }
 
@@ -2261,10 +2262,10 @@ async fn classes(
     Query(q): Query<ClassQuery>,
 ) -> Json<serde_json::Value> {
     if q.all {
-        let engine = s.engine.lock().unwrap();
+        let engine = s.engine.locked("engine");
         return Json(serde_json::json!({ "ranked": engine.class_ranking() }));
     }
-    let snap = s.snapshot.read().unwrap();
+    let snap = s.snapshot.reading("snapshot");
     Json(serde_json::json!({ "current": snap.classes }))
 }
 
@@ -2283,7 +2284,7 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> Response
 async fn ws_loop(mut socket: WebSocket, state: AppState) {
     let mut rx = state.updates.subscribe();
 
-    let initial = { state.snapshot.read().unwrap().clone() };
+    let initial = { state.snapshot.reading("snapshot").clone() };
     if send_snapshot(&mut socket, &initial).await.is_err() {
         return;
     }
@@ -2295,7 +2296,7 @@ async fn ws_loop(mut socket: WebSocket, state: AppState) {
             Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
             Err(broadcast::error::RecvError::Closed) => break,
         }
-        let snap = { state.snapshot.read().unwrap().clone() };
+        let snap = { state.snapshot.reading("snapshot").clone() };
         if send_snapshot(&mut socket, &snap).await.is_err() {
             break;
         }
