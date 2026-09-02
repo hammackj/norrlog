@@ -538,6 +538,24 @@ pub struct Snapshot {
     /// The class earning experience, when it can be pinned down.
     pub levelling: Option<String>,
     pub zone: Option<String>,
+    /// The place, with the instance mode and tier stripped off.
+    ///
+    /// `zone` is what the client wrote — "The Permafrost Caverns - Solo" — and
+    /// that string is three facts in one, which is why [`Zone::parse`] exists.
+    /// Everything filed by place uses the parsed name, so a consumer matching
+    /// "where am I" against a list of zones has to compare against this one:
+    /// the raw label matches nothing while you are inside an instance, which
+    /// is most of the time.
+    ///
+    /// Carried rather than derived by the caller because the grammar has one
+    /// implementation and it is the parser's. A second reading of it in the
+    /// window would be a second thing to keep in step with the client's
+    /// habits, and it would be wrong in exactly the cases the doc comment on
+    /// [`Zone::parse`] spends forty lines on.
+    ///
+    /// [`Zone::parse`]: eqlparser_core::zone::Zone::parse
+    #[serde(default)]
+    pub zone_place: Option<String>,
     pub classes: Vec<ClassInfo>,
     /// The fight in progress, if any.
     pub current: Option<EncounterSummary>,
@@ -3538,6 +3556,10 @@ impl Engine {
             },
             levelling: self.class_level_report().levelling,
             zone: self.tracker.current_zone().map(str::to_string),
+            zone_place: self
+                .tracker
+                .current_zone()
+                .map(|z| eqlparser_core::zone::Zone::parse(z).name),
             classes,
             current: self.tracker.current().map(|e| self.summarise(e, true)),
             recent,
