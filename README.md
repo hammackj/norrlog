@@ -144,6 +144,39 @@ as a frameless, always-on-top, click-through desktop window.
 | `?scope=session` | Meter the whole session instead of the current fight (`zone` for the current zone) |
 | `?idle=1` | Keep the last fight on screen between pulls |
 
+Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
+`auras`, `buffs`, `debuffs`, `motes`, `charm`, `sky`, `wanted`. Several hide
+themselves when they have nothing to say.
+
+`wanted` is the odd one out: it lists items you have looted in the **last
+hour** that the companion site still has no tooltip or icon for, so you can
+photograph one before it is sold. Graded `+N` drops are never offered — a `+1`
+has its own tooltip, so a picture of one is not the picture being asked for —
+and neither is anything auto-sold or transmuted on pickup, because it is
+already gone. The **Screenshots** tab in the GUI shows the same list in full,
+grouped by zone, with the tickboxes that clear items off it.
+
+## Plane of Sky
+
+The Sky tab reads two sources and shows both rather than picking one. The quest
+table is hand-transcribed and ships in `skyquest.rs`; **eqldb** keeps its own,
+assembled from parsed logs. They currently agree on every quest both know, so
+the useful output is the difference:
+
+- **not on eqldb** — quests only this table has (11 of 95 at the time of
+  writing). The `Not on eqldb yet` filter is that list on its own.
+- **draft on eqldb** — the site has it but has not verified it.
+- **disagrees with eqldb** — the giver, phrase, reward or items have drifted
+  apart. Never quietly resolved in either direction; the row says which is
+  which and the mismatch is shown in full.
+
+eqldb also supplies item icons and links, the giver's recorded dialogue for
+quests this character has never hailed, and observed drop counts per creature
+under each island. Those counts are a floor — what has been seen across
+contributed logs — so they are written as "seen N times", never as a rate.
+The bundled wiki data stays behind all of it for anything the site has not
+reached yet.
+
 ## CLI tools
 
 ```sh
@@ -173,6 +206,11 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 | `GET /api/encounters` | History — `?search=`, `?zone=`, `?since=`, `?until=`, `?min_duration=`, `?limit=`, `?offset=` |
 | `GET /api/encounters/:id` | Full breakdown for one fight |
 | `GET /api/loot` | Aggregated loot |
+| `GET /api/sky` | Plane of Sky quest progress, with eqldb's own record of the same quests alongside it — `?refresh=1` re-asks the site |
+| `GET /api/item-brief` | Icons, site slugs and "does eqldb know this" for a batch of items — `?names=` `\|`-separated |
+| `GET /api/wanted` | Items the companion site still needs a screenshot of, each flagged with whether you have ticked it off — `?refresh=1` re-asks the site |
+| `POST /api/wanted/mark` | `{item, have}` — tick an item off the screenshot list, or untick it |
+| `GET /api/wanted/recent` | Of those, what you have looted lately and could still photograph — `?window=` seconds (default an hour), `?limit=` rows |
 | `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |
 | `GET /api/drops` | What dropped from what, with the kills behind each count |
 | `GET /api/classes` | Detected classes with evidence |

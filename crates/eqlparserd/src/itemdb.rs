@@ -40,6 +40,20 @@ const MISS_TTL: Duration = Duration::from_secs(60);
 /// seconds has already failed at its job.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a whole-payload fetch is reused.
+///
+/// Shorter than an item lookup because these are working data, not reference
+/// data: the wanted list shrinks as screenshots are uploaded, and the zone
+/// record grows as quests are written up. A stale copy asks for pictures
+/// already taken, or reports a quest as missing that has just been added. Ten
+/// minutes is short enough that a session spent filling gaps stays roughly
+/// honest without re-fetching a quarter of a megabyte on every redraw.
+const PAYLOAD_TTL: Duration = Duration::from_secs(600);
+
+/// These payloads are far larger than a single item and are never fetched in
+/// front of a hover, so they get their own budget rather than [`TIMEOUT`].
+const PAYLOAD_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// The site's own slug form: lowercase, and every run of anything that is not
 /// alphanumeric becomes a single underscore.
 ///
@@ -59,6 +73,33 @@ pub fn slug(name: &str) -> String {
         } else {
             pending = true;
         }
+    }
+    out
+}
+
+/// The form two spellings of the same item are compared in.
+///
+/// Not [`slug`]: the site's own slug for "Legionnaire's Bracer" is
+/// `legionnaires_bracer` while this file derives `legionnaire_s_bracer`, and
+/// both are accepted by `/api/item` because it normalises on the way in. A
+/// list to cross-reference against loot cannot rely on that, so names are
+/// matched as names — folded to lowercase, with the `+N` grade removed and
+/// runs of whitespace collapsed, which is every difference actually observed
+/// between what the client writes and what the site stores.
+pub fn match_key(name: &str) -> String {
+    let base = eqlparser_core::drops::canonical_item(name);
+    let mut out = String::with_capacity(base.len());
+    let mut gap = false;
+    for c in base.trim().chars() {
+        if c.is_whitespace() {
+            gap = true;
+            continue;
+        }
+        if gap && !out.is_empty() {
+            out.push(' ');
+        }
+        gap = false;
+        out.extend(c.to_lowercase());
     }
     out
 }
@@ -94,6 +135,12 @@ pub struct ItemDb {
     client: reqwest::Client,
     cache: Mutex<HashMap<String, (Instant, Cached)>>,
     icons: Mutex<HashMap<String, (Instant, Option<(String, Vec<u8>)>)>>,
+    /// Whole payloads fetched by path — the wanted list, a zone record — with
+    /// the time each arrived.
+    ///
+    /// Kept out of `cache` because these are not item lookups and because they
+    /// are deliberately allowed to go stale: see [`ItemDb::payload`].
+    payloads: Mutex<HashMap<String, (Instant, Value)>>,
 }
 
 impl ItemDb {
@@ -122,6 +169,7 @@ impl ItemDb {
                 .unwrap_or_default(),
             cache: Mutex::new(HashMap::new()),
             icons: Mutex::new(HashMap::new()),
+            payloads: Mutex::new(HashMap::new()),
         }
     }
 
@@ -235,6 +283,86 @@ impl ItemDb {
         }
         self.remember(key, found.clone());
         found
+    }
+
+    /// The items eqdb still wants a screenshot for.
+    ///
+    /// One list for the whole site — it takes no filters — so it is fetched
+    /// whole and cross-referenced here.
+    pub async fn wanted(&self, force: bool) -> Option<(Value, u64)> {
+        self.payload("/api/items/wanted", force, |v| {
+            v.get("items").is_some_and(Value::is_array)
+        })
+        .await
+    }
+
+    /// Everything the site knows about one zone: its creatures, what drops
+    /// there, and every quest written up in it.
+    ///
+    /// One request answers what would otherwise be one per quest. The Plane of
+    /// Sky alone carries 84 of them, and asking for each by slug would be 84
+    /// round trips to learn the same thing.
+    pub async fn zone(&self, slug: &str, force: bool) -> Option<(Value, u64)> {
+        if slug.is_empty() || slug.contains('/') || slug.contains("..") {
+            return None;
+        }
+        self.payload(&format!("/api/zone/{slug}"), force, |v| {
+            v.get("name").is_some()
+        })
+        .await
+    }
+
+    /// Fetch a whole payload, remembering it.
+    ///
+    /// `force` is the refresh button, for when you have just changed something
+    /// on the site and waiting out [`PAYLOAD_TTL`] would feel broken.
+    ///
+    /// # Why a failure keeps the old answer
+    ///
+    /// These are working lists, not facts about an item. A tooltip that cannot
+    /// be drawn is better blank than wrong, but a to-do list that empties
+    /// itself because the site was briefly unreachable throws away the only
+    /// thing on screen telling you what to go and do. So a fetch that fails
+    /// hands back whatever arrived last, and the age comes with it — the
+    /// caller says how old it is rather than pretending it is current.
+    ///
+    /// `None` only when nothing has ever been fetched for this path.
+    async fn payload(
+        &self,
+        path: &str,
+        force: bool,
+        valid: fn(&Value) -> bool,
+    ) -> Option<(Value, u64)> {
+        if !force {
+            if let Some((at, v)) = self.cached_payload(path) {
+                if at.elapsed() < PAYLOAD_TTL {
+                    return Some((v, at.elapsed().as_secs()));
+                }
+            }
+        }
+        for base in self.origins() {
+            let url = format!("{base}{path}");
+            let got = match self.client.get(&url).timeout(PAYLOAD_TIMEOUT).send().await {
+                Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+                _ => continue,
+            };
+            let Some(v) = got.filter(&valid) else {
+                continue;
+            };
+            if let Ok(mut l) = self.live.lock() {
+                *l = Some(base.clone());
+            }
+            if let Ok(mut c) = self.payloads.lock() {
+                c.insert(path.to_string(), (Instant::now(), v.clone()));
+            }
+            return Some((v, 0));
+        }
+        let (at, v) = self.cached_payload(path)?;
+        Some((v, at.elapsed().as_secs()))
+    }
+
+    fn cached_payload(&self, path: &str) -> Option<(Instant, Value)> {
+        self.payloads.lock().ok()?.get(path).cloned()
     }
 
     /// Look a spell up, by the site's own id when we know it.
@@ -377,6 +505,21 @@ mod tests {
         );
         let empty = ItemDb::new(vec![]);
         assert_eq!(empty.base(), "");
+    }
+
+    /// The wanted list is matched by name, so the two spellings of an
+    /// apostrophe the site and the client use have to land on one key.
+    #[test]
+    fn match_keys_ignore_grade_punctuation_and_spacing() {
+        assert_eq!(match_key("Rusty Dagger"), "rusty dagger");
+        // A grade is a roll, not an item; the site has never heard of "+1".
+        assert_eq!(match_key("Woven Skull Cap +1"), "woven skull cap");
+        assert_eq!(match_key("Silvery Ring +12"), "silvery ring");
+        // Punctuation is kept — it is part of the name — but case and spacing
+        // are not.
+        assert_eq!(match_key("Legionnaire's Bracer"), "legionnaire's bracer");
+        assert_eq!(match_key("  LEGIONNAIRE'S   BRACER "), "legionnaire's bracer");
+        assert_eq!(match_key(""), "");
     }
 
     /// A graded drop is the same item to the site as it is to the tracker.

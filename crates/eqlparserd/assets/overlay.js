@@ -5,7 +5,8 @@
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
- *                                 incoming, auras, buffs, debuffs, motes
+ *                                 incoming, auras, buffs, debuffs, motes,
+ *                                 charm, sky, wanted
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -106,6 +107,9 @@
     charmPanel: document.getElementById("charm-panel"),
     charmMeta: document.getElementById("charm-meta"),
     charmRows: document.getElementById("charm-rows"),
+    wantedPanel: document.getElementById("wanted-panel"),
+    wantedMeta: document.getElementById("wanted-meta"),
+    wantedRows: document.getElementById("wanted-rows"),
     skyPanel: document.getElementById("sky-panel"),
     skyMeta: document.getElementById("sky-meta"),
     skyRows: document.getElementById("sky-rows"),
@@ -412,6 +416,83 @@
   if (opt.panels.includes("sky")) {
     pollSky();
     setInterval(pollSky, SKY_POLL_MS);
+  }
+
+  /* Items worth photographing.
+
+     The companion site publishes the items it still has no tooltip or icon
+     for. Cross-referenced against what you have just looted, that list becomes
+     a prompt: this thing in your bags is one nobody has a picture of, take one
+     before it is sold.
+
+     Two rules make it usable rather than noise, and both live in the daemon:
+
+     - Only the last hour counts. Loot from this morning has been sold, banked
+       or destroyed by now, and a panel listing things you no longer have is a
+       panel you stop reading. It is a reminder about what is in your bags, not
+       a history.
+     - Graded drops do not count. A `+1` has its own tooltip, so a picture of
+       one is not a picture of the item the site is missing.
+
+     Capped at five rows. This sits over the game and competes with it for
+     screen; anything longer is a list, and a list belongs in the window.
+     Whatever is left over is counted in the header rather than dropped
+     silently.
+
+     Polled on its own timer like the other list panels — the snapshot goes out
+     on every log line and a work queue has no business riding along. Twelve
+     seconds is well inside the time it takes to loot the next corpse. */
+  const WANTED_POLL_MS = 12000;
+  const WANTED_ROWS = 5;
+  const WANTED_WINDOW = 3600;
+
+  async function pollWanted() {
+    if (!opt.panels.includes("wanted")) return;
+    try {
+      const r = await fetch(
+        `/api/wanted/recent?window=${WANTED_WINDOW}&limit=${WANTED_ROWS}`
+      );
+      if (!r.ok) return;
+      const d = await r.json();
+      const rows = d.items || [];
+      el.wantedPanel.classList.toggle("hidden", rows.length === 0);
+      if (!rows.length) return;
+      const extra = (d.total || rows.length) - rows.length;
+      el.wantedMeta.textContent = extra > 0 ? `${d.total}, showing ${rows.length}` : "";
+      el.wantedRows.innerHTML = rows
+        .map((i) => {
+          const needs = (i.needs || []).join(" + ") || "a picture";
+          const from = i.source ? `from ${i.source}` : "in your bags";
+          return `<div class="row you" style="--share:100%">
+            <span class="name">${esc(i.item)}</span>
+            <span class="nums"><span class="dmg">${esc(needs)}</span></span>
+          </div>
+          <div class="row"><span class="name reward">${esc(from)}</span>
+            <span class="nums"><span class="dmg">${ago(i.at)}</span></span>
+          </div>`;
+        })
+        .join("");
+    } catch (e) {
+      /* daemon busy or restarting; try again next tick */
+    }
+  }
+
+  /* How long ago, in the log's clock. The daemon reports `at` as a log
+     timestamp, which is naive local time read as UTC — see `logNow`. */
+  function ago(at) {
+    const secs = Math.max(0, logNow() - at);
+    if (secs < 60) return "just now";
+    const m = Math.round(secs / 60);
+    return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`;
+  }
+
+  function logNow() {
+    return Math.floor(Date.now() / 1000) - new Date().getTimezoneOffset() * 60;
+  }
+
+  if (opt.panels.includes("wanted")) {
+    pollWanted();
+    setInterval(pollWanted, WANTED_POLL_MS);
   }
 
   /* Session totals.

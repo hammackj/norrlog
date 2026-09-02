@@ -392,6 +392,22 @@ pub struct LootTally {
     pub transmuted_into: Vec<String>,
 }
 
+/// An item you picked up recently and probably still have.
+///
+/// Built by [`Engine::recent_pickups`], which documents why "probably" is the
+/// strongest word available here.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentPickup {
+    /// The name as the client wrote it, ungraded by construction.
+    pub item: String,
+    /// When it was last picked up, in the log's clock.
+    pub at: i64,
+    /// How many arrived inside the window.
+    pub count: u64,
+    /// The most recent corpse it came off, when the log named one.
+    pub source: Option<String>,
+}
+
 /// Level-progression analysis.
 ///
 /// All experience figures are "percent of a level", because that is the only
@@ -743,6 +759,16 @@ pub struct Engine {
     /// fight closed, and it was silently discarded. Encounters still keep their
     /// own copy for per-fight display; this list is the authoritative tally.
     all_loot: Vec<eqlparser_core::encounter::LootRecord>,
+    /// Items a screenshot has already been taken of, keyed by
+    /// [`crate::itemdb::match_key`] and holding the display name.
+    ///
+    /// A hand-made list, like the buff marks: nothing in the log can tell you
+    /// whether you pointed a camera at something.
+    screenshot_marks: std::collections::BTreeMap<String, String>,
+    /// Where those marks are written. Held rather than derived on each call so
+    /// a test can be pointed somewhere harmless — see
+    /// [`Engine::use_screenshot_store`].
+    screenshot_store: Option<std::path::PathBuf>,
     player: String,
     last_timestamp: i64,
     /// When the current play session began.
@@ -840,6 +866,11 @@ impl Engine {
             coin_from_corpses: 0,
             coin_from_sales: 0,
             all_loot: Vec::new(),
+            screenshot_marks: std::collections::BTreeMap::new(),
+            // Hand-made state that nothing can regenerate, so it sits with the
+            // buff marks in the config directory rather than beside the
+            // rebuildable database. See `crate::paths`.
+            screenshot_store: crate::paths::config_file("screenshots.json"),
             player,
             last_timestamp: 0,
             session_start: 0,
@@ -859,6 +890,7 @@ impl Engine {
         let registry = ProcRegistry::from_spells(e.resolver.db());
         e.procs.set_registry(registry);
         e.load_marks();
+        e.load_screenshot_marks();
         e.load_task_defs();
         e.load_sky_quests();
         e
@@ -1766,6 +1798,152 @@ impl Engine {
         for (name, mark) in map {
             self.resolver.set_mark(&name, Some(mark));
         }
+    }
+
+    // -- Screenshot marks ---------------------------------------------------
+
+    /// Record that a screenshot of `item` has been taken, or take that back.
+    ///
+    /// Held by the daemon rather than the GUI for the same reason the buff
+    /// marks are: the overlay has no access to GUI config, and an item ticked
+    /// off in the window must stop being shouted about on screen a second
+    /// later.
+    pub fn set_screenshot_mark(&mut self, item: &str, have: bool) {
+        let key = crate::itemdb::match_key(item);
+        if key.is_empty() {
+            return;
+        }
+        if have {
+            // First spelling wins. Both callers hand over a properly cased
+            // name — the site's in the window, the client's in the overlay —
+            // but re-ticking something already ticked must not be able to
+            // rewrite the stored name into whatever was typed the second time.
+            self.screenshot_marks.entry(key).or_insert_with(|| {
+                eqlparser_core::drops::canonical_item(item).trim().to_string()
+            });
+        } else {
+            self.screenshot_marks.remove(&key);
+        }
+        self.save_screenshot_marks();
+    }
+
+    /// Whether `item` has already been captured. Grade-insensitive, because a
+    /// `+1` and its base share nothing but a name — see [`has_screenshot`]'s
+    /// caller, which never offers a graded drop in the first place.
+    ///
+    /// [`has_screenshot`]: Engine::has_screenshot
+    pub fn has_screenshot(&self, item: &str) -> bool {
+        self.screenshot_marks
+            .contains_key(&crate::itemdb::match_key(item))
+    }
+
+    /// Every item marked captured, by display name, in name order.
+    pub fn screenshot_marks(&self) -> Vec<String> {
+        self.screenshot_marks.values().cloned().collect()
+    }
+
+    /// Read and write the marks somewhere else, discarding what is loaded and
+    /// reading that file instead.
+    ///
+    /// Exists so the tests can exercise this without touching the real config
+    /// directory. Marks are hand-made state; a test run that clobbers them
+    /// would be worse than leaving the feature untested.
+    #[cfg(test)]
+    pub fn use_screenshot_store(&mut self, path: Option<std::path::PathBuf>) {
+        self.screenshot_marks.clear();
+        self.screenshot_store = path;
+        self.load_screenshot_marks();
+    }
+
+    fn save_screenshot_marks(&self) {
+        let Some(path) = self.screenshot_store.clone() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // A plain array of names: this is a list a person may well want to
+        // read, edit or paste somewhere, and the key is derivable from the
+        // name it was derived from.
+        let names: Vec<&String> = self.screenshot_marks.values().collect();
+        if let Ok(json) = serde_json::to_string_pretty(&names) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    fn load_screenshot_marks(&mut self) {
+        let Some(path) = self.screenshot_store.clone() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(names) = serde_json::from_str::<Vec<String>>(&text) else {
+            eprintln!("[eqlparserd] screenshots.json is unreadable; ignoring it");
+            return;
+        };
+        for name in names {
+            let key = crate::itemdb::match_key(&name);
+            if !key.is_empty() {
+                self.screenshot_marks.insert(key, name);
+            }
+        }
+    }
+
+    /// Items picked up since `since` that you could still photograph.
+    ///
+    /// Three filters, each of which exists because the answer is useless
+    /// without it:
+    ///
+    /// * **Ungraded only.** A `+1` is a different tooltip from the item it is
+    ///   a roll of, so a screenshot of one is not a screenshot of the other.
+    ///   Everywhere else in this program a grade is folded away as noise;
+    ///   here it disqualifies the drop outright.
+    /// * **Still in hand.** Something auto-sold on pickup, or combined into
+    ///   something else, is gone — the camera cannot be pointed at it. Only
+    ///   [`LootFate::Kept`] and [`LootFate::Stored`] leave an item where you
+    ///   can inspect it.
+    /// * **Recent.** Bags fill and get emptied; an item looted this morning is
+    ///   a guess, not a fact. The caller picks the window.
+    ///
+    /// One entry per item, carrying the most recent sighting.
+    ///
+    /// [`LootFate::Kept`]: eqlparser_core::encounter::LootFate::Kept
+    /// [`LootFate::Stored`]: eqlparser_core::encounter::LootFate::Stored
+    pub fn recent_pickups(&self, since: i64) -> Vec<RecentPickup> {
+        use eqlparser_core::encounter::LootFate;
+        use std::collections::HashMap;
+        let mut map: HashMap<String, RecentPickup> = HashMap::new();
+        for l in self.all_loot.iter().filter(|l| l.timestamp >= since) {
+            if !matches!(l.fate, LootFate::Kept | LootFate::Stored) {
+                continue;
+            }
+            if eqlparser_core::drops::split_grade(&l.item).1.is_some() {
+                continue;
+            }
+            let key = crate::itemdb::match_key(&l.item);
+            if key.is_empty() {
+                continue;
+            }
+            let e = map.entry(key).or_insert_with(|| RecentPickup {
+                item: l.item.trim().to_string(),
+                at: 0,
+                count: 0,
+                source: None,
+            });
+            e.count += l.quantity;
+            if l.timestamp >= e.at {
+                e.at = l.timestamp;
+                // The most recent corpse it came off, so the panel names one
+                // that is probably still on the ground next to you.
+                if l.source.is_some() {
+                    e.source = l.source.clone();
+                }
+            }
+        }
+        let mut v: Vec<RecentPickup> = map.into_values().collect();
+        v.sort_by_key(|p| std::cmp::Reverse(p.at));
+        v
     }
 
     /// What has been hitting you, aggregated across every fight or one of them.
@@ -4289,6 +4467,79 @@ mod tests {
             !enc.loot.iter().any(|l| l.item == "Random Trinket"),
             "unrelated loot must not be attributed to an old fight"
         );
+    }
+
+    /// The screenshot prompt is about what is in your bags right now, so it
+    /// answers a narrower question than the loot tally does.
+    #[test]
+    fn recent_pickups_offer_only_what_you_could_still_photograph() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                // Long before the window: sold, banked or destroyed by now.
+                "[Tue Jul 28 12:00:00 2026] --You have looted a Stale Bread from a rat's corpse.--",
+                "[Tue Jul 28 14:00:00 2026] --You have looted a Rusty Dagger from a rat's corpse.--",
+                // A roll of an item, not the item: its tooltip is its own.
+                "[Tue Jul 28 14:00:05 2026] --You have looted a Woven Skull Cap +1 from a rat's corpse.--",
+                // Gone the instant it was picked up.
+                "[Tue Jul 28 14:00:10 2026] You looted a Fire Beetle Eye from a fire beetle's corpse and sold it for 2 silver.",
+                // In a container, but still yours to inspect.
+                "[Tue Jul 28 14:00:15 2026] --You have looted 2 Spider Silk from a spider's corpse.--",
+                "[Tue Jul 28 14:30:00 2026] You slash a rat for 10 points of damage.",
+            ],
+        );
+        let since = e.now() - 3600;
+        let got = e.recent_pickups(since);
+        let names: Vec<&str> = got.iter().map(|p| p.item.as_str()).collect();
+        assert!(names.contains(&"Rusty Dagger"), "kept: {names:?}");
+        assert!(names.contains(&"Spider Silk"), "stored: {names:?}");
+        assert!(!names.contains(&"Stale Bread"), "outside the window: {names:?}");
+        assert!(!names.contains(&"Woven Skull Cap +1"), "graded: {names:?}");
+        assert!(!names.contains(&"Fire Beetle Eye"), "sold on pickup: {names:?}");
+        // Newest first, and the corpse it came off travels with it.
+        assert_eq!(got.first().map(|p| p.item.as_str()), Some("Spider Silk"));
+        let dagger = got.iter().find(|p| p.item == "Rusty Dagger").unwrap();
+        assert_eq!(dagger.source.as_deref(), Some("a rat"));
+    }
+
+    /// A tick is remembered by identity, not by the exact string that was
+    /// clicked — the overlay asks with the client's spelling and the tab asks
+    /// with the site's.
+    #[test]
+    fn screenshot_marks_ignore_case_and_grade() {
+        let dir = std::env::temp_dir().join(format!(
+            "eqlparserd-marks-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("screenshots.json");
+
+        let mut e = engine();
+        e.use_screenshot_store(Some(file.clone()));
+        assert!(!e.has_screenshot("Rusty Dagger"));
+        e.set_screenshot_mark("rusty   DAGGER", true);
+        assert!(e.has_screenshot("Rusty Dagger"));
+        // A grade is a roll of the same item, and only the base is ever
+        // offered, so both spellings have to land on the one mark.
+        assert!(e.has_screenshot("Rusty Dagger +2"));
+        // The display name is kept ungraded, so the list reads as item names.
+        e.set_screenshot_mark("Woven Skull Cap +1", true);
+        assert!(e.screenshot_marks().contains(&"Woven Skull Cap".to_string()));
+        // And re-ticking with a worse spelling does not rewrite it.
+        e.set_screenshot_mark("woven skull cap", true);
+        assert!(e.screenshot_marks().contains(&"Woven Skull Cap".to_string()));
+        e.set_screenshot_mark("RUSTY DAGGER", false);
+        assert!(!e.has_screenshot("Rusty Dagger"));
+
+        // And a tick survives a restart, which is the whole point of writing
+        // it down.
+        let mut again = engine();
+        again.use_screenshot_store(Some(file));
+        assert!(again.has_screenshot("woven skull cap"));
+        assert!(!again.has_screenshot("Rusty Dagger"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

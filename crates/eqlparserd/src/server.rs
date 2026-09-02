@@ -80,6 +80,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wiki", get(wiki))
         .route("/api/incoming", get(incoming))
         .route("/api/buff-marks", get(get_marks).post(set_mark))
+        .route("/api/item-brief", get(item_brief))
+        .route("/api/wanted", get(wanted))
+        .route("/api/wanted/mark", post(set_wanted_mark))
+        .route("/api/wanted/recent", get(wanted_recent))
         .route("/api/alerts", get(alerts).post(put_alert))
         .route("/api/alerts/delete", post(delete_alert))
         .route("/api/lines", get(lines))
@@ -999,6 +1003,288 @@ async fn set_mark(State(s): State<AppState>, Json(req): Json<MarkRequest>) -> Re
     (StatusCode::OK, "ok").into_response()
 }
 
+/// How many item lookups may be in flight at once.
+///
+/// The site is a small program on somebody's server, and a page listing two
+/// hundred items would otherwise open two hundred connections to it at once.
+/// Eight keeps a cold fetch of the whole Plane of Sky item set to a few
+/// seconds without behaving like a load test.
+const BRIEF_CONCURRENCY: usize = 8;
+
+/// The most names one request may ask about, so a caller cannot turn a single
+/// URL into an unbounded fan-out. The renderer chunks past this.
+const BRIEF_MAX: usize = 150;
+
+#[derive(Debug, Deserialize)]
+struct BriefQuery {
+    /// Item names, `|`-separated. Not commas: item names contain those, and
+    /// `|` appears in none of them.
+    names: Option<String>,
+}
+
+/// Icons and site links for a batch of items, in one request.
+///
+/// # Why a batch
+///
+/// A list of quest requirements wants an icon per row, and eqdb answers about
+/// one item at a time. Asking from the renderer would be one request per row
+/// with the window's own connection limit in the way; asking here means the
+/// lookups share this process's cache — already warm for anything hovered —
+/// and run a few at a time against the site.
+///
+/// The reply is deliberately thin. Everything needed to draw a row and link it
+/// is here, and nothing else: the full record is a hover away.
+async fn item_brief(State(s): State<AppState>, Query(q): Query<BriefQuery>) -> Response {
+    let names: Vec<String> = q
+        .names
+        .unwrap_or_default()
+        .split('|')
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .take(BRIEF_MAX)
+        .collect();
+
+    let mut out = serde_json::Map::new();
+    for chunk in names.chunks(BRIEF_CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for name in chunk {
+            let db = s.itemdb.clone();
+            let name = name.clone();
+            set.spawn(async move {
+                // Graded drops are the same item; the site only knows the
+                // ungraded name.
+                let base = eqlparser_core::drops::canonical_item(&name).to_string();
+                let found = db.item(&base).await;
+                (name, base, found)
+            });
+        }
+        while let Some(Ok((name, base, found))) = set.join_next().await {
+            let m = found
+                .as_ref()
+                .and_then(|v| v.get("matches"))
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first());
+            out.insert(
+                name,
+                serde_json::json!({
+                    "on_site": m.is_some(),
+                    // The slug the site files it under. Derived rather than
+                    // read back: `/api/item` echoes the name it was asked for,
+                    // and the site accepts either spelling of an apostrophe.
+                    "slug": crate::itemdb::slug(&base),
+                    "icon": m.and_then(|m| m.get("icon")).filter(|i| !i.is_null()),
+                }),
+            );
+        }
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "base": s.itemdb.base(),
+        "count": out.len(),
+        "items": out,
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Screenshots wanted
+// ---------------------------------------------------------------------------
+//
+// eqdb publishes the items it still has no tooltip or icon for. It takes no
+// filters and answers with the whole list, so it is fetched here — once, and
+// cached — rather than by each panel that wants it. Going through the daemon
+// also keeps the window's content-security policy closed to remote origins,
+// the same reason item lookups come this way.
+//
+// Cross-referencing against loot happens here too, so the window and the
+// overlay cannot disagree about whether an item is worth photographing.
+
+/// Pull the item list out of the site's payload, keyed for matching.
+///
+/// Anything without a usable name is dropped rather than carried as a row that
+/// can never match anything.
+fn wanted_index(payload: &serde_json::Value) -> HashMap<String, &serde_json::Value> {
+    let mut out = HashMap::new();
+    let Some(items) = payload.get("items").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for it in items {
+        let Some(name) = it.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let key = crate::itemdb::match_key(name);
+        if !key.is_empty() {
+            out.insert(key, it);
+        }
+    }
+    out
+}
+
+#[derive(Debug, Deserialize)]
+struct WantedQuery {
+    /// `refresh=1` re-asks the site instead of using the cached list. The
+    /// button behind it exists because the list changes when *you* upload a
+    /// screenshot, which is exactly when waiting ten minutes feels broken.
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+/// The whole wanted list, each item carrying whether it is already ticked off.
+///
+/// `age_seconds` is how old the copy is. It is reported rather than hidden
+/// because a list that could not be refreshed is still the best list there is,
+/// and the caller should be able to say so.
+async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Response {
+    let force = matches!(q.refresh.as_deref(), Some("1") | Some("true"));
+    let got = s.itemdb.wanted(force).await;
+    let Some((payload, age)) = got else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "base": s.itemdb.base(),
+            "error": "the item site could not be reached, and nothing has been fetched yet",
+            "items": [],
+            "count": 0,
+            "have_count": 0,
+        }))
+        .into_response();
+    };
+
+    // The engine is locked only to read the marks, and never across the fetch
+    // above: the follower thread holds this lock while ingesting lines.
+    let (items, marked_total): (Vec<serde_json::Value>, usize) = {
+        let engine = s.engine.lock().unwrap();
+        let marked_total = engine.screenshot_marks().len();
+        let items = payload
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|it| {
+                        let mut row = it.clone();
+                        let have = it
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|n| engine.has_screenshot(n));
+                        if let Some(o) = row.as_object_mut() {
+                            o.insert("have".into(), serde_json::Value::Bool(have));
+                        }
+                        row
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (items, marked_total)
+    };
+    let have_count = items
+        .iter()
+        .filter(|i| i.get("have").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
+
+    Json(serde_json::json!({
+        "ok": true,
+        "base": s.itemdb.base(),
+        "age_seconds": age,
+        "count": items.len(),
+        "have_count": have_count,
+        // Every item ever ticked off, including those the site has since
+        // published and dropped from the list. The difference between this and
+        // `have_count` is how many of your screenshots have landed.
+        "marked_total": marked_total,
+        "needing_tooltip": payload.get("needing_tooltip"),
+        "needing_icon": payload.get("needing_icon"),
+        "items": items,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct WantedMarkRequest {
+    item: String,
+    /// Absent means "ticked".
+    have: Option<bool>,
+}
+
+/// Tick an item off the screenshot list, or untick it.
+async fn set_wanted_mark(
+    State(s): State<AppState>,
+    Json(req): Json<WantedMarkRequest>,
+) -> Response {
+    let mut engine = s.engine.lock().unwrap();
+    engine.set_screenshot_mark(&req.item, req.have.unwrap_or(true));
+    let have = engine.has_screenshot(&req.item);
+    Json(serde_json::json!({ "ok": true, "item": req.item, "have": have })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct WantedRecentQuery {
+    /// How far back to look, in seconds.
+    window: Option<i64>,
+    /// How many rows to return. The total is reported regardless.
+    limit: Option<usize>,
+}
+
+/// Items you have picked up recently that the site still wants a picture of.
+///
+/// The window is deliberately short and the default is an hour: this answers
+/// "photograph this before you forget", not "what have you ever looted". An
+/// item from three days ago has very likely been sold, banked or destroyed,
+/// and a list full of things you no longer have is one nobody reads.
+async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQuery>) -> Response {
+    let window = q.window.unwrap_or(3600).clamp(60, 86_400);
+    let limit = q.limit.unwrap_or(5).clamp(1, 50);
+
+    let Some((payload, age)) = s.itemdb.wanted(false).await else {
+        // No list means no opinion. Saying "nothing wanted" would be a claim,
+        // and the panel would hide itself on the strength of it.
+        return Json(serde_json::json!({
+            "ok": false,
+            "window_seconds": window,
+            "total": 0,
+            "items": [],
+        }))
+        .into_response();
+    };
+    let index = wanted_index(&payload);
+
+    let (pickups, marks): (Vec<crate::engine::RecentPickup>, Vec<bool>) = {
+        let engine = s.engine.lock().unwrap();
+        let since = engine.now() - window;
+        let p = engine.recent_pickups(since);
+        let m = p.iter().map(|x| engine.has_screenshot(&x.item)).collect();
+        (p, m)
+    };
+
+    let rows: Vec<serde_json::Value> = pickups
+        .iter()
+        .zip(marks)
+        .filter(|(_, marked)| !marked)
+        .filter_map(|(p, _)| {
+            let it = index.get(&crate::itemdb::match_key(&p.item))?;
+            Some(serde_json::json!({
+                "item": p.item,
+                "at": p.at,
+                "count": p.count,
+                "source": p.source,
+                "slug": it.get("slug"),
+                "needs": it.get("needs"),
+                "seen": it.get("seen"),
+            }))
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "ok": true,
+        "window_seconds": window,
+        "age_seconds": age,
+        // The full count, so a capped list can say what it is hiding rather
+        // than quietly presenting five as the whole answer.
+        "total": rows.len(),
+        "items": rows.into_iter().take(limit).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Alerts
 // ---------------------------------------------------------------------------
@@ -1682,7 +1968,17 @@ async fn wiki() -> Response {
 }
 
 /// Plane of Sky quest progress.
-async fn sky(State(s): State<AppState>) -> Json<eqlparser_core::skyquest::SkyReport> {
+/// The zone eqdb files the Plane of Sky under.
+const SKY_ZONE_SLUG: &str = "the_plane_of_sky";
+
+#[derive(Debug, Deserialize)]
+struct SkyQuery {
+    /// `refresh=1` re-asks the site for the zone record.
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+async fn sky(State(s): State<AppState>, Query(q): Query<SkyQuery>) -> Response {
     let mut report = { s.engine.lock().unwrap().sky_report() };
     // History spans every log ever parsed; the tracker only knows this one.
     if let Some(store) = &s.store {
@@ -1690,7 +1986,250 @@ async fn sky(State(s): State<AppState>) -> Json<eqlparser_core::skyquest::SkyRep
             Engine::apply_stored_turn_ins(&mut report, &stored);
         }
     }
-    Json(report)
+    let force = matches!(q.refresh.as_deref(), Some("1") | Some("true"));
+    let site = sky_site_overlay(&s, &report, force).await;
+
+    // Merged rather than nested under a new type: the report is what the page
+    // has always read, and the site's account of the same quests rides
+    // alongside it as a second opinion rather than replacing anything.
+    let mut body = serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(o) = body.as_object_mut() {
+        o.insert("site".into(), site);
+    }
+    Json(body).into_response()
+}
+
+/// What eqdb says about the Plane of Sky, keyed to line up with our own table.
+///
+/// # Why an overlay and not a replacement
+///
+/// The quest table in `skyquest.rs` is hand-transcribed, and the site is
+/// assembled from parsed logs. Neither is authoritative over the other, and
+/// right now they agree exactly on every quest both know — so the interesting
+/// output is not a merged record but the *difference*: which quests the site
+/// has yet to hear about, which it marks as still a draft, and any field where
+/// the two have drifted apart. The first of those is a list of things worth
+/// contributing; the last is the alarm that would fire if either side went
+/// wrong.
+///
+/// Replacing the table outright was considered and rejected: the site has 84
+/// of our 95 quests, so taking its list wholesale would silently drop eleven.
+async fn sky_site_overlay(
+    s: &AppState,
+    report: &eqlparser_core::skyquest::SkyReport,
+    force: bool,
+) -> serde_json::Value {
+    let Some((zone, age)) = s.itemdb.zone(SKY_ZONE_SLUG, force).await else {
+        return serde_json::json!({
+            "ok": false,
+            "base": s.itemdb.base(),
+            "error": "the item site could not be reached, and its Sky record has never been fetched",
+        });
+    };
+
+    let empty = Vec::new();
+    let site_quests = zone
+        .get("quests")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
+    let by_name: HashMap<String, &serde_json::Value> = site_quests
+        .iter()
+        .filter_map(|q| {
+            let n = q.get("name").and_then(|v| v.as_str())?;
+            Some((n.trim().to_lowercase(), q))
+        })
+        .collect();
+
+    let mut quests = serde_json::Map::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for q in &report.quests {
+        let Some(sq) = by_name.get(&q.name.trim().to_lowercase()) else {
+            missing.push(&q.name);
+            continue;
+        };
+        let start = sq.get("start").and_then(|v| v.as_str()).unwrap_or("");
+        let site_items: Vec<(String, Option<String>)> = sq
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|i| i.as_str())
+                    .map(split_site_item)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        quests.insert(
+            q.name.clone(),
+            serde_json::json!({
+                "verified": sq.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
+                "draft": sq.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
+                "start": start,
+                "notes": sq.get("notes").and_then(|v| v.as_str()).unwrap_or(""),
+                "updated": sq.get("updated"),
+                "contributors": sq.get("contributors"),
+                "dialogue": sq.get("dialogue"),
+                "items": site_items.iter().map(|(n, src)| serde_json::json!({
+                    "name": n, "source": src
+                })).collect::<Vec<_>>(),
+                "reward": sq.get("reward"),
+                "giver": sq.get("giver"),
+                "disagrees": sky_disagreements(q, sq, start, &site_items),
+            }),
+        );
+    }
+
+    // What drops here, as the site has actually observed it — but only for the
+    // items some quest asks for. The zone record lists everything that has
+    // ever dropped in Sky, and a panel about quest requirements has no use for
+    // the other hundred-odd.
+    let wanted_items: std::collections::HashSet<String> = report
+        .quests
+        .iter()
+        .flat_map(|q| q.items.iter())
+        .map(|i| crate::itemdb::match_key(&i.name))
+        .collect();
+    let mut drops = serde_json::Map::new();
+    for d in zone.get("drops").and_then(|v| v.as_array()).unwrap_or(&empty) {
+        let Some(item) = d.get("item").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !wanted_items.contains(&crate::itemdb::match_key(item)) {
+            continue;
+        }
+        let sources: Vec<serde_json::Value> = d
+            .get("sources")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|src| {
+                        let npc = src.get("npc").and_then(|v| v.as_str())?;
+                        Some(serde_json::json!({
+                            "npc": npc,
+                            "looted": src.get("looted"),
+                            // Named bosses map to an island; trash does not,
+                            // and is left unplaced rather than guessed at.
+                            "island": island_of_npc(npc),
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        drops.insert(
+            item.to_string(),
+            serde_json::json!({ "looted": d.get("looted"), "sources": sources }),
+        );
+    }
+
+    serde_json::json!({
+        "ok": true,
+        "base": s.itemdb.base(),
+        "age_seconds": age,
+        "zone": zone.get("name"),
+        "count": site_quests.len(),
+        "matched": quests.len(),
+        // Ours that the site has never heard of — the contribution list.
+        "missing": missing,
+        "quests": quests,
+        "drops": drops,
+    })
+}
+
+/// Split the site's `"Azure Ring (3-Gorga)"` into name and source note.
+///
+/// The site writes a requirement as one string with the note in brackets;
+/// our table keeps the two apart. Only a trailing bracket counts, so an item
+/// whose name contains brackets survives intact.
+fn split_site_item(s: &str) -> (String, Option<String>) {
+    let t = s.trim();
+    let Some(body) = t.strip_suffix(')') else {
+        return (t.to_string(), None);
+    };
+    // The matching `(` for that final `)`, not merely the last one in the
+    // string: `rfind` picks the wrong bracket the moment a name contains one.
+    let Some(open) = body.rfind('(') else {
+        return (t.to_string(), None);
+    };
+    let note = &body[open + 1..];
+    let name = body[..open].trim_end();
+    // A note is a short aside — an island code, or the word "rune". Anything
+    // with a bracket of its own is part of the name, not a note about it.
+    if name.is_empty() || note.contains('(') || note.contains(')') {
+        return (t.to_string(), None);
+    }
+    (name.to_string(), Some(note.to_string()))
+}
+
+/// The word said to a giver, out of the site's `start` sentence.
+///
+/// The site writes it as prose — `Hail Torgon Blademaster, then say "skill".`
+/// — and the quoted word is the part our table stores as `phrase`.
+fn site_phrase(start: &str) -> Option<&str> {
+    let rest = start.split_once("say \"")?.1;
+    rest.split_once('"').map(|(w, _)| w)
+}
+
+/// Where our table and the site's record differ, in words.
+///
+/// Empty today — the two agree on every quest both know — which is exactly why
+/// it is worth computing. A transcription that drifts, or a site entry written
+/// from a different server's requirements, shows up here rather than silently
+/// contradicting whichever source a given panel happened to read.
+fn sky_disagreements(
+    ours: &eqlparser_core::skyquest::SkyQuestProgress,
+    theirs: &serde_json::Value,
+    start: &str,
+    site_items: &[(String, Option<String>)],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+
+    if let Some(g) = theirs.get("giver").and_then(|v| v.as_str()) {
+        if !same(g, &ours.giver) {
+            out.push(format!("giver: ours \"{}\", site \"{g}\"", ours.giver));
+        }
+    }
+    if let Some(r) = theirs.get("reward").and_then(|v| v.as_str()) {
+        if !same(r, &ours.reward) {
+            out.push(format!("reward: ours \"{}\", site \"{r}\"", ours.reward));
+        }
+    }
+    if let Some(p) = site_phrase(start) {
+        if !same(p, &ours.phrase) {
+            out.push(format!("phrase: ours \"{}\", site \"{p}\"", ours.phrase));
+        }
+    }
+    // Compared as sets: the site lists the rune among the items and so do we,
+    // but neither promises an order.
+    let norm = |v: &str| crate::itemdb::match_key(v);
+    let ours_items: std::collections::BTreeSet<String> =
+        ours.items.iter().map(|i| norm(&i.name)).collect();
+    let their_items: std::collections::BTreeSet<String> =
+        site_items.iter().map(|(n, _)| norm(n)).collect();
+    if !their_items.is_empty() && ours_items != their_items {
+        let only_ours: Vec<&str> = ours_items
+            .difference(&their_items)
+            .map(String::as_str)
+            .collect();
+        let only_theirs: Vec<&str> = their_items
+            .difference(&ours_items)
+            .map(String::as_str)
+            .collect();
+        out.push(format!(
+            "items: only ours [{}], only site [{}]",
+            only_ours.join(", "),
+            only_theirs.join(", ")
+        ));
+    }
+    out
+}
+
+/// The island a named belongs to, or `None` for trash and anything unplaced.
+fn island_of_npc(npc: &str) -> Option<&'static str> {
+    eqlparser_core::skyquest::SKY_ISLANDS
+        .iter()
+        .find(|(_, _, bosses)| bosses.iter().any(|b| b.eq_ignore_ascii_case(npc.trim())))
+        .map(|(code, _, _)| *code)
 }
 
 /// Add or replace one Sky quest, for classes not in the built-in table.
@@ -2047,5 +2586,115 @@ mod tests {
         let Json(v) = loot(State(s), Query(LootQuery { session: None })).await;
         assert_eq!(v["total"], 1);
         assert_eq!(v["items"][0]["item"], "Mummy Wrap");
+    }
+
+    /// The site writes a requirement as one string with the source in
+    /// brackets; our table keeps the two apart.
+    #[test]
+    fn a_site_requirement_splits_into_item_and_note() {
+        assert_eq!(
+            split_site_item("Azure Ring (3-Gorga)"),
+            ("Azure Ring".into(), Some("3-Gorga".into()))
+        );
+        assert_eq!(
+            split_site_item("Wind Rune Neza (rune)"),
+            ("Wind Rune Neza".into(), Some("rune".into()))
+        );
+        // No bracket at all, and a bracket that is part of the name.
+        assert_eq!(split_site_item("Efreeti Belt"), ("Efreeti Belt".into(), None));
+        assert_eq!(
+            split_site_item("Some Item (with (nested) brackets)"),
+            ("Some Item (with (nested) brackets)".into(), None)
+        );
+    }
+
+    /// The word said to a giver is quoted inside the site's prose.
+    #[test]
+    fn the_phrase_comes_out_of_the_sites_start_sentence() {
+        assert_eq!(
+            site_phrase("Hail Torgon Blademaster, then say \"skill\"."),
+            Some("skill")
+        );
+        assert_eq!(
+            site_phrase("Hail Cilin Spellsinger, then say \"ready to be tested\"."),
+            Some("ready to be tested")
+        );
+        // Nothing quoted, and nothing at all: both mean "the site does not say".
+        assert_eq!(site_phrase("Hail the giver."), None);
+        assert_eq!(site_phrase(""), None);
+    }
+
+    /// Only nameds place a drop on an island. Trash is left unplaced rather
+    /// than guessed at from a similar name.
+    #[test]
+    fn a_named_places_a_drop_on_its_island() {
+        assert_eq!(island_of_npc("Gorgalosk"), Some("3-Gorga"));
+        assert_eq!(island_of_npc("gorgalosk"), Some("3-Gorga"));
+        assert_eq!(island_of_npc("The Spiroc Lord"), Some("5-SL"));
+        assert_eq!(island_of_npc("Eye of Veeshan"), Some("8-EoV"));
+        // `a gorgalask` is trash that merely shares a root with the named.
+        assert_eq!(island_of_npc("a gorgalask"), None);
+        assert_eq!(island_of_npc("an azarack"), None);
+        assert_eq!(island_of_npc(""), None);
+    }
+
+    /// The overlay's whole job is to notice drift, so the comparison has to
+    /// fire on a real difference and stay quiet on a cosmetic one.
+    #[test]
+    fn the_site_and_the_table_are_compared_field_by_field() {
+        let report = Engine::new("Tharn".to_string(), SpellDb::empty()).sky_report();
+        let ours = report
+            .quests
+            .iter()
+            .find(|q| q.name == "Warrior Test of Skill")
+            .expect("the seeded table has this quest");
+
+        // The site as it actually answers today: same giver, phrase, reward
+        // and items, written in its own shapes.
+        let start = "Hail Torgon Blademaster, then say \"skill\".";
+        let agrees = serde_json::json!({
+            "giver": "Torgon Blademaster",
+            "reward": "Azure Ruby Ring",
+        });
+        let items = vec![
+            ("Wind Rune Neza".to_string(), Some("rune".to_string())),
+            ("Azure Ring".to_string(), Some("3-Gorga".to_string())),
+        ];
+        assert!(
+            sky_disagreements(ours, &agrees, start, &items).is_empty(),
+            "the two agree today; a false alarm here would train the eye to ignore it"
+        );
+
+        // Case and spacing are not differences.
+        let loose = serde_json::json!({
+            "giver": "  torgon blademaster ",
+            "reward": "AZURE RUBY RING",
+        });
+        assert!(sky_disagreements(ours, &loose, start, &items).is_empty());
+
+        // A real drift on every field it checks.
+        let drifted = serde_json::json!({
+            "giver": "Someone Else",
+            "reward": "A Different Ring",
+        });
+        let wrong_items = vec![("Azure Ring".to_string(), None)];
+        let out = sky_disagreements(
+            ours,
+            &drifted,
+            "Hail Torgon Blademaster, then say \"strength\".",
+            &wrong_items,
+        );
+        assert_eq!(out.len(), 4, "giver, reward, phrase and items: {out:?}");
+        assert!(out.iter().any(|l| l.starts_with("giver:")));
+        assert!(out.iter().any(|l| l.starts_with("reward:")));
+        assert!(out.iter().any(|l| l.starts_with("phrase:")));
+        assert!(out.iter().any(|l| l.contains("wind rune neza")));
+
+        // An empty item list is the site not saying, not the site disagreeing.
+        assert!(
+            !sky_disagreements(ours, &agrees, start, &[])
+                .iter()
+                .any(|l| l.starts_with("items:"))
+        );
     }
 }
