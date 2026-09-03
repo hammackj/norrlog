@@ -1271,31 +1271,61 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
     let mut unlisted: Vec<&crate::engine::RecentPickup> = Vec::new();
     for p in unmarked {
         match index.get(&crate::itemdb::match_key(&p.item)) {
-            Some(it) => wanted_rows.push(serde_json::json!({
-                "item": p.item,
-                "at": p.at,
-                "count": p.count,
-                "source": p.source,
-                // Where to point the camera: your bags, or the item link the
-                // client wrote into chat as it sold the thing.
-                "held": p.held,
-                "new": false,
-                "slug": it.get("slug"),
-                "needs": it.get("needs"),
-                "seen": it.get("seen"),
-            })),
+            Some(it) => {
+                let known = zone_list(it.get("zones"));
+                wanted_rows.push(serde_json::json!({
+                    "item": p.item,
+                    "at": p.at,
+                    "count": p.count,
+                    "source": p.source,
+                    // Where to point the camera: your bags, or the item link the
+                    // client wrote into chat as it sold the thing.
+                    "held": p.held,
+                    "new": false,
+                    "slug": it.get("slug"),
+                    "needs": it.get("needs"),
+                    "seen": it.get("seen"),
+                    "zone": p.zone,
+                    "new_zone": new_zone(p.zone.as_deref(), &known),
+                    "known_zones": known,
+                }))
+            }
             None => unlisted.push(p),
         }
     }
 
-    let new_rows = undiscovered(&s, unlisted).await;
+    let (new_rows, zone_rows) = unlisted_rows(&s, unlisted).await;
 
-    // Undiscovered first. An item the site has never seen is the one nobody
-    // else can contribute, and the window for it is however long the thing
-    // stays in your bags or the link stays in your chat.
-    let total = new_rows.len() + wanted_rows.len();
-    let items: Vec<serde_json::Value> =
-        new_rows.into_iter().chain(wanted_rows).take(limit).collect();
+    /* The order, and why the new zones are not second.
+
+       Undiscovered first. An item the site has never seen is the one nobody
+       else can contribute, and the window for it is however long the thing
+       stays in your bags or the link stays in your chat.
+
+       Then the wanted list, because a picture is what this panel is for and an
+       item eqldb is asking about is one you can act on in ten seconds. Within
+       it, the ones that also dropped somewhere unrecorded lead: same job, more
+       to say.
+
+       Last, the items that are only a new drop location. They are real — a
+       zone nobody has contributed makes every drop in it one — and that is
+       exactly why they cannot go second: standing in such a zone produced
+       eleven of them against two discoveries on the log this was built
+       against, which in a five-row overlay would leave no room for the thing
+       the panel exists to prompt. Nothing is photographable in them, so they
+       are the ones to lose to the cap. */
+    let (unrecorded, listed): (Vec<serde_json::Value>, Vec<serde_json::Value>) =
+        wanted_rows.into_iter().partition(|r| {
+            r.get("new_zone").and_then(|v| v.as_bool()).unwrap_or(false)
+        });
+    let total = new_rows.len() + zone_rows.len() + unrecorded.len() + listed.len();
+    let items: Vec<serde_json::Value> = new_rows
+        .into_iter()
+        .chain(unrecorded)
+        .chain(listed)
+        .chain(zone_rows)
+        .take(limit)
+        .collect();
 
     Json(serde_json::json!({
         "ok": true,
@@ -1309,7 +1339,34 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
     .into_response()
 }
 
-/// The most lookups one request will spend hunting for undiscovered items.
+/// The zones a wanted-list row names, as plain strings.
+fn zone_list(v: Option<&serde_json::Value>) -> Vec<String> {
+    v.and_then(|z| z.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|z| z.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Did you loot this somewhere the site has never recorded it?
+///
+/// Three things have to be true, and the two guards are the point: a pickup
+/// the log could not place says nothing, and neither does an item the site
+/// knows but has placed nowhere at all. Both would otherwise read as "new
+/// here" about every item in the game, which is the way to make the flag
+/// worthless.
+fn new_zone(here: Option<&str>, known: &[String]) -> bool {
+    let Some(here) = here else {
+        return false;
+    };
+    !known.is_empty() && !known.iter().any(|z| z.eq_ignore_ascii_case(here))
+}
+
+/// The most lookups one request will spend asking the site about drops the
+/// wanted list does not name.
 ///
 /// A busy hour in a new zone can turn over a lot of distinct drops, and each
 /// unlisted one costs a request to the site. The cap bounds that; anything
@@ -1317,8 +1374,9 @@ async fn wanted_recent(State(s): State<AppState>, Query(q): Query<WantedRecentQu
 /// cached.
 const DISCOVERY_MAX: usize = 40;
 
-/// Of the recent drops the wanted list does not name, the ones the site has
-/// never heard of.
+/// Of the recent drops the wanted list does not name, the two kinds worth
+/// saying something about: the ones the site has never heard of, and the ones
+/// it knows but has never seen drop where you found them.
 ///
 /// # Why this is separate from the wanted list
 ///
@@ -1328,15 +1386,26 @@ const DISCOVERY_MAX: usize = 40;
 /// waiting for someone else to loot it, write it up, and publish — by which
 /// time yours has been sold.
 ///
+/// The second kind is absent from the list for the opposite reason: the item
+/// is fully written up, so nobody is asking for anything. What the site is
+/// missing is smaller and invisible from the list — an item it has only ever
+/// been shown in Befallen, dropping for you in Paineel. It costs the same one
+/// lookup to notice, since the answer to "has the site heard of this" carries
+/// the zones with it.
+///
 /// A lookup that cannot reach the site returns `None` and the item is skipped.
 /// "The site did not answer" is not evidence of discovery, and a panel that
 /// announced a dozen discoveries every time the network blinked would be worth
 /// less than no panel.
-async fn undiscovered(
+///
+/// Returned as two lists rather than one so the caller can order them without
+/// re-reading a flag off the rows it was handed.
+async fn unlisted_rows(
     s: &AppState,
     candidates: Vec<&crate::engine::RecentPickup>,
-) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let mut fresh = Vec::new();
+    let mut elsewhere = Vec::new();
     for chunk in candidates.chunks(BRIEF_CONCURRENCY).take(DISCOVERY_MAX / BRIEF_CONCURRENCY + 1) {
         let mut set = tokio::task::JoinSet::new();
         for p in chunk {
@@ -1353,18 +1422,45 @@ async fn undiscovered(
                 // The site has nothing at all, so it needs everything.
                 "needs": ["tooltip", "icon"],
                 "seen": 0,
+                "zone": p.zone,
+                // Nowhere to be new to: the item itself is the news.
+                "new_zone": false,
+                "known_zones": [],
             });
-            set.spawn(async move { (db.knows_item(&name).await, row) });
+            let here = p.zone.clone();
+            set.spawn(async move { (db.item_zones(&name).await, here, row) });
         }
-        while let Some(Ok((known, row))) = set.join_next().await {
-            if known == Some(false) {
-                out.push(row);
+        while let Some(Ok((zones, here, mut row))) = set.join_next().await {
+            match zones {
+                // The site answered, and has no record of the item.
+                Some(None) => fresh.push(row),
+                // Known — interesting only if you found it somewhere new.
+                Some(Some(known)) => {
+                    if new_zone(here.as_deref(), &known) {
+                        if let Some(o) = row.as_object_mut() {
+                            o.insert("new".into(), serde_json::Value::Bool(false));
+                            o.insert("new_zone".into(), serde_json::Value::Bool(true));
+                            o.insert("known_zones".into(), serde_json::json!(known));
+                            // It is on no wanted list, so the site is asking
+                            // for no picture of it. Saying it needs a tooltip
+                            // would be a claim about eqdb that is not true.
+                            o.insert("needs".into(), serde_json::json!([]));
+                        }
+                        elsewhere.push(row);
+                    }
+                }
+                // The site did not answer. No claim either way.
+                None => {}
             }
         }
     }
     // Newest first, as with the rest of the panel.
-    out.sort_by_key(|r| std::cmp::Reverse(r.get("at").and_then(|v| v.as_i64()).unwrap_or(0)));
-    out
+    let newest = |out: &mut Vec<serde_json::Value>| {
+        out.sort_by_key(|r| std::cmp::Reverse(r.get("at").and_then(|v| v.as_i64()).unwrap_or(0)));
+    };
+    newest(&mut fresh);
+    newest(&mut elsewhere);
+    (fresh, elsewhere)
 }
 
 // ---------------------------------------------------------------------------
@@ -2419,6 +2515,23 @@ mod tests {
                 "http://127.0.0.1:1".to_string()
             ])),
         }
+    }
+
+    /// "Nobody has recorded this here" is a claim, and it is only worth making
+    /// when both halves are actually known.
+    #[test]
+    fn a_new_drop_location_needs_both_halves_to_be_known() {
+        let known = ["Befallen".to_string(), "Paineel".to_string()];
+        assert!(new_zone(Some("Solusek's Eye"), &known));
+        assert!(!new_zone(Some("Befallen"), &known));
+        // The site writes zones one way and the client another often enough
+        // that case cannot be the difference between "known" and "new".
+        assert!(!new_zone(Some("befallen"), &known));
+        // The log could not place the pickup.
+        assert!(!new_zone(None, &known));
+        // The site knows the item but has placed none of its sources, so
+        // everywhere would read as new.
+        assert!(!new_zone(Some("Befallen"), &[]));
     }
 
     /// The overlay's panels and the Settings tickboxes are two lists in two

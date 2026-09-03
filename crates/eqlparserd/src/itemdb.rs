@@ -104,6 +104,50 @@ pub fn match_key(name: &str) -> String {
     out
 }
 
+/// The zones an item's drop sources have been seen in, from one `/api/item`
+/// payload.
+///
+/// Read from every match rather than the first. A name the site holds twice is
+/// two items as far as it is concerned, and the question here is whether *any*
+/// of them is known to drop where you are standing — the generous reading,
+/// because the claim being made downstream is "nobody has recorded this here",
+/// and that is worth making only when it is certainly true.
+///
+/// Both places a source names are taken: `zones` is where it has been seen,
+/// and `places` names the same thing per instance, which carries zones that
+/// `zones` sometimes does not.
+fn drop_zones(payload: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |z: &str| {
+        let z = z.trim();
+        if !z.is_empty() && !out.iter().any(|k| k.eq_ignore_ascii_case(z)) {
+            out.push(z.to_string());
+        }
+    };
+    let array = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(|a| a.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    for m in array(payload, "matches") {
+        for src in array(&m, "sources") {
+            for z in array(&src, "zones") {
+                if let Some(z) = z.as_str() {
+                    push(z);
+                }
+            }
+            for p in array(&src, "places") {
+                if let Some(z) = p.get("zone").and_then(|v| v.as_str()) {
+                    push(z);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Percent-encode a query value. Small by hand rather than pulling a crate in
 /// for one call: spell names carry spaces, apostrophes and backticks.
 fn urlencode(s: &str) -> String {
@@ -365,29 +409,44 @@ impl ItemDb {
         self.payloads.lock().ok()?.get(path).cloned()
     }
 
-    /// Does the site know this item at all?
+    /// What the site knows about an item, in the two facts a screenshot
+    /// prompt turns on: whether it has a record at all, and where it has seen
+    /// the thing drop.
     ///
     /// The wanted list can only name items eqdb has already seen. Something it
     /// has never heard of is missing from that list *and* is the most valuable
     /// thing you could photograph, so it has to be asked about separately.
     ///
     /// Three answers, and the third is why this exists rather than reusing
-    /// [`ItemDb::item`]: `Some(true)` the site has a record, `Some(false)` the
-    /// site answered and has none, `None` the site could not be reached.
-    /// `item` folds the last two together — a caller drawing a tooltip cannot
-    /// act on the difference — but here they are opposites. Treating an
-    /// unreachable site as "nobody has ever seen this" would mark every drop
-    /// as a discovery the moment the network hiccuped.
+    /// [`ItemDb::item`]: `None` the site could not be reached, `Some(None)` it
+    /// answered and has no record, `Some(Some(zones))` it has one, and these
+    /// are the places its sources have been seen in — possibly none, for an
+    /// item whose sources nobody has placed yet. `item` folds the first two
+    /// together, since a caller drawing a tooltip cannot act on the
+    /// difference, but here they are opposites: treating an unreachable site
+    /// as "nobody has ever seen this" would mark every drop as a discovery the
+    /// moment the network hiccuped.
+    ///
+    /// Only drop sources count towards the zones. An item sold by a vendor in
+    /// a zone is not an item that drops there, and folding the two together
+    /// would answer "yes, known here" about the one place you could not have
+    /// looted it.
     ///
     /// Shares the lookup cache with `item`, so hovering an item and being
     /// prompted about it cost one request between them.
-    pub async fn knows_item(&self, name: &str) -> Option<bool> {
+    pub async fn item_zones(&self, name: &str) -> Option<Option<Vec<String>>> {
+        Some(self.record(name).await?.map(|v| drop_zones(&v)))
+    }
+
+    /// The site's record for an item, cached, with "no record" and "no answer"
+    /// kept apart.
+    async fn record(&self, name: &str) -> Option<Option<Value>> {
         let key = slug(name);
         if key.is_empty() {
             return None;
         }
         if let Some(v) = self.cached(&key) {
-            return Some(v.is_some());
+            return Some(v);
         }
         for base in self.origins() {
             let url = format!("{base}/api/item?name={key}");
@@ -400,9 +459,8 @@ impl ItemDb {
                 *l = Some(base.clone());
             }
             let found = got.filter(|v| v.get("count").and_then(Value::as_u64).unwrap_or(0) > 0);
-            let known = found.is_some();
-            self.remember(key, found);
-            return Some(known);
+            self.remember(key, found.clone());
+            return Some(found);
         }
         None
     }
@@ -501,6 +559,37 @@ mod tests {
         assert_eq!(slug("  Fine Steel Long Sword  "), "fine_steel_long_sword");
         assert_eq!(slug("!!!"), "");
         assert_eq!(slug(""), "");
+    }
+
+    /// The zones come off every match and both places a source carries them,
+    /// because the claim built on top of this is a negative one.
+    #[test]
+    fn drop_zones_gathers_every_place_a_source_names() {
+        let payload = serde_json::json!({
+            "count": 2,
+            "matches": [
+                {
+                    "sources": [
+                        { "npc": "a decaying skeleton", "zones": ["East Commonlands", "Paineel"], "places": [] },
+                        {
+                            "npc": "young goblin",
+                            "zones": [],
+                            // An instance names its zone here and nowhere else.
+                            "places": [{ "zone": "Solusek's Eye", "mode": "instance" }]
+                        }
+                    ],
+                    // A vendor is not a drop, however placed it is.
+                    "vendors": [{ "npc": "Merchant Fisk", "zones": ["Qeynos"] }]
+                },
+                { "sources": [{ "npc": "a ghoul", "zones": ["Befallen"] }] }
+            ]
+        });
+        assert_eq!(
+            drop_zones(&payload),
+            vec!["Befallen", "East Commonlands", "Paineel", "Solusek's Eye"]
+        );
+        // Nothing to say, rather than an empty-shaped guess.
+        assert!(drop_zones(&serde_json::json!({ "count": 0 })).is_empty());
     }
 
     #[test]

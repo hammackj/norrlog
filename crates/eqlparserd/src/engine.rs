@@ -413,6 +413,12 @@ pub struct RecentPickup {
     /// for it, and that link opens the same tooltip — so it can be
     /// photographed, just from a different place. The panel says which.
     pub held: bool,
+    /// Where you were standing when the most recent copy arrived.
+    ///
+    /// The parsed place name, so it can be compared against the zones the item
+    /// site lists for the item. `None` when the log cannot say — see
+    /// [`Engine::zone_at`] — and a missing zone makes no claim either way.
+    pub zone: Option<String>,
 }
 
 /// Level-progression analysis.
@@ -784,6 +790,17 @@ pub struct Engine {
     /// fight closed, and it was silently discarded. Encounters still keep their
     /// own copy for per-fight display; this list is the authoritative tally.
     all_loot: Vec<eqlparser_core::encounter::LootRecord>,
+    /// Where you were, over time: the place name, from the moment you arrived.
+    ///
+    /// Loot carries no zone of its own, and the fight it belongs to is not a
+    /// reliable stand-in: a chest, a ground spawn or a forage happens with no
+    /// fight open at all, and those are exactly the pickups worth asking about.
+    /// Kept as arrival times rather than spans because that is what the log
+    /// gives — you are somewhere until the next zone line says otherwise.
+    ///
+    /// The parsed place name, not the client's label, so it can be compared
+    /// with a list of zones from anywhere else. See [`Snapshot::zone_place`].
+    zone_log: Vec<(i64, String)>,
     /// Items a screenshot has already been taken of, keyed by
     /// [`crate::itemdb::match_key`] and holding the display name.
     ///
@@ -891,6 +908,7 @@ impl Engine {
             coin_from_corpses: 0,
             coin_from_sales: 0,
             all_loot: Vec::new(),
+            zone_log: Vec::new(),
             screenshot_marks: std::collections::BTreeMap::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
@@ -1614,6 +1632,12 @@ impl Engine {
                 }
             }
             Event::ZoneChange { zone } => {
+                // Where you are, remembered with its arrival time, so a pickup
+                // can be placed later without a fight having been open.
+                let place = eqlparser_core::zone::Zone::parse(zone).name;
+                if self.zone_log.last().map(|(_, z)| z.as_str()) != Some(place.as_str()) {
+                    self.zone_log.push((entry.timestamp, place));
+                }
                 // Everything the bestiary records is keyed on where you are,
                 // and a zone line also ends any fight still in progress.
                 self.bestiary.on_zone(zone);
@@ -1959,6 +1983,7 @@ impl Engine {
                 count: 0,
                 source: None,
                 held: false,
+                zone: None,
             });
             e.count += l.quantity;
             // Held if any copy inside the window is still yours: two dropped
@@ -1971,6 +1996,9 @@ impl Engine {
                 if l.source.is_some() {
                     e.source = l.source.clone();
                 }
+                // The place that copy came from, which is the one you can
+                // still walk back to and photograph in.
+                e.zone = self.zone_at(l.timestamp);
             }
         }
         let mut v: Vec<RecentPickup> = map.into_values().collect();
@@ -2273,6 +2301,22 @@ impl Engine {
         self.encounters
             .iter()
             .find(|e| ts >= e.start && ts <= e.end + eqlparser_core::encounter::LOOT_GRACE_SECONDS)
+    }
+
+    /// Where you were at a given moment, as a place name.
+    ///
+    /// The zone line you last walked through before then, and nothing else.
+    /// The fight a moment belongs to is not a second opinion — an encounter
+    /// takes its zone from the same lines this does — so a log whose head
+    /// predates any zone line answers `None` here rather than reaching for the
+    /// zone you happen to be standing in now. A pickup that cannot be placed
+    /// should make no claim about where it came from.
+    pub fn zone_at(&self, ts: i64) -> Option<String> {
+        self.zone_log
+            .iter()
+            .rev()
+            .find(|(at, _)| *at <= ts)
+            .map(|(_, z)| z.clone())
     }
 
     /// Which bosses each build has cleared.
@@ -4547,6 +4591,42 @@ mod tests {
         assert!(held("Rusty Dagger"), "kept, so it is in your bags");
         assert!(held("Spider Silk"), "stored, so it is still yours");
         assert!(!held("Fire Beetle Eye"), "sold, so the chat link is the way in");
+    }
+
+    /// A pickup carries the place you were standing in, which is the half of
+    /// "is this a new drop location" the log has to supply.
+    #[test]
+    fn a_pickup_remembers_the_zone_it_came_from() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 13:00:00 2026] You have entered Befallen.",
+                "[Tue Jul 28 13:30:00 2026] --You have looted a Rusty Dagger from a rat's corpse.--",
+                // No fight anywhere near this one: a chest, a forage, a ground
+                // spawn. The zone line is the only thing that can place it.
+                "[Tue Jul 28 14:00:00 2026] You have entered The Permafrost Caverns - Solo.",
+                "[Tue Jul 28 14:10:00 2026] --You have looted a Ice Shard from a chest.--",
+            ],
+        );
+        let got = e.recent_pickups(0);
+        let zone = |n: &str| {
+            got.iter()
+                .find(|p| p.item == n)
+                .unwrap_or_else(|| panic!("{n} should be a pickup"))
+                .zone
+                .clone()
+        };
+        assert_eq!(zone("Rusty Dagger").as_deref(), Some("Befallen"));
+        // The place, not the client's label: it is compared against lists of
+        // zones written by people who never saw your instance.
+        assert_eq!(
+            zone("Ice Shard").as_deref(),
+            Some("The Permafrost Caverns"),
+            "the instance suffix is not part of the place"
+        );
+        // Before the log ever said where you were, nothing is claimed.
+        assert_eq!(e.zone_at(0), None);
     }
 
     /// One of two dropped being auto-sold still leaves one to photograph.

@@ -149,21 +149,36 @@ Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
 themselves when they have nothing to say.
 
 `wanted` is the odd one out. It lists items you have looted in the **last
-hour** that eqldb has no picture of, in two kinds:
+hour** that eqldb is missing something about, in three kinds:
 
-- **on the wanted list** — the site knows the item and is asking for a tooltip
-  or an icon.
 - **not on eqldb at all** — the site has never heard of it. These cannot appear
-  on the wanted list by construction, and are the more valuable of the two:
+  on the wanted list by construction, and are the most valuable of the three:
   waiting for eqldb to ask means waiting for somebody else to loot it first.
-  Each unlisted drop is checked against the site as it happens, and a lookup
-  that cannot reach the site is skipped rather than announced as a discovery.
+- **on the wanted list** — the site knows the item and is asking for a tooltip
+  or an icon. This is what the panel is for, so it outranks the third kind
+  however many of those there are.
+- **not known to drop here** — eqldb knows the item well, and has never been
+  shown it dropping in the zone you are standing in. Nothing needs
+  photographing; what is missing is a line on the item's map, and the only
+  person who can add it is whoever is in the zone. A whole zone nobody has
+  contributed turns every drop in it into one of these, which is why they sort
+  last and are the first to lose to the row cap.
+
+Each drop the wanted list does not name is checked against the site as it
+happens — one lookup answers both "has it heard of this" and "where has it seen
+it" — and a lookup that cannot reach the site is skipped rather than announced
+as a discovery. Neither claim is made without both halves: a pickup the log
+cannot place says nothing about zones, and neither does an item whose sources
+nobody has placed.
 
 Graded `+N` drops are never offered — a `+1` has its own tooltip, so a picture
 of one is not the picture being asked for. Anything auto-sold *is* offered,
 marked "click the chat link": the client writes a clickable item link as it
 sells, and that link opens the same tooltip. The **Screenshots** tab in the GUI shows the same list in full,
-grouped by zone, with the tickboxes that clear items off it.
+grouped by zone, with the tickboxes that clear items off it. Its "Looted
+recently" group covers a day rather than an hour and re-asks while the tab is
+open, so it and the overlay never disagree about what is still worth a
+picture.
 
 ## Plane of Sky
 

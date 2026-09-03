@@ -434,13 +434,19 @@
      - Graded drops do not count. A `+1` has its own tooltip, so a picture of
        one is not a picture of the item the site is missing.
 
-     Two kinds of row, and the second is the point of the first being cheap to
-     check. An item on eqldb's wanted list is one the site knows about and has
-     no picture of. An item the site has never heard of at all cannot be on
-     that list by construction, and is the more valuable of the two: waiting
-     for eqldb to ask for it means waiting for somebody else to loot it first.
-     Those are asked about one at a time as they drop, and drawn in the enemy
-     colour so they do not read as more of the same.
+     Three kinds of row, and the last two are the point of the first being
+     cheap to check. An item on eqldb's wanted list is one the site knows about
+     and has no picture of. An item the site has never heard of at all cannot
+     be on that list by construction, and is the most valuable of the three:
+     waiting for eqldb to ask for it means waiting for somebody else to loot it
+     first. Those are asked about one at a time as they drop, and drawn in the
+     enemy colour so they do not read as more of the same.
+
+     The third is an item eqldb knows well but has never seen drop where you
+     are standing. Nobody is asking for it — its page is finished — and the
+     only person who can tell the site it drops here is whoever is here. Same
+     colour as a discovery, since it is the same kind of fact: something only
+     you currently know.
 
      Capped at five rows. This sits over the game and competes with it for
      screen; anything longer is a list, and a list belongs in the window.
@@ -472,9 +478,16 @@
           // An item the site has never seen outranks one it has merely asked
           // about: nobody else can contribute it, and it is only yours for as
           // long as it is in your bags or the link is in your chat.
+          // What the site is missing. A picture leads when one is wanted: this
+          // panel exists to prompt for one, and an item that also dropped
+          // somewhere unrecorded is still an item to photograph first.
           const needs = i.new
             ? "new \u2014 not on eqldb at all"
-            : (i.needs || []).join(" + ") || "a picture";
+            : (i.needs || []).length
+              ? (i.needs || []).join(" + ") + (i.new_zone ? " \u00b7 new here" : "")
+              : i.new_zone
+                ? `not known to drop in ${i.zone || "this zone"}`
+                : "a picture";
           // Held items are in your bags; the rest were auto-sold on pickup,
           // and the client left a clickable item link in chat that opens the
           // same tooltip. Both can be photographed, from different places, so
@@ -484,11 +497,20 @@
               ? `from ${i.source}`
               : "in your bags"
             : "sold \u2014 click the chat link";
-          return `<div class="row ${i.new ? "enemy" : "you"}" style="--share:100%">
+          /* For a row that is *only* a new drop location, where the site has
+             seen it instead is the line that says why the row is there at
+             all. Where the thing physically is stays on the rows where you
+             are being asked to point a camera at it. */
+          const line = i.new_zone && !(i.needs || []).length
+            ? `known from ${(i.known_zones || []).slice(0, 2).join(", ")}${
+                (i.known_zones || []).length > 2 ? " +" + (i.known_zones.length - 2) : ""
+              }`
+            : from;
+          return `<div class="row ${i.new || i.new_zone ? "enemy" : "you"}" style="--share:100%">
             <span class="name">${esc(i.item)}</span>
             <span class="nums"><span class="dmg">${esc(needs)}</span></span>
           </div>
-          <div class="row"><span class="name reward">${esc(from)}</span>
+          <div class="row"><span class="name reward">${esc(line)}</span>
             <span class="nums"><span class="dmg">${ago(i.at)}</span></span>
           </div>`;
         })
