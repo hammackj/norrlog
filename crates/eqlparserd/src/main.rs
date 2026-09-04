@@ -486,33 +486,21 @@ async fn main() -> anyhow::Result<()> {
     // it needs is present. Whichever way that goes, it is said out loud: a
     // feature that is silently not running is indistinguishable from one that
     // is running and finding nothing.
-    let shot_log = if cfg.no_shots {
-        eprintln!("[eqlparserd] screenshots: not read (--no-shots)");
-        None
-    } else {
-        match shots::Reader::configure(
-            cfg.ocr.clone(),
-            cfg.shots.clone(),
-            cfg.game_dir.as_deref(),
-            std::sync::Arc::clone(&itemdb),
-        ) {
-            Ok(reader) => {
-                let reader = Arc::new(reader);
-                eprintln!(
-                    "[eqlparserd] screenshots: reading {} and sending item windows to {}",
-                    reader.watching().display(),
-                    itemdb.base()
-                );
-                let log = Arc::clone(&reader.log);
-                shots::spawn(reader, Arc::clone(&engine));
-                Some(log)
-            }
-            Err(why) => {
-                eprintln!("[eqlparserd] screenshots: not read — {why}");
-                None
-            }
-        }
-    };
+    let shots = shots::Shots::new(shots::Setup {
+        ocr: cfg.ocr.clone(),
+        shots: cfg.shots.clone(),
+        game_dir: cfg.game_dir.clone(),
+        itemdb: std::sync::Arc::clone(&itemdb),
+        off: cfg.no_shots,
+    });
+    match shots.running() {
+        true => eprintln!("[eqlparserd] screenshots: {}", shots.why_running()),
+        false => eprintln!("[eqlparserd] screenshots: not read — {}", shots.why()),
+    }
+    // Spawned whether or not there is a reader right now: a token pasted into
+    // the settings box builds one, and something has to be watching for the
+    // shots it is then meant to read.
+    shots::spawn(Arc::clone(&shots), Arc::clone(&engine));
 
     let state = AppState {
         log_path: log_path.clone(),
@@ -522,7 +510,7 @@ async fn main() -> anyhow::Result<()> {
         updates,
         store: history,
         itemdb,
-        shot_log,
+        shots,
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));

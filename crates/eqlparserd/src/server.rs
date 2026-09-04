@@ -36,10 +36,11 @@ pub struct AppState {
     /// Item reference data from the eqdb companion site, with the bundled
     /// data behind it.
     pub itemdb: Arc<crate::itemdb::ItemDb>,
-    /// What the screenshot reader has done, when there is one. `None` means
-    /// it is not running, which is a different answer from "running and it
-    /// has done nothing" — see `/api/shots/recent`, which says which.
-    pub shot_log: Option<Arc<Mutex<crate::shots::Log>>>,
+    /// The screenshot reader, which may not be running. Always present, so
+    /// that "off, and here is what is missing" is an answer this can give —
+    /// and so that a token arriving through `/api/eqdb/token` has something
+    /// to switch on.
+    pub shots: Arc<crate::shots::Shots>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/overlay", get(overlay_page))
         .route("/api/shots/recent", get(shots_recent))
+        .route("/api/eqdb/token", axum::routing::post(set_eqdb_token))
         .route("/overlay.css", get(overlay_css))
         .route("/overlay.js", get(overlay_js))
         .route("/api/snapshot", get(snapshot))
@@ -1103,26 +1105,50 @@ async fn item_brief(State(s): State<AppState>, Query(q): Query<BriefQuery>) -> R
 /// lately", which is the wrong thing to believe when the truth is that
 /// nothing has been *read*.
 async fn shots_recent(State(state): State<AppState>) -> impl IntoResponse {
-    let Some(log) = state.shot_log.as_ref() else {
-        return Json(serde_json::json!({
-            "running": false,
-            "why": "the screenshot reader is not running; see the daemon's \
-                    startup lines for which piece is missing",
-            "shots": [],
-        }));
-    };
-    let (recent, waiting) = match log.lock() {
+    let (recent, waiting) = match state.shots.log().lock() {
         Ok(l) => (l.recent(), l.waiting()),
         Err(_) => (Vec::new(), 0),
     };
+    let (have_token, token_from) = state.shots.token_state();
     Json(serde_json::json!({
-        "running": true,
+        "running": state.shots.running(),
+        // The sentence, not a flag. "Off" and "off because the OCR tree is
+        // not where I looked" are different amounts of help, and a panel that
+        // can only say the first sends somebody to read startup logs.
+        "why": state.shots.why(),
+        // Said separately from `why` because it is the one piece a person can
+        // fix from where they are standing, and the panel offers the box.
+        "token": have_token,
+        "token_from": token_from,
         // Shots the client announced whose file has not turned up yet. Never
         // more than a few seconds' worth; a number that stays put means the
         // pictures are not landing where the reader is looking.
         "waiting": waiting,
         "shots": recent,
     }))
+}
+
+/// `POST /api/eqdb/token` — take a token and start using it.
+///
+/// Write-only on purpose. This daemon's API is unauthenticated and bound to
+/// localhost, which is the same trust boundary as the file it writes: anything
+/// that can reach this could already read `~/.config/eqlparser/eqldb-token`.
+/// What it must not do is *hand the value back*, because then a stray local
+/// page could take a credential rather than merely break a reader.
+async fn set_eqdb_token(
+    State(state): State<AppState>,
+    Json(body): Json<TokenBody>,
+) -> impl IntoResponse {
+    match state.shots.set_token(&body.token) {
+        Ok(said) => Json(serde_json::json!({"ok": true, "said": said})),
+        Err(why) => Json(serde_json::json!({"ok": false, "said": why})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TokenBody {
+    #[serde(default)]
+    token: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -2551,7 +2577,16 @@ mod tests {
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![
                 "http://127.0.0.1:1".to_string()
             ])),
-            shot_log: None,
+            shots: crate::shots::Shots::new(crate::shots::Setup {
+                ocr: None,
+                shots: None,
+                game_dir: None,
+                itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
+                // The tests must not read anybody's screenshots, send
+                // anything anywhere, or notice a token that happens to be in
+                // the environment they run in.
+                off: true,
+            }),
         }
     }
 

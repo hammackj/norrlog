@@ -216,14 +216,27 @@ not:
   copy of a glyph matcher tuned against a thousand crops.
 - **`--shots <dir>`** — the client's `Screenshots` folder. Defaults to
   `$EQL_SHOTS_DIR`, else `<game-dir>/Screenshots`.
-- **a token for eqldb** — from `$EQLDB_TOKEN`, or from
-  `~/.config/eqlparser/eqldb-token` at mode 600. Never from a flag:
+- **a token for eqldb** — paste one into **Settings → eqldb upload token**,
+  which is the easy way: eqldb issues them at *your account → Upload tokens*,
+  and the daemon writes what you paste to `~/.config/eqlparser/eqldb-token` at
+  mode 600 and switches the reader on without a restart. `$EQLDB_TOKEN` in the
+  daemon's environment wins over that file if it is set. Never a flag:
   `/proc/<pid>/cmdline` is world-readable and the environment is not, so a
   token passed as an argument is one every process on the machine can read. A
   token file other accounts can read is refused, and the daemon says so.
 
+  The settings box is write-only. `POST /api/eqdb/token` takes a value and
+  `GET /api/shots/recent` says whether one is set and where it came from;
+  nothing hands the value back. Anything that can reach this API could already
+  read the file, but a credential that can only be *replaced* is one a stray
+  local page can break rather than steal.
+
 `--no-shots` turns it off whatever else is configured. `GET /api/shots/recent`
-says what it has done, and the **Screenshots** tab shows the last few.
+says what it has done and, when it is off, which piece is missing — the strip
+at the top of the **Screenshots** tab draws that, with the last few outcomes
+under it. A reader that has been quietly off all session is the thing that
+strip exists to make visible, so "off" is a sentence there rather than an
+empty list.
 
 ## Plane of Sky
 
@@ -281,6 +294,7 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 | `POST /api/wanted/mark` | `{item, have}` — tick an item off the screenshot list, or untick it |
 | `GET /api/wanted/recent` | Of those, what you have looted lately and could still photograph — `?window=` seconds (default an hour), `?limit=` rows |
 | `GET /api/shots/recent` | What the screenshot reader made of the last few pictures, and whether it is running at all |
+| `POST /api/eqdb/token` | `{token}` — keep an eqldb upload token and start using it; an empty one removes it. Write-only: nothing reads it back |
 | `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |
 | `GET /api/drops` | What dropped from what, with the kills behind each count |
 | `GET /api/classes` | Detected classes with evidence |

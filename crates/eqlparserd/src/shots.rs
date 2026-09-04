@@ -53,7 +53,7 @@ use crate::locks::Guarded;
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 /// How often the drain runs.
@@ -240,6 +240,23 @@ fn token_from(config: Option<&Path>) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
+/// What the reader would be built from, kept so it can be built again.
+///
+/// Held apart from `Reader` because a token can arrive after the daemon has
+/// started — somebody pastes one into the settings — and the alternative to
+/// rebuilding is telling them to restart the app to use the thing they just
+/// configured.
+pub struct Setup {
+    pub ocr: Option<PathBuf>,
+    pub shots: Option<PathBuf>,
+    pub game_dir: Option<PathBuf>,
+    pub itemdb: Arc<crate::itemdb::ItemDb>,
+    /// `--no-shots`. Kept here rather than checked by the caller so that
+    /// "off because you asked" and "off because a piece is missing" come out
+    /// of one place and read the same way.
+    pub off: bool,
+}
+
 impl Reader {
     /// Assemble one, or explain in a sentence why there is not one.
     ///
@@ -251,6 +268,10 @@ impl Reader {
         shots: Option<PathBuf>,
         game_dir: Option<&Path>,
         itemdb: Arc<crate::itemdb::ItemDb>,
+        // The outcomes seen so far. Passed in rather than made here so that
+        // swapping the reader -- which is what pasting a token does -- keeps
+        // the list a person is looking at.
+        log: Arc<Mutex<Log>>,
     ) -> Result<Reader, String> {
         let ocr = ocr
             .or_else(|| std::env::var_os("EQL_OCR_DIR").map(PathBuf::from))
@@ -289,7 +310,7 @@ impl Reader {
                 .build()
                 .map_err(|e| e.to_string())?,
             token,
-            log: Arc::new(Mutex::new(Log::default())),
+            log,
         })
     }
 
@@ -598,13 +619,196 @@ impl Reader {
     }
 }
 
+/// The reader, and the ability to not have one.
+///
+/// Every piece the reader needs can arrive after the daemon has started: the
+/// OCR tree can be installed, the Screenshots folder can be created by the
+/// first screenshot, and the token is pasted into a settings box. Building
+/// once at startup meant each of those was "restart the app" -- which for the
+/// token is asking somebody to restart in order to use the thing they have
+/// just set up.
+///
+/// So the loop always runs and the reader is a slot in it. `why` is what is
+/// missing, in a sentence, and is what `/api/shots/recent` reports when there
+/// is nothing there.
+pub struct Shots {
+    setup: Setup,
+    reader: RwLock<Option<Arc<Reader>>>,
+    /// Outcomes, held here rather than on the reader so they survive a swap.
+    log: Arc<Mutex<Log>>,
+    why: RwLock<String>,
+}
+
+impl Shots {
+    pub fn new(setup: Setup) -> Arc<Shots> {
+        let shots = Arc::new(Shots {
+            setup,
+            reader: RwLock::new(None),
+            log: Arc::new(Mutex::new(Log::default())),
+            why: RwLock::new(String::new()),
+        });
+        // The failure is not dropped, it is *stored* -- `rebuild` puts the
+        // reason in `why`, which is where every caller reads it from.
+        let _ = shots.rebuild();
+        shots
+    }
+
+    /// Try again with whatever is on disk now. Says what it found, for the
+    /// startup line and for the settings box that just changed something.
+    pub fn rebuild(&self) -> Result<String, String> {
+        if self.setup.off {
+            self.put(None, "not read (--no-shots)");
+            return Err("--no-shots".into());
+        }
+        match Reader::configure(
+            self.setup.ocr.clone(),
+            self.setup.shots.clone(),
+            self.setup.game_dir.as_deref(),
+            Arc::clone(&self.setup.itemdb),
+            Arc::clone(&self.log),
+        ) {
+            Ok(r) => {
+                let where_ = r.watching().display().to_string();
+                let site = self.setup.itemdb.base();
+                self.put(Some(Arc::new(r)), "");
+                Ok(format!(
+                    "reading {where_} and sending item windows to {site}"
+                ))
+            }
+            Err(why) => {
+                self.put(None, &why);
+                Err(why)
+            }
+        }
+    }
+
+    fn put(&self, reader: Option<Arc<Reader>>, why: &str) {
+        if let Ok(mut slot) = self.reader.write() {
+            *slot = reader;
+        }
+        if let Ok(mut w) = self.why.write() {
+            *w = why.to_string();
+        }
+    }
+
+    fn reader(&self) -> Option<Arc<Reader>> {
+        self.reader.read().ok().and_then(|r| r.clone())
+    }
+
+    pub fn running(&self) -> bool {
+        self.reader().is_some()
+    }
+
+    /// What it is doing, for the startup line. Empty when it is not running,
+    /// where [`Shots::why`] is the sentence instead.
+    pub fn why_running(&self) -> String {
+        match self.reader() {
+            Some(r) => format!(
+                "reading {} and sending item windows to {}",
+                r.watching().display(),
+                self.setup.itemdb.base()
+            ),
+            None => String::new(),
+        }
+    }
+
+    pub fn why(&self) -> String {
+        self.why.read().map(|w| w.clone()).unwrap_or_default()
+    }
+
+    pub fn log(&self) -> &Arc<Mutex<Log>> {
+        &self.log
+    }
+
+    /// Where a token would be kept, if this machine has somewhere to keep it.
+    pub fn token_path() -> Option<PathBuf> {
+        crate::paths::config_dir().map(|d| d.join("eqldb-token"))
+    }
+
+    /// Whether a token is set, and where it came from.
+    ///
+    /// Never the value. This endpoint is reachable by anything that can talk
+    /// to localhost, and a credential that can be written but not read back is
+    /// strictly better than one that can be done both to: the worst a stray
+    /// local page can do here is break the reader, which is visible, rather
+    /// than take the token, which is not.
+    pub fn token_state(&self) -> (bool, &'static str) {
+        if std::env::var("EQLDB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
+            return (true, "EQLDB_TOKEN");
+        }
+        match Self::token_path() {
+            Some(p) if p.is_file() => (true, "file"),
+            _ => (false, "none"),
+        }
+    }
+
+    /// Write a token and start reading with it. An empty one removes the file.
+    ///
+    /// Mode 600 from the moment it exists, not after: creating it readable and
+    /// chmodding it afterwards leaves a window in which any account on the
+    /// machine can have it, and that window is all an attacker needs.
+    pub fn set_token(&self, token: &str) -> Result<String, String> {
+        let path = Self::token_path().ok_or("nowhere to keep a token on this machine")?;
+        let token = token.trim();
+        if token.is_empty() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+            let _ = self.rebuild();
+            return Ok("The token was removed.".into());
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        write_privately(&path, token).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Said, not silently overridden. The environment wins in `configure`,
+        // so a token pasted here while `EQLDB_TOKEN` is set would be written,
+        // ignored, and blamed for whatever the other one does.
+        let shadowed = std::env::var("EQLDB_TOKEN").is_ok_and(|t| !t.trim().is_empty());
+        match self.rebuild() {
+            Ok(what) if shadowed => Ok(format!(
+                "Saved, but EQLDB_TOKEN is set in this daemon's environment and \
+                 is what will be used. {what}"
+            )),
+            Ok(what) => Ok(format!("Saved. {what}")),
+            Err(why) => Err(format!("Saved, but the reader is still off: {why}")),
+        }
+    }
+}
+
+/// Write a file only its owner can read, and never for an instant otherwise.
+fn write_privately(path: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    // `create` keeps the mode of a file that already exists, so an existing
+    // one is tightened explicitly. Before the write, so the new value is
+    // never in a file somebody else could read.
+    #[cfg(unix)]
+    if path.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(body.as_bytes())?;
+    f.write_all(b"\n")?;
+    f.sync_all()
+}
+
 /// Watch the drained shot notices and put each one through the reader.
 ///
 /// Shots are handled one at a time. The reader is CPU-heavy — a template pass
 /// over a 2560px frame, in numpy — and a burst of screenshots taken in one
 /// motion would otherwise start five of them at once on the machine that is
 /// also running the game.
-pub fn spawn(reader: Arc<Reader>, engine: Arc<Mutex<Engine>>) {
+pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
     tokio::spawn(async move {
         // Shots whose file has not turned up yet. Both clocks are kept: the
         // log's, because that is the timestamp a person will go and look for
@@ -623,6 +827,14 @@ pub fn spawn(reader: Arc<Reader>, engine: Arc<Mutex<Engine>>) {
                     pending.push_back((at, at - off));
                 }
             }
+            // No reader: the notices are dropped rather than banked. A shot
+            // taken before a token was pasted in is not one anybody is waiting
+            // on, and a queue that survives being off would send a burst of
+            // stale windows the moment it came on.
+            let Some(reader) = shots.reader() else {
+                pending.clear();
+                continue;
+            };
             let mut again = VecDeque::new();
             while let Some((at, local)) = pending.pop_front() {
                 match reader.file_at(local) {
@@ -644,7 +856,7 @@ pub fn spawn(reader: Arc<Reader>, engine: Arc<Mutex<Engine>>) {
             // just been handled was still reported as waiting until the next
             // tick, which is the one number on that endpoint a person reads as
             // "something is stuck".
-            if let Ok(mut l) = reader.log.lock() {
+            if let Ok(mut l) = shots.log().lock() {
                 l.waiting = pending.len();
             }
         }
@@ -854,5 +1066,91 @@ mod prune_tests {
             "the newest was dropped"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod token_file_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("eqlparserd-tok-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn a_written_token_is_private_from_the_moment_it_exists() {
+        let d = tmp("fresh");
+        let p = d.join("eqldb-token");
+        write_privately(&p, "abc123").unwrap();
+        assert_eq!(mode(&p), 0o600, "a token any account can read is not a secret");
+        assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), "abc123");
+    }
+
+    #[test]
+    fn overwriting_a_readable_token_tightens_it() {
+        // `create(true)` keeps the mode of a file that already exists, so
+        // without the explicit tighten a token pasted over a world-readable
+        // one stays world-readable -- and `configure` would then refuse to
+        // use the thing somebody just set, blaming the file they did not
+        // make.
+        let d = tmp("loose");
+        let p = d.join("eqldb-token");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_privately(&p, "new").unwrap();
+        assert_eq!(mode(&p), 0o600);
+        assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), "new");
+    }
+
+    #[test]
+    fn a_shorter_token_does_not_leave_the_tail_of_a_longer_one() {
+        // Without `truncate`, writing a 8-character token over a 64-character
+        // one leaves 56 characters of the old one behind and the file reads
+        // as neither.
+        let d = tmp("trunc");
+        let p = d.join("eqldb-token");
+        write_privately(&p, &"a".repeat(64)).unwrap();
+        write_privately(&p, "short").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), "short");
+    }
+
+    #[test]
+    fn a_world_readable_token_is_refused_rather_than_used() {
+        let d = tmp("refuse");
+        let p = d.join("eqldb-token");
+        std::fs::write(&p, "sekrit").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Read through the same door `configure` uses.
+        let before = std::env::var("EQLDB_TOKEN").ok();
+        unsafe { std::env::remove_var("EQLDB_TOKEN") };
+        let got = token_from(Some(&d));
+        if let Some(v) = before {
+            unsafe { std::env::set_var("EQLDB_TOKEN", v) };
+        }
+        assert!(got.is_none(), "a token other accounts can read was used");
+    }
+
+    #[test]
+    fn a_token_at_the_right_mode_is_read() {
+        let d = tmp("ok");
+        let p = d.join("eqldb-token");
+        write_privately(&p, "  spaced  ").unwrap();
+        let before = std::env::var("EQLDB_TOKEN").ok();
+        unsafe { std::env::remove_var("EQLDB_TOKEN") };
+        let got = token_from(Some(&d));
+        if let Some(v) = before {
+            unsafe { std::env::set_var("EQLDB_TOKEN", v) };
+        }
+        // Trimmed: a token pasted out of a web page brings whitespace with it,
+        // and a bearer header with a trailing newline is a 401 nobody can see.
+        assert_eq!(got.as_deref(), Some("spaced"));
     }
 }
