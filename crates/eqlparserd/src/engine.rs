@@ -807,6 +807,15 @@ pub struct Engine {
     /// A hand-made list, like the buff marks: nothing in the log can tell you
     /// whether you pointed a camera at something.
     screenshot_marks: std::collections::BTreeMap<String, String>,
+    /// Screenshots the client said it took, as log timestamps, oldest first.
+    ///
+    /// The client writes `Taking a screenshot...` to the character log at the
+    /// same second it writes the file, so the log we are already following is
+    /// the cheapest possible notification that a picture exists — no directory
+    /// to poll, no inotify watch on a network mount, and no question about
+    /// whether a file that appeared was written by the game or copied in by
+    /// somebody. Something else drains this; see [`Engine::shots_taken`].
+    shots_taken: VecDeque<i64>,
     /// Where those marks are written. Held rather than derived on each call so
     /// a test can be pointed somewhere harmless — see
     /// [`Engine::use_screenshot_store`].
@@ -910,6 +919,7 @@ impl Engine {
             all_loot: Vec::new(),
             zone_log: Vec::new(),
             screenshot_marks: std::collections::BTreeMap::new(),
+            shots_taken: VecDeque::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
             // rebuildable database. See `crate::paths`.
@@ -983,6 +993,23 @@ impl Engine {
         self.clock_offset = Some(self.last_timestamp - system_now());
     }
 
+    /// How far the log's clock runs ahead of this machine's, in seconds, once
+    /// a live line has been seen to measure it against.
+    ///
+    /// The two are not the same clock and are not always the same *domain*:
+    /// the client writes local wall time with no zone on it, so a log
+    /// timestamp read back is out by the offset — five hours, here. Anything
+    /// pairing a log line with something outside the log has to cross that,
+    /// and the screenshot reader is the first thing that does: it matches a
+    /// `Taking a screenshot...` against a file's mtime, and without this it
+    /// looked five hours into the past and found nothing, every time.
+    ///
+    /// `None` until a line has arrived live, which is also when nothing has
+    /// any business converting.
+    pub fn clock_offset(&self) -> Option<i64> {
+        self.clock_offset
+    }
+
     /// Current time in the log's clock domain.
     ///
     /// While following live this advances with the wall clock, so buff timers
@@ -1043,6 +1070,7 @@ impl Engine {
         if !self.live {
             return;
         }
+        self.note_screenshot(entry);
         // Split the borrow: the rules need the player name to render "you"
         // into something speakable, and it lives on the same struct.
         let Engine {
@@ -1874,6 +1902,46 @@ impl Engine {
             self.screenshot_marks.remove(&key);
         }
         self.save_screenshot_marks();
+    }
+
+    /// The line the client writes when it takes a picture.
+    ///
+    /// Matched on the text rather than given an `Event` variant because it is
+    /// not an event about the game — nothing in the world happened, and every
+    /// consumer of `Event` would have to learn to ignore it. It is a fact
+    /// about the *client*, and the only thing that wants it is the screenshot
+    /// reader.
+    const TOOK_A_SHOT: &'static str = "Taking a screenshot...";
+
+    /// How many un-drained shot notices to keep.
+    ///
+    /// Small on purpose. If nothing is draining these — the reader is off, or
+    /// the OCR tree is not installed — they are of no use to anybody, and an
+    /// unbounded queue would grow for as long as the daemon runs. Dropping the
+    /// oldest is right rather than refusing the newest: the interesting
+    /// picture is always the one just taken.
+    const MOST_PENDING_SHOTS: usize = 64;
+
+    fn note_screenshot(&mut self, entry: &LogEntry) {
+        // The whole line after the timestamp, not a suffix of it. A player
+        // typing the phrase into say or a tell ends a line with it too, and
+        // ending on it is the only thing a suffix test can tell you.
+        if eqlparser_core::alert::strip_timestamp(&entry.raw).trim() != Self::TOOK_A_SHOT {
+            return;
+        }
+        self.shots_taken.push_back(entry.timestamp);
+        while self.shots_taken.len() > Self::MOST_PENDING_SHOTS {
+            self.shots_taken.pop_front();
+        }
+    }
+
+    /// Take every screenshot notice seen since this was last called.
+    ///
+    /// Draining rather than reading: two callers would each believe they had
+    /// to handle every shot, and the second would re-read pictures the first
+    /// already sent. There is one reader, and this is how it is fed.
+    pub fn shots_taken(&mut self) -> Vec<i64> {
+        self.shots_taken.drain(..).collect()
     }
 
     /// Whether `item` has already been captured. Grade-insensitive, because a
@@ -4925,5 +4993,77 @@ mod tests {
         // Asking again with the sequence just seen returns nothing, so polling
         // a quiet log costs nothing.
         assert!(e.lines_since(lines[0].seq).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod screenshot_notice_tests {
+    use super::*;
+    use eqlparser_core::spell::SpellDb;
+
+    fn engine() -> Engine {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        e.set_live(true);
+        e
+    }
+
+    const SHOT: &str = "[Fri Sep 04 14:18:33 2026] Taking a screenshot...";
+
+    #[test]
+    fn the_client_saying_it_took_a_picture_is_a_shot_to_read() {
+        let mut e = engine();
+        e.push_line(SHOT);
+        let got = e.shots_taken();
+        assert_eq!(got.len(), 1, "one line, one shot: {got:?}");
+    }
+
+    #[test]
+    fn draining_the_queue_empties_it() {
+        // Two callers would each believe they had to handle every shot, and
+        // the second would re-read pictures the first already sent.
+        let mut e = engine();
+        e.push_line(SHOT);
+        assert_eq!(e.shots_taken().len(), 1);
+        assert!(e.shots_taken().is_empty(), "a drained shot came back");
+    }
+
+    #[test]
+    fn a_shot_taken_before_we_caught_up_is_not_read() {
+        // The backlog is history. Reading it would send eqdb every item
+        // window photographed since the log began, on every daemon restart.
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        e.push_line(SHOT);
+        assert!(e.shots_taken().is_empty(), "a backlog shot was queued");
+    }
+
+    #[test]
+    fn an_ordinary_line_is_not_a_screenshot() {
+        let mut e = engine();
+        e.push_line("[Fri Sep 04 14:18:33 2026] You have entered Freeport.");
+        // The phrase in somebody's mouth is not the client announcing a file.
+        e.push_line("[Fri Sep 04 14:18:34 2026] Tharn tells you, 'Taking a screenshot...'");
+        e.push_line("[Fri Sep 04 14:18:35 2026] You say, 'Taking a screenshot...");
+        assert!(e.shots_taken().is_empty(), "a chat line was read as a shot");
+    }
+
+    #[test]
+    fn the_queue_keeps_the_newest_when_nothing_is_draining_it() {
+        let mut e = engine();
+        for i in 0..Engine::MOST_PENDING_SHOTS + 10 {
+            e.push_line(&format!(
+                "[Fri Sep 04 {:02}:{:02}:{:02} 2026] Taking a screenshot...",
+                14 + i / 3600,
+                (i / 60) % 60,
+                i % 60
+            ));
+        }
+        let got = e.shots_taken();
+        assert_eq!(got.len(), Engine::MOST_PENDING_SHOTS);
+        // Oldest dropped, not newest refused: the interesting picture is
+        // always the one just taken.
+        assert!(
+            got.windows(2).all(|w| w[0] <= w[1]),
+            "the queue is not in order: {got:?}"
+        );
     }
 }

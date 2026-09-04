@@ -36,12 +36,17 @@ pub struct AppState {
     /// Item reference data from the eqdb companion site, with the bundled
     /// data behind it.
     pub itemdb: Arc<crate::itemdb::ItemDb>,
+    /// What the screenshot reader has done, when there is one. `None` means
+    /// it is not running, which is a different answer from "running and it
+    /// has done nothing" — see `/api/shots/recent`, which says which.
+    pub shot_log: Option<Arc<Mutex<crate::shots::Log>>>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/overlay", get(overlay_page))
+        .route("/api/shots/recent", get(shots_recent))
         .route("/overlay.css", get(overlay_css))
         .route("/overlay.js", get(overlay_js))
         .route("/api/snapshot", get(snapshot))
@@ -1086,6 +1091,38 @@ async fn item_brief(State(s): State<AppState>, Query(q): Query<BriefQuery>) -> R
         "items": out,
     }))
     .into_response()
+}
+
+/// `GET /api/shots/recent` — what the screenshot reader has made of the last
+/// few pictures.
+///
+/// `running: false` is the interesting case and is stated rather than implied
+/// by an empty list. The reader needs a second program and a credential, so
+/// "off" is a normal state and one a person will want to see named: an empty
+/// `shots` array with no `running` flag reads as "nothing photographed
+/// lately", which is the wrong thing to believe when the truth is that
+/// nothing has been *read*.
+async fn shots_recent(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(log) = state.shot_log.as_ref() else {
+        return Json(serde_json::json!({
+            "running": false,
+            "why": "the screenshot reader is not running; see the daemon's \
+                    startup lines for which piece is missing",
+            "shots": [],
+        }));
+    };
+    let (recent, waiting) = match log.lock() {
+        Ok(l) => (l.recent(), l.waiting()),
+        Err(_) => (Vec::new(), 0),
+    };
+    Json(serde_json::json!({
+        "running": true,
+        // Shots the client announced whose file has not turned up yet. Never
+        // more than a few seconds' worth; a number that stays put means the
+        // pictures are not landing where the reader is looking.
+        "waiting": waiting,
+        "shots": recent,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2514,6 +2551,7 @@ mod tests {
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![
                 "http://127.0.0.1:1".to_string()
             ])),
+            shot_log: None,
         }
     }
 

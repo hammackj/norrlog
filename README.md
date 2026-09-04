@@ -180,6 +180,51 @@ recently" group covers a day rather than an hour and re-asks while the tab is
 open, so it and the overlay never disagree about what is still worth a
 picture.
 
+### Reading the screenshots you take
+
+The list above says what is worth photographing. With the reader configured,
+taking the picture is the whole job: the daemon notices the shot, reads the
+item window out of it, and puts it in eqldb's review queue for a person to
+confirm.
+
+The client writes `Taking a screenshot...` to the character log in the same
+second it writes the file, and the daemon is already following that log — so
+there is no folder being polled and no watch on a wine-mapped mount. That line
+is also better evidence than a new file would be: it says *the game* took this
+picture, which a file appearing does not.
+
+What happens to each one:
+
+| | |
+|---|---|
+| eqldb is asking for the item | the window is sent to its review queue |
+| eqldb has never heard of the item | sent — a new item is what nobody can have asked for |
+| eqldb holds it and is not asking | not sent, and the daemon says which item it was |
+| the window is a graded `+N` copy | not sent; graded stats are derived from a base reading, so a `+4` is an output of that rule rather than an input to it |
+| no item window in the picture | nothing, beyond a line saying so |
+
+Nothing here decides anything. A sent window is `state = review` on eqldb and
+changes no item page; the ordinary verdict-and-publish path is still what
+carries a reading into the data.
+
+Three things have to be in place, and the daemon says at startup which one is
+not:
+
+- **`--ocr <dir>`** — the screenshot-reading tree, holding `ocr/oneshot.py`.
+  Defaults to `$EQL_OCR_DIR`, else `~/Pictures/eql-items`. The decoder is
+  Python and numpy; `eqlparserd` shells out to it rather than carrying its own
+  copy of a glyph matcher tuned against a thousand crops.
+- **`--shots <dir>`** — the client's `Screenshots` folder. Defaults to
+  `$EQL_SHOTS_DIR`, else `<game-dir>/Screenshots`.
+- **a token for eqldb** — from `$EQLDB_TOKEN`, or from
+  `~/.config/eqlparser/eqldb-token` at mode 600. Never from a flag:
+  `/proc/<pid>/cmdline` is world-readable and the environment is not, so a
+  token passed as an argument is one every process on the machine can read. A
+  token file other accounts can read is refused, and the daemon says so.
+
+`--no-shots` turns it off whatever else is configured. `GET /api/shots/recent`
+says what it has done, and the **Screenshots** tab shows the last few.
+
 ## Plane of Sky
 
 The Sky tab reads two sources and shows both rather than picking one. The quest
@@ -235,6 +280,7 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 | `GET /api/wanted` | Items the companion site still needs a screenshot of, each flagged with whether you have ticked it off — `?refresh=1` re-asks the site |
 | `POST /api/wanted/mark` | `{item, have}` — tick an item off the screenshot list, or untick it |
 | `GET /api/wanted/recent` | Of those, what you have looted lately and could still photograph — `?window=` seconds (default an hour), `?limit=` rows |
+| `GET /api/shots/recent` | What the screenshot reader made of the last few pictures, and whether it is running at all |
 | `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |
 | `GET /api/drops` | What dropped from what, with the kills behind each count |
 | `GET /api/classes` | Detected classes with evidence |

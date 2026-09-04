@@ -9,6 +9,7 @@ mod itemdb;
 mod locks;
 mod paths;
 mod server;
+mod shots;
 mod store;
 mod tail;
 
@@ -48,6 +49,12 @@ struct Config {
     since: Option<i64>,
     /// Exit when the process that started this one goes away.
     exit_with_parent: bool,
+    /// The screenshot-reading tree, holding `ocr/oneshot.py`.
+    ocr: Option<PathBuf>,
+    /// The client's `Screenshots` folder, when it is not under `--game-dir`.
+    shots: Option<PathBuf>,
+    /// Do not read screenshots at all, even where everything for it is here.
+    no_shots: bool,
 }
 
 /// Parse a load window: `2h`, `4h`, `8h`, `1d`, `2d`, `all`.
@@ -109,6 +116,17 @@ OPTIONS:
                        two-hour window means two hours of loot, kills and
                        encounters, not a lifetime of them. Durable history in
                        the database is unaffected.
+    --ocr <dir>        The screenshot-reading tree, holding ocr/oneshot.py
+                       (default $EQL_OCR_DIR, else ~/Pictures/eql-items). When
+                       it is there and a token is set, every screenshot the
+                       client announces is read, and any item window in it that
+                       eqdb wants — or has never heard of — is sent to eqdb's
+                       review queue. The token comes from $EQLDB_TOKEN or from
+                       ~/.config/eqlparser/eqldb-token at mode 600, never from
+                       a flag: /proc/<pid>/cmdline is world-readable.
+    --shots <dir>      The client's Screenshots folder. Defaults to
+                       $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
+    --no-shots         Do not read screenshots, whatever else is configured.
     --exit-with-parent Exit when the process that started this one does, by
                        watching for the parent pid to change. For the desktop
                        app, which owns the daemon and must not leave it running
@@ -125,6 +143,7 @@ ENDPOINTS:
     /                  Status page with overlay setup instructions
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
+    /api/shots/recent  What the screenshot reader made of the last few pictures
     /api/encounters    Historical encounters (filter, search, paginate)
     /api/loot          Aggregated loot
     /ws                Live snapshot stream
@@ -225,6 +244,9 @@ fn parse_args() -> Config {
         // Off by default: run from a terminal, this daemon belongs to whoever
         // started it and should outlive nothing in particular.
         exit_with_parent: false,
+        ocr: None,
+        shots: None,
+        no_shots: false,
     };
     let mut saw_eqdb = false;
     let mut args = std::env::args().skip(1);
@@ -274,6 +296,9 @@ fn parse_args() -> Config {
                     cfg.eqdb.extend(split_origins(&u));
                 }
             }
+            "--ocr" => cfg.ocr = args.next().map(PathBuf::from),
+            "--shots" => cfg.shots = args.next().map(PathBuf::from),
+            "--no-shots" => cfg.no_shots = true,
             "--exit-with-parent" => cfg.exit_with_parent = true,
             "-h" | "--help" => usage(),
             other => {
@@ -454,6 +479,41 @@ async fn main() -> anyhow::Result<()> {
         history.clone(),
     );
 
+    let itemdb = std::sync::Arc::new(crate::itemdb::ItemDb::new(cfg.eqdb.clone()));
+
+    // Reading screenshots is the one thing here that needs a second program
+    // and a credential, so it is the one thing that is off unless everything
+    // it needs is present. Whichever way that goes, it is said out loud: a
+    // feature that is silently not running is indistinguishable from one that
+    // is running and finding nothing.
+    let shot_log = if cfg.no_shots {
+        eprintln!("[eqlparserd] screenshots: not read (--no-shots)");
+        None
+    } else {
+        match shots::Reader::configure(
+            cfg.ocr.clone(),
+            cfg.shots.clone(),
+            cfg.game_dir.as_deref(),
+            std::sync::Arc::clone(&itemdb),
+        ) {
+            Ok(reader) => {
+                let reader = Arc::new(reader);
+                eprintln!(
+                    "[eqlparserd] screenshots: reading {} and sending item windows to {}",
+                    reader.watching().display(),
+                    itemdb.base()
+                );
+                let log = Arc::clone(&reader.log);
+                shots::spawn(reader, Arc::clone(&engine));
+                Some(log)
+            }
+            Err(why) => {
+                eprintln!("[eqlparserd] screenshots: not read — {why}");
+                None
+            }
+        }
+    };
+
     let state = AppState {
         log_path: log_path.clone(),
         logs_dir: cfg.logs_dir.clone(),
@@ -461,7 +521,8 @@ async fn main() -> anyhow::Result<()> {
         snapshot,
         updates,
         store: history,
-        itemdb: std::sync::Arc::new(crate::itemdb::ItemDb::new(cfg.eqdb.clone())),
+        itemdb,
+        shot_log,
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
@@ -637,6 +698,9 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
+            ocr: None,
+            shots: None,
+            no_shots: false,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -655,6 +719,9 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
+            ocr: None,
+            shots: None,
+            no_shots: false,
         };
         assert!(resolve_log(&cfg).is_err());
     }
