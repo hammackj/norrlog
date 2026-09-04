@@ -2615,6 +2615,100 @@ mod tests {
     ///
     /// So the lists are checked against each other rather than trusted.
     #[test]
+    /// Every named import across the renderer resolves.
+    ///
+    /// The same failure as the id test and a different cause: a module that
+    /// imports a name its target does not export does not load, and every
+    /// listener it wires goes with it. It is easy to reach for — adding one
+    /// function to an import line is how a feature usually starts — and the
+    /// only report is a console nobody has open.
+    #[test]
+    fn every_named_import_in_the_renderer_resolves() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let dir = root.join("gui/renderer");
+        // The daemon is usable without the desktop app beside it.
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let files: Vec<std::path::PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "js"))
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+
+        /// What a module exports, by the two forms this renderer uses:
+        /// `export const/let/function/class NAME`, and `export { a, b }`.
+        fn exports(src: &str) -> std::collections::BTreeSet<String> {
+            let mut out = std::collections::BTreeSet::new();
+            let word = |s: &str| -> String {
+                s.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect()
+            };
+            let mut rest = src;
+            while let Some(i) = rest.find("export ") {
+                rest = &rest[i + 7..];
+                let mut t = rest.trim_start();
+                for kw in ["async ", "function ", "const ", "let ", "var ", "class "] {
+                    t = t.strip_prefix(kw).unwrap_or(t).trim_start();
+                }
+                if let Some(list) = t.strip_prefix('{') {
+                    if let Some(end) = list.find('}') {
+                        for n in list[..end].split(',') {
+                            // `export { a as b }` exports `b`.
+                            let n = n.rsplit(" as ").next().unwrap_or("").trim();
+                            if !n.is_empty() {
+                                out.insert(n.to_string());
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let name = word(t);
+                if !name.is_empty() {
+                    out.insert(name);
+                }
+            }
+            out
+        }
+
+        let mut broken: Vec<String> = Vec::new();
+        for path in &files {
+            let Ok(src) = std::fs::read_to_string(path) else { continue };
+            let me = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let mut rest = src.as_str();
+            while let Some(i) = rest.find("import {") {
+                rest = &rest[i + 8..];
+                let Some(close) = rest.find('}') else { break };
+                let names = &rest[..close];
+                let after = &rest[close..];
+                let Some(q) = after.find("\"./") else { continue };
+                let tail = &after[q + 3..];
+                let Some(e) = tail.find('"') else { continue };
+                let target = &tail[..e];
+                let Ok(tsrc) = std::fs::read_to_string(dir.join(target)) else {
+                    broken.push(format!("{me} imports from {target}, which is not there"));
+                    continue;
+                };
+                let has = exports(&tsrc);
+                for n in names.split(',') {
+                    let n = n.split(" as ").next().unwrap_or("").trim();
+                    if !n.is_empty() && !has.contains(n) {
+                        broken.push(format!("{me} imports {n:?} from {target}, which does not export it"));
+                    }
+                }
+            }
+        }
+        assert!(
+            broken.is_empty(),
+            "the renderer will not load: {broken:#?}"
+        );
+    }
+
     /// Every `$("id")` the renderer reaches for is an id something makes.
     ///
     /// The renderer wires its listeners at module scope, so `$("cfg-save")`
