@@ -2615,6 +2615,75 @@ mod tests {
     ///
     /// So the lists are checked against each other rather than trusted.
     #[test]
+    /// Every `$("id")` the renderer reaches for is an id something makes.
+    ///
+    /// The renderer wires its listeners at module scope, so `$("cfg-save")`
+    /// against an id that is not there is not a dead button — `$` returns
+    /// null, `.addEventListener` throws, the module fails to load, and every
+    /// feature in that file goes with it. A typo in a settings field takes
+    /// out the settings tab.
+    ///
+    /// An id counts as made if `index.html` has it or if some renderer module
+    /// writes it into an `innerHTML` template, which is where the encounters
+    /// sub-tabs and the tasks toggle come from.
+    #[test]
+    fn every_id_the_renderer_reaches_for_is_one_something_makes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let dir = root.join("gui/renderer");
+        // The daemon is usable without the desktop app beside it.
+        let Ok(html) = std::fs::read_to_string(dir.join("index.html")) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let js: String = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "js"))
+            .filter_map(|p| std::fs::read_to_string(&p).map(|s| format!("//@{}\n{s}", p.display())).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if js.is_empty() {
+            return;
+        }
+
+        // Every `id="..."` anywhere -- the page's own, and the ones the
+        // renderer builds into its templates.
+        let mut made = std::collections::BTreeSet::new();
+        for src in [&html, &js] {
+            let mut rest = src.as_str();
+            while let Some(i) = rest.find("id=\"") {
+                rest = &rest[i + 4..];
+                if let Some(j) = rest.find('"') {
+                    made.insert(rest[..j].to_string());
+                }
+            }
+        }
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut rest = js.as_str();
+        while let Some(i) = rest.find("$(\"") {
+            rest = &rest[i + 3..];
+            let Some(j) = rest.find('"') else { break };
+            // Only a literal: `$("view-" + name)` names no id here, and the
+            // half in the source is not one to look for.
+            if rest[j + 1..].starts_with(')') {
+                let id = &rest[..j];
+                if !made.contains(id) {
+                    missing.push(id.to_string());
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "the renderer reaches for {missing:?}, which nothing makes -- \
+             the module holding it will throw at load and take its whole tab \
+             with it"
+        );
+    }
+
     fn every_overlay_panel_is_offered_in_settings() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
