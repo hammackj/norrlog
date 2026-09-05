@@ -54,6 +54,11 @@
 //!     lore is on file were no longer wanted when it was taken, and the site
 //!     holds 1,865 items with stats against 161 with lore.
 //!
+//! A Lore window also carries an `onsite` block naming the one field it was
+//! compared on, so the review page draws it as an *addition* to the item --
+//! the site's lore beside this window's, with the site's side empty -- rather
+//! than as a rival reading of a window somebody has already judged.
+//!
 //! A sent window is `state = review` on the site and changes no item page.
 //! `ocr/verdicts.py` and the ordinary publish are still what carry a reading
 //! into the data.
@@ -247,6 +252,23 @@ impl Window {
 /// decision and it is a table.
 fn sends(wanted: bool, known: bool, teaches_lore: bool) -> bool {
     wanted || !known || teaches_lore
+}
+
+/// The `onsite` block for a Lore window eqdb has no lore for.
+///
+/// The shape `ocr/onsite.py` produces, narrowed. `only` is the addition and
+/// it is the important half: every other block on the review page was
+/// computed over the whole field vocabulary, so one that lists a single
+/// difference and says nothing else reads as "everything else agreed". Here
+/// nothing else was looked at --- the stats come off the Description tab,
+/// which is a different photograph --- and the page draws that caveat from
+/// this field.
+fn lore_onsite(lore: &str) -> serde_json::Value {
+    serde_json::json!({
+        "known": true,
+        "only": ["lore"],
+        "differs": { "lore": { "on_file": "", "now": lore } },
+    })
 }
 
 fn lore_on_file(v: &serde_json::Value) -> bool {
@@ -495,23 +517,42 @@ impl Reader {
         (false, self.itemdb.item(item).await.is_some())
     }
 
-    /// Whether eqdb already holds lore for this item.
+    /// Where this item's lore stands with eqdb: whether this window would add
+    /// any, and what to show a reviewer about it.
     ///
-    /// False when it holds the item but no lore, when it does not hold the
-    /// item, and when it could not be asked. Only a positive answer may
-    /// suppress a window, so an unreachable site sends rather than discards --
-    /// the same way [`Self::standing`] treats no answer as "wanted".
+    /// The first half decides whether the window is sent at all. The second
+    /// is the `onsite` block the review page draws under "Against the site",
+    /// which is what turns the window from a second reading of an item into a
+    /// visible *addition* to one: the site's lore beside this window's, with
+    /// the site's side empty.
+    ///
+    /// `None` for the block wherever there is nothing to draw --- lore
+    /// already on file, or no answer to compare against. Only a positive
+    /// answer may suppress a window, so an unreachable site sends rather than
+    /// discards, the same way [`Self::standing`] treats no answer as
+    /// "wanted".
     ///
     /// `standing` asked `/api/item` for this same name a moment ago and
-    /// `ItemDb` caches the answer, so on the path that calls both this is not
-    /// a second request.
-    async fn lore_held(&self, item: &str) -> bool {
-        self.itemdb.item(item).await.as_ref().is_some_and(lore_on_file)
+    /// `ItemDb` caches the answer, so this is not a second request.
+    async fn lore_standing(&self, item: &str, lore: &str) -> (bool, Option<serde_json::Value>) {
+        let Some(v) = self.itemdb.item(item).await else {
+            // No answer: eqdb does not hold the item, or could not be asked.
+            // `standing` cannot tell those apart either, and neither reading
+            // puts lore on file. Nothing to compare, so no block --- the page
+            // says "the site has never served this item" from `known` alone,
+            // and claiming a comparison here would be claiming one that was
+            // never made.
+            return (true, None);
+        };
+        if lore_on_file(&v) {
+            return (false, None);
+        }
+        (true, Some(lore_onsite(lore)))
     }
 
     /// The picture, then the reading citing it — the order `ocr/push.py` uses,
     /// so a reading is never stored pointing at a picture that did not arrive.
-    async fn send(&self, w: &Window) -> Result<String, String> {
+    async fn send(&self, w: &Window, onsite: Option<&serde_json::Value>) -> Result<String, String> {
         let png = tokio::fs::read(&w.crop_path)
             .await
             .map_err(|e| format!("{}: {e}", w.crop_path))?;
@@ -523,7 +564,7 @@ impl Reader {
                 &[("X-Shot-Name", w.crop.as_str())],
             )
             .await?;
-        let reading = serde_json::json!({
+        let mut reading = serde_json::json!({
             "crop": w.crop,
             "record": w.record,
             "original": w.record,
@@ -535,6 +576,12 @@ impl Reader {
             "reader": "eqlparserd",
             "read_at": now(),
         });
+        // Omitted rather than sent as null where there is nothing to say:
+        // `Reading::onsite` is an `Option`, and the page tells "no comparison
+        // was made" from "a comparison that found nothing" by its absence.
+        if let (Some(o), Some(map)) = (onsite, reading.as_object_mut()) {
+            map.insert("onsite".into(), o.clone());
+        }
         let body = serde_json::to_vec(&reading).map_err(|e| e.to_string())?;
         let out: serde_json::Value = self
             .post("/api/readings", reqwest::Body::from(body), "application/json", &[])
@@ -645,12 +692,16 @@ impl Reader {
                 // stats reading and the icon, so it goes quiet about an item
                 // the moment its Description tab lands -- which is one tab
                 // and a few seconds before its Lore tab is photographed.
-                let teaches_lore = w.is_lore() && !self.lore_held(&item).await;
+                let (teaches_lore, onsite) = if w.is_lore() {
+                    self.lore_standing(&item, &w.lore()).await
+                } else {
+                    (false, None)
+                };
                 if !sends(wanted, known, teaches_lore) {
                     out.verdict = "covered".into();
                     out.detail = "eqdb holds this item and is not asking for it".into();
                 } else {
-                    match self.send(w).await {
+                    match self.send(w, onsite.as_ref()).await {
                         Ok(status) => {
                             out.verdict = status;
                             // Ordered so each arm is true where it is
@@ -1372,18 +1423,6 @@ mod lore_tests {
         assert!(w.is_lore());
     }
 
-    /// An unreachable site holds no lore, so its windows are sent. `ItemDb`
-    /// with no origins cannot answer, which is the same answer.
-    #[test]
-    fn a_site_that_cannot_be_asked_does_not_hold_lore() {
-        let d = std::env::temp_dir();
-        let r = tests::looking_at(&d);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        assert!(!rt.block_on(r.lore_held("Ancient Rock")));
-    }
 }
 
 /// The send rule as a table, which is what it is.
@@ -1436,5 +1475,52 @@ mod send_rule_tests {
             }
         }
         assert_eq!(skipped, vec![(false, true, false)]);
+    }
+}
+
+/// What a Lore window tells the review page about the item it belongs to.
+#[cfg(test)]
+mod lore_onsite_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The block has to survive eqdb's own reader, which draws the table from
+    /// `differs` and the caveat from `only`. Both spellings are asserted here
+    /// because the two sides are in different repositories and nothing
+    /// compiles them together.
+    #[test]
+    fn the_block_names_the_field_and_says_it_is_the_only_one() {
+        let v = lore_onsite("Ancient piece of earth from Rathe Mountains");
+        assert_eq!(v["known"], json!(true));
+        assert_eq!(v["only"], json!(["lore"]));
+        assert_eq!(v["differs"]["lore"]["on_file"], json!(""));
+        assert_eq!(
+            v["differs"]["lore"]["now"],
+            json!("Ancient piece of earth from Rathe Mountains")
+        );
+    }
+
+    /// `differs` must not be empty even when the decoder read nothing: eqdb's
+    /// `onsite_block` returns *nothing to draw* for a block that is known,
+    /// error-free and carries no differences, and that would take the caveat
+    /// down with it -- on exactly the window a person most needs to see.
+    #[test]
+    fn a_lore_tab_that_did_not_decode_still_draws() {
+        let v = lore_onsite("");
+        let differs = v["differs"].as_object().expect("an object");
+        assert!(!differs.is_empty(), "or eqdb draws no block at all");
+        assert_eq!(v["differs"]["lore"]["now"], json!(""));
+    }
+
+    /// A site with no origins cannot answer, and an answer nobody gave is not
+    /// a comparison. The window is still sent.
+    #[test]
+    fn no_answer_is_no_block_and_still_a_send() {
+        let d = std::env::temp_dir();
+        let r = tests::looking_at(&d);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (teaches, onsite) = rt.block_on(r.lore_standing("Ancient Rock", "some lore"));
+        assert!(teaches, "no answer does not mean the lore is on file");
+        assert!(onsite.is_none(), "and claims no comparison was made");
     }
 }
