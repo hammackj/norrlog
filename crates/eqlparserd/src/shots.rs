@@ -43,6 +43,16 @@
 //!     exactly what nobody can have asked for.
 //!   * An item eqdb holds and does not want is **not** sent, and the daemon
 //!     says which item it was rather than staying quiet about it.
+//!   * Except a **Lore** window for an item eqdb has no lore for, which is
+//!     sent even though the item is covered. The wanted list is built from
+//!     `facts = 0 OR base_facts = 0 OR icons = 0` -- an item's stats reading
+//!     and its icon. Lore is in neither term, so an item leaves the list the
+//!     moment its Description tab is photographed, and the Lore tab is a
+//!     *second* photograph of a *second* tab, almost always taken next. Every
+//!     one of those was arriving here as "covered" and going no further.
+//!     Measured 5 September against production: 143 of the 146 items whose
+//!     lore is on file were no longer wanted when it was taken, and the site
+//!     holds 1,865 items with stats against 161 with lore.
 //!
 //! A sent window is `state = review` on the site and changes no item page.
 //! `ocr/verdicts.py` and the ordinary publish are still what carry a reading
@@ -186,6 +196,75 @@ impl Window {
     fn unread(&self) -> bool {
         self.error.is_some() || self.needs_review.iter().any(|n| n == "__error__")
     }
+
+    /// The lore this window read, empty if it read none.
+    ///
+    /// `parse.py` files a window's body text under `lore` only when the tab
+    /// row says `Lore`; on the Description tab the same text is a `note`. So
+    /// this is empty on every window that is not a Lore window, and on a Lore
+    /// window whose text did not come out.
+    fn lore(&self) -> String {
+        self.record
+            .get("lore")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// Whether this is a reading of the item's Lore tab.
+    ///
+    /// The tab, not the text. A Lore window whose lore did not decode is
+    /// still a photograph of the lore, and a person reading what the decoder
+    /// could not is the entire point of the review queue -- suppressing those
+    /// would drop exactly the windows most in need of eyes. `parse.py` flags
+    /// them itself: "the Lore tab is selected and no lore text was read".
+    ///
+    /// The second arm is for a window whose tab row was missed but whose lore
+    /// came out anyway; `parse.py` cannot produce it today, and it costs one
+    /// comparison to not depend on that staying true.
+    fn is_lore(&self) -> bool {
+        self.record.get("tab").and_then(serde_json::Value::as_str) == Some("Lore")
+            || !self.lore().is_empty()
+    }
+}
+
+/// Whether an `/api/item` payload already carries lore for the item.
+///
+/// A free function over the payload rather than a method, so the rule can be
+/// tested without a site to ask.
+///
+/// `all`, not `any`: a name can match twins, and lore on one of them is not
+/// lore on the other. A match with no facts fails its term, and an empty or
+/// absent `matches` is false -- every uncertain answer lands on "not on file",
+/// because the cost of being wrong that way is a duplicate in the queue and
+/// the cost of being wrong the other way is a photograph nobody can retake
+/// without going back to the zone.
+/// Whether a window is sent, given where its item stands with eqdb.
+///
+/// The three rules in one place and out of `handle`, which cannot be called
+/// without a site, a subprocess and an engine. This is the whole of the
+/// decision and it is a table.
+fn sends(wanted: bool, known: bool, teaches_lore: bool) -> bool {
+    wanted || !known || teaches_lore
+}
+
+fn lore_on_file(v: &serde_json::Value) -> bool {
+    let Some(matches) = v.get("matches").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    !matches.is_empty()
+        && matches.iter().all(|m| {
+            m.get("facts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|facts| {
+                    facts.iter().any(|f| {
+                        f.get("lore")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|l| !l.trim().is_empty())
+                    })
+                })
+        })
 }
 
 /// Everything the reader needs, or nothing and it does not run.
@@ -416,6 +495,20 @@ impl Reader {
         (false, self.itemdb.item(item).await.is_some())
     }
 
+    /// Whether eqdb already holds lore for this item.
+    ///
+    /// False when it holds the item but no lore, when it does not hold the
+    /// item, and when it could not be asked. Only a positive answer may
+    /// suppress a window, so an unreachable site sends rather than discards --
+    /// the same way [`Self::standing`] treats no answer as "wanted".
+    ///
+    /// `standing` asked `/api/item` for this same name a moment ago and
+    /// `ItemDb` caches the answer, so on the path that calls both this is not
+    /// a second request.
+    async fn lore_held(&self, item: &str) -> bool {
+        self.itemdb.item(item).await.as_ref().is_some_and(lore_on_file)
+    }
+
     /// The picture, then the reading citing it — the order `ocr/push.py` uses,
     /// so a reading is never stored pointing at a picture that did not arrive.
     async fn send(&self, w: &Window) -> Result<String, String> {
@@ -546,17 +639,30 @@ impl Reader {
                 // also predate this feature, having been ticked by hand.
                 engine.locked("engine").set_screenshot_mark(&item, true);
                 let (wanted, known) = self.standing(&item).await;
-                if !wanted && known {
+                // A Lore window for an item whose lore eqdb does not have is
+                // sent even though the item itself is covered. The wanted
+                // list cannot express this gap: it is computed from the
+                // stats reading and the icon, so it goes quiet about an item
+                // the moment its Description tab lands -- which is one tab
+                // and a few seconds before its Lore tab is photographed.
+                let teaches_lore = w.is_lore() && !self.lore_held(&item).await;
+                if !sends(wanted, known, teaches_lore) {
                     out.verdict = "covered".into();
                     out.detail = "eqdb holds this item and is not asking for it".into();
                 } else {
                     match self.send(w).await {
                         Ok(status) => {
                             out.verdict = status;
+                            // Ordered so each arm is true where it is
+                            // reached: the last is only reachable when the
+                            // item is known and unwanted, which in this
+                            // branch means `teaches_lore`.
                             out.detail = if wanted {
                                 "eqdb was asking for this one".into()
-                            } else {
+                            } else if !known {
                                 "eqdb has never heard of this item".into()
+                            } else {
+                                "eqdb holds this item with no lore, and this window has it".into()
                             };
                         }
                         Err(e) => {
@@ -1152,5 +1258,183 @@ mod token_file_tests {
         // Trimmed: a token pasted out of a web page brings whitespace with it,
         // and a bearer header with a trailing newline is a 401 nobody can see.
         assert_eq!(got.as_deref(), Some("spaced"));
+    }
+}
+
+/// The Lore tab exception: a window carrying lore eqdb does not have is sent
+/// even though the item itself is covered.
+///
+/// These test the two halves of that decision separately, because between
+/// them they are the whole of it and neither needs a site: `lore_on_file`
+/// reads an `/api/item` payload, and `Window::is_lore` reads a record.
+#[cfg(test)]
+mod lore_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn window(record: serde_json::Value) -> Window {
+        Window {
+            crop: "c.png".into(),
+            crop_path: "/nowhere/c.png".into(),
+            held: None,
+            error: None,
+            record,
+            fields: serde_json::Value::Null,
+            needs_review: vec![],
+            lines: serde_json::Value::Null,
+        }
+    }
+
+    /// The 1,704-item case, and the reason any of this was written: the site
+    /// holds the item, holds its stats, and holds no lore. Measured on
+    /// production 5 September -- 1,865 items with facts, 161 with lore.
+    #[test]
+    fn facts_without_lore_are_not_lore_on_file() {
+        let v = json!({"count": 1, "matches": [
+            {"facts": [{"item": "Bixie Wing", "lore": "", "icon": 734}]}
+        ]});
+        assert!(!lore_on_file(&v));
+    }
+
+    #[test]
+    fn lore_on_any_reading_is_lore_on_file() {
+        let v = json!({"count": 1, "matches": [
+            {"facts": [{"lore": ""}, {"lore": "Misty Bixie Wings"}]}
+        ]});
+        assert!(lore_on_file(&v));
+    }
+
+    /// Whitespace is not lore. The decoder returns a stripped string, but a
+    /// hand-typed field on the review page has whatever the person left in it.
+    #[test]
+    fn blank_lore_is_not_lore() {
+        let v = json!({"count": 1, "matches": [{"facts": [{"lore": "   \n "}]}]});
+        assert!(!lore_on_file(&v));
+    }
+
+    /// Twins. `Bixie Stinger` names two items and lore on one of them is not
+    /// lore on the other, so the window goes to a person to sort out.
+    #[test]
+    fn one_twin_with_lore_is_not_enough() {
+        let v = json!({"count": 2, "matches": [
+            {"facts": [{"lore": "From the Sky"}]},
+            {"facts": [{"lore": ""}]},
+        ]});
+        assert!(!lore_on_file(&v));
+    }
+
+    /// A match eqdb has never had a reading for cannot be holding its lore.
+    #[test]
+    fn a_match_with_no_facts_is_not_lore_on_file() {
+        assert!(!lore_on_file(&json!({"count": 1, "matches": [{"facts": []}]})));
+        assert!(!lore_on_file(&json!({"count": 1, "matches": [{}]})));
+    }
+
+    /// `count: 0` -- the shape the site answers with for a name it does not
+    /// know, and the shape a caller gets from an origin that is up but empty.
+    #[test]
+    fn an_unknown_item_is_not_lore_on_file() {
+        assert!(!lore_on_file(&json!({"count": 0, "matches": []})));
+        assert!(!lore_on_file(&json!({})));
+        assert!(!lore_on_file(&serde_json::Value::Null));
+    }
+
+    /// The tab, not the text. This is the window `parse.py` flags with "the
+    /// Lore tab is selected and no lore text was read" -- the one most worth
+    /// a person's eyes, and the one a text-only test would have dropped.
+    #[test]
+    fn a_lore_tab_that_did_not_decode_is_still_a_lore_window() {
+        let w = window(json!({"item": "Ancient Rock", "tab": "Lore"}));
+        assert!(w.lore().is_empty());
+        assert!(w.is_lore());
+    }
+
+    #[test]
+    fn a_description_window_is_not_a_lore_window() {
+        let w = window(json!({
+            "item": "Ancient Rock", "tab": "Description",
+            "note": "Ancient piece of earth from Rathe Mountains"
+        }));
+        assert!(!w.is_lore(), "a note on the Description tab is not lore");
+    }
+
+    /// No tab at all is the common shape: most windows never reach the tab
+    /// row, and none of them may take this exception.
+    #[test]
+    fn a_window_with_no_tab_is_not_a_lore_window() {
+        assert!(!window(json!({"item": "Ancient Rock"})).is_lore());
+    }
+
+    #[test]
+    fn lore_text_is_read_and_trimmed() {
+        let w = window(json!({"tab": "Lore", "lore": "  Marnek's Wand \n"}));
+        assert_eq!(w.lore(), "Marnek's Wand");
+        assert!(w.is_lore());
+    }
+
+    /// An unreachable site holds no lore, so its windows are sent. `ItemDb`
+    /// with no origins cannot answer, which is the same answer.
+    #[test]
+    fn a_site_that_cannot_be_asked_does_not_hold_lore() {
+        let d = std::env::temp_dir();
+        let r = tests::looking_at(&d);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(!rt.block_on(r.lore_held("Ancient Rock")));
+    }
+}
+
+/// The send rule as a table, which is what it is.
+#[cfg(test)]
+mod send_rule_tests {
+    use super::sends;
+
+    /// The line this whole change turns on. Before it, an item eqdb held and
+    /// was not asking for was skipped whatever the window carried -- and
+    /// since the wanted list never mentions lore, that was every Lore tab of
+    /// every item already photographed. 143 of the 146 items whose lore is on
+    /// file were in exactly this state when it was taken.
+    #[test]
+    fn a_covered_item_is_sent_when_the_window_carries_lore_eqdb_lacks() {
+        assert!(sends(false, true, true));
+    }
+
+    /// And still skipped when it does not. The exception is for the gap, not
+    /// for the tab: re-photographing lore already on file is a duplicate in
+    /// somebody's review queue.
+    #[test]
+    fn a_covered_item_is_still_skipped_otherwise() {
+        assert!(!sends(false, true, false));
+    }
+
+    #[test]
+    fn a_wanted_item_is_always_sent() {
+        assert!(sends(true, true, false));
+        assert!(sends(true, true, true));
+    }
+
+    #[test]
+    fn an_unknown_item_is_always_sent() {
+        assert!(sends(false, false, false));
+        assert!(sends(false, false, true));
+    }
+
+    /// Every combination, so the rule is pinned rather than sampled. Skipping
+    /// is the single case: known, unwanted, teaching nothing.
+    #[test]
+    fn skipping_is_the_one_case() {
+        let mut skipped = vec![];
+        for wanted in [false, true] {
+            for known in [false, true] {
+                for lore in [false, true] {
+                    if !sends(wanted, known, lore) {
+                        skipped.push((wanted, known, lore));
+                    }
+                }
+            }
+        }
+        assert_eq!(skipped, vec![(false, true, false)]);
     }
 }
