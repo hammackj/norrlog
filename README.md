@@ -259,6 +259,42 @@ contributed logs — so they are written as "seen N times", never as a rate.
 The bundled wiki data stays behind all of it for anything the site has not
 reached yet.
 
+## The record, and the bundle
+
+Two readings of a log happen at once. The **live** one is what every panel
+shows: encounters, buffs, what is happening now. The **record** is what a site
+can be built from — who else was in the zone, what a creature considered at,
+which faction a kill moved, how high a skill has climbed, where a marker was
+written down, where a corpse fell.
+
+Both come out of the same parse. The record's six collectors live in
+`eqlparser-core::collect` and are driven from `Engine::push_entry`, so a rule
+about how to read a line exists once. They were previously read by a second
+program (`eqldb-logscan`) opening the same 161 MB file again.
+
+```sh
+# Parse one log and write the record as JSON — the file names and shapes
+# eqldb's rebuild has always written, so the two readings can be diffed.
+eqlparserd --log <log> --game-dir <dir> --record-out <dir>
+```
+
+The **Bundle** tab shows what this daemon would upload, and — more to the
+point — what uploading it would do.
+
+That distinction is the whole design of the panel. An ingest does not merge a
+bundle: for every table the document declares a source for, it deletes the
+contributor's rows and writes the bundle's in their place. So a table carrying
+no rows is not a smaller contribution, it is a deletion, and from the outside
+it looks like a perfectly good bundle. The panel therefore reports verdicts
+rather than row counts, ordered by consequence, with the deletions lifted out
+above everything else.
+
+Two tables sit deliberately in **adds only**: markers and icons are each half
+this daemon's and half something else's — the eqmaps label store, and the
+screenshot matcher — so no source is declared for them and an ingest folds
+them in rather than clearing first. Undeclared is the safe state: a bundle
+that cannot clear a table cannot empty it.
+
 ## CLI tools
 
 ```sh
@@ -293,6 +329,8 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 | `GET /api/wanted` | Items the companion site still needs a screenshot of, each flagged with whether you have ticked it off — `?refresh=1` re-asks the site |
 | `POST /api/wanted/mark` | `{item, have}` — tick an item off the screenshot list, or untick it |
 | `GET /api/wanted/recent` | Of those, what you have looted lately and could still photograph — `?window=` seconds (default an hour), `?limit=` rows |
+| `GET /api/bundle/preview` | The contribution bundle this daemon would send, and what an ingest of it would do to each of the site's tables |
+| `GET /api/bundle/contributor` · `POST` | `{contributor}` — the name your rows are filed under on the site. Kept here rather than taken from the upload token |
 | `GET /api/shots/recent` | What the screenshot reader made of the last few pictures, and whether it is running at all |
 | `POST /api/eqdb/token` | `{token}` — keep an eqldb upload token and start using it; an empty one removes it. Write-only: nothing reads it back |
 | `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |

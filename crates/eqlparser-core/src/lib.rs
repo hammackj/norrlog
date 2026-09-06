@@ -11,6 +11,7 @@
 pub mod aa;
 pub mod alert;
 pub mod bestiary;
+pub mod bundle;
 pub mod class;
 pub mod collect;
 pub mod classlevel;
@@ -20,6 +21,7 @@ pub mod event;
 pub mod experience;
 pub mod feed;
 pub mod game;
+pub mod itemids;
 pub mod lockout;
 pub mod npc;
 pub mod parser;

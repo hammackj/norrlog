@@ -41,6 +41,9 @@ pub struct AppState {
     /// and so that a token arriving through `/api/eqdb/token` has something
     /// to switch on.
     pub shots: Arc<crate::shots::Shots>,
+    /// The accumulated item-id record. Absent when there is nowhere to keep
+    /// it; present but empty when there is no game folder to read.
+    pub ids: Option<Arc<Mutex<crate::dumps::Ids>>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -48,6 +51,12 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/overlay", get(overlay_page))
         .route("/api/shots/recent", get(shots_recent))
+        .route("/api/item-ids", get(item_ids))
+        .route("/api/bundle/preview", get(bundle_preview))
+        .route(
+            "/api/bundle/contributor",
+            get(get_contributor).post(set_contributor),
+        )
         .route("/api/eqdb/token", axum::routing::post(set_eqdb_token))
         .route("/overlay.css", get(overlay_css))
         .route("/overlay.js", get(overlay_js))
@@ -495,6 +504,34 @@ fn fmt_hms(seconds: i64) -> String {
     } else {
         format!("{s}s")
     }
+}
+
+/// The item-id record, whole.
+///
+/// Served rather than left as a file for other programs to find, because a
+/// file is a path every reader has to be told and this daemon is already the
+/// thing that knows where the record lives. The capture tree reads it to
+/// decide which items still want photographing; `eqldb-export` reads it into
+/// the bundle.
+///
+/// Whole rather than paged: it is a couple of thousand rows and every caller
+/// so far wants all of them.
+async fn item_ids(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(ids) = &state.ids else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "no item-id record: this daemon has no config directory to keep one in"
+            })),
+        )
+            .into_response();
+    };
+    let guard = ids.locked("item ids");
+    Json(serde_json::json!({
+        "path": guard.path().to_string_lossy(),
+        "registry": guard.registry(),
+    }))
+    .into_response()
 }
 
 fn render_encounters_markdown(encs: &[crate::engine::EncounterSummary]) -> String {
@@ -1135,6 +1172,88 @@ async fn shots_recent(State(state): State<AppState>) -> impl IntoResponse {
 /// that can reach this could already read `~/.config/eqlparser/eqldb-token`.
 /// What it must not do is *hand the value back*, because then a stray local
 /// page could take a credential rather than merely break a reader.
+// ---------------------------------------------------------------------------
+// The bundle
+// ---------------------------------------------------------------------------
+//
+// What this daemon would send to the site, and what sending it would do. See
+// `crate::bundle` for why the answer is a set of verdicts rather than a set of
+// row counts: an ingest deletes before it writes, so an empty table this
+// bundle has declared authority over is a deletion, and it looks like a
+// perfectly good bundle from the outside.
+
+/// Where the contributor's name is kept.
+///
+/// The config directory, with the hand-made state, because that is what it is:
+/// nothing derives it and nothing can regenerate it. Deliberately not taken
+/// from the upload token — a name assigned from a credential is not an
+/// attribution, and rows filed under the wrong one cannot be told apart
+/// afterwards.
+fn contributor_path() -> Option<std::path::PathBuf> {
+    crate::paths::config_file("contributor")
+}
+
+fn contributor() -> String {
+    contributor_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+async fn get_contributor() -> impl IntoResponse {
+    Json(serde_json::json!({ "contributor": contributor() }))
+}
+
+async fn set_contributor(Json(body): Json<ContributorBody>) -> impl IntoResponse {
+    let name = body.contributor.trim();
+    let Some(path) = contributor_path() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "said": "nowhere to keep a config file on this machine"
+        }));
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::write(&path, format!("{name}\n")) {
+        Ok(()) => Json(serde_json::json!({"ok": true, "contributor": name})),
+        Err(e) => Json(serde_json::json!({"ok": false, "said": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ContributorBody {
+    #[serde(default)]
+    contributor: String,
+}
+
+async fn bundle_preview(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(store) = state.store.as_ref() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "said": "no history database, so there is nothing to send"
+        }));
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // The registry is cloned out from under its lock rather than held across
+    // the build: the sweep thread wants it back every minute.
+    let ids = state
+        .ids
+        .as_ref()
+        .map(|i| i.locked("item ids").registry().clone());
+    let built = {
+        let st = store.locked("bundle");
+        crate::bundle::build(&st, ids.as_ref(), &contributor(), now)
+    };
+    match built {
+        Ok(b) => Json(serde_json::to_value(crate::bundle::preview(&b)).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"ok": false, "said": e.to_string()})),
+    }
+}
+
 async fn set_eqdb_token(
     State(state): State<AppState>,
     Json(body): Json<TokenBody>,
@@ -2577,6 +2696,7 @@ mod tests {
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![
                 "http://127.0.0.1:1".to_string()
             ])),
+            ids: None,
             shots: crate::shots::Shots::new(crate::shots::Setup {
                 ocr: None,
                 shots: None,
@@ -2607,14 +2727,6 @@ mod tests {
         assert!(!new_zone(Some("Befallen"), &[]));
     }
 
-    /// The overlay's panels and the Settings tickboxes are two lists in two
-    /// files, and they drift. A comment above the second one already said
-    /// "adding one to the overlay means adding it here", and the `motes` panel
-    /// was still added to one and not the other — leaving it reachable only by
-    /// typing it into the options string by hand.
-    ///
-    /// So the lists are checked against each other rather than trusted.
-    #[test]
     /// Every named import across the renderer resolves.
     ///
     /// The same failure as the id test and a different cause: a module that
@@ -2778,6 +2890,14 @@ mod tests {
         );
     }
 
+    /// The overlay's panels and the Settings tickboxes are two lists in two
+    /// files, and they drift. A comment above the second one already said
+    /// "adding one to the overlay means adding it here", and the `motes` panel
+    /// was still added to one and not the other — leaving it reachable only by
+    /// typing it into the options string by hand.
+    ///
+    /// So the lists are checked against each other rather than trusted.
+    #[test]
     fn every_overlay_panel_is_offered_in_settings() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

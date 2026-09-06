@@ -12,6 +12,7 @@ use eqlparser_core::class::{ClassDetector, ClassScore};
 use eqlparser_core::drops::{DropReport, DropTracker};
 use eqlparser_core::encounter::{Encounter, EncounterTracker};
 use eqlparser_core::experience::{AaPurchase, ExpSource, ExpTracker, LevelRecord};
+use eqlparser_core::feed::Context;
 use eqlparser_core::game::Game;
 use eqlparser_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
 use eqlparser_core::npc::{NpcReport, NpcTracker};
@@ -844,6 +845,23 @@ pub struct Engine {
     /// reaches the end of the file, the newest line is approximately "now".
     clock_offset: Option<i64>,
     live: bool,
+    /// The six collectors that read this log for the *record* rather than for
+    /// the screen — who was here, what considered at what, which faction a
+    /// kill moved, how high a skill has reached, and where things stood.
+    ///
+    /// Nothing on any panel needs these. They ride this parse because the
+    /// alternative is a second program opening the same file, which is how
+    /// they were read until now. See [`crate::record`].
+    record: crate::record::Record,
+    /// The zone exactly as the client announced it.
+    ///
+    /// Distinct from [`Engine::zone_log`], which holds the *parsed* place
+    /// name. The record's collectors were written against a
+    /// [`Feed`](eqlparser_core::feed::Feed), which passes the raw string
+    /// through, and a marker filed under "Befallen" by one reader and
+    /// "befallen" by another is two markers. Keeping the raw string is
+    /// cheaper than teaching six collectors which spelling this one is.
+    feed_zone: Option<String>,
     /// Alert rules and what they have fired.
     alerts: AlertBook,
     /// The last lines to arrive, so the alerts view can offer "tell me when
@@ -933,6 +951,8 @@ impl Engine {
             seen_logon: false,
             clock_offset: None,
             live: false,
+            record: crate::record::Record::new(),
+            feed_zone: None,
             alerts: AlertBook::new(),
             recent_lines: VecDeque::new(),
             line_seq: 0,
@@ -1158,6 +1178,11 @@ impl Engine {
     }
 
     fn push_entry(&mut self, entry: LogEntry) {
+        // The gap the record's collectors are given, taken before the session
+        // logic below moves `last_timestamp` on. `None` on the very first
+        // entry, as a feed reports it: there is nothing for it to be a gap
+        // from.
+        let record_gap = (self.last_timestamp > 0).then(|| entry.timestamp - self.last_timestamp);
         // A session starts at a logon, which the client states outright; see
         // the `LoggedOn` arm below. Until one has been seen the log may have
         // begun mid-session, so fall back to inferring a boundary from a long
@@ -1660,6 +1685,11 @@ impl Engine {
                 }
             }
             Event::ZoneChange { zone } => {
+                // The zone as the client wrote it, for the record's
+                // collectors; see the field. Set before they are dispatched
+                // below, because the line announces an arrival that has
+                // already happened.
+                self.feed_zone = Some(zone.clone());
                 // Where you are, remembered with its arrival time, so a pickup
                 // can be placed later without a fight having been open.
                 let place = eqlparser_core::zone::Zone::parse(zone).name;
@@ -1711,7 +1741,53 @@ impl Engine {
             _ => {}
         }
 
+        // The record's collectors, on exactly the terms a feed gives them: the
+        // zone as announced, and the fight as it stood *before* this line is
+        // pushed. Before the push matters — a death is judged against the
+        // encounter that was open when it was written, and pushing first
+        // closes the fight and turns "did you fight this" into no.
+        {
+            let Engine {
+                record,
+                tracker,
+                player,
+                feed_zone,
+                drops,
+                ..
+            } = self;
+            let cx = Context {
+                player,
+                game: drops.game(),
+                zone: feed_zone.as_deref(),
+                gap: record_gap,
+                encounter: tracker.current(),
+            };
+            record.on_entry(&entry, &cx);
+        }
+
         if let Some(done) = self.tracker.push(&entry) {
+            // A fresh context, for the same reason the feed builds one: the
+            // borrow above held the encounter that has just closed, and what
+            // an observer wants here is the state the next line is read
+            // against.
+            {
+                let Engine {
+                    record,
+                    tracker,
+                    player,
+                    feed_zone,
+                    drops,
+                    ..
+                } = self;
+                let cx = Context {
+                    player,
+                    game: drops.game(),
+                    zone: feed_zone.as_deref(),
+                    gap: record_gap,
+                    encounter: tracker.current(),
+                };
+                record.on_encounter_end(&done, &cx);
+            }
             self.encounters.push(done);
             self.trim_timelines();
         }
@@ -2845,6 +2921,23 @@ impl Engine {
     /// Which game this engine's log is from.
     pub fn game(&self) -> Game {
         self.drops.game()
+    }
+
+    /// The record as it stands, settled but not disturbed.
+    ///
+    /// See [`crate::record`] for why this clones rather than finishing the
+    /// live collectors in place.
+    pub fn record(&self) -> crate::record::Settled {
+        self.record
+            .settle(&self.player, self.drops.game(), self.feed_zone.as_deref())
+    }
+
+    /// Every record report, filed under `source`.
+    ///
+    /// `source` is the log's stem, which is the tag these rows have always
+    /// carried.
+    pub fn record_reports(&self, source: &str) -> crate::record::Reports {
+        self.record().reports(source)
     }
 
     /// Everything known about the items this log has touched, gathered into

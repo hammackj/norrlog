@@ -780,6 +780,207 @@ impl Store {
                 last_seen INTEGER NOT NULL,
                 bytes     INTEGER NOT NULL DEFAULT 0
             );
+
+            -- ---- the record ------------------------------------------------
+            --
+            -- Six tables for what `crate::record` collects. They follow the
+            -- same rule as `item_drops` above and for the same reason:
+            -- `source` is in every key, so re-reading a log replaces that
+            -- log's own rows while a second log adds to them. Summing across
+            -- rows is therefore correct however many times anything is
+            -- re-read, which a single running total would not be.
+
+            -- Levels a creature has been seen conning at.
+            --
+            -- One row per level rather than a packed map, so a merge across
+            -- logs is a SUM rather than a parse. `rare` and `raid` are facts
+            -- about the creature and so repeat across its level rows; merge
+            -- them with MAX.
+            --
+            -- A creature with no levels at all is written at level **-1**,
+            -- with a count of zero, purely so its rare and raid marks
+            -- survive. Minus one rather than zero because zero is a
+            -- *representable* level -- `Event::Consider` carries a `u32` and
+            -- the collector files whatever it is given -- and a sentinel that
+            -- collides with a value the column can hold is a count silently
+            -- dropped the first time the grammar changes. Today's grammar
+            -- requires `(Lvl: N)`, so the placeholder is defensive and the
+            -- rows it guards do not yet occur.
+            CREATE TABLE IF NOT EXISTS considers (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                creature  TEXT NOT NULL,
+                level     INTEGER NOT NULL,
+                times     INTEGER NOT NULL,
+                rare      INTEGER NOT NULL DEFAULT 0,
+                raid      INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (game, character, server, source, creature, level)
+            );
+
+            -- Faction moved by killing something, one row per distinct
+            -- adjustment. Not an average: a creature whose hit varies keeps
+            -- both readings. The kill count is the sum of `times`, so it is
+            -- not stored.
+            CREATE TABLE IF NOT EXISTS faction_hits (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                creature  TEXT NOT NULL,
+                zone      TEXT NOT NULL,
+                faction   TEXT NOT NULL,
+                amount    INTEGER NOT NULL,
+                times     INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, creature, zone, faction, amount)
+            );
+
+            -- The same, for handing an item to somebody.
+            CREATE TABLE IF NOT EXISTS faction_turnins (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                npc       TEXT NOT NULL,
+                item      TEXT NOT NULL,
+                faction   TEXT NOT NULL,
+                amount    INTEGER NOT NULL,
+                times     INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, npc, item, faction, amount)
+            );
+
+            -- How many of an item were offered and how many went across.
+            --
+            -- Its own table rather than columns on `faction_turnins`: those
+            -- rows are per adjustment, and a count repeated across four
+            -- adjustment rows would be quadrupled by the first SUM anyone
+            -- writes. A hand-in that moved no faction at all is a row here
+            -- and nowhere else, which is also the point.
+            CREATE TABLE IF NOT EXISTS faction_offers (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                npc       TEXT NOT NULL,
+                item      TEXT NOT NULL,
+                offered   INTEGER NOT NULL,
+                handins   INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, npc, item)
+            );
+
+            -- How well the attribution did, per log. Kept because it is the
+            -- only measure of whether the faction reading is worth trusting:
+            -- bursts seen against bursts anything explained.
+            CREATE TABLE IF NOT EXISTS faction_bursts (
+                game        TEXT NOT NULL,
+                character   TEXT NOT NULL,
+                server      TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                seen        INTEGER NOT NULL,
+                attributed  INTEGER NOT NULL,
+                to_turnins  INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source)
+            );
+
+            -- Player characters named by /who.
+            --
+            -- Here to keep people out of the bestiary; see
+            -- `eqlparser_core::collect::PlayerCollector`. `level` 0 means
+            -- [ANONYMOUS], and `classes` is empty for the same reason -- both
+            -- are somebody hiding, not somebody absent.
+            CREATE TABLE IF NOT EXISTS players (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                level     INTEGER NOT NULL,
+                classes   TEXT NOT NULL DEFAULT '',
+                race      TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (game, character, server, source, name)
+            );
+
+            -- The highest each skill has been seen at.
+            --
+            -- No `source` column, unlike everything else here, because a
+            -- ceiling is not a running total: it is the highest anybody has
+            -- reached, and a lower reading is simply an older one. Written
+            -- with MAX rather than REPLACE so re-reading a log that stops
+            -- earlier cannot lower it.
+            CREATE TABLE IF NOT EXISTS skills (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                skill     TEXT NOT NULL,
+                at_least  INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, skill)
+            );
+
+            -- Map markers, from the convention the player types at the spot.
+            --
+            -- The position is in the key, which is unusual for a float and is
+            -- deliberate: two markers of the same name in the same zone are
+            -- two markers -- a zone with four guildmasters is four rows --
+            -- and the position is the only thing that distinguishes them.
+            -- Safe as a key because re-parsing the same line produces the
+            -- same bits, so a re-read replaces its own row rather than
+            -- doubling it.
+            --
+            -- **Map space, not /loc space.** See `MarkerCollector` for the
+            -- transform and for why distance-to-nearest-map-line is not a
+            -- valid test of it.
+            CREATE TABLE IF NOT EXISTS markers (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                role       TEXT NOT NULL DEFAULT '',
+                zone       TEXT NOT NULL,
+                zone_short TEXT NOT NULL DEFAULT '',
+                x          REAL NOT NULL,
+                y          REAL NOT NULL,
+                z          REAL NOT NULL,
+                -- From a consider in the same block, when there was one.
+                level      INTEGER,
+                PRIMARY KEY (game, character, server, source, zone, name, role, x, y)
+            );
+
+            -- Zone name to map shortname, learned from /who.
+            --
+            -- Nothing in the client states this pairing, and a shortname is
+            -- what a map file is called. Not keyed on a log: it is a fact
+            -- about the world rather than an observation, so a later reading
+            -- replaces an earlier one.
+            CREATE TABLE IF NOT EXISTS map_zones (
+                game       TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                zone_short TEXT NOT NULL,
+                PRIMARY KEY (game, zone)
+            );
+
+            -- Where a creature stood when it died, from a /loc taken over the
+            -- corpse. Keyed on the death time, which is what makes it one
+            -- observation. `gap` is the seconds between the death and the
+            -- reading and is the whole reliability of the row -- carried
+            -- rather than thresholded, so the reader decides.
+            CREATE TABLE IF NOT EXISTS spots (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                zone_short TEXT NOT NULL DEFAULT '',
+                x          REAL NOT NULL,
+                y          REAL NOT NULL,
+                z          REAL NOT NULL,
+                at         INTEGER NOT NULL,
+                gap        INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, name, at)
+            );
             ",
         )?;
         Ok(())
@@ -1145,6 +1346,532 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Write the record — considers, faction, players, skills, markers and
+    /// spots — for one log.
+    ///
+    /// Every row carries `source`, so this replaces this log's own rows and
+    /// leaves every other log's alone. Safe to call as often as the history
+    /// flush likes.
+    pub fn put_record(
+        &mut self,
+        game: &str,
+        source: &str,
+        r: &crate::record::Settled,
+    ) -> Result<usize> {
+        let (c, sv) = (self.character.clone(), self.server.clone());
+        let tx = self.conn.transaction()?;
+        let mut n = 0usize;
+        {
+            // Considers. A creature with no levels at all still gets a row,
+            // at level -1 and with `times` 0, so its rare and raid marks
+            // survive. See the schema for why -1 rather than 0, and for why
+            // this path does not fire against today's grammar. `times` is
+            // zero because the collector's own count is the sum over levels,
+            // so a placeholder carrying a count would inflate every total.
+            tx.execute(
+                "DELETE FROM considers WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
+                params![game, c, sv, source],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO considers
+                 (game, character, server, source, creature, level, times, rare, raid)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            )?;
+            for con in r.consider.seen().values() {
+                if con.levels.is_empty() {
+                    if con.rare || con.raid {
+                        stmt.execute(params![
+                            game, c, sv, source, con.name, -1i64, 0i64,
+                            con.rare as i64, con.raid as i64
+                        ])?;
+                        n += 1;
+                    }
+                    continue;
+                }
+                for (level, times) in &con.levels {
+                    stmt.execute(params![
+                        game, c, sv, source, con.name, *level as i64, *times as i64,
+                        con.rare as i64, con.raid as i64
+                    ])?;
+                    n += 1;
+                }
+            }
+        }
+        {
+            // Faction. Three tables; see the schema for why the offer counts
+            // are not columns on the adjustments.
+            for t in ["faction_hits", "faction_turnins", "faction_offers", "faction_bursts"] {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {t} WHERE game=?1 AND character=?2 AND server=?3 AND source=?4"
+                    ),
+                    params![game, c, sv, source],
+                )?;
+            }
+            let f = &r.faction;
+            let mut hit = tx.prepare(
+                "INSERT OR REPLACE INTO faction_hits
+                 (game, character, server, source, creature, zone, faction, amount, times)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            )?;
+            let mut turn = tx.prepare(
+                "INSERT OR REPLACE INTO faction_turnins
+                 (game, character, server, source, npc, item, faction, amount, times)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            )?;
+            for ((cause, faction), moves) in f.moves() {
+                for (amount, times) in &moves.amounts {
+                    match cause {
+                        eqlparser_core::collect::FactionCause::Kill { creature, zone } => {
+                            hit.execute(params![
+                                game, c, sv, source,
+                                f.creature_display(creature).unwrap_or(creature),
+                                f.zone_display(zone).unwrap_or(zone),
+                                faction, *amount, *times as i64
+                            ])?;
+                        }
+                        eqlparser_core::collect::FactionCause::TurnIn { npc, item } => {
+                            turn.execute(params![
+                                game, c, sv, source, npc, item, faction, *amount, *times as i64
+                            ])?;
+                        }
+                    }
+                    n += 1;
+                }
+            }
+            let mut offer = tx.prepare(
+                "INSERT OR REPLACE INTO faction_offers
+                 (game, character, server, source, npc, item, offered, handins)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            )?;
+            let mut pairs: std::collections::BTreeSet<(String, String)> =
+                f.offered.keys().cloned().collect();
+            pairs.extend(f.handins.keys().cloned());
+            for (npc, item) in pairs {
+                offer.execute(params![
+                    game, c, sv, source, npc, item,
+                    f.offered.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64,
+                    f.handins.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64
+                ])?;
+                n += 1;
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO faction_bursts
+                 (game, character, server, source, seen, attributed, to_turnins)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    game, c, sv, source,
+                    f.bursts as i64, f.to_kill as i64, f.to_turnin as i64
+                ],
+            )?;
+        }
+        {
+            tx.execute(
+                "DELETE FROM players WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
+                params![game, c, sv, source],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO players
+                 (game, character, server, source, name, level, classes, race)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            )?;
+            for p in r.players.seen().values() {
+                stmt.execute(params![
+                    game, c, sv, source, p.name, p.level as i64,
+                    p.classes.join("|"), p.race
+                ])?;
+                n += 1;
+            }
+        }
+        {
+            // MAX, not REPLACE: a skill only goes up, so a lower reading is an
+            // older one. This is also why there is no DELETE above it -- a
+            // ceiling is not a per-log running total.
+            let mut stmt = tx.prepare(
+                "INSERT INTO skills (game, character, server, skill, at_least)
+                 VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT (game, character, server, skill)
+                 DO UPDATE SET at_least = MAX(at_least, excluded.at_least)",
+            )?;
+            for (skill, at_least) in r.skills.best() {
+                stmt.execute(params![game, c, sv, skill, *at_least as i64])?;
+                n += 1;
+            }
+        }
+        {
+            tx.execute(
+                "DELETE FROM markers WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
+                params![game, c, sv, source],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO markers
+                 (game, character, server, source, name, kind, role, zone, zone_short,
+                  x, y, z, level)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            )?;
+            for m in r.markers.spawn_points(crate::record::SPAWN_RADIUS) {
+                stmt.execute(params![
+                    game, c, sv, source, m.name,
+                    crate::record::marker_kind(m.kind),
+                    m.role, m.zone, m.zone_short, m.x, m.y, m.z,
+                    m.level.map(|l| l as i64)
+                ])?;
+                n += 1;
+            }
+            let mut zone = tx.prepare(
+                "INSERT OR REPLACE INTO map_zones (game, zone, zone_short) VALUES (?1,?2,?3)",
+            )?;
+            for (z, short) in r.markers.zones() {
+                zone.execute(params![game, z, short])?;
+                n += 1;
+            }
+        }
+        {
+            tx.execute(
+                "DELETE FROM spots WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
+                params![game, c, sv, source],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO spots
+                 (game, character, server, source, name, zone, zone_short, x, y, z, at, gap)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            )?;
+            for sp in r.spots.spots() {
+                stmt.execute(params![
+                    game, c, sv, source, sp.name, sp.zone, sp.zone_short,
+                    sp.x, sp.y, sp.z, sp.at, sp.gap
+                ])?;
+                n += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// The whole record on file, merged across every log and character.
+    ///
+    /// This is what a bundle is built from. The per-log reports the engine
+    /// serves are one log's reading; this is the accumulation, which is the
+    /// only thing that can honestly be sent — the daemon follows one log at a
+    /// time and the site is owed everything ever seen.
+    ///
+    /// `source` on each report reads `history` rather than a log's stem, for
+    /// the same reason: there is no one log this came from.
+    pub fn record_reports(&self, game: &str) -> Result<crate::record::Reports> {
+        use crate::record::*;
+        const SOURCE: &str = "history";
+
+        let mut considers: Vec<ConsiderRow> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT creature, level, SUM(times), MAX(rare), MAX(raid)
+                 FROM considers WHERE game = ?1
+                 GROUP BY creature, level ORDER BY creature, level",
+            )?;
+            let rows = stmt
+                .query_map(params![game], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)? != 0,
+                        r.get::<_, i64>(4)? != 0,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (creature, level, times, rare, raid) in rows {
+                let row = match considers.last_mut() {
+                    Some(r) if r.creature == creature => r,
+                    _ => {
+                        considers.push(ConsiderRow {
+                            creature,
+                            game: GAME_TAG,
+                            levels: Vec::new(),
+                            rare: false,
+                            raid: false,
+                            considers: 0,
+                        });
+                        considers.last_mut().expect("just pushed")
+                    }
+                };
+                row.rare |= rare;
+                row.raid |= raid;
+                // Minus one is the placeholder for a creature with no levels
+                // at all; it carries the marks above and nothing else. Every
+                // value the column can actually hold is a real level. See
+                // `put_record`.
+                if level >= 0 {
+                    row.levels.push(LevelSeen {
+                        level: level as u32,
+                        times: times as u64,
+                    });
+                    row.considers += times as u64;
+                }
+            }
+        }
+
+        let mut hits: Vec<FactionHit> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT creature, zone, faction, amount, SUM(times)
+                 FROM faction_hits WHERE game = ?1
+                 GROUP BY creature, zone, faction, amount
+                 ORDER BY creature, zone, faction, amount",
+            )?;
+            let rows = stmt
+                .query_map(params![game], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (creature, zone, faction, amount, times) in rows {
+                let row = match hits.last_mut() {
+                    Some(h) if h.creature == creature && h.zone == zone && h.faction == faction => h,
+                    _ => {
+                        hits.push(FactionHit {
+                            creature,
+                            zone,
+                            faction,
+                            adjustments: Vec::new(),
+                            kills: 0,
+                            game: GAME_TAG,
+                        });
+                        hits.last_mut().expect("just pushed")
+                    }
+                };
+                row.adjustments.push(Adjustment {
+                    amount,
+                    times: times as u64,
+                });
+                row.kills += times as u64;
+            }
+        }
+
+        let mut turnins: Vec<FactionTurnIn> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT npc, item, faction, amount, SUM(times)
+                 FROM faction_turnins WHERE game = ?1
+                 GROUP BY npc, item, faction, amount
+                 ORDER BY npc, item, faction, amount",
+            )?;
+            let rows = stmt
+                .query_map(params![game], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (npc, item, faction, amount, times) in rows {
+                let row = match turnins.last_mut() {
+                    Some(t) if t.npc == npc && t.item == item && t.faction == faction => t,
+                    _ => {
+                        turnins.push(FactionTurnIn {
+                            npc,
+                            item,
+                            faction,
+                            adjustments: Vec::new(),
+                            offered: 0,
+                            handins: 0,
+                            game: GAME_TAG,
+                        });
+                        turnins.last_mut().expect("just pushed")
+                    }
+                };
+                row.adjustments.push(Adjustment {
+                    amount,
+                    times: times as u64,
+                });
+            }
+            let mut stmt = self.conn.prepare(
+                "SELECT npc, item, SUM(offered), SUM(handins)
+                 FROM faction_offers WHERE game = ?1 GROUP BY npc, item",
+            )?;
+            let counts = stmt
+                .query_map(params![game], |r| {
+                    Ok((
+                        (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                        (r.get::<_, i64>(2)?, r.get::<_, i64>(3)?),
+                    ))
+                })?
+                .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
+            for t in &mut turnins {
+                if let Some((offered, handins)) = counts.get(&(t.npc.clone(), t.item.clone())) {
+                    t.offered = *offered as u64;
+                    t.handins = *handins as u64;
+                }
+            }
+        }
+
+        let (bursts_seen, bursts_attributed, bursts_to_turnins) = self.conn.query_row(
+            "SELECT COALESCE(SUM(seen),0), COALESCE(SUM(attributed),0),
+                    COALESCE(SUM(to_turnins),0) FROM faction_bursts WHERE game = ?1",
+            params![game],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )?;
+
+        let players = {
+            // The highest reading of each player wins. A groupmate seen at 51
+            // in one log and 52 in another is one person who levelled, and the
+            // later reading is the true one; [ANONYMOUS] reads as 0 and so
+            // never displaces a stated level.
+            let mut stmt = self.conn.prepare(
+                "SELECT name, level, classes, race FROM players WHERE game = ?1
+                 ORDER BY name, level",
+            )?;
+            let rows = stmt
+                .query_map(params![game], |r| {
+                    Ok(PlayerRow {
+                        name: r.get(0)?,
+                        level: r.get::<_, i64>(1)? as u32,
+                        classes: split_packed(&r.get::<_, String>(2)?),
+                        race: r.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut best: std::collections::BTreeMap<String, PlayerRow> =
+                std::collections::BTreeMap::new();
+            for row in rows {
+                match best.get_mut(&row.name) {
+                    Some(prev) => {
+                        if row.level >= prev.level {
+                            *prev = row;
+                        }
+                    }
+                    None => {
+                        best.insert(row.name.clone(), row);
+                    }
+                }
+            }
+            best.into_values().collect()
+        };
+
+        let skills = {
+            let mut stmt = self.conn.prepare(
+                "SELECT skill, MAX(at_least) FROM skills WHERE game = ?1
+                 GROUP BY skill ORDER BY skill",
+            )?;
+            let rows = stmt.query_map(params![game], |r| {
+                Ok(SkillRow {
+                    skill: r.get(0)?,
+                    at_least: r.get::<_, i64>(1)? as u32,
+                    game: GAME_TAG,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+
+        let markers = {
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT name, kind, role, zone, zone_short, x, y, z, level
+                 FROM markers WHERE game = ?1 ORDER BY zone, name, x, y",
+            )?;
+            let rows = stmt.query_map(params![game], |r| {
+                Ok(MarkerRow {
+                    name: r.get(0)?,
+                    kind: crate::record::kind_of(&r.get::<_, String>(1)?),
+                    role: r.get(2)?,
+                    zone: r.get(3)?,
+                    zone_short: r.get(4)?,
+                    x: r.get(5)?,
+                    y: r.get(6)?,
+                    z: r.get(7)?,
+                    level: r.get::<_, Option<i64>>(8)?.map(|l| l as u32),
+                    game: GAME_TAG,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+
+        let zones = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT zone, zone_short FROM map_zones WHERE game = ?1 ORDER BY zone")?;
+            let rows = stmt.query_map(params![game], |r| {
+                Ok(ZoneRow {
+                    zone: r.get(0)?,
+                    zone_short: r.get(1)?,
+                    game: GAME_TAG,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+
+        let spots = {
+            let mut stmt = self.conn.prepare(
+                "SELECT name, zone, zone_short, x, y, z, at, gap FROM spots
+                 WHERE game = ?1 ORDER BY name, at",
+            )?;
+            let rows = stmt.query_map(params![game], |r| {
+                Ok(SpotRow {
+                    name: r.get(0)?,
+                    zone: r.get(1)?,
+                    zone_short: r.get(2)?,
+                    x: r.get(3)?,
+                    y: r.get(4)?,
+                    z: r.get(5)?,
+                    at: r.get(6)?,
+                    gap: r.get(7)?,
+                    game: GAME_TAG,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+
+        Ok(Reports {
+            players: PlayersReport {
+                note: PLAYERS_NOTE,
+                source: SOURCE.to_string(),
+                game: GAME_TAG,
+                players,
+            },
+            consider: ConsiderReport {
+                note: CONSIDER_NOTE,
+                source: SOURCE.to_string(),
+                considers,
+            },
+            faction: FactionReport {
+                note: FACTION_NOTE,
+                source: SOURCE.to_string(),
+                bursts_seen: bursts_seen as u64,
+                bursts_attributed: bursts_attributed as u64,
+                bursts_to_turnins: bursts_to_turnins as u64,
+                hits,
+                turnins,
+            },
+            spots: SpotsReport {
+                note: SPOTS_NOTE,
+                source: SOURCE.to_string(),
+                spots,
+            },
+            carto: CartoReport {
+                note: CARTO_NOTE,
+                source: SOURCE.to_string(),
+                zones,
+                markers,
+            },
+            skills: SkillsReport {
+                note: SKILLS_NOTE,
+                source: "logs",
+                game: GAME_TAG,
+                skills,
+            },
+        })
     }
 
     /// Every drop observation on file, summed across logs and characters.
@@ -1815,6 +2542,122 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record built the way the engine builds one, so these exercise the
+    /// real collectors rather than hand-written rows.
+    fn record_over(text: &str) -> crate::record::Settled {
+        let mut e = crate::engine::Engine::with_game(
+            "Tharn".to_string(),
+            eqlparser_core::spell::SpellDb::empty(),
+            eqlparser_core::game::Game::EverQuestLegends,
+        );
+        for line in text.lines() {
+            e.push_line(line);
+        }
+        e.record()
+    }
+
+    const RIVERVALE: &str = "\
+[Tue Jul 28 15:03:10 2026] You have entered Rivervale.
+[Tue Jul 28 15:03:11 2026] You say, '--EQLCartographer--Ranger Guildmaster'
+[Tue Jul 28 15:03:12 2026] You say, 'Hail, Megosh Thistlethorn'
+[Tue Jul 28 15:03:13 2026] Your Location is -27.08, -440.14, -11.75
+[Tue Jul 28 15:03:14 2026] Megosh Thistlethorn glowers at you dubiously -- what would you like your tombstone to say? (Lvl: 70)
+[Tue Jul 28 15:03:15 2026] [50 WAR/DRU/BRD] Tharn (Ogre) ZONE: Rivervale (rivervale)
+[Tue Jul 28 15:03:16 2026] You have become better at Baking! (42)
+";
+
+    /// What went in comes back out.
+    #[test]
+    fn the_record_survives_a_round_trip() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(RIVERVALE)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        assert_eq!(r.players.source, "history");
+        assert!(r.players.players.iter().any(|p| p.name == "Tharn"));
+        assert!(r.consider.considers.iter().any(|c| c.creature.contains("Megosh")));
+        assert_eq!(
+            r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
+            Some(42)
+        );
+        assert_eq!(
+            r.carto.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["Megosh Thistlethorn"]
+        );
+        assert_eq!(r.carto.zones.len(), 1);
+    }
+
+    /// Re-reading a log replaces that log's rows and nothing else. Without the
+    /// per-source key a second parse would double every count.
+    #[test]
+    fn re_reading_one_log_replaces_only_its_own_rows() {
+        let mut st = Store::in_memory().unwrap();
+        let rec = record_over(RIVERVALE);
+        st.put_record("eql", "log-a", &rec).unwrap();
+        let once = st.record_reports("eql").unwrap();
+        st.put_record("eql", "log-a", &rec).unwrap();
+        let twice = st.record_reports("eql").unwrap();
+        assert_eq!(
+            once.consider.considers[0].considers, twice.consider.considers[0].considers,
+            "a second read of the same log is the same reading, not twice as much"
+        );
+        assert_eq!(once.carto.markers.len(), twice.carto.markers.len());
+
+        // A second log adds to it.
+        st.put_record("eql", "log-b", &rec).unwrap();
+        let both = st.record_reports("eql").unwrap();
+        assert_eq!(
+            both.consider.considers[0].considers,
+            twice.consider.considers[0].considers * 2,
+            "two logs that saw the same thing saw it twice"
+        );
+    }
+
+    /// A skill ceiling is the highest anybody reached, so a shorter re-read
+    /// cannot lower it — the one table here that is not a running total.
+    #[test]
+    fn a_skill_ceiling_never_falls() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(RIVERVALE)).unwrap();
+        let lower = "[Tue Jul 28 15:03:16 2026] You have become better at Baking! (7)\n";
+        st.put_record("eql", "log-a", &record_over(lower)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+        assert_eq!(
+            r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
+            Some(42),
+            "a lower reading is an older one"
+        );
+    }
+
+    /// Levels and their counts come back exactly, one row per level.
+    ///
+    /// The shape that makes this worth asserting is a creature seen at two
+    /// levels: the store holds one row per level and the reader has to fold
+    /// them back into one creature without summing them into a single number.
+    /// A level that changed between patches is two readings, not one
+    /// overwriting the other.
+    #[test]
+    fn a_creature_seen_at_two_levels_keeps_both() {
+        let log = "\
+[Tue Jul 28 15:03:14 2026] a rat glowers at you dubiously -- what would you like your tombstone to say? (Lvl: 12)
+[Tue Jul 28 15:04:14 2026] a rat glowers at you dubiously -- what would you like your tombstone to say? (Lvl: 12)
+[Tue Jul 28 15:05:14 2026] a rat glowers at you dubiously -- what would you like your tombstone to say? (Lvl: 13)
+";
+        let settled = record_over(log);
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &settled).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        let row = r.consider.considers.first().expect("the rat");
+        assert_eq!(row.creature, "rat");
+        assert_eq!(
+            row.levels.iter().map(|l| (l.level, l.times)).collect::<Vec<_>>(),
+            vec![(12, 2), (13, 1)],
+            "two levels, each with its own count"
+        );
+        assert_eq!(row.considers, 3, "and the total is their sum");
+    }
 
     /// A bestiary built the way the engine builds one, so the test exercises
     /// the real report rather than hand-written rows.
@@ -2571,4 +3414,16 @@ mod tests {
         s.put_levels(&[l]).unwrap();
         assert_eq!(s.levels().unwrap().len(), 1);
     }
+}
+
+/// Split a `|`-packed column back into its parts.
+///
+/// Empty means empty, not one empty string — which for a player's classes is
+/// the difference between "[ANONYMOUS], no classes stated" and "one class,
+/// named the empty string".
+fn split_packed(packed: &str) -> Vec<String> {
+    if packed.is_empty() {
+        return Vec::new();
+    }
+    packed.split('|').map(str::to_string).collect()
 }

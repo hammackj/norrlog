@@ -1832,7 +1832,7 @@ pub const SPOT_WINDOW: i64 = 10;
 ///
 /// See [`CreatureSpot`]. The rule is one line long and the reason it is not
 /// shorter is [`SPOT_WINDOW`].
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SpotCollector {
     spots: Vec<CreatureSpot>,
     /// The last death, waiting for a `/loc` to describe it.

@@ -4,15 +4,19 @@
 //! API and the overlay page. The Electron GUI and OBS both talk to this one
 //! process, so there is a single source of truth for what is happening in game.
 
+mod bundle;
+mod dumps;
 mod engine;
 mod itemdb;
 mod locks;
 mod paths;
+mod record;
 mod server;
 mod shots;
 mod store;
 mod tail;
 
+use anyhow::Context;
 use engine::Engine;
 use locks::{Guarded, Shared};
 use eqlparser_core::game::Game;
@@ -55,6 +59,10 @@ struct Config {
     shots: Option<PathBuf>,
     /// Do not read screenshots at all, even where everything for it is here.
     no_shots: bool,
+    /// A previously accumulated item-id record to take on, once.
+    adopt_item_ids: Option<PathBuf>,
+    /// Read the log once, write the record's reports as JSON, and exit.
+    record_out: Option<PathBuf>,
 }
 
 /// Parse a load window: `2h`, `4h`, `8h`, `1d`, `2d`, `all`.
@@ -127,6 +135,20 @@ OPTIONS:
     --shots <dir>      The client's Screenshots folder. Defaults to
                        $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
     --no-shots         Do not read screenshots, whatever else is configured.
+    --adopt-item-ids <file>
+                       Fold a previously accumulated item-id record into this
+                       machine's, sweep the game folder once, and exit without
+                       following anything. For the record the Python capture
+                       tree kept: its ids include items whose dumps have since
+                       been overwritten, which no rescan can recover. Ids
+                       already known are left alone, so running it twice
+                       changes nothing.
+    --record-out <dir> Parse the log once, write the record — considers,
+                       faction, players, skills, carto, spots — into <dir> as
+                       <what>.<log stem>.json, and exit. The file names and
+                       shapes eqldb's rebuild has always written, so the two
+                       readings of one log can be diffed against each other.
+                       Touches no history database and follows nothing.
     --exit-with-parent Exit when the process that started this one does, by
                        watching for the parent pid to change. For the desktop
                        app, which owns the daemon and must not leave it running
@@ -247,6 +269,8 @@ fn parse_args() -> Config {
         ocr: None,
         shots: None,
         no_shots: false,
+        adopt_item_ids: None,
+        record_out: None,
     };
     let mut saw_eqdb = false;
     let mut args = std::env::args().skip(1);
@@ -299,6 +323,8 @@ fn parse_args() -> Config {
             "--ocr" => cfg.ocr = args.next().map(PathBuf::from),
             "--shots" => cfg.shots = args.next().map(PathBuf::from),
             "--no-shots" => cfg.no_shots = true,
+            "--adopt-item-ids" => cfg.adopt_item_ids = args.next().map(PathBuf::from),
+            "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
             "--exit-with-parent" => cfg.exit_with_parent = true,
             "-h" | "--help" => usage(),
             other => {
@@ -335,7 +361,21 @@ async fn main() -> anyhow::Result<()> {
     if cfg.exit_with_parent {
         exit_with_parent();
     }
+    // The migration, and nothing else. It needs no log, no history database
+    // and no port — and a second daemon opening the history database beside
+    // the one the desktop app is running is a worse thing to ask of somebody
+    // than a flag that does one job and stops.
+    if let Some(legacy) = cfg.adopt_item_ids.clone() {
+        return adopt_item_ids_once(&cfg, &legacy);
+    }
+
     let log_path = resolve_log(&cfg)?;
+
+    // The other one-shot. Unlike the migration above this needs a log, so it
+    // sits after `resolve_log` and before anything opens a database or a port.
+    if let Some(dir) = cfg.record_out.clone() {
+        return record_out_once(&cfg, &log_path, &dir);
+    }
 
     // The filename is the only place the character and server appear; history
     // is keyed on both so an alt or a second server keeps its own records.
@@ -373,6 +413,27 @@ async fn main() -> anyhow::Result<()> {
             (false, _) => " (from the install path)",
         }
     );
+
+    // Item ids, out of the client's own inventory dumps and loot filters.
+    //
+    // Before the daemon reads a line: the fold is fast, and a record that only
+    // updates once somebody plays is a record that is stale exactly when
+    // somebody is looking at it after a session.
+    let ids = dumps::Ids::open(cfg.game_dir.as_deref(), game).map(|mut ids| {
+        let sweep = ids.sweep(&dumps::today());
+        report_sweep(&sweep, ids.registry().items.len(), ids.path());
+        Arc::new(Mutex::new(ids))
+    });
+    if ids.is_none() {
+        eprintln!(
+            "[eqlparserd] item ids: not recorded — no config directory to keep the record in"
+        );
+    } else if cfg.game_dir.is_none() {
+        eprintln!(
+            "[eqlparserd] item ids: nothing to read — pass --game-dir to find the client's \
+             inventory dumps and loot filters"
+        );
+    }
 
     let spell_db = Engine::load_spell_db(cfg.game_dir.as_deref());
     let engine = Engine::with_game(player.clone(), spell_db, game);
@@ -501,6 +562,9 @@ async fn main() -> anyhow::Result<()> {
     // the settings box builds one, and something has to be watching for the
     // shots it is then meant to read.
     shots::spawn(Arc::clone(&shots), Arc::clone(&engine));
+    if let Some(ids) = &ids {
+        spawn_id_sweep(Arc::clone(ids));
+    }
 
     let state = AppState {
         log_path: log_path.clone(),
@@ -511,6 +575,7 @@ async fn main() -> anyhow::Result<()> {
         store: history,
         itemdb,
         shots,
+        ids: ids.clone(),
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
@@ -520,6 +585,229 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, server::router(state)).await?;
     Ok(())
+}
+
+/// Fold a previously accumulated item-id record in, sweep once, and stop.
+///
+/// One-shot rather than a mode the daemon runs in, because adopting is a
+/// migration: it happens once per machine, the record it reads is going away,
+/// and running it twice must be — and is — a no-op, since an id already known
+/// is left alone.
+/// Parse one log and write the record's reports, then stop.
+///
+/// The proof that moving the collectors into the daemon changed nothing: the
+/// same six answers, from the same lines, under the same file names the
+/// rebuild has always written. Nothing here opens the history database — this
+/// is a reading of one file, not a contribution to the record.
+fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<()> {
+    use std::io::BufRead;
+
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    let (player, _server) = Parser::identity_from_filename(&log_path.to_string_lossy())
+        .with_context(|| {
+            format!(
+                "cannot tell whose log {} is. The client names a log \
+                 eqlog_<Character>_<server>.txt and nothing inside it states \
+                 either.",
+                log_path.display()
+            )
+        })?;
+    let game = cfg.game.unwrap_or_else(|| {
+        Game::detect(
+            [cfg.game_dir.as_deref(), Some(log_path)]
+                .into_iter()
+                .flatten(),
+        )
+    });
+    // The spell database matters here even though none of the six collectors
+    // reads one: class detection does, and the Sky report is gated on which
+    // classes you have played. Skipping it would make this run answer a
+    // different question from the daemon's.
+    let spells = Engine::load_spell_db(cfg.game_dir.as_deref());
+    let mut engine = Engine::with_game(player, spells, game);
+    let file = std::fs::File::open(log_path)
+        .with_context(|| format!("opening {}", log_path.display()))?;
+    let start = std::time::Instant::now();
+    let mut lines = 0u64;
+    for line in std::io::BufReader::new(file).lines() {
+        engine.push_line(&line?);
+        lines += 1;
+    }
+    // The tag is the log's stem, as it was when a script fetched these off
+    // this daemon's API.
+    let tag = log_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let reports = engine.record_reports(&tag);
+    // Straight from the struct, never through `serde_json::Value`. A `Value`
+    // is a sorted map here, so a round trip through one alphabetises every
+    // object and the file stops matching the one the rebuild wrote — same
+    // bytes, different order, and a diff that is all noise.
+    for (what, json) in [
+        ("players", serde_json::to_string_pretty(&reports.players)?),
+        ("consider", serde_json::to_string_pretty(&reports.consider)?),
+        ("faction", serde_json::to_string_pretty(&reports.faction)?),
+        ("spots", serde_json::to_string_pretty(&reports.spots)?),
+        ("carto", serde_json::to_string_pretty(&reports.carto)?),
+        // The other three the rebuild writes per log. These come off the
+        // engine's own trackers rather than the record's collectors — it has
+        // always had them — and are written here so the same one command
+        // covers everything a log gives up.
+        ("sky", serde_json::to_string_pretty(&engine.sky_report())?),
+        ("tasks", serde_json::to_string_pretty(&engine.task_report())?),
+        ("quests", serde_json::to_string_pretty(&engine.task_report())?),
+        (
+            "tradeskills",
+            serde_json::to_string_pretty(&engine.tradeskill_report())?,
+        ),
+    ] {
+        let p = dir.join(format!("{what}.{tag}.json"));
+        std::fs::write(&p, json + "\n")
+            .with_context(|| format!("writing {}", p.display()))?;
+    }
+    // A ceiling is the highest anybody has reached, so it has no log's stem
+    // in its name and is folded into whatever is already there — the same
+    // rule, and for the same reason, as the rebuild that wrote it before.
+    let skills_path = dir.join("skills.json");
+    let mut best: std::collections::BTreeMap<String, u32> = reports
+        .skills
+        .skills
+        .iter()
+        .map(|s| (s.skill.clone(), s.at_least))
+        .collect();
+    if let Ok(text) = std::fs::read_to_string(&skills_path) {
+        if let Ok(old) = serde_json::from_str::<serde_json::Value>(&text) {
+            for row in old
+                .get("skills")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let (Some(name), Some(v)) = (
+                    row.get("skill").and_then(|v| v.as_str()),
+                    row.get("at_least").and_then(|v| v.as_u64()),
+                ) else {
+                    continue;
+                };
+                let e = best.entry(name.to_string()).or_insert(0);
+                *e = (*e).max(v as u32);
+            }
+        }
+    }
+    let skills = record::SkillsReport {
+        note: record::SKILLS_NOTE,
+        source: "logs",
+        game: record::GAME_TAG,
+        skills: best
+            .into_iter()
+            .map(|(skill, at_least)| record::SkillRow {
+                skill,
+                at_least,
+                game: record::GAME_TAG,
+            })
+            .collect(),
+    };
+    std::fs::write(
+        &skills_path,
+        serde_json::to_string_pretty(&skills)? + "\n",
+    )
+    .with_context(|| format!("writing {}", skills_path.display()))?;
+
+    eprintln!(
+        "[eqlparserd] record: {tag} — {lines} lines in {:.2}s; {} consider(s), \
+         {} faction hit(s), {} turn-in(s), {} player(s), {} marker(s), {} spot(s), \
+         {} skill(s) into {}",
+        start.elapsed().as_secs_f64(),
+        reports.consider.considers.len(),
+        reports.faction.hits.len(),
+        reports.faction.turnins.len(),
+        reports.players.players.len(),
+        reports.carto.markers.len(),
+        reports.spots.spots.len(),
+        skills.skills.len(),
+        dir.display()
+    );
+    Ok(())
+}
+
+fn adopt_item_ids_once(cfg: &Config, legacy: &Path) -> anyhow::Result<()> {
+    let game = cfg.game.unwrap_or_else(|| {
+        Game::detect(
+            [cfg.game_dir.as_deref(), cfg.log.as_deref()]
+                .into_iter()
+                .flatten(),
+        )
+    });
+    let Some(mut ids) = dumps::Ids::open(cfg.game_dir.as_deref(), game) else {
+        anyhow::bail!(
+            "no config directory to keep an item-id record in; set HOME or XDG_CONFIG_HOME"
+        );
+    };
+    let (taken, corrected) = ids
+        .adopt(legacy)
+        .with_context(|| format!("adopting {}", legacy.display()))?;
+    eprintln!(
+        "[eqlparserd] item ids: adopted {taken} id(s) from {} — {corrected} of them had grades \
+         a loot filter saw on a corpse filed as grades somebody held, and now say seen",
+        legacy.display()
+    );
+    if cfg.game_dir.is_none() {
+        eprintln!(
+            "[eqlparserd] item ids: nothing swept — pass --game-dir to fold the client's \
+             current dumps and loot filters on top"
+        );
+    }
+    let sweep = ids.sweep(&dumps::today());
+    report_sweep(&sweep, ids.registry().items.len(), ids.path());
+    Ok(())
+}
+
+/// Say what a sweep of the game folder found.
+///
+/// Always, including when it found nothing new: a fold that quietly does
+/// nothing and a fold that is not running look identical from outside, and
+/// this record is one nobody checks until an id is missing from it.
+fn report_sweep(sweep: &dumps::Sweep, held: usize, path: &Path) {
+    if sweep.changed_anything() {
+        eprintln!(
+            "[eqlparserd] item ids: folded {} — {} new, {} updated, {held} on file in {}",
+            sweep.folded.join(", "),
+            sweep.added,
+            sweep.updated,
+            path.display()
+        );
+    } else {
+        eprintln!(
+            "[eqlparserd] item ids: {held} on file, {} source(s) already folded",
+            sweep.looked_at
+        );
+    }
+    for note in &sweep.notes {
+        eprintln!("[eqlparserd] item ids: {note}");
+    }
+    for bad in &sweep.failures {
+        eprintln!("[eqlparserd] item ids: {bad}");
+    }
+}
+
+/// Re-examine the game folder while the daemon runs.
+///
+/// A player types `/outputfile inventory` mid-session and expects the record
+/// to know about it without restarting anything. Quiet unless something was
+/// actually folded — see `report_sweep` for why the startup pass is not.
+fn spawn_id_sweep(ids: Arc<Mutex<dumps::Ids>>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(dumps::SWEEP_INTERVAL).await;
+            let mut guard = ids.locked("item ids");
+            let sweep = guard.sweep(&dumps::today());
+            if sweep.changed_anything() || !sweep.failures.is_empty() {
+                report_sweep(&sweep, guard.registry().items.len(), guard.path());
+            }
+        }
+    });
 }
 
 /// Run the log follower on its own thread.
@@ -545,7 +833,7 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
     let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
     let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
     let grants = { engine.locked("engine").grants_to_persist() };
-    let (drops, prices, game, bestiary, health) = {
+    let (drops, prices, game, bestiary, health, record) = {
         let e = engine.locked("engine");
         (
             e.drop_report(),
@@ -553,6 +841,9 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
             e.game(),
             e.bestiary_report(),
             e.bestiary_health_samples(),
+            // Settled but not disturbed: a faction burst straddling this
+            // flush stays open in the live collector. See `crate::record`.
+            e.record(),
         )
     };
     let source = path.to_string_lossy().to_string();
@@ -567,6 +858,7 @@ fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, 
         .and_then(|_| st.put_drops(game.slug(), &source, &drops))
         .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
         .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))
+        .and_then(|_| st.put_record(record::GAME_TAG, &source, &record))
     {
         eprintln!("[eqlparserd] history write failed: {e}");
         return;
@@ -689,6 +981,8 @@ mod tests {
             ocr: None,
             shots: None,
             no_shots: false,
+            adopt_item_ids: None,
+            record_out: None,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -710,6 +1004,8 @@ mod tests {
             ocr: None,
             shots: None,
             no_shots: false,
+            adopt_item_ids: None,
+            record_out: None,
         };
         assert!(resolve_log(&cfg).is_err());
     }
