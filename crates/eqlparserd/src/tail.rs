@@ -245,6 +245,36 @@ impl Follower {
 ///
 /// Characters each get their own `eqlog_<name>_<server>.txt`, so "the log the
 /// user means" is almost always the one just written to.
+/// Every log in a directory, oldest first.
+///
+/// `newest_log_in` answers "which character is being played", which is the
+/// question a daemon asks. This one answers "what has this person got", which
+/// is the question a one-shot bundle asks: the record is the union of every
+/// log, and a contributor has one per character per server. Oldest first so a
+/// run reads them in the order they were written and the progress it prints
+/// is chronological.
+pub fn logs_in(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        if !name.starts_with("eqlog_") || !name.ends_with(".txt") {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        found.push((mtime, path));
+    }
+    found.sort();
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
 pub fn newest_log_in(dir: &Path) -> Option<PathBuf> {
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()? {
@@ -378,6 +408,42 @@ mod tests {
 
         let picked = newest_log_in(&dir).unwrap();
         assert_eq!(picked.file_name().unwrap(), "eqlog_New_server.txt");
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    /// The one-shot bundle takes all of them, oldest first, and applies the
+    /// same name filter. A `--logs-dir` that quietly dropped a character's
+    /// log would produce a bundle that claims a source over a record missing
+    /// that character -- which is the deletion `bundle::OURS` describes.
+    #[test]
+    fn every_log_is_taken_oldest_first() {
+        let dir = tmpdir().join("logs3");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("eqlog_First_erudin.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("dbg.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("Tharn_halas-Inventory.txt"), "x\n").unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        std::fs::write(dir.join("eqlog_Second_halas.txt"), "x\n").unwrap();
+
+        let all = logs_in(&dir);
+        let names: Vec<String> = all
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["eqlog_First_erudin.txt", "eqlog_Second_halas.txt"],
+            "both logs, oldest first, and nothing that is not one"
+        );
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_directory_with_no_logs_yields_none() {
+        let dir = tmpdir().join("logs4");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dbg.txt"), "x\n").unwrap();
+        assert!(logs_in(&dir).is_empty());
         std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 

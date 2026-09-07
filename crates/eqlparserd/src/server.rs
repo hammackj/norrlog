@@ -1194,7 +1194,7 @@ fn contributor_path() -> Option<std::path::PathBuf> {
     crate::paths::config_file("contributor")
 }
 
-fn contributor() -> String {
+pub fn contributor() -> String {
     contributor_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| s.trim().to_string())

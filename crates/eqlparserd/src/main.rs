@@ -64,6 +64,17 @@ struct Config {
     adopt_item_ids: Option<PathBuf>,
     /// Read the log once, write the record's reports as JSON, and exit.
     record_out: Option<PathBuf>,
+    /// Every `--log` given, in order. `log` above is the one the daemon
+    /// follows; this is the whole list, which only the one-shot bundle modes
+    /// read. A contributor has one log per character per server and the
+    /// record is the union of all of them.
+    logs: Vec<PathBuf>,
+    /// Build the bundle from the record and write it here, then exit.
+    bundle_out: Option<PathBuf>,
+    /// Build the bundle, say what sending it would do, send it, then exit.
+    send: bool,
+    /// Whose rows these are, for this run. Falls back to the name on file.
+    contributor: Option<String>,
 }
 
 /// Parse a load window: `2h`, `4h`, `8h`, `1d`, `2d`, `all`.
@@ -144,6 +155,27 @@ OPTIONS:
                        been overwritten, which no rescan can recover. Ids
                        already known are left alone, so running it twice
                        changes nothing.
+    --bundle-out <file>
+                       Parse, build the contribution bundle, print what
+                       sending it would do to the site, write it here and
+                       exit. Follows nothing and opens no port.
+    --send             The same, and then send it to eqdb. Needs a token --
+                       see --ocr for where one is kept -- and a name, from
+                       --contributor or ~/.config/eqlparser/contributor.
+                       Refuses whatever the printed verdicts call unsafe,
+                       which is the same list the desktop app refuses on.
+
+                       Both read *every* log they are given, not the newest:
+                       pass --log more than once, or --logs-dir on its own to
+                       read the whole folder. A bundle says what you know,
+                       and that is the union of your characters. The record
+                       accumulates in the same history the app uses, so a log
+                       read today still counts after it has rotated away.
+    --contributor <name>
+                       Whose rows these are, for this run. A name, given by
+                       the person it belongs to -- never taken from the
+                       token, which would be a credential filing rows under
+                       a name nobody chose.
     --record-out <dir> Parse the log once, write the record — considers,
                        faction, players, skills, carto, spots — into <dir> as
                        <what>.<log stem>.json, and exit. The file names and
@@ -274,12 +306,25 @@ fn parse_args() -> Config {
         no_shots: false,
         adopt_item_ids: None,
         record_out: None,
+        logs: Vec::new(),
+        bundle_out: None,
+        send: false,
+        contributor: None,
     };
     let mut saw_eqdb = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--log" => cfg.log = args.next().map(PathBuf::from),
+            "--log" => {
+                // Kept in both: `log` is what the daemon follows and `logs`
+                // is everything that was named. Given twice, a daemon can
+                // only follow one and takes the last -- which is what it did
+                // before this list existed.
+                if let Some(p) = args.next().map(PathBuf::from) {
+                    cfg.log = Some(p.clone());
+                    cfg.logs.push(p);
+                }
+            }
             "--logs-dir" => cfg.logs_dir = args.next().map(PathBuf::from),
             "--game-dir" => cfg.game_dir = args.next().map(PathBuf::from),
             "--game" => {
@@ -328,6 +373,9 @@ fn parse_args() -> Config {
             "--no-shots" => cfg.no_shots = true,
             "--adopt-item-ids" => cfg.adopt_item_ids = args.next().map(PathBuf::from),
             "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
+            "--bundle-out" => cfg.bundle_out = args.next().map(PathBuf::from),
+            "--send" => cfg.send = true,
+            "--contributor" => cfg.contributor = args.next(),
             "--exit-with-parent" => cfg.exit_with_parent = true,
             "-h" | "--help" => usage(),
             other => {
@@ -378,6 +426,12 @@ async fn main() -> anyhow::Result<()> {
     // sits after `resolve_log` and before anything opens a database or a port.
     if let Some(dir) = cfg.record_out.clone() {
         return record_out_once(&cfg, &log_path, &dir);
+    }
+
+    // The one-shot a contributor runs. Above the identity line below because
+    // it reads every log rather than one, and resolves its own.
+    if cfg.bundle_out.is_some() || cfg.send {
+        return bundle_once(&cfg).await;
     }
 
     // The filename is the only place the character and server appear; history
@@ -602,6 +656,275 @@ async fn main() -> anyhow::Result<()> {
 /// same six answers, from the same lines, under the same file names the
 /// rebuild has always written. Nothing here opens the history database — this
 /// is a reading of one file, not a contribution to the record.
+/// Build the bundle from a person's own logs, and write it or send it.
+///
+/// # Why this exists beside a daemon that already does it
+///
+/// The panel and the button need the desktop app, and most of the people who
+/// contribute to this site have never run it: they send a log file and
+/// somebody parses it on the server. That works and it is the wrong shape --
+/// a 366 MB upload for facts that compress to 670 KB, and a parse that has to
+/// happen on the machine serving the site rather than on the one that has the
+/// game installed.
+///
+/// So this is the same three steps the button performs, with no window: parse
+/// what you have, say what sending it would do, send it. `--bundle-out`
+/// stops after the second, for somebody who would rather look first or has no
+/// token yet.
+///
+/// # Every log, not the newest one
+///
+/// The daemon follows one log because it is showing you the fight you are in.
+/// A bundle is a different claim -- it says *this is what I know* -- and the
+/// record behind it is the union of every character on every server. That
+/// distinction is not academic: declaring a source over a record built from
+/// one log is how four turn-ins recorded on another character came to be
+/// marked for deletion, which is written up in `crate::bundle`'s `OURS`.
+///
+/// So `--log` may be given more than once, and with none of them a
+/// `--logs-dir` means all of it.
+///
+/// # It writes to the same history every other run uses
+///
+/// Deliberately, and unlike `--record-out`, which touches no database. The
+/// record accumulates: a log rotates, an old one is deleted, and what was
+/// parsed out of it stays. A one-shot that built its own throwaway store
+/// would send less than the same machine sent last week and call it an
+/// update.
+async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
+    let logs: Vec<PathBuf> = if !cfg.logs.is_empty() {
+        cfg.logs.clone()
+    } else if let Some(dir) = &cfg.logs_dir {
+        let all = tail::logs_in(dir);
+        if all.is_empty() {
+            anyhow::bail!("no eqlog_*.txt found in {}", dir.display());
+        }
+        all
+    } else {
+        anyhow::bail!(
+            "specify --log <file> (more than once for more than one) or \
+             --logs-dir <dir> to read all of them"
+        );
+    };
+
+    let db = history_path().ok_or_else(|| {
+        anyhow::anyhow!("no absolute home directory; set HOME, or XDG_DATA_HOME")
+    })?;
+    let game = cfg.game.unwrap_or_else(|| {
+        Game::detect(
+            [cfg.game_dir.as_deref(), logs.first().map(|p| p.as_path())]
+                .into_iter()
+                .flatten(),
+        )
+    });
+
+    // Parsed one at a time rather than into one engine: the engine is built
+    // around a character, and history rows are keyed on character and server
+    // so an alt keeps its own. One log, one identity, one flush.
+    let mut identity = None;
+    for path in &logs {
+        let Some((player, server)) =
+            Parser::identity_from_filename(&path.to_string_lossy())
+        else {
+            eprintln!(
+                "[eqlparserd] skipping {}: the client names a log \
+                 eqlog_<Character>_<server>.txt and nothing inside states either",
+                path.display()
+            );
+            continue;
+        };
+        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        eprint!(
+            "[eqlparserd] reading {} ({} MB, {player} on {server})… ",
+            path.display(),
+            bytes / 1_048_576
+        );
+        let spells = Engine::load_spell_db(cfg.game_dir.as_deref());
+        let engine = Arc::new(Mutex::new(Engine::with_game(
+            player.clone(),
+            spells,
+            game,
+        )));
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let started = std::time::Instant::now();
+        let mut lines = 0u64;
+        {
+            use std::io::BufRead;
+            let mut e = engine.locked("parse");
+            for line in std::io::BufReader::new(file).lines() {
+                e.push_line(&line?);
+                lines += 1;
+            }
+        }
+        let store = Arc::new(Mutex::new(
+            store::Store::open_as(&db, &player, &server)
+                .with_context(|| format!("opening {}", db.display()))?,
+        ));
+        flush_history(&engine, &store, path);
+        eprintln!("{lines} lines in {:.1}s", started.elapsed().as_secs_f64());
+        identity = Some((player, server));
+    }
+    let Some((player, server)) = identity else {
+        anyhow::bail!("none of the logs given could be attributed to a character");
+    };
+
+    // The client's own files, on the same sweep the daemon runs every minute.
+    // They are where item ids come from, and they are not in any log.
+    let ids = dumps::Ids::open(cfg.game_dir.as_deref(), game).map(|mut ids| {
+        let sweep = ids.sweep(&dumps::today());
+        report_sweep(&sweep, ids.registry().items.len(), ids.path());
+        ids
+    });
+    if ids.is_none() {
+        eprintln!("[eqlparserd] item ids: no config directory to keep the record in");
+    } else if cfg.game_dir.is_none() {
+        eprintln!("[eqlparserd] item ids: no --game-dir, so no dumps were read this run");
+    }
+
+    let who = cfg
+        .contributor
+        .clone()
+        .unwrap_or_else(crate::server::contributor);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let store = store::Store::open_as(&db, &player, &server)?;
+    let b = crate::bundle::build(&store, ids.as_ref().map(|i| i.registry()), &who, now)?;
+    let p = crate::bundle::preview(&b);
+    print_verdicts(&p);
+
+    if let Some(out) = &cfg.bundle_out {
+        // Compact, not pretty. This file is meant to *be* the upload -- sent
+        // by hand, or mailed to somebody who will send it -- and the site
+        // files a bundle under the digest of the bytes it received. Pretty
+        // printing would give the same document a different id from the one
+        // `--send` produces, which is a difference nobody would look for.
+        let json = serde_json::to_vec(&b)?;
+        std::fs::write(out, &json).with_context(|| format!("writing {}", out.display()))?;
+        eprintln!(
+            "\n[eqlparserd] wrote {} ({} KB of JSON)",
+            out.display(),
+            json.len().div_ceil(1024)
+        );
+    }
+    if !cfg.send {
+        if cfg.bundle_out.is_none() {
+            eprintln!("\n[eqlparserd] nothing written and nothing sent — pass --bundle-out <file> or --send");
+        }
+        return Ok(());
+    }
+
+    // The same refusal the endpoint makes, from the same list, so a bundle
+    // this says is unsafe cannot be sent by going round the window.
+    if !p.blocked.is_empty() {
+        for why in &p.blocked {
+            eprintln!("[eqlparserd] {why}");
+        }
+        anyhow::bail!("this bundle is not safe to send, so it was not sent");
+    }
+    let site = crate::site::Site::new(
+        cfg.eqdb
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_EQDB[0].to_string()),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let json = serde_json::to_vec(&b)?;
+    let body = crate::site::gzip(&json).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let sent_bytes = body.len();
+    let from: String = b
+        .contributor
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ' ' | '\''))
+        .take(60)
+        .collect();
+    eprintln!(
+        "\n[eqlparserd] sending {} rows to {} ({} KB gzipped)…",
+        p.rows,
+        site.base(),
+        sent_bytes.div_ceil(1024)
+    );
+    let reply = site
+        .post(
+            "/api/bundle",
+            reqwest::Body::from(body),
+            "application/octet-stream",
+            &[("X-Contributor", from.trim())],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    eprintln!(
+        "[eqlparserd] filed{}. It is not ingested: somebody runs \
+         `deploy/worker.sh --bundles` on the server next.",
+        reply
+            .get("bundle_id")
+            .and_then(|v| v.as_str())
+            .map(|id| format!(" as {id}"))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// The panel's four groups, as text.
+///
+/// Ordered by consequence rather than by table name, and the deletions first,
+/// for the reason `crate::bundle` gives: a table carrying nothing that the
+/// bundle has claimed is a deletion, and a tidy zero in an alphabetical list
+/// has technically shown that and in practice hidden it.
+fn print_verdicts(p: &crate::bundle::Preview) {
+    use crate::bundle::Verdict;
+    eprintln!();
+    eprintln!(
+        "  contributor  {}",
+        if p.contributor.is_empty() {
+            "— not set —"
+        } else {
+            &p.contributor
+        }
+    );
+    eprintln!("  game         {}", p.game);
+    eprintln!(
+        "  document     {} rows, {} KB of JSON, {} KB gzipped",
+        p.rows,
+        p.bytes.div_ceil(1024),
+        p.gzip_bytes.div_ceil(1024)
+    );
+    eprintln!(
+        "  claims       {}",
+        if p.sources.is_empty() {
+            "nothing — every table is added to rather than replaced".to_string()
+        } else {
+            p.sources.join(", ")
+        }
+    );
+    for (verdict, title) in [
+        (Verdict::Deletes, "WOULD DELETE"),
+        (Verdict::Replaces, "replaces"),
+        (Verdict::AddsOnly, "adds only"),
+    ] {
+        let rows: Vec<&crate::bundle::TableView> =
+            p.tables.iter().filter(|t| t.verdict == verdict).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        eprintln!("\n  {title}");
+        for t in rows {
+            eprintln!("    {:<22} {:>8}", t.table, t.rows);
+        }
+    }
+    let absent = p
+        .tables
+        .iter()
+        .filter(|t| t.verdict == Verdict::Absent)
+        .count();
+    eprintln!("\n  {absent} table(s) left alone: nothing here claims them.");
+    for why in &p.blocked {
+        eprintln!("\n  NOT SAFE TO SEND: {why}");
+    }
+}
+
 fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<()> {
     use std::io::BufRead;
 
@@ -986,6 +1309,10 @@ mod tests {
             no_shots: false,
             adopt_item_ids: None,
             record_out: None,
+            logs: Vec::new(),
+            bundle_out: None,
+            send: false,
+            contributor: None,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -1009,6 +1336,10 @@ mod tests {
             no_shots: false,
             adopt_item_ids: None,
             record_out: None,
+            logs: Vec::new(),
+            bundle_out: None,
+            send: false,
+            contributor: None,
         };
         assert!(resolve_log(&cfg).is_err());
     }
