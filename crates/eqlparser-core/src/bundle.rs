@@ -242,6 +242,58 @@ pub struct Bundle {
     /// Items that a combine hands back rather than consumes.
     #[serde(default)]
     pub recipe_tools: Vec<String>,
+    /// Books, read page by page off their own window.
+    #[serde(default)]
+    pub books: Vec<Book>,
+}
+
+/// One book, with the pages somebody has photographed of it.
+///
+/// # Why the pages are nested
+///
+/// A page with no book is not a fact about anything -- the text is the book's
+/// and the number means nothing without it. Nesting is what makes that
+/// unrepresentable, rather than a rule two tables have to keep. The same
+/// argument `Recipe` makes about its components.
+///
+/// # Why the book has a name and the pages do not
+///
+/// A book is an item you read, so its name is the item's, and two photographs
+/// of the same book must land on one page list rather than two. Spelling it
+/// once per book is what makes that true by construction: a contributor who
+/// types `Guide to Blacksmithing` on one page and `Guide To Blacksmithing` on
+/// the next has made one mistake, not created a second book.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Book {
+    /// The item's name, as the window spells it.
+    pub name: String,
+    /// The pages, in whatever order they were photographed. The reader sorts
+    /// them; this is a set.
+    #[serde(default)]
+    pub pages: Vec<BookPage>,
+}
+
+/// One page of one book.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BookPage {
+    /// The page number the client prints above the text, or 0 for a page
+    /// nobody has numbered.
+    ///
+    /// Zero is a real answer and not a default standing in for one. The
+    /// number is printed in a face the reader's atlas only partly covers --
+    /// `8` decodes at 0.998 and `7` comes back as ink it cannot name -- so a
+    /// page can arrive transcribed and unnumbered, and pretending it is page
+    /// zero would sort it first. Unnumbered pages sort last and say so.
+    #[serde(default)]
+    pub page: i64,
+    /// The page's text, lines joined with `\n`. The client's own wrapping is
+    /// kept: it is where the line breaks are, and re-flowing it would be this
+    /// end guessing at a width.
+    pub text: String,
+    /// The crop it was read off, so a disputed page can be re-examined
+    /// against the same pixels.
+    #[serde(default)]
+    pub evidence: String,
 }
 
 /// The game this site holds.
@@ -322,6 +374,8 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("skills_seen", &["skills"]),
     ("item_ids", &["inventory"]),
     ("markers", &["labels"]),
+    ("books", &["books"]),
+    ("book_pages", &["books"]),
     ("creature_spots", &["spots"]),
     ("zone_shortnames", &["labels"]),
     ("observed_recipes", &["tradeskills"]),
@@ -429,6 +483,7 @@ impl Bundle {
             recipes: Vec::new(),
             recipe_note: String::new(),
             recipe_tools: Vec::new(),
+            books: Vec::new(),
         }
     }
 
