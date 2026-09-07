@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/shots/recent", get(shots_recent))
         .route("/api/item-ids", get(item_ids))
         .route("/api/bundle/preview", get(bundle_preview))
+        .route("/api/bundle/send", post(bundle_send))
         .route(
             "/api/bundle/contributor",
             get(get_contributor).post(set_contributor),
@@ -1227,13 +1228,19 @@ struct ContributorBody {
     contributor: String,
 }
 
-async fn bundle_preview(State(state): State<AppState>) -> impl IntoResponse {
-    let Some(store) = state.store.as_ref() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "said": "no history database, so there is nothing to send"
-        }));
-    };
+/// The bundle as it stands right now.
+///
+/// Built for the panel and built again for the send, rather than built once
+/// and held. A bundle is a statement about what this machine knows *at the
+/// moment it was written*, and sending one a person looked at ten minutes ago
+/// would send a document that no longer describes anything. The cost is one
+/// pass over the record; the alternative is a cache whose staleness nobody
+/// can see.
+fn build_current(state: &AppState) -> Result<eqlparser_core::bundle::Bundle, String> {
+    let store = state
+        .store
+        .as_ref()
+        .ok_or("no history database, so there is nothing to send")?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1244,13 +1251,104 @@ async fn bundle_preview(State(state): State<AppState>) -> impl IntoResponse {
         .ids
         .as_ref()
         .map(|i| i.locked("item ids").registry().clone());
-    let built = {
-        let st = store.locked("bundle");
-        crate::bundle::build(&st, ids.as_ref(), &contributor(), now)
-    };
-    match built {
+    let st = store.locked("bundle");
+    crate::bundle::build(&st, ids.as_ref(), &contributor(), now).map_err(|e| e.to_string())
+}
+
+async fn bundle_preview(State(state): State<AppState>) -> impl IntoResponse {
+    match build_current(&state) {
         Ok(b) => Json(serde_json::to_value(crate::bundle::preview(&b)).unwrap_or_default()),
-        Err(e) => Json(serde_json::json!({"ok": false, "said": e.to_string()})),
+        Err(said) => Json(serde_json::json!({"ok": false, "said": said})),
+    }
+}
+
+/// `POST /api/bundle/send` — build it, check it, and hand it to the site.
+///
+/// # The panel's verdicts are the gate, not a display
+///
+/// `preview` already decides whether a document is safe to send and says why
+/// in `blocked`; this refuses on exactly that, so the answer a person reads
+/// and the answer the machine acts on cannot disagree. A panel that advises
+/// against sending and a button that sends anyway is two rules, and the one
+/// that runs is the one nobody read.
+///
+/// Today `blocked` catches an unattributed bundle and any table that would be
+/// emptied. Neither can arise from this daemon as it stands — no source it
+/// declares covers a table it leaves empty — which is the point: the guard is
+/// for the change that has not been made yet.
+///
+/// # What this does not do
+///
+/// It does not ingest. `POST /api/bundle` files the document and answers 202,
+/// and somebody runs `deploy/worker.sh --bundles` beside the database
+/// afterwards. That boundary is deliberate on the site's side — the web
+/// process cannot write `game` — and nothing here should read as though a
+/// send has changed a page.
+async fn bundle_send(State(state): State<AppState>) -> impl IntoResponse {
+    let b = match build_current(&state) {
+        Ok(b) => b,
+        Err(said) => return Json(serde_json::json!({"ok": false, "said": said})),
+    };
+    let p = crate::bundle::preview(&b);
+    if !p.blocked.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "said": "this bundle is not safe to send, so it was not sent",
+            "blocked": p.blocked,
+        }));
+    }
+    let site = match crate::site::Site::new(state.itemdb.base()) {
+        Ok(s) => s,
+        Err(said) => return Json(serde_json::json!({"ok": false, "said": said})),
+    };
+    let json = match serde_json::to_vec(&b) {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({"ok": false, "said": e.to_string()})),
+    };
+    let body = match crate::site::gzip(&json) {
+        Ok(v) => v,
+        Err(said) => return Json(serde_json::json!({"ok": false, "said": said})),
+    };
+    // `X-Contributor` is provenance beside the document, not authority over
+    // it: the site checks the name *in* the bundle against the token's and
+    // 403s a mismatch. See `api_upload_bundle`.
+    //
+    // Narrowed to the characters the site keeps anyway, because a header
+    // value is not a string: a name with an accent in it makes `reqwest`
+    // refuse to build the request, and the whole send would fail with
+    // "invalid header value" over a field nothing depends on. The name that
+    // matters travelled inside the document, where it is bytes.
+    let from: String = b
+        .contributor
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ' ' | '\''))
+        .take(60)
+        .collect();
+    let sent_bytes = body.len();
+    let sent = site
+        .post(
+            "/api/bundle",
+            reqwest::Body::from(body),
+            "application/octet-stream",
+            &[("X-Contributor", from.trim())],
+        )
+        .await;
+    match sent {
+        Ok(v) => Json(serde_json::json!({
+            "ok": true,
+            "said": format!(
+                "{} rows sent to {} as {} KB. It is filed, not ingested — somebody \
+                 runs `deploy/worker.sh --bundles` on the server next.",
+                p.rows,
+                site.base(),
+                sent_bytes.div_ceil(1024),
+            ),
+            "rows": p.rows,
+            "bytes": json.len(),
+            "sent_bytes": sent_bytes,
+            "reply": v,
+        })),
+        Err(said) => Json(serde_json::json!({"ok": false, "said": said})),
     }
 }
 

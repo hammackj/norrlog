@@ -13,6 +13,7 @@ mod paths;
 mod record;
 mod server;
 mod shots;
+mod site;
 mod store;
 mod tail;
 
@@ -166,6 +167,8 @@ ENDPOINTS:
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
     /api/shots/recent  What the screenshot reader made of the last few pictures
+    /api/bundle/preview  The contribution bundle, and what sending it would do
+    /api/bundle/send   Send it. Refuses whatever the preview calls unsafe.
     /api/encounters    Historical encounters (filter, search, paginate)
     /api/loot          Aggregated loot
     /ws                Live snapshot stream

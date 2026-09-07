@@ -300,45 +300,10 @@ pub struct Reader {
     crops: PathBuf,
     python: String,
     itemdb: Arc<crate::itemdb::ItemDb>,
-    http: reqwest::Client,
-    site: String,
-    token: String,
+    /// The origin and the credential. Shared with the bundle sender rather
+    /// than kept here: see `crate::site`.
+    site: crate::site::Site,
     pub log: Arc<Mutex<Log>>,
-}
-
-/// Where the token may come from, in order.
-///
-/// Never a flag. `/proc/<pid>/cmdline` is world-readable and the environment
-/// is not, so a token passed as an argument is a token every process on the
-/// machine can read — the same rule the eqldb binaries enforce by refusing a
-/// database URL on `--db`.
-fn token_from(config: Option<&Path>) -> Option<String> {
-    if let Ok(t) = std::env::var("EQLDB_TOKEN") {
-        let t = t.trim().to_string();
-        if !t.is_empty() {
-            return Some(t);
-        }
-    }
-    let path = config?.join("eqldb-token");
-    let meta = std::fs::metadata(&path).ok()?;
-    // A token any account on this machine can read is not a secret, and
-    // quietly using it would teach that it was one.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o077 != 0 {
-            eprintln!(
-                "[eqlparserd] {} is readable by other accounts (mode {:o}); \
-                 chmod 600 it. Not using it.",
-                path.display(),
-                meta.permissions().mode() & 0o7777
-            );
-            return None;
-        }
-    }
-    let _ = meta;
-    let t = std::fs::read_to_string(&path).ok()?.trim().to_string();
-    (!t.is_empty()).then_some(t)
 }
 
 /// What the reader would be built from, kept so it can be built again.
@@ -391,10 +356,7 @@ impl Reader {
         if !shots.is_dir() {
             return Err(format!("{} is not a directory", shots.display()));
         }
-        let token = token_from(crate::paths::config_dir().as_deref()).ok_or(
-            "no eqdb token: set EQLDB_TOKEN, or put one in \
-             ~/.config/eqlparser/eqldb-token with mode 600",
-        )?;
+        let token = crate::site::token().ok_or(crate::site::NO_TOKEN)?;
         let crops = crate::paths::data_dir()
             .ok_or("nowhere to write cut windows")?
             .join("crops");
@@ -404,13 +366,8 @@ impl Reader {
             shots,
             crops,
             python: std::env::var("EQL_PYTHON").unwrap_or_else(|_| "python3".into()),
-            site: itemdb.base(),
+            site: crate::site::Site::with_token(itemdb.base(), token)?,
             itemdb,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .map_err(|e| e.to_string())?,
-            token,
             log,
         })
     }
@@ -557,6 +514,7 @@ impl Reader {
             .await
             .map_err(|e| format!("{}: {e}", w.crop_path))?;
         let shot: serde_json::Value = self
+            .site
             .post(
                 "/api/shots",
                 reqwest::Body::from(png),
@@ -584,6 +542,7 @@ impl Reader {
         }
         let body = serde_json::to_vec(&reading).map_err(|e| e.to_string())?;
         let out: serde_json::Value = self
+            .site
             .post("/api/readings", reqwest::Body::from(body), "application/json", &[])
             .await?;
         Ok(out
@@ -591,44 +550,6 @@ impl Reader {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("queued")
             .to_string())
-    }
-
-    async fn post(
-        &self,
-        path: &str,
-        body: reqwest::Body,
-        ctype: &str,
-        extra: &[(&str, &str)],
-    ) -> Result<serde_json::Value, String> {
-        let mut req = self
-            .http
-            .post(format!("{}{path}", self.site.trim_end_matches('/')))
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("Content-Type", ctype);
-        for (k, v) in extra {
-            req = req.header(*k, *v);
-        }
-        let r = req.body(body).send().await.map_err(|e| e.to_string())?;
-        let status = r.status();
-        let text = r.text().await.unwrap_or_default();
-        if !status.is_success() {
-            // The site's own words. Its refusals name the reason — "already
-            // held", a quota, a 403 on the contributor name — and paraphrasing
-            // them into "upload failed" would throw away the only part worth
-            // reading.
-            return Err(format!(
-                "{} {}",
-                status.as_u16(),
-                serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| v
-                        .get("detail")
-                        .or_else(|| v.get("status"))
-                        .and_then(|d| d.as_str().map(str::to_string)))
-                    .unwrap_or_else(|| text.chars().take(160).collect())
-            ));
-        }
-        Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
     }
 
     /// One screenshot, all the way through.
@@ -1060,9 +981,8 @@ mod tests {
             crops: PathBuf::new(),
             python: "python3".into(),
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
-            http: reqwest::Client::new(),
-            site: String::new(),
-            token: String::new(),
+            site: crate::site::Site::with_token(String::new(), String::new())
+                .expect("a client with no origin and no token still builds"),
             log: Arc::new(Mutex::new(Log::default())),
         }
     }
@@ -1288,7 +1208,7 @@ mod token_file_tests {
         // Read through the same door `configure` uses.
         let before = std::env::var("EQLDB_TOKEN").ok();
         unsafe { std::env::remove_var("EQLDB_TOKEN") };
-        let got = token_from(Some(&d));
+        let got = crate::site::token_from(Some(&d));
         if let Some(v) = before {
             unsafe { std::env::set_var("EQLDB_TOKEN", v) };
         }
@@ -1302,7 +1222,7 @@ mod token_file_tests {
         write_privately(&p, "  spaced  ").unwrap();
         let before = std::env::var("EQLDB_TOKEN").ok();
         unsafe { std::env::remove_var("EQLDB_TOKEN") };
-        let got = token_from(Some(&d));
+        let got = crate::site::token_from(Some(&d));
         if let Some(v) = before {
             unsafe { std::env::set_var("EQLDB_TOKEN", v) };
         }
