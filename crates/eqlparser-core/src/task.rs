@@ -444,6 +444,42 @@ fn match_step(steps: &[TaskStepDef], killed: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    /// The body `tools/import-tasks.py` posts to `/api/tasks`.
+    ///
+    /// That tool reads a task's objectives off a photograph of the Quest
+    /// Journal, which is the only place they are stated -- see this module's
+    /// header for why the log cannot supply them. It builds this JSON by
+    /// hand in Python, so nothing but a test keeps the two shapes together,
+    /// and a field renamed here would fail at the far end of a pipeline that
+    /// starts with a screenshot.
+    #[test]
+    fn the_importer_s_json_is_a_task_definition() {
+        let body = r#"{
+            "name": "What Happened Here?",
+            "steps": [
+                {"description": "Ask Orator Zikorisy [what happened here].",
+                 "kill_target": null},
+                {"description": "Kill the Abomination of Ro.",
+                 "kill_target": "Abomination of Ro"}
+            ]
+        }"#;
+        let def: TaskDef = serde_json::from_str(body).expect("the importer's body");
+        assert_eq!(def.name, "What Happened Here?");
+        assert_eq!(def.steps.len(), 2);
+        assert_eq!(def.steps[0].kill_target, None);
+        assert_eq!(
+            def.steps[1].kill_target.as_deref(),
+            Some("Abomination of Ro"),
+            "the target is what lets an update be attributed instead of counted"
+        );
+
+        // And the target does its job: a definition is only worth seeding if
+        // the kill step can be recognised from it.
+        let mut t = TaskTracker::default();
+        t.define(def);
+        assert_eq!(t.definitions().len(), 1);
+    }
+
     /// "Active" counted every task ever assigned, so six weekly tasks all
     /// handed in this week still read as six things left to do.
     #[test]
