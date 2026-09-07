@@ -55,10 +55,6 @@ use serde::Serialize;
 /// delete every AA purchase and spell grant the site holds.
 const OURS: &[Source] = &[
     Source {
-        name: "faction",
-        fills: &["faction_hits", "turnins"],
-    },
-    Source {
         name: "consider",
         fills: &["considers"],
     },
@@ -74,7 +70,7 @@ const OURS: &[Source] = &[
         name: "inventory",
         fills: &["item_ids"],
     },
-    // Two that look as though they belong here and must not, both for the
+    // Three that look as though they belong here and must not, all for the
     // same reason: this daemon holds one half of what fills them.
     //
     // `labels` covers `markers` and `zone_shortnames`, and the rebuild merges
@@ -89,7 +85,26 @@ const OURS: &[Source] = &[
     // 2,062 in the last bundle eqldb-export built, so declaring it would
     // delete around eight hundred.
     //
-    // Both tables are still filled below. Undeclared, they arrive as
+    // `faction` covers `faction_hits` and `turnins`, and the record collects
+    // both from the log this daemon *follows* — one log. The item-id registry
+    // above is the contrast worth holding onto: it reads every character's
+    // files off disk, so it covers alts and other servers without being told,
+    // while this covers whoever is being played right now. A character who
+    // played elsewhere is therefore not under-represented here; they are
+    // absent, and a bundle cannot tell the difference.
+    //
+    // Measured 7 September 2026 rather than assumed: the record holds 42
+    // turnins against the 46 the site has, and the four missing are one
+    // turn-in — `Megosh Thistlethorn` / `Halfling Ranger Note`, four faction
+    // lines — recorded in `eqlog_Tharn_erudin.txt`, which this daemon has
+    // never opened. Declaring `faction` would have deleted them for the
+    // reason that they were not seen.
+    //
+    // The cost of leaving it out is real and is the smaller one: undeclared,
+    // a faction hit recorded wrongly can never be taken back by a later
+    // bundle, only added to. It has to be fixed on the site by hand.
+    //
+    // All five tables are still filled below. Undeclared, they arrive as
     // additions — which is the whole point of the split: a bundle that cannot
     // clear a table cannot empty it.
 ];
@@ -658,6 +673,45 @@ mod tests {
         assert_eq!(t.verdict, Verdict::AddsOnly);
         assert_eq!(t.rows, 1);
         assert!(p.would_delete.is_empty());
+    }
+
+    /// Faction is collected from the one log this daemon follows, so its view
+    /// of a character played elsewhere is absent rather than merely smaller.
+    /// Both its tables therefore ship undeclared — see `OURS`. Written as a
+    /// test because the failure is silent: declaring `faction` here would
+    /// still build, still preview cleanly, and delete four turnins on arrival.
+    #[test]
+    fn faction_is_never_claimed_and_so_can_never_delete() {
+        let mut b = empty();
+        b.faction_hits.push(FactionHit {
+            creature: "an orc pawn".into(),
+            zone: "crushbone".into(),
+            faction: "Crushbone Orcs".into(),
+            adjustments: vec![FactionAmount { amount: -5, times: 3 }],
+            kills: 3,
+        });
+        b.turnins.push(TurnIn {
+            npc: "Megosh Thistlethorn".into(),
+            item: "Halfling Ranger Note".into(),
+            faction: "Storm Reapers".into(),
+            adjustments: vec![FactionAmount { amount: 100, times: 1 }],
+            offered: 1,
+            handins: 1,
+        });
+        b.sources = Some(declared(&b));
+
+        assert!(
+            !b.sources.as_ref().unwrap().contains(&"faction".to_string()),
+            "filling both faction tables must still not claim the source: {:?}",
+            b.sources
+        );
+        let p = preview(&b);
+        for table in ["faction_hits", "turnins"] {
+            let t = p.tables.iter().find(|t| t.table == table).expect(table);
+            assert_eq!(t.verdict, Verdict::AddsOnly, "{table}: {}", t.says);
+            assert_eq!(t.rows, 1);
+        }
+        assert!(p.would_delete.is_empty(), "{:?}", p.would_delete);
     }
 
     /// A bundle nobody has put their name to cannot be sent, whatever is in
