@@ -1433,9 +1433,10 @@ async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Resp
 
     // The engine is locked only to read the marks, and never across the fetch
     // above: the follower thread holds this lock while ingesting lines.
-    let (items, marked_total): (Vec<serde_json::Value>, usize) = {
+    let (items, marked_total, sent_total): (Vec<serde_json::Value>, usize, usize) = {
         let engine = s.engine.locked("engine");
         let marked_total = engine.screenshot_marks().len();
+        let sent_total = engine.sent_marks().len();
         let items = payload
             .get("items")
             .and_then(|v| v.as_array())
@@ -1443,19 +1444,23 @@ async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Resp
                 a.iter()
                     .map(|it| {
                         let mut row = it.clone();
-                        let have = it
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|n| engine.has_screenshot(n));
+                        let name = it.get("name").and_then(|v| v.as_str());
+                        let have = name.is_some_and(|n| engine.has_screenshot(n));
+                        // Whether a reading of it actually reached the queue,
+                        // which `have` does not say: `have` is set the moment
+                        // a window is read, and by hand, and neither means
+                        // the site has the picture.
+                        let sent = name.is_some_and(|n| engine.has_sent(n));
                         if let Some(o) = row.as_object_mut() {
                             o.insert("have".into(), serde_json::Value::Bool(have));
+                            o.insert("sent".into(), serde_json::Value::Bool(sent));
                         }
                         row
                     })
                     .collect()
             })
             .unwrap_or_default();
-        (items, marked_total)
+        (items, marked_total, sent_total)
     };
     let have_count = items
         .iter()
@@ -1472,6 +1477,9 @@ async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Resp
         // published and dropped from the list. The difference between this and
         // `have_count` is how many of your screenshots have landed.
         "marked_total": marked_total,
+        // Every item a reading has been sent for, including those the site
+        // has since published and dropped from the list.
+        "sent_total": sent_total,
         "needing_tooltip": payload.get("needing_tooltip"),
         "needing_icon": payload.get("needing_icon"),
         "items": items,

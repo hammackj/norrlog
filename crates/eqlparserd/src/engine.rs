@@ -808,6 +808,17 @@ pub struct Engine {
     /// A hand-made list, like the buff marks: nothing in the log can tell you
     /// whether you pointed a camera at something.
     screenshot_marks: std::collections::BTreeMap<String, String>,
+    /// Items whose reading the site actually took, keyed the same way.
+    ///
+    /// Deliberately *not* the same set as `screenshot_marks`, which is set
+    /// the moment a window is read and means "somebody pointed a camera at
+    /// this". This means "a reading of it reached the queue", which is the
+    /// stronger and later fact: a window can be read and then held back as a
+    /// graded copy, or refused as covered, or fail to send at all. Keeping
+    /// one set would make the tick a person made by hand and the picture the
+    /// site accepted indistinguishable, and the whole point of showing this
+    /// is that they are different things.
+    sent_marks: std::collections::BTreeMap<String, String>,
     /// Screenshots the client said it took, as log timestamps, oldest first.
     ///
     /// The client writes `Taking a screenshot...` to the character log at the
@@ -821,6 +832,12 @@ pub struct Engine {
     /// a test can be pointed somewhere harmless — see
     /// [`Engine::use_screenshot_store`].
     screenshot_store: Option<std::path::PathBuf>,
+    /// Where the sent list is written. A second file rather than a richer
+    /// `screenshots.json`, because that one is documented as a plain array of
+    /// names -- a list a person may want to read, edit or paste somewhere --
+    /// and turning its entries into objects to carry a flag would take that
+    /// away from both.
+    sent_store: Option<std::path::PathBuf>,
     player: String,
     last_timestamp: i64,
     /// When the current play session began.
@@ -937,11 +954,13 @@ impl Engine {
             all_loot: Vec::new(),
             zone_log: Vec::new(),
             screenshot_marks: std::collections::BTreeMap::new(),
+            sent_marks: std::collections::BTreeMap::new(),
             shots_taken: VecDeque::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
             // rebuildable database. See `crate::paths`.
             screenshot_store: crate::paths::config_file("screenshots.json"),
+            sent_store: crate::paths::config_file("sent.json"),
             player,
             last_timestamp: 0,
             session_start: 0,
@@ -964,6 +983,7 @@ impl Engine {
         e.procs.set_registry(registry);
         e.load_marks();
         e.load_screenshot_marks();
+        e.load_sent_marks();
         e.load_task_defs();
         e.load_sky_quests();
         e
@@ -2033,6 +2053,80 @@ impl Engine {
     /// Every item marked captured, by display name, in name order.
     pub fn screenshot_marks(&self) -> Vec<String> {
         self.screenshot_marks.values().cloned().collect()
+    }
+
+    /// Record that a reading of `item` reached the site's queue.
+    ///
+    /// Only ever set, never cleared. It is a record of something that
+    /// happened rather than a preference: the picture is in the queue whether
+    /// or not anybody later unticks the box beside it, and a reviewer
+    /// rejecting the reading does not un-take the photograph. Un-marking is
+    /// what the tick is for.
+    pub fn set_sent(&mut self, item: &str) {
+        let key = crate::itemdb::match_key(item);
+        if key.is_empty() {
+            return;
+        }
+        // First spelling wins, as with the marks next door.
+        let before = self.sent_marks.len();
+        self.sent_marks
+            .entry(key)
+            .or_insert_with(|| eqlparser_core::drops::canonical_item(item).trim().to_string());
+        if self.sent_marks.len() != before {
+            self.save_sent_marks();
+        }
+    }
+
+    /// Whether a reading of `item` has reached the queue. Grade-insensitive,
+    /// for the reason [`Engine::has_screenshot`] gives.
+    pub fn has_sent(&self, item: &str) -> bool {
+        self.sent_marks
+            .contains_key(&crate::itemdb::match_key(item))
+    }
+
+    /// Every item a reading has been sent for, by display name, in name order.
+    pub fn sent_marks(&self) -> Vec<String> {
+        self.sent_marks.values().cloned().collect()
+    }
+
+    /// See [`Engine::use_screenshot_store`].
+    #[cfg(test)]
+    pub fn use_sent_store(&mut self, path: Option<std::path::PathBuf>) {
+        self.sent_marks.clear();
+        self.sent_store = path;
+        self.load_sent_marks();
+    }
+
+    fn save_sent_marks(&self) {
+        let Some(path) = self.sent_store.clone() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let names: Vec<&String> = self.sent_marks.values().collect();
+        if let Ok(json) = serde_json::to_string_pretty(&names) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    fn load_sent_marks(&mut self) {
+        let Some(path) = self.sent_store.clone() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(names) = serde_json::from_str::<Vec<String>>(&text) else {
+            eprintln!("[eqlparserd] sent.json is unreadable; ignoring it");
+            return;
+        };
+        for name in names {
+            let key = crate::itemdb::match_key(&name);
+            if !key.is_empty() {
+                self.sent_marks.insert(key, name);
+            }
+        }
     }
 
     /// Read and write the marks somewhere else, discarding what is loaded and
@@ -4806,6 +4900,58 @@ mod tests {
         let d = got.iter().find(|p| p.item == "Rusty Dagger").expect("dagger");
         assert_eq!(d.count, 2);
         assert!(d.held, "one of the two is still in your bags");
+    }
+
+    /// "Sent" survives a restart and is not the same set as "marked".
+    ///
+    /// Both halves matter. It is written to its own file because it has to
+    /// still be true tomorrow — the wanted list is something you come back to,
+    /// and a highlight that vanished when the daemon restarted would read as
+    /// the picture having been lost. And it is a *separate* set because the
+    /// mark beside it is set the moment a window is read, by hand as well, and
+    /// neither of those means the site took anything.
+    #[test]
+    fn sent_marks_are_kept_apart_from_ticks_and_outlive_a_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "eqlparserd-sent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sent.json");
+
+        let mut e = engine();
+        e.use_sent_store(Some(file.clone()));
+        e.use_screenshot_store(Some(dir.join("screenshots.json")));
+
+        assert!(!e.has_sent("Rusty Dagger"));
+        // A tick is not a send.
+        e.set_screenshot_mark("Rusty Dagger", true);
+        assert!(e.has_screenshot("Rusty Dagger"));
+        assert!(!e.has_sent("Rusty Dagger"), "a tick was mistaken for a send");
+
+        // Matched by identity rather than by the exact string: the reader
+        // hands over whatever the window said, and the list is the site's
+        // spelling.
+        e.set_sent("Rusty Dagger");
+        assert!(e.has_sent("rusty   DAGGER"), "not matched by identity");
+        // A grade is a roll of the same item, as with the marks next door.
+        assert!(e.has_sent("Rusty Dagger +2"));
+        // First spelling wins — the display name is not normalised, so a
+        // second send must not be able to rewrite it into a worse one.
+        e.set_sent("RUSTY   dagger");
+        assert_eq!(e.sent_marks(), vec!["Rusty Dagger".to_string()]);
+
+        // Unticking does not un-send: the picture is in the queue either way.
+        e.set_screenshot_mark("Rusty Dagger", false);
+        assert!(!e.has_screenshot("Rusty Dagger"));
+        assert!(e.has_sent("Rusty Dagger"), "unticking un-sent the reading");
+
+        let mut again = engine();
+        again.use_sent_store(Some(file));
+        assert!(again.has_sent("Rusty Dagger"), "the sent list did not survive a restart");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A tick is remembered by identity, not by the exact string that was

@@ -624,6 +624,13 @@ impl Reader {
                 } else {
                     match self.send(w, onsite.as_ref()).await {
                         Ok(status) => {
+                            // The site took a reading of this item. Recorded
+                            // here rather than off the verdict string: this
+                            // is the one place that knows the post landed,
+                            // and a later 409 saying "already in the queue"
+                            // arrives as an error even though the queue does
+                            // hold it -- it holds it because of this send.
+                            engine.locked("engine").set_sent(&item);
                             out.verdict = status;
                             // Ordered so each arm is true where it is
                             // reached: the last is only reachable when the
