@@ -640,6 +640,40 @@ impl Store {
                 PRIMARY KEY (game, character, server, source, item, npc)
             );
 
+            -- Where those loots happened, split out of the row above.
+            --
+            -- `item_drops.zones` is the *set* of places a pairing was seen in
+            -- and `looted` is one count across all of them, which is not an
+            -- attribution: a black wolf dropped 832 Chunk of Meat over three
+            -- zones as a single number, and nothing on file could say which
+            -- zone produced how many. The engine has always known -- the
+            -- sighting carries `places` -- and this table is where that stops
+            -- being thrown away on the way to disk.
+            --
+            -- Mode and difficulty are part of the key rather than columns on
+            -- a zone, because `solo T1` and `instance T1` in one zone are
+            -- different fights. `creatures` already keys kills that way and a
+            -- drop breakdown that did not would not join to it.
+            --
+            -- A pairing with no rows here is *unknown*, not open-world at
+            -- tier 0: rows written before this table existed have none, and
+            -- the bundle omits an empty breakdown rather than inventing one.
+            CREATE TABLE IF NOT EXISTS item_drop_places (
+                game       TEXT NOT NULL,
+                character  TEXT NOT NULL,
+                server     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                item       TEXT NOT NULL,
+                npc        TEXT NOT NULL,
+                zone       TEXT NOT NULL,
+                mode       TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                looted     INTEGER NOT NULL,
+                quantity   INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, item, npc,
+                             zone, mode, difficulty)
+            );
+
             -- Kills per creature, the denominator behind a sighting count.
             -- Separate from item_drops because a creature that dropped
             -- nothing still has to be counted: it is evidence about
@@ -1336,6 +1370,43 @@ impl Store {
                     n += 1;
                 }
             }
+            // Cleared per source before the rewrite, unlike the row above.
+            // `INSERT OR REPLACE` keys on a place, so a zone that stopped
+            // appearing in this log's report -- because a name was corrected,
+            // or the fold changed -- would otherwise be left behind as a
+            // sighting nothing supports any more. The parent row is keyed on
+            // the pairing and cannot go stale that way; this can.
+            tx.execute(
+                "DELETE FROM item_drop_places
+                 WHERE game = ?1 AND character = ?2 AND server = ?3 AND source = ?4",
+                params![game, c, sv, source],
+            )?;
+            let mut place_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO item_drop_places
+                 (game, character, server, source, item, npc, zone, mode,
+                  difficulty, looted, quantity)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )?;
+            for item in &report.items {
+                for s in &item.sources {
+                    for pl in &s.places {
+                        place_stmt.execute(params![
+                            game,
+                            c,
+                            sv,
+                            source,
+                            item.item,
+                            s.npc,
+                            pl.zone,
+                            pl.mode,
+                            pl.difficulty as i64,
+                            pl.looted as i64,
+                            pl.quantity as i64,
+                        ])?;
+                    }
+                }
+            }
+
             let mut kill_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO npc_kills
                  (game, character, server, source, npc, kills) VALUES (?1,?2,?3,?4,?5,?6)",
@@ -1943,6 +2014,73 @@ impl Store {
         }
         out.sort_by(|a, b| b.4.cmp(&a.4).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         Ok(out)
+    }
+
+    /// Where every drop was looted, folded the same way `all_drops` folds.
+    ///
+    /// Keyed on the *base* item name and the creature, both lowercased, so a
+    /// caller that has an `all_drops` row can look its breakdown up directly.
+    /// The fold has to happen here for the same reason it happens there: rows
+    /// written before drops were keyed on the ungraded name are still on file
+    /// under `Woven Skull Cap +1`, and SQL groups them apart from the base.
+    /// A breakdown that folded differently from the row it belongs to would
+    /// report places summing to more loots than the drop records.
+    #[allow(clippy::type_complexity)]
+    pub fn all_drop_places(
+        &self,
+    ) -> Result<std::collections::HashMap<(String, String, String), Vec<(String, String, u8, u64, u64)>>>
+    {
+        let mut stmt = self.conn.prepare(
+            "SELECT game, item, npc, zone, mode, difficulty,
+                    SUM(looted), SUM(quantity)
+             FROM item_drop_places
+             GROUP BY game, lower(item), lower(npc), zone, mode, difficulty",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)? as u8,
+                r.get::<_, i64>(6)? as u64,
+                r.get::<_, i64>(7)? as u64,
+            ))
+        })?;
+        // Two folds, not one: the graded-name fold above, and then places
+        // that were separate rows only because they came off different
+        // characters or logs. Summed on the way out, as the parent row is.
+        let mut out: std::collections::HashMap<
+            (String, String, String),
+            std::collections::HashMap<(String, String, u8), (u64, u64)>,
+        > = std::collections::HashMap::new();
+        for row in rows {
+            let (game, item, npc, zone, mode, difficulty, looted, quantity) = row?;
+            let base = eqlparser_core::drops::canonical_item(&item).to_lowercase();
+            let e = out
+                .entry((game, base, npc.to_lowercase()))
+                .or_default()
+                .entry((zone, mode, difficulty))
+                .or_insert((0, 0));
+            e.0 += looted;
+            e.1 += quantity;
+        }
+        Ok(out
+            .into_iter()
+            .map(|(k, places)| {
+                let mut v: Vec<(String, String, u8, u64, u64)> = places
+                    .into_iter()
+                    .map(|((zone, mode, difficulty), (looted, quantity))| {
+                        (zone, mode, difficulty, looted, quantity)
+                    })
+                    .collect();
+                // Biggest first, so a page showing two of five shows the two
+                // that account for most of the drops.
+                v.sort_by(|a, b| b.3.cmp(&a.3).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+                (k, v)
+            })
+            .collect())
     }
 
     /// What level to assume for a log that has not said yet.
@@ -2611,6 +2749,142 @@ mod tests {
             both.consider.considers[0].considers,
             twice.consider.considers[0].considers * 2,
             "two logs that saw the same thing saw it twice"
+        );
+    }
+
+    /// Where a drop happened survives the trip to disk, folds a graded name
+    /// onto its base the way the parent row does, and does not double when
+    /// the same log is read twice.
+    ///
+    /// The fold is the part worth a test. `all_drops` folds
+    /// `Woven Skull Cap +1` onto `Woven Skull Cap`; if the breakdown did not
+    /// fold identically, a row would carry places summing to more loots than
+    /// the row itself records, and the difference would look like a parser
+    /// fault rather than a join.
+    #[test]
+    fn drop_places_survive_the_round_trip_and_fold_like_their_row() {
+        use eqlparser_core::drops::{DropPlace, DropReport, DropSighting, ItemDrops};
+        use eqlparser_core::game::Game;
+
+        let sighting = |zone: &str, mode: &str, difficulty: u8, looted: u64| DropSighting {
+            npc: "a black wolf".into(),
+            zones: vec![zone.to_string()],
+            places: vec![DropPlace {
+                zone: zone.to_string(),
+                mode: mode.to_string(),
+                difficulty,
+                looted,
+                quantity: looted,
+            }],
+            looted,
+            quantity: looted,
+            kills: looted,
+            grades: Vec::new(),
+            first_seen: 1,
+            last_seen: 2,
+        };
+        let report = DropReport {
+            game: Game::EverQuestLegends,
+            kills: Vec::new(),
+            items: vec![
+                ItemDrops {
+                    item: "Woven Skull Cap".into(),
+                    game: Game::EverQuestLegends,
+                    sources: vec![sighting("rivervale", "open", 0, 5)],
+                    looted: 5,
+                    quantity: 5,
+                    grades: Vec::new(),
+                },
+                // The same item under its graded name, as rows written before
+                // the ungraded key are still on file.
+                ItemDrops {
+                    item: "Woven Skull Cap +1".into(),
+                    game: Game::EverQuestLegends,
+                    sources: vec![sighting("misty thicket", "instance", 1, 3)],
+                    looted: 3,
+                    quantity: 3,
+                    grades: Vec::new(),
+                },
+            ],
+        };
+
+        let mut st = Store::in_memory().unwrap();
+        st.put_drops("everquest-legends", "log-a", &report).unwrap();
+        st.put_drops("everquest-legends", "log-a", &report).unwrap();
+
+        let places = st.all_drop_places().unwrap();
+        let key = (
+            "everquest-legends".to_string(),
+            "woven skull cap".to_string(),
+            "a black wolf".to_string(),
+        );
+        let got = places.get(&key).expect("both names fold onto the base item");
+        assert_eq!(got.len(), 2, "two places, not four: {got:?}");
+        assert_eq!(
+            got.iter().map(|p| p.3).sum::<u64>(),
+            8,
+            "reading one log twice is not twice as many loots: {got:?}"
+        );
+        // Biggest first.
+        assert_eq!(got[0].0, "rivervale");
+        assert_eq!(got[0].1, "open");
+        assert_eq!(got[1].2, 1, "the instance tier is kept, not flattened");
+    }
+
+    /// A place that stops being reported is gone, not left behind.
+    ///
+    /// The parent row is keyed on the pairing so a rewrite replaces it. A
+    /// place is keyed on the place, so `INSERT OR REPLACE` alone would leave
+    /// a zone nothing supports any more sitting on file forever.
+    #[test]
+    fn a_place_that_stops_being_reported_is_removed() {
+        use eqlparser_core::drops::{DropPlace, DropReport, DropSighting, ItemDrops};
+        use eqlparser_core::game::Game;
+
+        let report = |zone: &str| DropReport {
+            game: Game::EverQuestLegends,
+            kills: Vec::new(),
+            items: vec![ItemDrops {
+                item: "Chunk of Meat".into(),
+                game: Game::EverQuestLegends,
+                sources: vec![DropSighting {
+                    npc: "a black wolf".into(),
+                    zones: vec![zone.to_string()],
+                    places: vec![DropPlace {
+                        zone: zone.to_string(),
+                        mode: "open".into(),
+                        difficulty: 0,
+                        looted: 1,
+                        quantity: 1,
+                    }],
+                    looted: 1,
+                    quantity: 1,
+                    kills: 1,
+                    grades: Vec::new(),
+                    first_seen: 1,
+                    last_seen: 2,
+                }],
+                looted: 1,
+                quantity: 1,
+                grades: Vec::new(),
+            }],
+        };
+
+        let mut st = Store::in_memory().unwrap();
+        st.put_drops("everquest-legends", "log-a", &report("rivervale")).unwrap();
+        st.put_drops("everquest-legends", "log-a", &report("misty thicket")).unwrap();
+        let places = st.all_drop_places().unwrap();
+        let got = places
+            .get(&(
+                "everquest-legends".to_string(),
+                "chunk of meat".to_string(),
+                "a black wolf".to_string(),
+            ))
+            .expect("the pairing is on file");
+        assert_eq!(
+            got.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(),
+            vec!["misty thicket"],
+            "the zone the re-read no longer reports is gone: {got:?}"
         );
     }
 

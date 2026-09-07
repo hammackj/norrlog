@@ -35,7 +35,8 @@
 
 use eqlparser_core::bundle::{
     may_replace, Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
-    FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn, VendorRow,
+    DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
+    VendorRow,
     ZoneMarker, ZoneShortname, TABLE_SOURCES,
 };
 use eqlparser_core::game::Game;
@@ -325,23 +326,46 @@ pub fn build(
             }
         })
         .collect();
+    // The breakdown, read once and looked up per row. `zones` says where a
+    // pairing was seen and `looted` counts all of them together, which is a
+    // set and a total rather than an attribution; these say how many came
+    // from where. Absent for anything recorded before the store kept them,
+    // and `places` is skipped when empty rather than serialised as an empty
+    // list -- an unknown breakdown must not arrive looking like a measured
+    // one with nothing in it.
+    let mut places = store.all_drop_places()?;
     b.drops = store
         .all_drops()?
         .into_iter()
         .filter(|(game, ..)| game == Game::EverQuestLegends.slug())
         .map(
-            |(_, item, npc, zones, looted, quantity, first_seen, last_seen)| DropRow {
-                server: String::new(),
-                ruleset: String::new(),
-                item,
-                npc,
-                grades: Vec::new(),
-                zones,
-                places: Vec::new(),
-                looted,
-                quantity,
-                first_seen,
-                last_seen,
+            |(game, item, npc, zones, looted, quantity, first_seen, last_seen)| {
+                let key = (game, item.to_lowercase(), npc.to_lowercase());
+                let places = places
+                    .remove(&key)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(zone, mode, difficulty, looted, quantity)| DropPlaceRow {
+                        zone,
+                        mode,
+                        difficulty,
+                        looted,
+                        quantity,
+                    })
+                    .collect();
+                DropRow {
+                    server: String::new(),
+                    ruleset: String::new(),
+                    item,
+                    npc,
+                    grades: Vec::new(),
+                    zones,
+                    places,
+                    looted,
+                    quantity,
+                    first_seen,
+                    last_seen,
+                }
             },
         )
         .collect();
