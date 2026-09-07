@@ -66,15 +66,27 @@ pub const LEVEL_CAP: u32 = 50;
 /// as 11, so they entered at 10 rather than 1.
 ///
 /// It applies to a class that has not been played. A character's *first* class
-/// does start lower — this one's warrior was 8 on day one — so levels below 10
-/// early in a character's life are floored here. Not worth handling: those
-/// levels are long gone by the time anyone runs a parser over the log.
+/// does start lower — this one's warrior was 8 on day one, and a character
+/// rolled today is level 1 — so this is an assumption about an unplayed class
+/// and not a floor under the character. It used to act as one: `record` keeps
+/// the highest level seen, so on a level-3 character every level-up *and* the
+/// `/who` row confirming it were all discarded for being below 10, and the
+/// overlay printed `lvl 10` with no evidence able to correct it. See
+/// [`LevelSource::Baseline`] for the rule that stops it.
 pub const STARTING_LEVEL: u32 = 10;
 
 /// How a class's level came to be known, worst to best.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LevelSource {
     /// The level every class holds until it is played.
+    ///
+    /// An assumption, not an observation, and the only variant here that is.
+    /// So it does not take part in the highest-wins rule in [`record`]: the
+    /// first thing the log actually says about a class replaces it, in either
+    /// direction. Monotonicity is a property of levels, not of guesses about
+    /// them, and applying it to this one made a new character unrepresentable.
+    ///
+    /// [`record`]: ClassLevelTracker::record
     Baseline,
     /// A level-up message attributed to this class as the only candidate.
     LevelUp,
@@ -199,6 +211,14 @@ impl ClassLevelTracker {
             }
         }
         match self.levels.get(&class) {
+            // Anything observed beats the baseline outright, including a
+            // lower number. The baseline is what we assume about a class
+            // nobody has played; the moment the log speaks about it, the
+            // assumption has been answered rather than outbid.
+            Some((_, LevelSource::Baseline, _)) if source != LevelSource::Baseline => {
+                self.levels.insert(class, (level, source, at));
+                self.resolve_pending();
+            }
             Some((lv, _, _)) if *lv > level => {}
             Some((lv, have, _)) if *lv == level && *have >= source => {}
             _ => {
@@ -263,9 +283,17 @@ impl ClassLevelTracker {
         let loose: Vec<Class> = loadout
             .iter()
             .copied()
-            .filter(|c| match self.level_of(*c) {
-                Some(l) => l < LEVEL_CAP && l < level,
-                None => true,
+            .filter(|c| match self.source_of(*c) {
+                // Never played, as far as anything here knows, so its number
+                // is the assumption rather than a reading and cannot rule it
+                // out. Without this a level-3 character's gains matched
+                // nothing — not `level - 1`, since every class sat at 10, and
+                // not `l < level` either — so every one of them went to
+                // `pending` and no class ever acquired a level at all.
+                None | Some(LevelSource::Baseline) => true,
+                Some(_) => self
+                    .level_of(*c)
+                    .is_some_and(|l| l < LEVEL_CAP && l < level),
             })
             .collect();
         (loose.len() == 1).then(|| loose[0])
@@ -342,6 +370,12 @@ impl ClassLevelTracker {
 
     pub fn level_of(&self, class: Class) -> Option<u32> {
         self.levels.get(&class).map(|(l, _, _)| *l)
+    }
+
+    /// Where this class's level came from, so a caller can tell an assumption
+    /// from a reading. `None` for a class not in the table at all.
+    pub fn source_of(&self, class: Class) -> Option<LevelSource> {
+        self.levels.get(&class).map(|(_, s, _)| *s)
     }
 
     pub fn is_capped(&self, class: Class) -> bool {
@@ -434,6 +468,76 @@ impl ClassLevelTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this module's baseline caused, from the player's own report:
+    /// "im level 3 and it says im level 10".
+    ///
+    /// Every reading the log offered was below the baseline, and highest-wins
+    /// discarded all of them -- the two level-ups and the `/who` row that
+    /// confirmed them. The number shown had no evidence behind it and no
+    /// evidence could dislodge it.
+    #[test]
+    fn a_new_character_is_not_floored_at_the_baseline() {
+        let mut t = ClassLevelTracker::new();
+        let loadout = [Class::Warrior];
+        t.note_loadout(0, &loadout);
+        assert_eq!(
+            t.on_level_up(100, 2, &loadout),
+            Some(Class::Warrior),
+            "the only class in the loadout has to take the level"
+        );
+        assert_eq!(t.level_of(Class::Warrior), Some(2));
+        t.on_level_up(200, 3, &loadout);
+        assert_eq!(t.report(&loadout, &loadout).effective, Some(3));
+        // And it keeps going up from there in the ordinary way.
+        t.on_level_up(300, 4, &loadout);
+        assert_eq!(t.report(&loadout, &loadout).effective, Some(4));
+    }
+
+    /// A `/who` below the baseline is the game's own answer, and was thrown
+    /// away for being a smaller number than a guess.
+    #[test]
+    fn who_below_the_baseline_is_believed() {
+        let mut t = ClassLevelTracker::new();
+        let loadout = [Class::Warrior, Class::Bard];
+        t.on_who(100, 3, &loadout);
+        assert_eq!(t.level_of(Class::Warrior), Some(3));
+        assert_eq!(t.level_of(Class::Bard), Some(3));
+        assert!(
+            t.report(&loadout, &loadout).unknown.is_empty(),
+            "a class the game just reported the level of is not unknown"
+        );
+    }
+
+    /// Only the *assumption* gives way. Two readings still go highest-wins,
+    /// so a stale one cannot pull a class back down.
+    #[test]
+    fn one_reading_does_not_lower_another() {
+        let mut t = ClassLevelTracker::new();
+        let loadout = [Class::Warrior, Class::Bard, Class::Shaman];
+        t.note_loadout(0, &loadout);
+        t.on_achievement(100, "Warrior's Combat Proficiency, Level 50");
+        // An old /who from before the warrior capped. Lower, and ignored.
+        t.on_who(200, 28, &loadout);
+        assert_eq!(t.level_of(Class::Warrior), Some(50));
+        assert_eq!(t.level_of(Class::Shaman), Some(28), "and the floor still lands");
+    }
+
+    /// The baseline still does the job it was added for: on a mature
+    /// character it says which class earned a gain to 11.
+    #[test]
+    fn the_baseline_still_sharpens_attribution() {
+        let mut t = ClassLevelTracker::new();
+        let loadout = [Class::Warrior, Class::Bard, Class::Shaman];
+        t.note_loadout(0, &loadout);
+        t.on_achievement(100, "Warrior's Combat Proficiency, Level 50");
+        t.on_achievement(110, "Bard's Casting Proficiency, Level 50");
+        assert_eq!(
+            t.on_level_up(200, 11, &loadout),
+            Some(Class::Shaman),
+            "the class sitting at the baseline is the one that reached 11"
+        );
+    }
 
     /// The sequence this character actually produced: a class caps at 50, a
     /// new one is swapped in and levels from 11, then a third replaces it and
@@ -656,3 +760,4 @@ mod tests {
         assert_eq!(r.levelling.as_deref(), Some("SHM"));
     }
 }
+
