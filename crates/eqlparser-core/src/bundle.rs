@@ -593,7 +593,7 @@ impl Bundle {
              {} granted spells, {} skills, {} abilities, \
              {} tooltip readings, {} faction pairs, {} turn-in pairs, \
              {} considered, {} spawn rules, {} item icons, {} item ids, {} map markers, \
-             {} creature spots, {} logs",
+             {} creature spots, {} books ({} pages), {} logs",
             self.drops.len(),
             self.kills.len(),
             self.vendors.len(),
@@ -615,6 +615,8 @@ impl Bundle {
             self.item_ids.len(),
             self.markers.len(),
             self.spots.len(),
+            self.books.len(),
+            self.books.iter().map(|b| b.pages.len()).sum::<usize>(),
             self.logs.len(),
         )
     }

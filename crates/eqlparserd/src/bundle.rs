@@ -450,6 +450,8 @@ fn rows_in(b: &Bundle, table: &str) -> usize {
         "item_ids" => b.item_ids.len(),
         "markers" => b.markers.len(),
         "creature_spots" => b.spots.len(),
+        "books" => b.books.len(),
+        "book_pages" => b.books.iter().map(|k| k.pages.len()).sum(),
         "zone_shortnames" => b.zone_shortnames.len(),
         "observed_recipes" => b.observed_recipes.len(),
         "observed_components" => b.observed_recipes.iter().map(|r| r.components.len()).sum(),
