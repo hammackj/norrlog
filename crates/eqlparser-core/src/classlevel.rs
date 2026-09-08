@@ -191,6 +191,30 @@ impl ClassLevelTracker {
 
     /// Record a level, keeping the highest seen.
     ///
+    /// # The precedence, in one place
+    ///
+    /// Written out because until now it existed only as the order of the four
+    /// match arms below and the order of [`LevelSource`]'s variants, and a
+    /// rule that is only implied by the order of some code is one nobody can
+    /// check a bug against. In order, first match wins:
+    ///
+    /// 1. **A statement is not retroactive.** Evidence timestamped *before* a
+    ///    stated level, claiming *more* than it, is dropped. The player read
+    ///    their character sheet; the log cannot have known better earlier.
+    /// 2. **Anything observed replaces the baseline**, in either direction.
+    ///    The baseline is a guess about an unplayed class, and monotonicity is
+    ///    a property of levels rather than of guesses about them.
+    /// 3. **Higher wins**, whatever it came from. A stale `/who` outranking a
+    ///    later level-up is what pinned this character's warrior at 8 and made
+    ///    every subsequent gain ambiguous.
+    /// 4. **At equal levels, the better source wins**, ranked by
+    ///    [`LevelSource`]: stated > `/who` > achievement > level-up >
+    ///    baseline. Ties keep what is already held.
+    ///
+    /// That ranking is load-bearing and is the enum's declaration order, via
+    /// the derived `Ord` --- see
+    /// `the_written_precedence_matches_the_enums_order`.
+    ///
     /// Levels only ever go up, so the larger number wins outright regardless of
     /// where it came from. Ranking sources above that would let a stale reading
     /// outlive the truth: this character's only `/who` is from the first day
@@ -759,5 +783,32 @@ mod tests {
         assert!(r.unknown.is_empty());
         assert_eq!(r.levelling.as_deref(), Some("SHM"));
     }
+    /// The ranking in `record`'s doc is the enum's declaration order.
+    ///
+    /// `record` breaks a tie with `*have >= source`, which is the derived
+    /// `Ord`, which is the order the variants are written in. So moving a
+    /// variant changes which source wins at an equal level, silently, with
+    /// nothing in the type system objecting --- and the tie-break is the
+    /// difference between believing a stale `/who` and believing a level-up.
+    /// Stated here so the prose and the enum cannot drift apart.
+    #[test]
+    fn the_written_precedence_matches_the_enums_order() {
+        use LevelSource::*;
+        let ranked = [Baseline, LevelUp, Achievement, Who, Stated];
+        for pair in ranked.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} must rank below {:?}, or `record`'s tie-break means \
+                 something other than what its doc says",
+                pair[0],
+                pair[1]
+            );
+        }
+        // And the two ends, named rather than implied: a statement beats
+        // everything, and the baseline loses to everything.
+        assert_eq!(ranked.iter().copied().max(), Some(Stated));
+        assert_eq!(ranked.iter().copied().min(), Some(Baseline));
+    }
+
 }
 
