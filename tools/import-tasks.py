@@ -64,6 +64,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -130,12 +131,45 @@ def unbracket(text):
     return "".join(out), fixed
 
 
+def one_line(crops, name, reader):
+    """-> the single decoded line of a cell, or None.
+
+    A cell is one row of the table and so one line. More than one means the
+    row bands ran together, and taking the first would quietly file half an
+    objective.
+    """
+    lines = reader.read_crop(os.path.join(crops, name), find_window=False)
+    lines = [l for l in lines if l.get("text", "").strip()]
+    if len(lines) != 1:
+        if len(lines) > 1:
+            print(f"  {name}: {len(lines)} lines in one cell, skipped",
+                  file=sys.stderr)
+        return None
+    return lines[0]
+
+
 def cells(crops, reader):
-    """-> {shot: {row: {'text','score','done'}}} for every objective cell."""
+    """-> {shot: {row: {'text','score','done','zone'}}} for every cell.
+
+    The Zone column is read as well as the objective. It is not part of what
+    an objective *says* -- the daemon's `TaskStepDef` has no field for it --
+    but it is what the site's quest builder fills the quest's zone in from,
+    and it comes off the same window at the same time. Read here rather than
+    there because the reader is here.
+    """
     seen = {}
     for name in sorted(os.listdir(crops)):
         m = CELL.match(name)
-        if not m or m["col"] != "obj":
+        if not m or m["col"] not in ("obj", "zone"):
+            continue
+        if m["col"] == "zone":
+            # Attached to the objective beside it, and dropped where that
+            # objective did not decode: a zone with no objective is a column
+            # with nothing to be a column of.
+            line = one_line(crops, name, reader)
+            row = seen.get(m["shot"], {}).get(int(m["row"]))
+            if line and row:
+                row["zone"] = line["text"].strip()
             continue
         lines = reader.read_crop(os.path.join(crops, name), find_window=False)
         lines = [l for l in lines if l.get("text", "").strip()]
@@ -156,6 +190,7 @@ def cells(crops, reader):
             # not from the Status column beside it: `Done` decodes and `0/1`
             # does not, and the colour says the same thing for both.
             "done": line.get("colour") == "green",
+            "zone": "",
             "evidence": name,
         }
     return seen
@@ -200,6 +235,11 @@ def merged(seen):
             "as_read": pick["text"],
             "brackets_repaired": pick["repaired"],
             "done": any(r["done"] for r in rs),
+            # The zone the photographs agree on, and blank where they do not.
+            # The column is narrow and truncates a long zone name, so a
+            # disagreement here is usually two truncations of one name --
+            # which is exactly the case where guessing would be wrong.
+            "zone": pick.get("zone", ""),
             "score": pick["score"],
             "readings": len(rs),
             "votes": len(best),
@@ -330,6 +370,148 @@ def send(args):
     return 0
 
 
+def push(args):
+    """Put a corrected draft in front of a person on the site.
+
+    `send` hands the objectives to the daemon, which is where a *running*
+    parser needs them. This hands the same objectives to eqldb, where
+    somebody writes the walkthrough: the quest builder opens on them, with the
+    picture above the form, and what comes out is a quest rather than a task
+    definition. The two are not alternatives -- the daemon needs the
+    definitions to attribute an update, and the site needs the walkthrough --
+    and a draft is normally sent to both.
+
+    # The window, not the cells
+
+    A cell is twelve pixels tall. Eight of them stacked on a review page show
+    a person eight grey strips and nothing about which task, which row, or
+    what the Status column said. `scan_quests.py` cuts the whole window for
+    this, and the reading cites the fullest one -- the shot with the most
+    objectives revealed, because the client reveals them as you go and the
+    last photograph is the one that shows the most.
+    """
+    with open(args.draft, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    name = (doc.get("task") or "").strip()
+    if not name:
+        raise SystemExit(
+            "import-tasks: the draft has no `task`. It is the name the log "
+            "uses --\n  `You have been assigned the task 'X'` -- and nothing "
+            "on the crop states it."
+        )
+    steps = [s for s in doc.get("steps", []) if (s.get("text") or "").strip()]
+    if not steps:
+        raise SystemExit("import-tasks: the draft has no objectives in it")
+
+    sys.path.insert(0, os.path.join(args.ocr, "ocr"))
+    try:
+        import site_api
+    except ImportError as e:
+        raise SystemExit(
+            f"import-tasks: cannot import the site client from {args.ocr} ({e}).\n"
+            f"  --ocr should point at the eql-items tree."
+        )
+
+    crops = args.crops or doc.get("crops") or ""
+    win = fullest_window(crops, steps)
+    if win is None and not args.no_picture:
+        raise SystemExit(
+            f"import-tasks: no window crop in {crops or '(nowhere -- the draft '\
+            'names no crops directory)'}.\n"
+            "  `scan_quests.py` writes one per shot as `quest<tag>_<shot>_win.png`;\n"
+            "  re-run it, or pass --no-picture to send the text alone."
+        )
+
+    record = {
+        "task": name,
+        "steps": [{
+            "text": s["text"].strip(),
+            "zone": (s.get("zone") or "").strip(),
+            "done": bool(s.get("done")),
+            "score": s.get("score"),
+        } for s in steps],
+    }
+    if args.dry_run:
+        print(f"would send {len(steps)} objective(s) for {name!r}"
+              + (f" with {os.path.basename(win)}" if win else " with no picture"))
+        return 0
+
+    shot_key, fmt = "", "png"
+    if win:
+        with open(win, "rb") as fh:
+            png = fh.read()
+        # The picture first, so a reading is never stored citing a picture
+        # that failed to arrive. Same order and same reason as `ocr/push.py`.
+        _st, shot = site_api.call(
+            "POST", "/api/shots", body=png, ctype="application/octet-stream",
+            headers={"X-Shot-Name": os.path.basename(win)})
+        shot_key = shot.get("shot_key") or ""
+        fmt = shot.get("format") or "png"
+
+    reading = {
+        # The window this was read off, which is also the key the site
+        # deduplicates on: pushing the same journal window twice hands
+        # somebody a task they have already written up.
+        "crop": os.path.basename(win) if win else f"{store_key(name)}.txt",
+        "record": record,
+        # Per-objective confidence, in the shape the site renders: the step's
+        # own number as the field name, because an objective has no name of
+        # its own and its position is what identifies it.
+        "fields": {
+            f"step{s['step']}": {
+                "value": s["text"],
+                "score": s.get("score"),
+                "raw": s.get("as_read", s["text"]),
+                "accept": bool(s.get("agreed")),
+            } for s in steps
+        },
+        "needs_review": [f"step{s['step']}" for s in steps if not s.get("agreed")],
+        "shot_key": shot_key,
+        "shot_format": fmt,
+        "read_at": int(time.time()),
+    }
+    try:
+        _st, out = site_api.call("POST", "/api/readings", body=reading,
+                                 query={"again": "1"} if args.again else None)
+    except site_api.Refused as e:
+        raise SystemExit(f"import-tasks: the site refused it: {e}")
+    print(f"{out.get('status', 'queued')}: {len(steps)} objective(s) for {name!r}")
+    print(f"  {site_api.base()}/quest-builder — it is waiting there, with the "
+          f"picture above the form")
+    return 0
+
+
+def store_key(name):
+    """The site's own folding, for the one place this needs a filename."""
+    return "".join(c if c.isalnum() else "_" for c in name.lower())[:60] or "task"
+
+
+def fullest_window(crops, steps):
+    """-> the path of the window crop showing the most objectives, or None.
+
+    The client reveals a task's steps as you finish them, so the shot with
+    the most rows is the most complete picture of the window -- and it is the
+    one whose bottom rows nothing else photographed.
+    """
+    if not crops or not os.path.isdir(crops):
+        return None
+    wins = sorted(n for n in os.listdir(crops) if n.endswith("_win.png"))
+    if not wins:
+        return None
+    # How many objectives each shot contributed, from the evidence the draft
+    # carries: `questt_004413_03_obj.png` names its shot.
+    rows = {}
+    for s in steps:
+        for ev in s.get("evidence", []):
+            m = CELL.match(ev)
+            if m:
+                rows[m["shot"]] = rows.get(m["shot"], 0) + 1
+    def score(n):
+        shot = n.split("_")[1] if "_" in n else ""
+        return (rows.get(shot, 0), shot)
+    return os.path.join(crops, max(wins, key=score))
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -348,6 +530,21 @@ def main():
     s.add_argument("draft")
     s.add_argument("--daemon", default=DAEMON)
     s.set_defaults(fn=send)
+
+    u = sub.add_parser("push", help="put a corrected draft on the site to be "
+                                    "written up as a quest")
+    u.add_argument("draft")
+    u.add_argument("--crops", default="", help="the crops directory, if the "
+                                               "draft does not name it")
+    u.add_argument("--ocr", default=os.path.expanduser("~/Pictures/eql-items"),
+                   help="the eql-items tree, for its site client")
+    u.add_argument("--again", action="store_true",
+                   help="replace a reading the site already holds, where "
+                        "nobody has written it up yet")
+    u.add_argument("--no-picture", action="store_true",
+                   help="send the objectives without the window they came off")
+    u.add_argument("--dry-run", action="store_true")
+    u.set_defaults(fn=push)
 
     args = ap.parse_args()
     return args.fn(args)
