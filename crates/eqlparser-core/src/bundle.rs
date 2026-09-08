@@ -403,13 +403,41 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("class_armor_slots", &["class_armor"]),
 ];
 
+/// Tables no bundle may ever clear, whatever it declares.
+///
+/// A source says "I read this evidence, so my rows for these tables are the
+/// whole of it". That is true of a log and false of a *record*: the item-id
+/// registry is folded from every inventory dump and loot filter a machine has
+/// ever seen, it is one JSON file, and it has a known failure mode — there is
+/// a `.before-update` copy beside it precisely because it has been needed. A
+/// registry that comes back short would take the site's rows down with it.
+///
+/// Measured before this was added, against a real send: of 2,259 rows offered,
+/// 219 were new, 683 updated their grades, 1,357 were rewritten byte-identical
+/// and **none were deleted**. The clear destroyed 2,040 rows to remove zero.
+/// It cannot pay for the risk it carries.
+///
+/// What it costs: a name recorded wrongly cannot be retracted by re-sending,
+/// because the key is the name and a correction arrives as a second row. That
+/// is a fair trade here and would not be for a log — these names are the
+/// client's own spellings out of its own files, not anybody's reading of a
+/// screenshot.
+pub const APPEND_ONLY: &[&str] = &["item_ids"];
+
 /// Whether an ingest of this bundle may clear `table` for its contributor.
 ///
 /// True for a table nothing optional feeds, and true for one whose source was
-/// consulted. False only when the bundle names its sources — so it is new
-/// enough to be believed about this — and none of the ones behind this table
-/// are among them.
+/// consulted. False for anything in [`APPEND_ONLY`], and false when the bundle
+/// names its sources — so it is new enough to be believed about this — and
+/// none of the ones behind this table are among them.
 pub fn may_replace(sources: Option<&Vec<String>>, table: &str) -> bool {
+    // First, and before the two defaults below: both of them answer *true*,
+    // and an append-only table must not be reachable by either — not by a
+    // bundle too old to state its sources, and not by one that names the
+    // source and is simply wrong about what that entitles it to.
+    if APPEND_ONLY.contains(&table) {
+        return false;
+    }
     let Some((_, needs)) = TABLE_SOURCES.iter().find(|(t, _)| *t == table) else {
         return true;
     };
