@@ -432,71 +432,63 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("class_armor_slots", &["class_armor"]),
 ];
 
-/// Tables no bundle may ever clear for its contributor, whatever it declares.
+/// The only tables an ingest still empties, and why they are the last ones.
 ///
-/// A source says "I read this evidence, so my rows for these tables are the
-/// whole of it". That is true of a log, and false of everything here — for
-/// two different reasons that are worth keeping apart.
+/// This list used to be its complement. Until 8 September 2026 a bundle
+/// replaced everything its contributor had ever asserted, thirty-nine tables
+/// at a time, and the exceptions were named one by one -- `item_ids` first,
+/// then the item family. The exceptions won: the general rule is now that a
+/// bundle is one observation and merges, and these seven are what has not
+/// moved yet.
 ///
-/// # `item_ids` is a record, not a restatement
+/// They are the ones that **count events** rather than state facts:
+/// `drops.looted`, `drop_places.looted`, `kills.kills`, `vendors.bought`,
+/// `creatures.kills`, `creature_melee.hits`, `faction_hits.kills`. Merging a
+/// count means adding it, and adding is only safe once the same span cannot
+/// be handed over twice -- which is what the `observed` ledger is for and is
+/// not finished. Until then, replacing is the honest arithmetic: a bundle
+/// states the total its history holds, and the total is what lands.
 ///
-/// The registry is folded from every inventory dump and loot filter a machine
-/// has ever seen, it is one JSON file, and it has a known failure mode: there
-/// is a `.before-update` copy beside it precisely because it has been needed.
-/// A registry that comes back short would take the site's rows down with it.
+/// So the ordering rule, which must not be broken: **nothing accumulates a
+/// count before the ledger can refuse a repeat.** When it can, this list
+/// empties and `may_replace` goes with it.
 ///
-/// Measured before this was added, against a real send: of 2,259 rows offered,
-/// 219 were new, 683 updated their grades, 1,357 were rewritten byte-identical
-/// and **none were deleted**. The clear destroyed 2,040 rows to remove zero.
-/// It cannot pay for the risk it carries.
+/// # What being on the other side of this list costs
 ///
-/// What it costs: a name recorded wrongly cannot be retracted by re-sending,
-/// because the key is the name and a correction arrives as a second row. That
-/// is a fair trade here and would not be for a log — these names are the
-/// client's own spellings out of its own files, not anybody's reading of a
-/// screenshot.
-///
-/// # The item family is a pile of readings, not a survey
-///
-/// `item_facts` and the three detail tables under it are one row per window
-/// somebody photographed. A bundle carrying forty tooltips is saying *I read
-/// these forty*, and it has never been in a position to say anything about
-/// the four hundred it did not open. The clear read it as the second thing:
-/// one tooltip posted with `sources: ["item_facts"]` was measured, on 4
-/// September 2026, about to delete 2,706 drops and 3,308 drop_places on its
-/// way past — and to answer `202 stored`.
-///
-/// This does **not** make a reading unretractable, which is the difference
-/// from `item_ids` above. A re-read window still replaces the row it names,
-/// column for column, and the ingest still deletes that item's stats,
-/// augments and effects before writing the new ones. What goes away is the
-/// blast radius: the delete is scoped to the items in the bundle instead of
-/// to everything the contributor ever photographed.
-///
-/// `item_icons` is here for a third reason. A row in it is often a *person's*
-/// pick, made on the site through the picker, and a re-export from the
-/// workstation has never known about those.
-pub const NEVER_CLEARED: &[&str] = &[
-    "item_ids",
-    "item_facts",
-    "item_facts_stats",
-    "item_augments",
-    "item_effects",
-    "item_icons",
+/// A fact stated wrongly is no longer retracted by re-sending a shorter
+/// bundle. It has to be withdrawn by name. That is a real cost and it was
+/// paid on purpose: the alternative was measured three separate times, and
+/// each time the clear removed thousands of rows to make room for tens. One
+/// tooltip posted with `sources: ["item_facts"]` was about to take 2,706
+/// drops and 3,308 drop_places with it and answer `202 stored`.
+pub const STILL_CLEARED: &[&str] = &[
+    "drops",
+    "drop_places",
+    "kills",
+    "vendors",
+    "creatures",
+    "creature_melee",
+    "faction_hits",
 ];
 
 /// Whether an ingest of this bundle may clear `table` for its contributor.
 ///
 /// True for a table nothing optional feeds, and true for one whose source was
-/// consulted. False for anything in [`NEVER_CLEARED`], and false when the bundle
+/// consulted. False for anything outside [`STILL_CLEARED`], and false when the bundle
 /// names its sources — so it is new enough to be believed about this — and
 /// none of the ones behind this table are among them.
 pub fn may_replace(sources: Option<&Vec<String>>, table: &str) -> bool {
-    // First, and before the two defaults below: both of them answer *true*,
-    // and a never-cleared table must not be reachable by either — not by a
-    // bundle too old to state its sources, and not by one that names the
-    // source and is simply wrong about what that entitles it to.
-    if NEVER_CLEARED.contains(&table) {
+    // First, and before everything below it, because everything below it can
+    // answer *true* and only this list may. The old shape was the other way
+    // round -- a short list of exceptions in front of two defaults that both
+    // said yes -- and that shape is behind every data-loss incident on this
+    // board: a table nobody had thought about was replaceable, and a bundle
+    // too old to state its sources was believed about all of them.
+    //
+    // Now nothing is replaceable unless it is named here. A table added to
+    // the schema tomorrow is safe by default, which is the direction a
+    // default should fail in.
+    if !STILL_CLEARED.contains(&table) {
         return false;
     }
     let Some((_, needs)) = TABLE_SOURCES.iter().find(|(t, _)| *t == table) else {

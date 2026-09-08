@@ -37,7 +37,7 @@ use eqlparser_core::bundle::{
     may_replace, Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
     DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
     VendorRow,
-    ZoneMarker, ZoneShortname, NEVER_CLEARED, TABLE_SOURCES,
+    ZoneMarker, ZoneShortname, STILL_CLEARED, TABLE_SOURCES,
 };
 use eqlparser_core::game::Game;
 use serde::Serialize;
@@ -503,7 +503,7 @@ pub fn preview(b: &Bundle) -> Preview {
             // saying "no source declared" about it would be false — the
             // source may well be declared and it still does not entitle
             // anybody to empty the table.
-            Verdict::AddsOnly if NEVER_CLEARED.contains(&table) => format!(
+            Verdict::AddsOnly if !STILL_CLEARED.contains(&table) => format!(
                 "adds or updates {rows} row(s) in {table}; it is never cleared wholesale, \
                  so nothing already on the site is deleted for not being in this bundle"
             ),
@@ -644,20 +644,42 @@ mod tests {
     /// The one this panel exists for. A bundle that declares a source and
     /// carries nothing for the table behind it deletes that table, and it must
     /// say so in as many words rather than showing a tidy zero.
+    ///
+    /// Asked of `drops` rather than of `recipes`, which is what it used to
+    /// ask about. Recipes stopped being clearable on 8 September 2026 -- see
+    /// `STILL_CLEARED` -- so the question has to be put to a table that still
+    /// is, or the test passes by describing a deletion that cannot happen.
     #[test]
     fn a_declared_empty_table_is_a_deletion() {
+        let mut b = empty();
+        b.sources = Some(vec!["history".to_string()]);
+        let p = preview(&b);
+        let t = p.tables.iter().find(|t| t.table == "drops").expect("drops");
+        assert_eq!(t.verdict, Verdict::Deletes);
+        assert!(t.says.contains("DELETES"), "{}", t.says);
+        assert!(p.would_delete.contains(&"drops".to_string()));
+        assert!(
+            p.blocked.iter().any(|b| b.contains("drops")),
+            "a bundle that would empty a table is not safe to send: {:?}",
+            p.blocked
+        );
+    }
+
+    /// And a table that is no longer clearable does not answer that way.
+    ///
+    /// The other half, and the one worth pinning: declaring `recipes` and
+    /// carrying none used to be a deletion of every recipe the contributor
+    /// had. It is now nothing at all, and the panel has to say nothing at
+    /// all rather than keep warning about a danger that has been removed --
+    /// a warning nobody can act on is one they learn to scroll past.
+    #[test]
+    fn a_table_that_is_no_longer_cleared_is_not_a_deletion() {
         let mut b = empty();
         b.sources = Some(vec!["recipes".to_string()]);
         let p = preview(&b);
         let t = p.tables.iter().find(|t| t.table == "recipes").expect("recipes");
-        assert_eq!(t.verdict, Verdict::Deletes);
-        assert!(t.says.contains("DELETES"), "{}", t.says);
-        assert!(p.would_delete.contains(&"recipes".to_string()));
-        assert!(
-            p.blocked.iter().any(|b| b.contains("recipes")),
-            "a bundle that would empty a table is not safe to send: {:?}",
-            p.blocked
-        );
+        assert_eq!(t.verdict, Verdict::Absent);
+        assert!(!p.would_delete.contains(&"recipes".to_string()));
     }
 
     /// The declaration rule: a source is claimed only when every table behind
