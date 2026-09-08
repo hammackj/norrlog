@@ -74,12 +74,11 @@ pub const CARTO_NOTE: &str = "Map markers written down at the spot, from the log
 pub const SKILLS_NOTE: &str = "The highest value seen for each skill, across every log read.";
 
 /// The word a marker's kind is stored and published under.
+///
+/// Kept as a name here, and the table itself lives on the enum — three crates
+/// had grown their own copy of it. See [`MarkerKind::word`].
 pub fn marker_kind(kind: MarkerKind) -> &'static str {
-    match kind {
-        MarkerKind::Npc => "npc",
-        MarkerKind::Zone => "zone",
-        MarkerKind::Place => "place",
-    }
+    kind.word()
 }
 
 /// The inverse, for a row read back out of the store.
@@ -91,6 +90,8 @@ pub fn kind_of(word: &str) -> &'static str {
     match word {
         "npc" => "npc",
         "zone" => "zone",
+        "craft" => "craft",
+        "quest" => "quest",
         _ => "place",
     }
 }

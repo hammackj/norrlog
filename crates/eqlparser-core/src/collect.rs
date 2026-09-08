@@ -916,15 +916,53 @@ mod skill_tests {
     }
 }
 
-/// What kind of thing a cartographer marker stands on.
+/// What kind of thing a marker stands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerKind {
     /// Something you can hail. Recorded from `You say, 'Hail, X'`.
     Npc,
     /// The boundary to somewhere else.
     Zone,
+    /// A station you use rather than talk to: a forge, a loom, an oven.
+    ///
+    /// Kept apart from [`Self::Npc`] because the difference is not
+    /// cosmetic. A forge is never killed and never drops anything, so a page
+    /// that counts kills against it is counting nothing, and the site draws
+    /// and words the two differently for that reason.
+    Object,
+    /// A place an objective sends you to, named by the objective's own text.
+    ///
+    /// The odd one out: every other kind names a thing that is standing
+    /// there, and this names a task. `Find a scroll that details who cursed
+    /// the forest.` is not a creature and must not be filed as one.
+    Quest,
     /// A label for a place — anything else the player wrote.
     Place,
+}
+
+impl MarkerKind {
+    /// The word this kind is stored, published and drawn under.
+    ///
+    /// Here rather than at the three places that needed it — the daemon, the
+    /// logscan tool and the site — because the three had grown separate
+    /// copies of the same `match`, and a kind added to the enum compiled
+    /// against two of them.
+    ///
+    /// `Object` publishes as `craft`, which is the word the site already
+    /// draws and words: a marker of that kind gets no kill count and is
+    /// described as standing somewhere rather than having been seen there.
+    /// Both objects anybody has marked so far are crafting stations — a loom
+    /// and a forge — and the distinction the site draws with the word is "a
+    /// thing you use, not a person you hail", which is the same one.
+    pub fn word(self) -> &'static str {
+        match self {
+            MarkerKind::Npc => "npc",
+            MarkerKind::Zone => "zone",
+            MarkerKind::Object => "craft",
+            MarkerKind::Quest => "quest",
+            MarkerKind::Place => "place",
+        }
+    }
 }
 
 /// One position somebody walked to and wrote down.
@@ -933,7 +971,11 @@ pub struct Marker {
     pub name: String,
     pub kind: MarkerKind,
     /// What the player calls it — "Banker", "Ranger Guildmaster". The game
-    /// never states this; it is the whole reason for the convention.
+    /// never states this; it is the whole reason for the `--EQLCartographer--`
+    /// convention.
+    ///
+    /// Empty for a `-- EQLDB --` marker, which has nowhere to write one. That
+    /// is a gap in what was recorded, not a thing with no job.
     pub role: String,
     /// As `/who` reports it, which is the map you are standing on rather than
     /// the place a zone-line label names.
@@ -959,6 +1001,27 @@ pub struct Marker {
 ///
 /// One block gives everything a marker needs and nothing is typed twice: what
 /// it is, where it stands, which zone's map that is, and often its level.
+///
+/// # Two conventions write this block
+///
+/// The one above, and the `-- EQLDB --` macros:
+///
+/// ```text
+/// You say, '-- EQLDB -- Object : Loom'
+/// You say, 'OBJECT::LOOM'
+/// Your Location is 293.22, -57.08, -20.19
+/// [2 SHD/WIZ] Mirela (Iksar) ZONE: New Sebilis Expedition 153 (newsebexp)
+/// ```
+///
+/// Everything below the tag is the same and is read the same way. What
+/// differs is what the tag itself carries: `--EQLCartographer--` states the
+/// **role** and lets the line below settle the kind, and `-- EQLDB -- `
+/// states the **kind** and has no room for a role. See [`EQLDB_TAG`].
+///
+/// The second line is a payload rather than prose in both: `Hail, X` names an
+/// NPC, `OBJECT::X` a station, `QUEST_LOCATION:X` the objective a place
+/// belongs to. That last one is a task, not a thing standing there — see
+/// [`MarkerKind::Quest`].
 ///
 /// # `/loc` is not map space
 ///
@@ -1015,6 +1078,77 @@ struct Open {
 
 /// The tag that opens a block. Its suffix is the role.
 const TAG: &str = "--EQLCartographer--";
+
+/// The other tag that opens a block, from the `-- EQLDB --` macros.
+///
+/// ```text
+/// You say, '-- EQLDB -- Mark NPC'
+/// You say, 'Hail, Mistress Drozlen'
+/// Your Location is 616.24, -168.38, -20.19
+/// Mistress Drozlen judges you amiably — ... (Lvl: 70)
+/// [2 SHD/WIZ] Mirela (Iksar) ZONE: New Sebilis Expedition 153 (newsebexp)
+/// ```
+///
+/// Same block, different suffix. [`TAG`] puts the thing's *role* there and
+/// leaves the kind to be worked out from the line below; this one states the
+/// **kind** and leaves the role unsaid. So a marker from this convention has
+/// an empty `role` — not because nobody filled it in, but because the
+/// convention has nowhere to write one.
+///
+/// The trailing ` -- ` is load-bearing. The same logs carry two older, looser
+/// uses of the word — `--EQLDB Inventory Dump` and `-- EQLDB -WAR DRU
+/// Enchanter AA` — which are bookmarks for a person reading the file and have
+/// no payload, no position and nothing to collect. Matching on the separator
+/// keeps them out without a list of exceptions.
+const EQLDB_TAG: &str = "-- EQLDB -- ";
+
+/// `Object : Loom` -> `(Object, Some("Loom"))`.
+///
+/// The word before the colon says what kind of thing is being marked; what
+/// follows is the player naming the individual one. `Mark NPC` and `Quest
+/// Location` carry no detail because the line below names the thing.
+///
+/// An unrecognised kind is a `Place` rather than a refusal: the macro is a
+/// text file somebody edits, and a marker filed under the wrong heading is
+/// recoverable in a way that a position nobody recorded is not.
+fn eqldb_tag(suffix: &str) -> (MarkerKind, Option<String>) {
+    let (head, detail) = match suffix.split_once(':') {
+        Some((a, b)) => (a.trim(), b.trim()),
+        None => (suffix.trim(), ""),
+    };
+    let kind = match head.to_lowercase().as_str() {
+        "mark npc" | "npc" => MarkerKind::Npc,
+        "object" => MarkerKind::Object,
+        "quest location" => MarkerKind::Quest,
+        "zone line" | "zone" => MarkerKind::Zone,
+        _ => MarkerKind::Place,
+    };
+    (kind, (!detail.is_empty()).then(|| detail.to_string()))
+}
+
+/// The line after the tag names the thing, and sometimes says what it is.
+///
+/// -> `(name, kind)`, where `None` means the line named the thing without
+/// classifying it. That is not the same as "a place": under [`TAG`] the kind
+/// is only ever what this line says, and under [`EQLDB_TAG`] the tag has
+/// already said it — so a payload that says nothing must leave the tag's
+/// answer alone rather than overwrite it with a guess.
+///
+/// `OBJECT::` and `QUEST_LOCATION:` come from the macros; `Hail, ` is what
+/// you type at an NPC anyway and costs the player nothing.
+fn payload(text: &str) -> (String, Option<MarkerKind>) {
+    if let Some(who) = text.strip_prefix("Hail, ") {
+        (who.trim().to_string(), Some(MarkerKind::Npc))
+    } else if let Some(what) = text.strip_prefix("OBJECT::") {
+        (what.trim().to_string(), Some(MarkerKind::Object))
+    } else if let Some(what) = text.strip_prefix("QUEST_LOCATION:") {
+        (what.trim().to_string(), Some(MarkerKind::Quest))
+    } else if text.to_lowercase().starts_with("zone line:") {
+        (text.to_string(), Some(MarkerKind::Zone))
+    } else {
+        (text.to_string(), None)
+    }
+}
 
 /// How many entries past the tag to read.
 ///
@@ -1134,13 +1268,25 @@ impl Observer for MarkerCollector {
         // can never merge however short the second one is.
         if let Event::Chat { speaker, message, .. } = &entry.event {
             if speaker.is_you() {
-                if let Some(role) = message.trim().strip_prefix(TAG) {
+                let text = message.trim();
+                // Two conventions, one block. `--EQLCartographer--` names a
+                // role and leaves the kind to the line below;
+                // `-- EQLDB -- ` names a kind and leaves the role unsaid.
+                let opened = if let Some(role) = text.strip_prefix(TAG) {
+                    Some((role.trim().to_string(), MarkerKind::Place, None))
+                } else if let Some(rest) = text.strip_prefix(EQLDB_TAG) {
+                    let (kind, name) = eqldb_tag(rest);
+                    Some((String::new(), kind, name))
+                } else {
+                    None
+                };
+                if let Some((role, kind, name)) = opened {
                     self.close();
                     self.open = Some(Open {
-                        role: role.trim().to_string(),
+                        role,
                         seen: 0,
-                        name: None,
-                        kind: MarkerKind::Place,
+                        name,
+                        kind,
                         loc: None,
                         zone: String::new(),
                         short: String::new(),
@@ -1159,18 +1305,15 @@ impl Observer for MarkerCollector {
         }
 
         match &entry.event {
-            // The line after the tag names the thing.
+            // The line after the tag names the thing. Skipped entirely when
+            // the tag already named it — `-- EQLDB -- Object : Loom` gives
+            // `Loom` in the player's own casing and the payload below gives
+            // `LOOM` in the macro's.
             Event::Chat { speaker, message, .. } if speaker.is_you() && o.name.is_none() => {
-                let text = message.trim();
-                if let Some(who) = text.strip_prefix("Hail, ") {
-                    o.name = Some(who.trim().to_string());
-                    o.kind = MarkerKind::Npc;
-                } else if text.to_lowercase().starts_with("zone line:") {
-                    o.name = Some(text.to_string());
-                    o.kind = MarkerKind::Zone;
-                } else {
-                    o.name = Some(text.to_string());
-                    o.kind = MarkerKind::Place;
+                let (name, kind) = payload(message.trim());
+                o.name = Some(name);
+                if let Some(k) = kind {
+                    o.kind = k;
                 }
             }
             // The only required part. Swapped and negated on the way in.
@@ -1253,6 +1396,109 @@ mod marker_tests {
         assert!((m.x - -1211.09).abs() < 1e-9, "{}", m.x);
         assert!((m.y - 3044.26).abs() < 1e-9, "{}", m.y);
         assert!((m.z - -21.14).abs() < 1e-9, "{}", m.z);
+    }
+
+    /// The `-- EQLDB --` blocks, verbatim from the logs that carry them.
+    ///
+    /// One of each kind the macros write, in the order and with the stray
+    /// lines they actually arrive with: an unrelated tell lands between
+    /// `Klok Rento`'s payload and his position, and the block still closes on
+    /// the right coordinates.
+    const EQLDB: &str = "\
+[Sat Sep 06 21:14:02 2026] You say, '-- EQLDB -- Mark NPC'
+[Sat Sep 06 21:14:03 2026] You say, 'Hail, Mistress Drozlen'
+[Sat Sep 06 21:14:04 2026] Your Location is 616.24, -168.38, -20.19
+[Sat Sep 06 21:14:05 2026] Mistress Drozlen judges you amiably -- what would you like your tombstone to say? (Lvl: 70)
+[Sat Sep 06 21:14:06 2026] [2 SHD/WIZ] Mirela (Iksar) <Iron Lantern> ZONE: New Sebilis Expedition 153 (newsebexp)  
+[Sat Sep 06 21:20:11 2026] You say, '-- EQLDB -- Object : Loom'
+[Sat Sep 06 21:20:12 2026] You say, 'OBJECT::LOOM'
+[Sat Sep 06 21:20:13 2026] Your Location is 293.22, -57.08, -20.19
+[Sat Sep 06 21:20:14 2026] [2 SHD/WIZ] Mirela (Iksar) <Iron Lantern> ZONE: New Sebilis Expedition 153 (newsebexp)  
+[Sat Sep 06 21:31:40 2026] You say, '-- EQLDB -- Mark NPC'
+[Sat Sep 06 21:31:41 2026] You say, 'Hail, Klok Rento'
+[Sat Sep 06 21:31:41 2026] Neilehlm tells NewPlayers:1, 'Splitpaw has some, but it's higher level'
+[Sat Sep 06 21:31:42 2026] Your Location is 298.31, -101.45, -20.19
+[Sat Sep 06 21:31:43 2026] Klok Rento judges you amiably -- what would you like your tombstone to say? (Lvl: 50)
+[Sat Sep 06 21:31:44 2026] [2 SHD/WIZ] Mirela (Iksar) <Iron Lantern> ZONE: New Sebilis Expedition 153 (newsebexp)  
+[Sat Sep 06 22:02:55 2026] You say, '-- EQLDB -- Quest Location'
+[Sat Sep 06 22:02:56 2026] You say, 'QUEST_LOCATION:Find a scroll that details who cursed the forest.'
+[Sat Sep 06 22:02:57 2026] Your Location is -69.08, 213.54, -0.19
+[Sat Sep 06 22:02:58 2026] [5 SHD/WIZ] Mirela (Iksar) <Iron Lantern> ZONE: New Sebilis Expedition 153 (newsebexp)  
+";
+
+    /// The second convention is read as a marker, kind and all.
+    ///
+    /// Before this it was not read at all: the tag did not match, so the 42
+    /// blocks on file produced nothing.
+    #[test]
+    fn the_eqldb_macros_are_markers_too() {
+        let c = markers(EQLDB);
+        let got: Vec<(&str, MarkerKind)> =
+            c.markers().iter().map(|m| (m.name.as_str(), m.kind)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Mistress Drozlen", MarkerKind::Npc),
+                ("Loom", MarkerKind::Object),
+                ("Klok Rento", MarkerKind::Npc),
+                (
+                    "Find a scroll that details who cursed the forest.",
+                    MarkerKind::Quest
+                ),
+            ]
+        );
+        // Everything below the tag is read the same way as the other
+        // convention's, which is the whole reason for sharing the collector.
+        assert_eq!(c.markers()[0].zone_short, "newsebexp");
+        assert_eq!(c.markers()[0].zone, "New Sebilis Expedition");
+        assert_eq!(c.markers()[0].level, Some(70));
+        assert!((c.markers()[2].x - 101.45).abs() < 1e-9, "an unrelated tell moved the position");
+    }
+
+    /// This convention states a kind and has no room for a role.
+    ///
+    /// Empty, rather than the tag's own words: filing `Mark NPC` as a role
+    /// would put it on the map where `Banker` goes, as though somebody had
+    /// said what Drozlen does.
+    #[test]
+    fn an_eqldb_marker_has_no_role() {
+        let c = markers(EQLDB);
+        assert!(c.markers().iter().all(|m| m.role.is_empty()));
+    }
+
+    /// The object's name is the player's casing, not the macro's.
+    ///
+    /// Both lines name it. `Object : Loom` is what a person typed and
+    /// `OBJECT::LOOM` is what the macro sends, and the map shows the name.
+    #[test]
+    fn an_object_is_named_by_the_tag_not_the_payload() {
+        let c = markers(EQLDB);
+        assert_eq!(c.markers()[1].name, "Loom");
+        // With no detail on the tag there is nothing else to go on, and the
+        // payload is taken rather than the marker left unnamed.
+        let bare = markers(
+            "[Sat Sep 06 21:20:11 2026] You say, '-- EQLDB -- Object'\n\
+             [Sat Sep 06 21:20:12 2026] You say, 'OBJECT::FORGE'\n\
+             [Sat Sep 06 21:20:13 2026] Your Location is 296.56, -114.84, -20.18\n",
+        );
+        assert_eq!(bare.markers()[0].name, "FORGE");
+        assert_eq!(bare.markers()[0].kind, MarkerKind::Object);
+    }
+
+    /// The older, looser uses of the word are not markers.
+    ///
+    /// Both sit in the same logs as the real blocks. They are bookmarks for a
+    /// person reading the file: no payload, no position, nothing to collect.
+    /// Opening a block on them would swallow whatever happened to follow.
+    #[test]
+    fn a_bookmark_is_not_a_block() {
+        let c = markers(
+            "[Sat Sep 06 12:00:00 2026] You say, '--EQLDB Inventory Dump'\n\
+             [Sat Sep 06 12:00:01 2026] You say, '-- EQLDB -WAR DRU Enchanter AA'\n\
+             [Sat Sep 06 12:00:02 2026] Your Location is 1.0, 2.0, 3.0\n",
+        );
+        assert!(c.markers().is_empty(), "{:?}", c.markers());
+        assert_eq!(c.blocks_without_a_position, 0);
     }
 
     /// The pairing `/who` states for free is worth more than the marker.
