@@ -2,14 +2,13 @@
 //!
 //! # Why this is not just a serialiser
 //!
-//! An ingest does not merge a bundle into the site. For every table the
-//! bundle is *authorised* over, it deletes this contributor's rows and writes
-//! the bundle's in their place. Authorisation comes from
-//! [`Bundle::sources`](eqlparser_core::bundle::Bundle::sources) via
-//! [`may_replace`]: name a source and every table behind it is yours to
-//! replace — including with nothing.
+//! An ingest does not merge a **complete** bundle into the site. It deletes
+//! this contributor's rows and writes the bundle's in their place -- which is
+//! right, because a complete bundle is the whole of what that contributor's
+//! exporter knows, and replacing it makes the ingest idempotent: send it
+//! twice and the site lands in the same state.
 //!
-//! So a bundle carrying no rows for a table it declared is not a smaller
+//! So a complete bundle carrying no rows for a table is not a smaller
 //! contribution. It is a deletion, and it looks exactly like a good bundle
 //! from the outside. Three separate incidents on this site have that shape: a
 //! tooltip submission that emptied nine thousand drop rows, a hand-made
@@ -18,26 +17,38 @@
 //!
 //! [`preview`] therefore does not report row counts. It reports **verdicts**:
 //! for each of the forty-five tables, what an ingest of this document would
-//! actually do to the site. A table with zero rows and its source declared is
+//! actually do to the site. A complete bundle with zero rows for a table is
 //! marked [`Verdict::Deletes`] in as many words, because that is what it is.
+//!
+//! # One question, not thirty-nine
+//!
+//! Until 8 Sep 2026 authorisation was per table: `Bundle::sources` named the
+//! inputs the export had read, `TABLE_SOURCES` mapped tables to inputs, and
+//! `may_replace` answered the question once per table -- with two defaults
+//! that both said *yes*, which is the shape behind every incident above.
+//!
+//! It is now [`Bundle::complete`](eqlparser_core::bundle::Bundle::complete),
+//! asked once. A complete bundle replaces; an incomplete one merges and can
+//! delete nothing at all. `sources` survives as something to read rather than
+//! something to obey.
 //!
 //! # What this daemon fills, and what it does not
 //!
 //! eqlparser owns everything a log or the client's own files can state. It
-//! does not own the authored material — the hand-written walkthroughs, the
-//! recipe book's prose, the wiki's AA transcription — nor the OCR intake.
+//! does not own the authored material -- the hand-written walkthroughs, the
+//! recipe book's prose, the wiki's AA transcription -- nor the OCR intake.
 //! Those are still `eqldb-export`'s to send.
 //!
-//! The safety of that split is not a matter of care: a table this daemon does
-//! not fill is a table whose source it does not declare, so `may_replace`
-//! returns false for it and an ingest leaves it alone. [`preview`] shows this
-//! as [`Verdict::Absent`] — empty, and harmless because nothing claimed it.
+//! Which is why this daemon must not mark its bundles complete unless they
+//! are: a bundle that says *complete* while carrying only what a log can
+//! state would delete everything else. [`preview`] shows what that would do
+//! before anybody sends it.
 
 use eqlparser_core::bundle::{
-    may_replace, Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
+    Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
     DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
     VendorRow,
-    ZoneMarker, ZoneShortname, STILL_CLEARED, TABLE_SOURCES,
+    ZoneMarker, ZoneShortname, NEVER_CLEARED, TABLE_SOURCES,
 };
 use eqlparser_core::game::Game;
 use serde::Serialize;
@@ -119,19 +130,22 @@ struct Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
-    /// Rows, and the authority to replace what is there. The ordinary case.
+    /// Rows, from a complete bundle. This contributor's rows in that table
+    /// are deleted and these are written in their place. The ordinary case.
     Replaces,
-    /// Rows, but no authority to clear first, so the ingest folds them in on
-    /// conflict. Worth knowing rather than reassuring: a sparse row lands on
-    /// `ON CONFLICT` and blanks every column it does not carry — which is how
+    /// Rows, folded into what is there rather than replacing it -- because
+    /// the bundle is not complete, or because the table is one of the five
+    /// `NEVER_CLEARED` ones that a complete bundle still does not empty.
+    ///
+    /// Worth knowing rather than reassuring: a sparse row lands on
+    /// `ON CONFLICT` and blanks every column it does not carry, which is how
     /// a lore submission once emptied an item's stats.
-    AddsOnly,
-    /// **No rows, and the authority to clear.** An ingest of this deletes
-    /// every row this contributor has in that table. Never correct by
-    /// accident.
+    Merges,
+    /// **No rows, from a complete bundle.** An ingest of this deletes every
+    /// row this contributor has in that table. Never correct by accident.
     Deletes,
-    /// No rows and no claim. The ingest leaves the table alone; this is what
-    /// a table somebody else fills should look like.
+    /// No rows, and nothing would be cleared. The ingest leaves the table
+    /// alone; this is what a table somebody else fills should look like.
     Absent,
 }
 
@@ -142,11 +156,11 @@ pub struct TableView {
     pub table: String,
     /// How many rows this bundle carries for it.
     pub rows: usize,
-    /// The sources that would authorise clearing it, from [`TABLE_SOURCES`].
-    /// Empty means no source gates it, which is itself an authority to clear.
+    /// The inputs that fill it, from [`TABLE_SOURCES`]. Documentation for
+    /// the reader: it no longer decides anything.
     pub needs: Vec<String>,
-    /// Whether this bundle's declared sources grant that authority.
-    pub authorised: bool,
+    /// Whether an ingest of this bundle would clear the table first.
+    pub clears: bool,
     pub verdict: Verdict,
     /// Plain words for the row, so a person reading the panel does not have
     /// to hold the rule in their head.
@@ -485,10 +499,12 @@ pub fn preview(b: &Bundle) -> Preview {
     for (table, needs) in TABLE_SOURCES {
         let rows = rows_in(b, table);
         let rows = if rows == usize::MAX { 0 } else { rows };
-        let authorised = may_replace(b.sources.as_ref(), table);
-        let verdict = match (rows > 0, authorised) {
+        // One question, asked once for the whole bundle, and then narrowed by
+        // the only exception there is.
+        let clears = b.complete && !NEVER_CLEARED.contains(table);
+        let verdict = match (rows > 0, clears) {
             (true, true) => Verdict::Replaces,
-            (true, false) => Verdict::AddsOnly,
+            (true, false) => Verdict::Merges,
             (false, true) => Verdict::Deletes,
             (false, false) => Verdict::Absent,
         };
@@ -497,23 +513,23 @@ pub fn preview(b: &Bundle) -> Preview {
                 "replaces your {table} rows on the site with these {rows}"
             ),
             // Two different reasons a table is not cleared, and they need
-            // different warnings. An undeclared source is the dangerous one:
+            // different warnings. An incomplete bundle is the dangerous one:
             // the rows land on the `ON CONFLICT` and a sparse row blanks the
             // columns it omits. A never-cleared table is the safe one, and
-            // saying "no source declared" about it would be false — the
-            // source may well be declared and it still does not entitle
-            // anybody to empty the table.
-            Verdict::AddsOnly if !STILL_CLEARED.contains(&table) => format!(
+            // saying "this bundle is not complete" about it would be
+            // misleading -- it may well be complete, and these five are not
+            // cleared either way.
+            Verdict::Merges if !b.complete => format!(
+                "adds {rows} row(s); this bundle is not complete, so nothing is cleared \
+                 first and a sparse row will blank the columns it omits"
+            ),
+            Verdict::Merges => format!(
                 "adds or updates {rows} row(s) in {table}; it is never cleared wholesale, \
                  so nothing already on the site is deleted for not being in this bundle"
             ),
-            Verdict::AddsOnly => format!(
-                "adds {rows} row(s); no source declared for {table}, so nothing is cleared \
-                 first and a sparse row will blank the columns it omits"
-            ),
             Verdict::Deletes => format!(
-                "DELETES every {table} row you have on the site — this bundle declares \
-                 authority over it and carries nothing"
+                "DELETES every {table} row you have on the site — this bundle says it is \
+                 complete and carries nothing for it"
             ),
             Verdict::Absent => format!("leaves {table} alone; nothing here claims it"),
         };
@@ -521,7 +537,7 @@ pub fn preview(b: &Bundle) -> Preview {
             table: (*table).to_string(),
             rows,
             needs: needs.iter().map(|n| (*n).to_string()).collect(),
-            authorised,
+            clears,
             verdict,
             says,
         });
@@ -544,8 +560,8 @@ pub fn preview(b: &Bundle) -> Preview {
     }
     if !would_delete.is_empty() {
         blocked.push(format!(
-            "{} table(s) would be emptied: {}. Fix the data or stop declaring the source; \
-             do not send this.",
+            "{} table(s) would be emptied: {}. Fix the data, or do not mark this bundle \
+             complete; do not send it as it stands.",
             would_delete.len(),
             would_delete.join(", ")
         ));
@@ -641,18 +657,18 @@ mod tests {
         assert!(p.would_delete.is_empty());
     }
 
-    /// The one this panel exists for. A bundle that declares a source and
-    /// carries nothing for the table behind it deletes that table, and it must
-    /// say so in as many words rather than showing a tidy zero.
+    /// The one this panel exists for. A **complete** bundle carrying nothing
+    /// for a table deletes that table, and it must say so in as many words
+    /// rather than showing a tidy zero.
     ///
-    /// Asked of `drops` rather than of `recipes`, which is what it used to
-    /// ask about. Recipes stopped being clearable on 8 September 2026 -- see
-    /// `STILL_CLEARED` -- so the question has to be put to a table that still
-    /// is, or the test passes by describing a deletion that cannot happen.
+    /// It used to ask this of a *declared* source, and before that of
+    /// `recipes`. Both moved for the same reason each time: the question has
+    /// to be put to something that can still actually be emptied, or the test
+    /// passes by describing a deletion that cannot happen.
     #[test]
-    fn a_declared_empty_table_is_a_deletion() {
+    fn a_complete_bundle_with_no_rows_is_a_deletion() {
         let mut b = empty();
-        b.sources = Some(vec!["history".to_string()]);
+        b.complete = true;
         let p = preview(&b);
         let t = p.tables.iter().find(|t| t.table == "drops").expect("drops");
         assert_eq!(t.verdict, Verdict::Deletes);
@@ -665,21 +681,30 @@ mod tests {
         );
     }
 
-    /// And a table that is no longer clearable does not answer that way.
+    /// And a table a complete bundle still does not clear does not answer
+    /// that way.
     ///
-    /// The other half, and the one worth pinning: declaring `recipes` and
-    /// carrying none used to be a deletion of every recipe the contributor
-    /// had. It is now nothing at all, and the panel has to say nothing at
-    /// all rather than keep warning about a danger that has been removed --
-    /// a warning nobody can act on is one they learn to scroll past.
+    /// The other half, and the one worth pinning. An item's facts come from
+    /// screenshots the site reviews and writes back under the contributor's
+    /// own name, which their exporter knows nothing about -- so "complete"
+    /// cannot mean complete about those. The panel has to say nothing rather
+    /// than keep warning about a danger that has been removed: a warning
+    /// nobody can act on is one they learn to scroll past.
     #[test]
-    fn a_table_that_is_no_longer_cleared_is_not_a_deletion() {
+    fn a_table_that_is_never_cleared_is_not_a_deletion() {
         let mut b = empty();
-        b.sources = Some(vec!["recipes".to_string()]);
+        b.complete = true;
         let p = preview(&b);
-        let t = p.tables.iter().find(|t| t.table == "recipes").expect("recipes");
-        assert_eq!(t.verdict, Verdict::Absent);
-        assert!(!p.would_delete.contains(&"recipes".to_string()));
+        for table in eqlparser_core::bundle::NEVER_CLEARED {
+            let t = p.tables.iter().find(|t| &t.table == table).expect(table);
+            assert_eq!(t.verdict, Verdict::Absent, "{table}: {}", t.says);
+            assert!(!t.clears, "{table} would be cleared by a complete bundle");
+            assert!(!p.would_delete.contains(&(*table).to_string()));
+        }
+        // And the contrast, in the same bundle, so this cannot pass by the
+        // preview having decided nothing clears anything.
+        let drops = p.tables.iter().find(|t| t.table == "drops").expect("drops");
+        assert_eq!(drops.verdict, Verdict::Deletes);
     }
 
     /// The declaration rule: a source is claimed only when every table behind
@@ -712,10 +737,11 @@ mod tests {
         assert_eq!(declared(&b), vec!["consider".to_string()]);
     }
 
-    /// Rows with no claim behind them are folded in rather than replacing, and
-    /// the panel says why. This is the state markers and icons ship in.
+    /// Rows from an incomplete bundle are folded in rather than replacing,
+    /// and the panel says why. This is the state everything this daemon
+    /// builds ships in, because it never marks a bundle complete.
     #[test]
-    fn undeclared_rows_add_rather_than_replace() {
+    fn rows_from_an_incomplete_bundle_add_rather_than_replace() {
         let mut b = empty();
         b.markers.push(ZoneMarker {
             name: "Megosh".into(),
@@ -729,18 +755,25 @@ mod tests {
         b.sources = Some(declared(&b));
         let p = preview(&b);
         let t = p.tables.iter().find(|t| t.table == "markers").expect("markers");
-        assert_eq!(t.verdict, Verdict::AddsOnly);
+        assert!(!b.complete, "this daemon must not mark a bundle complete");
+        assert_eq!(t.verdict, Verdict::Merges);
         assert_eq!(t.rows, 1);
         assert!(p.would_delete.is_empty());
     }
 
     /// Faction is collected from the one log this daemon follows, so its view
     /// of a character played elsewhere is absent rather than merely smaller.
-    /// Both its tables therefore ship undeclared — see `OURS`. Written as a
-    /// test because the failure is silent: declaring `faction` here would
-    /// still build, still preview cleanly, and delete four turnins on arrival.
+    ///
+    /// It used to be protected by not declaring the `faction` source. That
+    /// guard is gone -- sources decide nothing now -- and what protects it
+    /// instead is stronger and simpler: **this daemon never marks a bundle
+    /// complete**, so no table it fills can be emptied by anything it sends.
+    ///
+    /// Still a test, because the failure is silent in exactly the same way:
+    /// setting `complete` here would build, preview cleanly, and delete four
+    /// turnins on arrival.
     #[test]
-    fn faction_is_never_claimed_and_so_can_never_delete() {
+    fn nothing_this_daemon_builds_can_delete_anything() {
         let mut b = empty();
         b.faction_hits.push(FactionHit {
             creature: "an orc pawn".into(),
@@ -759,18 +792,21 @@ mod tests {
         });
         b.sources = Some(declared(&b));
 
-        assert!(
-            !b.sources.as_ref().unwrap().contains(&"faction".to_string()),
-            "filling both faction tables must still not claim the source: {:?}",
-            b.sources
-        );
+        assert!(!b.complete, "this daemon must not mark a bundle complete");
         let p = preview(&b);
         for table in ["faction_hits", "turnins"] {
             let t = p.tables.iter().find(|t| t.table == table).expect(table);
-            assert_eq!(t.verdict, Verdict::AddsOnly, "{table}: {}", t.says);
+            assert_eq!(t.verdict, Verdict::Merges, "{table}: {}", t.says);
             assert_eq!(t.rows, 1);
         }
+        // The whole of it, not just the two tables above: an incomplete
+        // bundle cannot empty anything at all, which is the property worth
+        // asserting over the property of one source being absent from a list.
         assert!(p.would_delete.is_empty(), "{:?}", p.would_delete);
+        assert!(
+            p.tables.iter().all(|t| !t.clears),
+            "an incomplete bundle would clear something"
+        );
     }
 
     /// A bundle nobody has put their name to cannot be sent, whatever is in

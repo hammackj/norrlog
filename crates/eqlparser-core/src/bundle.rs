@@ -90,64 +90,49 @@ pub struct Bundle {
 
     /// Which optional inputs this export actually read.
     ///
-    /// A bundle replaces everything its contributor previously asserted, and
-    /// that is the right contract — it is what makes a re-export authoritative
-    /// rather than additive. But several of the export's inputs are optional
-    /// flags, some of them depending on a daemon being up, and when one is
-    /// absent the bundle does not say so. It simply arrives smaller, and the
-    /// ingest faithfully replaces richer stored data with poorer new data.
+    /// **Informational since 8 Sep 2026.** It used to be the authority: the
+    /// ingest asked it, per table, whether it was allowed to clear -- thirty
+    /// nine declarations, three data-loss incidents, and two defaults that
+    /// both answered *yes*.
     ///
-    /// That is not hypothetical: an export run with the parser closed carried
-    /// 103 achievements where the database held 492, and the 389 that vanished
-    /// were never reported by anything. The export's own summary read like a
-    /// success, because it counted what it had rather than what it had lost.
+    /// [`Bundle::complete`] replaced all of it with one question asked once.
+    /// This survives because it is genuinely useful to read: a preview that
+    /// says *this export consulted the history and the recipe file* tells an
+    /// operator what they are about to accept. It decides nothing.
     ///
-    /// So the bundle now states which inputs it consulted, and the ingest
-    /// declines to clear a table whose sources are all absent. Absence of a
-    /// source is the real fact and it is knowable here, at export time —
-    /// unlike a shrink, which can only be guessed at from the far side and
-    /// needs a threshold to recognise.
-    ///
-    /// `None` is a bundle written before this field existed, and keeps the
-    /// old contract: it replaces everything, because there is no way to ask
-    /// it what it read.
-    ///
-    /// `Some([])` is a *current* export that consulted nothing optional, and
-    /// is the case this exists for. The two must not be conflated — they were
-    /// at first, with the field a plain `Vec`, and an export run with no
-    /// optional sources at all emptied eighteen tables while the guard stood
-    /// by, because "read nothing" and "cannot say" looked identical.
-    #[serde(default)]
+    /// `None` is a bundle from before the field. It used to mean *replaces
+    /// everything, because there is no way to ask it what it read*. It now
+    /// means nothing at all, which is the point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<String>>,
 
-    /// What this bundle is an observation *of*.
+    /// Whether this bundle is the whole of what its contributor knows.
     ///
-    /// The whole basis of idempotence, and the field that lets a bundle stop
-    /// being a snapshot. `sources` above says which *tables* the export
-    /// consulted; this says which *bytes* it read, so the same span is never
-    /// counted twice and a client can ask the server where to resume rather
-    /// than remembering what it sent.
+    /// The one question the ingest asks, and the whole of the replace
+    /// contract since 8 Sep 2026.
     ///
-    /// Empty is not "nothing was read" — it is a bundle written before this
-    /// field existed, or one whose producer cannot say. Those merge but
-    /// cannot be superseded or withdrawn, because nothing identifies what
-    /// they covered.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub covers: Vec<Observed>,
-
-    /// Bundles this one re-states, by `bundle_id`.
+    /// **True** -- this export re-derived everything from its own files, so
+    /// its contributor's rows are cleared and re-laid from it. Correct
+    /// because it is a complete statement, and **idempotent for free**:
+    /// sending it twice lands in the same place. That is what the span
+    /// ledger, `covers`, `supersedes`, genesis and replay were all built to
+    /// buy, and none of them are needed to buy it this way.
     ///
-    /// The commonest operation while a reader is still under repair is not
-    /// *send something new* — it is **send that span again, correctly**, once
-    /// the parser is fixed. A span already held is refused, so without this
-    /// the operation performed most often would be the one the contract
-    /// forbids.
+    /// **False** -- a partial statement. Its rows are merged and nothing is
+    /// cleared. Safe by construction: the worst an incomplete bundle can do
+    /// is add something wrong, which is retractable, rather than remove
+    /// something right, which was not.
     ///
-    /// Withdraw-then-resend would also work and is worse: it leaves a window
-    /// where the site is missing data that is about to come back. The server
-    /// withdraws these and applies this bundle in one transaction.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub supersedes: Vec<String>,
+    /// # Why the default is false
+    ///
+    /// A bundle from before this field cannot be asked, and the two defaults
+    /// that used to cover that case both answered *yes*: `may_replace`
+    /// returned true for a table it had never heard of, and true for a bundle
+    /// too old to state its sources. Both are behind incidents on this board.
+    /// An old bundle now merges instead, which is the direction a default
+    /// should fail in.
+    #[serde(default)]
+    pub complete: bool,
 
     /// The logs behind the numbers, named without naming the filesystem.
     #[serde(default)]
@@ -344,6 +329,40 @@ pub const SITE_GAME: Game = Game::EverQuestLegends;
 /// task API adds the ones play has since completed. Either is enough to make
 /// the table authoritative, and requiring both would refuse perfectly good
 /// exports.
+/// The five tables a complete bundle still does not clear.
+///
+/// Everything else a bundle carries is re-derived from the exporter's own
+/// files each run, so a complete bundle is a complete statement about it and
+/// replacing is right. These five are not.
+///
+/// An item's facts come from **screenshots**, read once and reviewed by a
+/// person on the site. The site writes the accepted ones into `item_facts`
+/// under the contributor's own name -- their screenshot, their attribution --
+/// and the contributor's exporter has no idea that happened. A complete
+/// bundle from them would therefore be complete about everything it knows and
+/// silently delete every reading the site had accepted from them.
+///
+/// So these merge, permanently, and not as a transitional measure. It is the
+/// one place where "everything this contributor knows" is not a thing their
+/// exporter can state.
+pub const NEVER_CLEARED: &[&str] = &[
+    "item_facts",
+    "item_facts_stats",
+    "item_augments",
+    "item_effects",
+    "item_icons",
+];
+
+// Documentation since 8 Sep 2026, and nothing else. This was the authority
+// behind `may_replace` until `Bundle::complete` replaced the whole apparatus
+// -- `may_replace`, `STILL_CLEARED`, `INGEST_CLEARS` and three `Verdict`
+// variants -- with one boolean asked once per bundle instead of once per
+// table.
+//
+// Kept because the inspector reads it to describe a bundle to a person:
+// *this export consulted the history and the recipe file*. A preview that can
+// say what a bundle is about is worth a list. A preview that had to consult a
+// list to know whether the bundle would delete something was the problem.
 pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     // --- what the parse history fills -------------------------------------
     //
@@ -432,75 +451,6 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("class_armor_slots", &["class_armor"]),
 ];
 
-/// The only tables an ingest still empties, and why they are the last ones.
-///
-/// This list used to be its complement. Until 8 September 2026 a bundle
-/// replaced everything its contributor had ever asserted, thirty-nine tables
-/// at a time, and the exceptions were named one by one -- `item_ids` first,
-/// then the item family. The exceptions won: the general rule is now that a
-/// bundle is one observation and merges, and these seven are what has not
-/// moved yet.
-///
-/// They are the ones that **count events** rather than state facts:
-/// `drops.looted`, `drop_places.looted`, `kills.kills`, `vendors.bought`,
-/// `creatures.kills`, `creature_melee.hits`, `faction_hits.kills`. Merging a
-/// count means adding it, and adding is only safe once the same span cannot
-/// be handed over twice -- which is what the `observed` ledger is for and is
-/// not finished. Until then, replacing is the honest arithmetic: a bundle
-/// states the total its history holds, and the total is what lands.
-///
-/// So the ordering rule, which must not be broken: **nothing accumulates a
-/// count before the ledger can refuse a repeat.** When it can, this list
-/// empties and `may_replace` goes with it.
-///
-/// # What being on the other side of this list costs
-///
-/// A fact stated wrongly is no longer retracted by re-sending a shorter
-/// bundle. It has to be withdrawn by name. That is a real cost and it was
-/// paid on purpose: the alternative was measured three separate times, and
-/// each time the clear removed thousands of rows to make room for tens. One
-/// tooltip posted with `sources: ["item_facts"]` was about to take 2,706
-/// drops and 3,308 drop_places with it and answer `202 stored`.
-pub const STILL_CLEARED: &[&str] = &[
-    "drops",
-    "drop_places",
-    "kills",
-    "vendors",
-    "creatures",
-    "creature_melee",
-    "faction_hits",
-];
-
-/// Whether an ingest of this bundle may clear `table` for its contributor.
-///
-/// True for a table nothing optional feeds, and true for one whose source was
-/// consulted. False for anything outside [`STILL_CLEARED`], and false when the bundle
-/// names its sources — so it is new enough to be believed about this — and
-/// none of the ones behind this table are among them.
-pub fn may_replace(sources: Option<&Vec<String>>, table: &str) -> bool {
-    // First, and before everything below it, because everything below it can
-    // answer *true* and only this list may. The old shape was the other way
-    // round -- a short list of exceptions in front of two defaults that both
-    // said yes -- and that shape is behind every data-loss incident on this
-    // board: a table nobody had thought about was replaceable, and a bundle
-    // too old to state its sources was believed about all of them.
-    //
-    // Now nothing is replaceable unless it is named here. A table added to
-    // the schema tomorrow is safe by default, which is the direction a
-    // default should fail in.
-    if !STILL_CLEARED.contains(&table) {
-        return false;
-    }
-    let Some((_, needs)) = TABLE_SOURCES.iter().find(|(t, _)| *t == table) else {
-        return true;
-    };
-    // No list at all: a bundle from before the field. It cannot be asked, so
-    // it keeps the contract it was written under.
-    let Some(sources) = sources else {
-        return true;
-    };
-    needs.iter().any(|n| sources.iter().any(|s| s == n))
-}
 
 impl Bundle {
     /// A bundle with nothing in it yet, and no `generator` on it.
@@ -527,13 +477,11 @@ impl Bundle {
             // asked what it read. It has read nothing *yet*, and the export
             // fills the list in from its flags just before writing.
             sources: Some(Vec::new()),
-            // Empty, and filled in by whatever assembles the rows: only the
-            // producer knows which bytes it actually read. A bundle that
-            // never names a span still merges — it simply cannot be
-            // superseded or withdrawn later, having said nothing about what
-            // it covered.
-            covers: Vec::new(),
-            supersedes: Vec::new(),
+            // False, and set by whatever assembles the rows: only the
+            // producer knows whether it read everything. A half-built bundle
+            // that is never finished therefore merges rather than replaces,
+            // which is the failure this default exists to choose.
+            complete: false,
             logs: Vec::new(),
             drops: Vec::new(),
             raids: Vec::new(),
@@ -722,69 +670,6 @@ pub struct LogSource {
     pub last_seen: i64,
 }
 
-/// One thing a bundle looked at, named so that looking at it twice is
-/// recognisable.
-///
-/// Three producers exist — the daemon parsing logs, the OCR reader posting
-/// tooltip windows, and the client table dumps — and each has arrived by its
-/// own route with its own rules. One shape makes all three the same kind of
-/// statement, which is what collapses the special cases rather than adding a
-/// fourth.
-///
-/// Untagged variants are deliberately avoided: a `Shot` and a `Dump` are both
-/// "a string" on the wire, and serde would have to guess. The tag costs a few
-/// bytes per entry and removes the guess.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum Observed {
-    /// A byte range of one log, half-open: `from` is the first byte read and
-    /// `to` is one past the last, so two adjacent spans share a number and do
-    /// not overlap.
-    ///
-    /// `log_key` is the prefix fingerprint, not a hash of the whole file —
-    /// the same value [`LogSource::id`] carries and the same one
-    /// `uploads::fingerprint` computes on the far side. That is what makes an
-    /// appended log the same log: only its first bytes decide its identity,
-    /// so a file that grew is recognised rather than re-read from zero.
-    Log {
-        log_key: String,
-        from: u64,
-        to: u64,
-    },
-    /// One screenshot, read and reviewed. The digest `POST /api/shots`
-    /// answered with.
-    ///
-    /// A picture is not appended to, so unlike a log there is no prefix
-    /// identity and no span: two files are the same picture or they are two
-    /// pictures.
-    Shot { shot_key: String },
-    /// A client data table, keyed by the content of the dump it came from.
-    Dump { digest: String },
-}
-
-impl Observed {
-    /// Whether two observations describe overlapping evidence.
-    ///
-    /// The question the server has to answer before it may add a count to
-    /// what it already holds. Deliberately here rather than at the far end:
-    /// the rule belongs beside the shape it is about, and both sides need it
-    /// — the sender to avoid building a block that will be refused, the
-    /// receiver to refuse it.
-    ///
-    /// Spans are half-open, so `0..100` and `100..200` do not overlap. A
-    /// `Shot` or a `Dump` overlaps only itself, having no extent.
-    pub fn overlaps(&self, other: &Observed) -> bool {
-        match (self, other) {
-            (
-                Observed::Log { log_key: a, from: af, to: at },
-                Observed::Log { log_key: b, from: bf, to: bt },
-            ) => a == b && at > bf && bt > af,
-            (Observed::Shot { shot_key: a }, Observed::Shot { shot_key: b }) => a == b,
-            (Observed::Dump { digest: a }, Observed::Dump { digest: b }) => a == b,
-            _ => false,
-        }
-    }
-}
 
 /// One item seen dropping from one creature.
 ///
@@ -2537,93 +2422,3 @@ mod lore_only_tests {
     }
 }
 
-#[cfg(test)]
-mod observed_tests {
-    use super::*;
-
-    fn span(key: &str, from: u64, to: u64) -> Observed {
-        Observed::Log { log_key: key.into(), from, to }
-    }
-
-    /// Spans are half-open, and adjacency is the case that decides whether a
-    /// catch-up walk works at all.
-    ///
-    /// A client sending a log in 24-hour blocks hands over `0..100` and then
-    /// `100..200`. If the shared boundary counted as an overlap the second
-    /// block would be refused and the walk would stop after one step — so
-    /// this is not a detail of the comparison, it is whether the feature
-    /// exists.
-    #[test]
-    fn adjacent_spans_do_not_overlap_but_a_shared_byte_does() {
-        assert!(!span("a", 0, 100).overlaps(&span("a", 100, 200)));
-        assert!(span("a", 0, 101).overlaps(&span("a", 100, 200)));
-        assert!(span("a", 0, 100).overlaps(&span("a", 50, 60)), "contained");
-        assert!(span("a", 50, 60).overlaps(&span("a", 0, 100)), "containing");
-        assert!(span("a", 0, 100).overlaps(&span("a", 0, 100)), "identical");
-    }
-
-    /// Two logs that happen to be read at the same offsets are two logs.
-    ///
-    /// Every contributor's first log starts at byte 0, so a comparison that
-    /// ignored the key would refuse the second machine's first block as a
-    /// repeat of the first machine's.
-    #[test]
-    fn a_different_log_at_the_same_offsets_is_not_an_overlap() {
-        assert!(!span("a", 0, 100).overlaps(&span("b", 0, 100)));
-    }
-
-    /// A picture has no extent, so it overlaps itself and nothing else.
-    #[test]
-    fn evidence_without_a_span_overlaps_only_itself() {
-        let one = Observed::Shot { shot_key: "abc".into() };
-        let two = Observed::Shot { shot_key: "def".into() };
-        assert!(one.overlaps(&one));
-        assert!(!one.overlaps(&two));
-        assert!(
-            !one.overlaps(&Observed::Dump { digest: "abc".into() }),
-            "the same string under a different kind is different evidence"
-        );
-    }
-
-    /// The tag travels as a word.
-    ///
-    /// `Shot` and `Dump` are both a single string on the wire, so an untagged
-    /// enum would have to guess between them by field name and would silently
-    /// pick whichever variant serde tried first.
-    #[test]
-    fn a_variant_travels_as_its_own_name() {
-        let json = serde_json::to_string(&span("k", 0, 10)).unwrap();
-        assert!(json.contains(r#""kind":"log""#), "{json}");
-        assert_eq!(serde_json::from_str::<Observed>(&json).unwrap(), span("k", 0, 10));
-
-        let shot = Observed::Shot { shot_key: "d".into() };
-        let json = serde_json::to_string(&shot).unwrap();
-        assert!(json.contains(r#""kind":"shot""#), "{json}");
-        assert_eq!(serde_json::from_str::<Observed>(&json).unwrap(), shot);
-    }
-
-    /// A bundle written before either field existed still parses, and says
-    /// nothing about what it covered rather than claiming it covered nothing.
-    ///
-    /// Every bundle on file today is this shape — 285 of them — so a change
-    /// that made them unreadable would strand the corpus rather than migrate
-    /// it.
-    #[test]
-    fn a_bundle_from_before_these_fields_still_parses() {
-        let b: Bundle = serde_json::from_str(
-            r#"{"bundle_version":1,"generated_at":0,"generator":"old",
-                "contributor":"hammackj","game":"everquest-legends","note":""}"#,
-        )
-        .expect("an older bundle must stay readable");
-        assert!(b.covers.is_empty());
-        assert!(b.supersedes.is_empty());
-    }
-
-    /// And a bundle that covers nothing does not grow the wire format.
-    #[test]
-    fn empty_fields_are_not_written() {
-        let json = serde_json::to_string(&Bundle::new("hammackj", 0)).unwrap();
-        assert!(!json.contains("covers"), "{json}");
-        assert!(!json.contains("supersedes"), "{json}");
-    }
-}

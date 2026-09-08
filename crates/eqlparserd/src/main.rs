@@ -902,7 +902,7 @@ fn print_verdicts(p: &crate::bundle::Preview) {
     for (verdict, title) in [
         (Verdict::Deletes, "WOULD DELETE"),
         (Verdict::Replaces, "replaces"),
-        (Verdict::AddsOnly, "adds only"),
+        (Verdict::Merges, "merges"),
     ] {
         let rows: Vec<&crate::bundle::TableView> =
             p.tables.iter().filter(|t| t.verdict == verdict).collect();
