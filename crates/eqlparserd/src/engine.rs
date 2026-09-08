@@ -1577,7 +1577,9 @@ impl Engine {
                 self.class_levels
                     .on_level_up(entry.timestamp, *level, &trio);
             }
-            Event::Experience { percent } => self.exp.on_experience(entry.timestamp, *percent),
+            Event::Experience { percent, bonus } => {
+                self.exp.on_experience(entry.timestamp, *percent, *bonus)
+            }
             Event::CoinLoot { coin } => self.coin_from_corpses += coin.as_copper(),
             // Selling to a vendor is income just like an auto-sale.
             Event::MerchantSale { coin, .. } => self.coin_from_sales += coin.as_copper(),

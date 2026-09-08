@@ -431,7 +431,13 @@ pub enum Event {
         text: String,
     },
     /// Experience gained, as a percentage of the current level.
-    Experience { percent: f64 },
+    ///
+    /// `bonus` is the client's own `(with a bonus)`, which it prints for the
+    /// length of a bonus event and nowhere else. Carried rather than dropped
+    /// because it is the only record that the event happened: the log states
+    /// no start, no end and no multiplier, and a percentage earned under one
+    /// is not the same measurement as a percentage earned outside it.
+    Experience { percent: f64, bonus: bool },
     /// Faction adjustment.
     Faction {
         faction: String,

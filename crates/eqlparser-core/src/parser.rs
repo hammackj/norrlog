@@ -381,9 +381,15 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::SpellInterrupted,
         r"^Your (?:spell is interrupted|casting has been interrupted)\.?!?$",
     ),
+    // `(with a bonus)` is the server saying a bonus event is running. It sits
+    // between the noun and the exclamation mark, so an anchored pattern
+    // without it does not match a weaker version of the line -- it does not
+    // match at all, and every gain for the length of the event is dropped on
+    // the floor. 2,129 of them were, across the two Freeport logs, before this
+    // group was added.
     (
         RuleId::Experience,
-        r"^You gain (?:party )?experience!+(?: \((?P<pct>[\d.]+)%\))?$",
+        r"^You gain (?:party )?experience(?P<bonus> \(with a bonus\))?!+(?: \((?P<pct>[\d.]+)%\))?$",
     ),
     (
         RuleId::FactionAdjusted,
@@ -1126,6 +1132,7 @@ impl Parser {
                 }
                 RuleId::Experience => Event::Experience {
                     percent: g("pct").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    bonus: g("bonus").is_some(),
                 },
                 RuleId::Consider => Event::Consider {
                     name: g("name").unwrap_or_default().trim().to_string(),
@@ -2340,9 +2347,52 @@ mod tests {
             other => panic!("expected cast, got {other:?}"),
         }
         match p().parse_body("You gain experience! (1.585%)") {
-            Event::Experience { percent } => assert!((percent - 1.585).abs() < 1e-9),
+            Event::Experience { percent, bonus } => {
+                assert!((percent - 1.585).abs() < 1e-9);
+                assert!(!bonus);
+            }
             other => panic!("expected experience, got {other:?}"),
         }
+    }
+
+    /// Every shape the two Freeport logs actually hold.
+    ///
+    /// Counted rather than chosen: 11,809 plain with a figure, 4,324 plain
+    /// without, 2,061 bonused with a figure, 68 bonused without, 60 party.
+    /// The two bonused shapes -- 2,129 lines -- matched nothing at all until
+    /// the pattern learned `(with a bonus)`, and an unmatched line is not a
+    /// gain recorded badly, it is a gain not recorded.
+    #[test]
+    fn every_experience_line_the_logs_hold() {
+        let cases: &[(&str, f64, bool)] = &[
+            ("You gain experience! (1.585%)", 1.585, false),
+            ("You gain experience!", 0.0, false),
+            ("You gain experience (with a bonus)! (0.087%)", 0.087, true),
+            ("You gain experience (with a bonus)!", 0.0, true),
+            ("You gain party experience! (0.242%)", 0.242, false),
+        ];
+        for (line, want, marked) in cases {
+            match p().parse_body(line) {
+                Event::Experience { percent, bonus } => {
+                    assert!((percent - want).abs() < 1e-9, "{line}: got {percent}");
+                    assert_eq!(bonus, *marked, "{line}");
+                }
+                other => panic!("{line}: expected experience, got {other:?}"),
+            }
+        }
+    }
+
+    /// The bonus group is the client's phrase and not a wildcard.
+    ///
+    /// Spelled out because the group sits inside an anchored pattern, where a
+    /// looser one would swallow whatever the client puts there next and report
+    /// it as a bonus rather than as a line nobody has looked at.
+    #[test]
+    fn an_unknown_parenthetical_is_not_a_bonus() {
+        assert!(!matches!(
+            p().parse_body("You gain experience (with a penalty)! (1.0%)"),
+            Event::Experience { .. }
+        ));
     }
 
     #[test]

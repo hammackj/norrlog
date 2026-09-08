@@ -89,6 +89,24 @@ pub struct LevelRecord {
     /// build could not be determined.
     #[serde(default)]
     pub build: String,
+    /// Of `percent`, how much the client marked `(with a bonus)`, and how many
+    /// of `events` carried the mark.
+    ///
+    /// Held apart rather than folded in, and *not* subtracted from `percent`:
+    /// a bonused percentage is still a real percentage of a real level, so the
+    /// sums that make this module work are unaffected. What it is not is
+    /// comparable -- levels/hour measured through a bonus event is not a rate
+    /// anybody can plan by, and before this the question could not even be
+    /// asked, because the lines stating it did not parse.
+    ///
+    /// The multiplier is deliberately not inferred. The client states that a
+    /// bonus applied and never states its size, and a figure derived by
+    /// comparing this level to the last would be reading a guess back as a
+    /// measurement.
+    #[serde(default)]
+    pub bonus_percent: f64,
+    #[serde(default)]
+    pub bonus_events: u32,
 }
 
 /// Experience earned in one zone during one level.
@@ -288,6 +306,8 @@ impl ExpTracker {
                 complete: false,
                 zones: Vec::new(),
                 build: String::new(),
+                bonus_percent: 0.0,
+                bonus_events: 0,
             },
             by_zone: HashMap::new(),
             level_zones: HashMap::new(),
@@ -718,7 +738,7 @@ impl ExpTracker {
     }
 
     /// Note an experience gain.
-    pub fn on_experience(&mut self, timestamp: i64, percent: f64) {
+    pub fn on_experience(&mut self, timestamp: i64, percent: f64, bonus: bool) {
         self.flush_zone_time(timestamp);
         if !self.current_started {
             self.current.started = timestamp;
@@ -726,6 +746,10 @@ impl ExpTracker {
         }
         self.current.percent += percent;
         self.current.events += 1;
+        if bonus {
+            self.current.bonus_percent += percent;
+            self.current.bonus_events += 1;
+        }
         if let Some(z) = self.zone.clone() {
             *self.level_zones.entry(z).or_insert(0.0) += percent;
         }
@@ -805,6 +829,8 @@ impl ExpTracker {
             complete: false,
             zones: Vec::new(),
             build: String::new(),
+            bonus_percent: 0.0,
+            bonus_events: 0,
         };
         self.level_zones.clear();
         // The new level's clock starts at the level-up, not at its first
@@ -897,16 +923,37 @@ mod tests {
     #[test]
     fn percent_accumulates_within_a_level() {
         let mut t = ExpTracker::new();
-        t.on_experience(100, 1.5);
-        t.on_experience(110, 2.5);
+        t.on_experience(100, 1.5, false);
+        t.on_experience(110, 2.5, false);
         assert!((t.current_percent() - 4.0).abs() < 1e-9);
         assert_eq!(t.current_record().events, 2);
+    }
+
+    /// A bonused gain counts, and says it was bonused.
+    ///
+    /// Both halves matter. The percentage is a real percentage of a real
+    /// level, so it belongs in `percent` and the level still sums to ~100 --
+    /// dropping it or discounting it by a guessed multiplier would break the
+    /// one property this whole module rests on. And it is held separately as
+    /// well, because levels/hour measured through a bonus event is not a rate
+    /// anybody can plan the next level by.
+    #[test]
+    fn a_bonused_gain_is_counted_and_marked() {
+        let mut t = ExpTracker::new();
+        t.on_experience(100, 1.0, false);
+        t.on_experience(110, 3.0, true);
+        t.on_experience(120, 2.0, true);
+        let cur = t.current_record();
+        assert!((cur.percent - 6.0).abs() < 1e-9, "the bonused gains were dropped");
+        assert_eq!(cur.events, 3);
+        assert!((cur.bonus_percent - 5.0).abs() < 1e-9);
+        assert_eq!(cur.bonus_events, 2);
     }
 
     #[test]
     fn level_up_closes_the_record_for_the_level_below() {
         let mut t = ExpTracker::new();
-        t.on_experience(100, 50.0);
+        t.on_experience(100, 50.0, false);
         t.on_level_up(200, 10);
         // Reaching 10 means we just finished 9.
         assert_eq!(t.completed_levels()[0].level, Some(9));
@@ -919,9 +966,9 @@ mod tests {
     #[test]
     fn first_partial_level_is_marked_incomplete() {
         let mut t = ExpTracker::new();
-        t.on_experience(100, 15.0);
+        t.on_experience(100, 15.0, false);
         t.on_level_up(200, 10); // first level-up: partial
-        t.on_experience(300, 100.0);
+        t.on_experience(300, 100.0, false);
         t.on_level_up(400, 11); // second: a whole level
         assert!(!t.completed_levels()[0].complete);
         assert!(t.completed_levels()[1].complete);
@@ -931,11 +978,11 @@ mod tests {
     #[test]
     fn averages_use_only_whole_levels() {
         let mut t = ExpTracker::new();
-        t.on_experience(0, 10.0);
+        t.on_experience(0, 10.0, false);
         t.on_level_up(100, 10); // partial, 100s
-        t.on_experience(150, 100.0);
+        t.on_experience(150, 100.0, false);
         t.on_level_up(300, 11); // whole, 200s
-        t.on_experience(350, 100.0);
+        t.on_experience(350, 100.0, false);
         t.on_level_up(700, 12); // whole, 400s
         assert_eq!(
             t.average_seconds_per_level(),
@@ -950,9 +997,9 @@ mod tests {
     #[test]
     fn experience_logged_before_the_kill_is_attributed() {
         let mut t = ExpTracker::new();
-        t.on_experience(100, 2.0);
+        t.on_experience(100, 2.0, false);
         t.on_kill(100, "a fire giant warrior");
-        t.on_experience(200, 2.4);
+        t.on_experience(200, 2.4, false);
         t.on_kill(201, "a fire giant warrior");
 
         let mobs = t.mobs_by_exp_per_kill(1);
@@ -971,7 +1018,7 @@ mod tests {
         let mut t = ExpTracker::new();
         for i in 0..5 {
             let ts = 100 + i * 100;
-            t.on_experience(ts, 1.0);
+            t.on_experience(ts, 1.0, false);
             t.on_kill(ts, "gnomish miner");
         }
         let mobs = t.mobs_by_exp_per_kill(1);
@@ -984,7 +1031,7 @@ mod tests {
     #[test]
     fn kills_without_experience_are_tracked_separately() {
         let mut t = ExpTracker::new();
-        t.on_experience(100, 3.0);
+        t.on_experience(100, 3.0, false);
         t.on_kill(100, "a fire giant");
         t.on_kill(500, "a grey rat"); // no experience at all
         assert_eq!(t.kills_total(), 2);
@@ -1000,11 +1047,11 @@ mod tests {
     fn experience_is_attributed_to_the_mob_just_killed() {
         let mut t = ExpTracker::new();
         t.on_kill(100, "a fire giant warrior");
-        t.on_experience(101, 2.0);
+        t.on_experience(101, 2.0, false);
         t.on_kill(200, "a lesser mummy");
-        t.on_experience(201, 0.5);
+        t.on_experience(201, 0.5, false);
         t.on_kill(300, "a fire giant warrior");
-        t.on_experience(301, 2.2);
+        t.on_experience(301, 2.2, false);
 
         let mobs = t.mobs_by_exp_per_kill(1);
         assert_eq!(mobs[0].name, "a fire giant warrior");
@@ -1020,7 +1067,7 @@ mod tests {
     fn stale_kill_is_not_credited() {
         let mut t = ExpTracker::new();
         t.on_kill(100, "a rat");
-        t.on_experience(1000, 5.0);
+        t.on_experience(1000, 5.0, false);
         assert!(
             t.mobs_by_exp_per_kill(1).is_empty(),
             "experience far from a kill should not be attributed to it"
@@ -1034,8 +1081,8 @@ mod tests {
     fn one_kill_is_not_double_counted_by_two_messages() {
         let mut t = ExpTracker::new();
         t.on_kill(100, "a rat");
-        t.on_experience(101, 1.0);
-        t.on_experience(101, 0.2);
+        t.on_experience(101, 1.0, false);
+        t.on_experience(101, 0.2, false);
         let mobs = t.mobs_by_exp_per_kill(1);
         assert_eq!(mobs[0].kills, 1, "one kill despite two messages");
         assert_eq!(t.current_record().kills, 1);
@@ -1048,9 +1095,9 @@ mod tests {
         let mut t = ExpTracker::new();
         t.on_zone(0, "Nagafen's Lair");
         t.on_kill(10, "a fire giant");
-        t.on_experience(11, 5.0);
+        t.on_experience(11, 5.0, false);
         t.on_kill(20, "a fire giant");
-        t.on_experience(21, 5.0);
+        t.on_experience(21, 5.0, false);
         // Leaving after an hour credits the time.
         t.on_zone(3600, "West Commonlands");
 
@@ -1073,7 +1120,7 @@ mod tests {
         for i in 0..30 {
             let at = i * 60;
             t.on_kill(at, "an iksar");
-            t.on_experience(at + 1, 1.0);
+            t.on_experience(at + 1, 1.0, false);
         }
 
         let zones = t.zones_by_rate(10 * 60);
@@ -1093,7 +1140,7 @@ mod tests {
         let mut t = ExpTracker::new();
         t.on_zone(100, "Sebilis");
         t.on_kill(100, "a froglok");
-        t.on_experience(100, 2.0);
+        t.on_experience(100, 2.0, false);
 
         let zones = t.zones_by_rate(0);
         let seb = zones.iter().find(|z| z.name == "Sebilis").unwrap();
@@ -1104,7 +1151,7 @@ mod tests {
     fn zones_below_the_time_threshold_are_excluded() {
         let mut t = ExpTracker::new();
         t.on_zone(0, "Passing Through");
-        t.on_experience(5, 0.1);
+        t.on_experience(5, 0.1, false);
         t.on_zone(10, "Somewhere Else");
         assert!(
             t.zones_by_rate(600).is_empty(),
@@ -1116,8 +1163,8 @@ mod tests {
     fn rate_and_eta_are_derived_from_recent_gains() {
         let mut t = ExpTracker::new();
         // 10% over 10 minutes => 60%/hour.
-        t.on_experience(0, 5.0);
-        t.on_experience(600, 5.0);
+        t.on_experience(0, 5.0, false);
+        t.on_experience(600, 5.0, false);
         let rate = t.current_rate_per_hour(600);
         assert!((rate - 60.0).abs() < 0.1, "rate was {rate}");
         // 90% remaining at 60%/hour = 1.5 hours.
@@ -1395,8 +1442,8 @@ mod tests {
     #[test]
     fn percent_per_hour_on_a_level_record() {
         let mut t = ExpTracker::new();
-        t.on_experience(0, 0.0);
-        t.on_experience(1800, 50.0);
+        t.on_experience(0, 0.0, false);
+        t.on_experience(1800, 50.0, false);
         t.on_level_up(3600, 20);
         let r = &t.completed_levels()[0];
         assert_eq!(r.seconds, 3600);
@@ -1408,8 +1455,8 @@ mod tests {
     #[test]
     fn a_zero_timestamp_starts_the_level() {
         let mut t = ExpTracker::new();
-        t.on_experience(0, 10.0);
-        t.on_experience(100, 10.0);
+        t.on_experience(0, 10.0, false);
+        t.on_experience(100, 10.0, false);
         assert_eq!(
             t.current_record().started,
             0,
@@ -1423,10 +1470,10 @@ mod tests {
     #[test]
     fn level_duration_runs_from_the_level_up() {
         let mut t = ExpTracker::new();
-        t.on_experience(0, 100.0);
+        t.on_experience(0, 100.0, false);
         t.on_level_up(1000, 30);
         // Ten minutes of travel, then experience.
-        t.on_experience(1600, 5.0);
+        t.on_experience(1600, 5.0, false);
         assert_eq!(
             t.current_record().started,
             1000,
