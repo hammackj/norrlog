@@ -1482,6 +1482,16 @@ async fn wanted(State(s): State<AppState>, Query(q): Query<WantedQuery>) -> Resp
         "sent_total": sent_total,
         "needing_tooltip": payload.get("needing_tooltip"),
         "needing_icon": payload.get("needing_icon"),
+        // The levels of the zones this list sends somebody to, keyed by
+        // zone name. Forwarded verbatim rather than re-modelled: eqldb owns
+        // what a zone's levels are, and this end has no business having an
+        // opinion about them.
+        //
+        // Forwarded at all because this handler rebuilds the payload rather
+        // than relaying it, so anything not named here is dropped -- which is
+        // the right default and does mean a new block on the site is invisible
+        // until it is named.
+        "zones": payload.get("zones"),
         "items": items,
     }))
     .into_response()
