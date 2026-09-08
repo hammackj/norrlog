@@ -432,14 +432,18 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("class_armor_slots", &["class_armor"]),
 ];
 
-/// Tables no bundle may ever clear, whatever it declares.
+/// Tables no bundle may ever clear for its contributor, whatever it declares.
 ///
 /// A source says "I read this evidence, so my rows for these tables are the
-/// whole of it". That is true of a log and false of a *record*: the item-id
-/// registry is folded from every inventory dump and loot filter a machine has
-/// ever seen, it is one JSON file, and it has a known failure mode — there is
-/// a `.before-update` copy beside it precisely because it has been needed. A
-/// registry that comes back short would take the site's rows down with it.
+/// whole of it". That is true of a log, and false of everything here — for
+/// two different reasons that are worth keeping apart.
+///
+/// # `item_ids` is a record, not a restatement
+///
+/// The registry is folded from every inventory dump and loot filter a machine
+/// has ever seen, it is one JSON file, and it has a known failure mode: there
+/// is a `.before-update` copy beside it precisely because it has been needed.
+/// A registry that comes back short would take the site's rows down with it.
 ///
 /// Measured before this was added, against a real send: of 2,259 rows offered,
 /// 219 were new, 683 updated their grades, 1,357 were rewritten byte-identical
@@ -451,20 +455,48 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
 /// is a fair trade here and would not be for a log — these names are the
 /// client's own spellings out of its own files, not anybody's reading of a
 /// screenshot.
-pub const APPEND_ONLY: &[&str] = &["item_ids"];
+///
+/// # The item family is a pile of readings, not a survey
+///
+/// `item_facts` and the three detail tables under it are one row per window
+/// somebody photographed. A bundle carrying forty tooltips is saying *I read
+/// these forty*, and it has never been in a position to say anything about
+/// the four hundred it did not open. The clear read it as the second thing:
+/// one tooltip posted with `sources: ["item_facts"]` was measured, on 4
+/// September 2026, about to delete 2,706 drops and 3,308 drop_places on its
+/// way past — and to answer `202 stored`.
+///
+/// This does **not** make a reading unretractable, which is the difference
+/// from `item_ids` above. A re-read window still replaces the row it names,
+/// column for column, and the ingest still deletes that item's stats,
+/// augments and effects before writing the new ones. What goes away is the
+/// blast radius: the delete is scoped to the items in the bundle instead of
+/// to everything the contributor ever photographed.
+///
+/// `item_icons` is here for a third reason. A row in it is often a *person's*
+/// pick, made on the site through the picker, and a re-export from the
+/// workstation has never known about those.
+pub const NEVER_CLEARED: &[&str] = &[
+    "item_ids",
+    "item_facts",
+    "item_facts_stats",
+    "item_augments",
+    "item_effects",
+    "item_icons",
+];
 
 /// Whether an ingest of this bundle may clear `table` for its contributor.
 ///
 /// True for a table nothing optional feeds, and true for one whose source was
-/// consulted. False for anything in [`APPEND_ONLY`], and false when the bundle
+/// consulted. False for anything in [`NEVER_CLEARED`], and false when the bundle
 /// names its sources — so it is new enough to be believed about this — and
 /// none of the ones behind this table are among them.
 pub fn may_replace(sources: Option<&Vec<String>>, table: &str) -> bool {
     // First, and before the two defaults below: both of them answer *true*,
-    // and an append-only table must not be reachable by either — not by a
+    // and a never-cleared table must not be reachable by either — not by a
     // bundle too old to state its sources, and not by one that names the
     // source and is simply wrong about what that entitles it to.
-    if APPEND_ONLY.contains(&table) {
+    if NEVER_CLEARED.contains(&table) {
         return false;
     }
     let Some((_, needs)) = TABLE_SOURCES.iter().find(|(t, _)| *t == table) else {

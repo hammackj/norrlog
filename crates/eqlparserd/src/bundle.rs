@@ -37,7 +37,7 @@ use eqlparser_core::bundle::{
     may_replace, Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
     DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
     VendorRow,
-    ZoneMarker, ZoneShortname, TABLE_SOURCES,
+    ZoneMarker, ZoneShortname, NEVER_CLEARED, TABLE_SOURCES,
 };
 use eqlparser_core::game::Game;
 use serde::Serialize;
@@ -495,6 +495,17 @@ pub fn preview(b: &Bundle) -> Preview {
         let says = match verdict {
             Verdict::Replaces => format!(
                 "replaces your {table} rows on the site with these {rows}"
+            ),
+            // Two different reasons a table is not cleared, and they need
+            // different warnings. An undeclared source is the dangerous one:
+            // the rows land on the `ON CONFLICT` and a sparse row blanks the
+            // columns it omits. A never-cleared table is the safe one, and
+            // saying "no source declared" about it would be false — the
+            // source may well be declared and it still does not entitle
+            // anybody to empty the table.
+            Verdict::AddsOnly if NEVER_CLEARED.contains(&table) => format!(
+                "adds or updates {rows} row(s) in {table}; it is never cleared wholesale, \
+                 so nothing already on the site is deleted for not being in this bundle"
             ),
             Verdict::AddsOnly => format!(
                 "adds {rows} row(s); no source declared for {table}, so nothing is cleared \
