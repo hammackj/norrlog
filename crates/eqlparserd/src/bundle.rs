@@ -43,6 +43,44 @@
 //! are: a bundle that says *complete* while carrying only what a log can
 //! state would delete everything else. [`preview`] shows what that would do
 //! before anybody sends it.
+//!
+//! # What this daemon holds only half of
+//!
+//! Kept as a record rather than as machinery. Until the pivot these were the
+//! reasons three sources could not be *declared*, when declaring one
+//! authorised a clear over every table behind it. Nothing authorises a clear
+//! now except `complete`, so the list no longer gates anything --- but the
+//! measurements are what would have to change before this daemon could ever
+//! honestly say `complete`, and they were expensive to take.
+//!
+//! **`labels`** covers `markers` and `zone_shortnames`, and the site merges
+//! two things into those: the cartographer blocks a player typed in game,
+//! which is what the record collects, and the eqmaps label store, which holds
+//! every marker walked before that convention existed. This daemon has the
+//! first half.
+//!
+//! **`item_icons`** covers icons, and the record knows only the ones the
+//! client's own files state; the rest come from the OCR matcher. Measured
+//! rather than assumed: the registry alone yields 1,255 icons against the
+//! 2,062 in the last bundle `eqldb-export` built. Around eight hundred are
+//! not this daemon's to state.
+//!
+//! **`faction`** covers `faction_hits` and `turnins`, and the record collects
+//! both from the log this daemon *follows* --- one log. Measured 7 September
+//! 2026: the record holds 42 turnins against the site's 46, and the four
+//! missing are one turn-in --- `Megosh Thistlethorn` / `Halfling Ranger
+//! Note`, four faction lines --- recorded in `eqlog_Tharn_erudin.txt`, which
+//! this daemon has never opened.
+//!
+//! The item-id registry is the contrast worth holding onto: it reads every
+//! character's files off disk, so it covers alts and other servers without
+//! being told, while the log-derived families cover whoever is being played
+//! right now. A character who played elsewhere is not under-represented in
+//! those; they are absent, and a bundle cannot tell the difference.
+//!
+//! The cost of that is real and it is the smaller one: what this daemon
+//! cannot state, it can only add to. A faction hit recorded wrongly is
+//! corrected on the site by hand, not by a later bundle.
 
 use eqlparser_core::bundle::{
     Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
@@ -52,79 +90,6 @@ use eqlparser_core::bundle::{
 };
 use eqlparser_core::game::Game;
 use serde::Serialize;
-
-/// The sources this daemon is entitled to declare.
-///
-/// One entry per body of evidence it actually reads. Declaring a source is a
-/// claim that this bundle is *authoritative* over every table behind it — see
-/// [`TABLE_SOURCES`] — so a source belongs here only when the builder below
-/// genuinely fills every table that names it.
-///
-/// `history` covers logs, drops, kills, vendors and creatures. It is the one
-/// worth staring at: it also covers `aa_observed` and `spell_grants`, which
-/// this daemon records but does not yet read back out of its store, so
-/// `history` is **not** declared until it does. Declaring it early would
-/// delete every AA purchase and spell grant the site holds.
-const OURS: &[Source] = &[
-    Source {
-        name: "consider",
-        fills: &["considers"],
-    },
-    Source {
-        name: "skills",
-        fills: &["skills_seen"],
-    },
-    Source {
-        name: "spots",
-        fills: &["creature_spots"],
-    },
-    Source {
-        name: "inventory",
-        fills: &["item_ids"],
-    },
-    // Three that look as though they belong here and must not, all for the
-    // same reason: this daemon holds one half of what fills them.
-    //
-    // `labels` covers `markers` and `zone_shortnames`, and the rebuild merges
-    // two things into those — the cartographer blocks a player typed in game,
-    // which is what the record collects, *and* the eqmaps label store, which
-    // holds every marker walked before that convention existed. Declaring
-    // `labels` here would delete the store's half.
-    //
-    // `item_icons` covers icons, and the record knows only the ones the
-    // client's own files state. The rest come from the OCR matcher. Measured
-    // rather than assumed: the registry alone yields 1,255 icons against the
-    // 2,062 in the last bundle eqldb-export built, so declaring it would
-    // delete around eight hundred.
-    //
-    // `faction` covers `faction_hits` and `turnins`, and the record collects
-    // both from the log this daemon *follows* — one log. The item-id registry
-    // above is the contrast worth holding onto: it reads every character's
-    // files off disk, so it covers alts and other servers without being told,
-    // while this covers whoever is being played right now. A character who
-    // played elsewhere is therefore not under-represented here; they are
-    // absent, and a bundle cannot tell the difference.
-    //
-    // Measured 7 September 2026 rather than assumed: the record holds 42
-    // turnins against the 46 the site has, and the four missing are one
-    // turn-in — `Megosh Thistlethorn` / `Halfling Ranger Note`, four faction
-    // lines — recorded in `eqlog_Tharn_erudin.txt`, which this daemon has
-    // never opened. Declaring `faction` would have deleted them for the
-    // reason that they were not seen.
-    //
-    // The cost of leaving it out is real and is the smaller one: undeclared,
-    // a faction hit recorded wrongly can never be taken back by a later
-    // bundle, only added to. It has to be fixed on the site by hand.
-    //
-    // All five tables are still filled below. Undeclared, they arrive as
-    // additions — which is the whole point of the split: a bundle that cannot
-    // clear a table cannot empty it.
-];
-
-struct Source {
-    name: &'static str,
-    fills: &'static [&'static str],
-}
 
 /// What a table's presence in this bundle would do to the site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -410,21 +375,20 @@ pub fn build(
     let (profiles, health) = store.bestiary_excluding(Game::EverQuestLegends.slug(), "")?;
     b.creatures = eqlparser_core::bestiary::merge(profiles, &health);
 
-    b.sources = Some(declared(&b));
+    // Claiming nothing, deliberately.
+    //
+    // `sources` used to be this bundle's declaration of what it was
+    // authoritative over, and the ingest cleared a table when the bundle
+    // named the source behind it. That mechanism is gone --- `complete`
+    // decides, once, and this builder never sets it --- so a list here would
+    // be a claim nothing acts on, made by a bundle that cannot clear
+    // anything. The preview says as much in words: "claims nothing --- every
+    // table is added to rather than replaced".
+    //
+    // Empty rather than absent: absent is what an old bundle looks like, and
+    // this one is stating that it claims nothing rather than failing to say.
+    b.sources = Some(Vec::new());
     Ok(b)
-}
-
-/// Which of [`OURS`] this bundle has actually filled.
-///
-/// A source is declared only when *every* table behind it carries rows. The
-/// rule is deliberately strict in the safe direction: an under-declared
-/// bundle adds rows without clearing, which at worst leaves something stale;
-/// an over-declared one deletes.
-fn declared(b: &Bundle) -> Vec<String> {
-    OURS.iter()
-        .filter(|s| s.fills.iter().all(|t| rows_in(b, t) > 0))
-        .map(|s| s.name.to_string())
-        .collect()
 }
 
 /// Every table an ingest knows, and how many rows this bundle has for it.
@@ -707,35 +671,7 @@ mod tests {
         assert_eq!(drops.verdict, Verdict::Deletes);
     }
 
-    /// The declaration rule: a source is claimed only when every table behind
-    /// it carries rows. `labels` covers two tables, so filling one of them is
-    /// not enough — and this is the case that would otherwise delete the
-    /// eqmaps label store.
-    #[test]
-    fn a_source_is_declared_only_when_all_its_tables_are_filled() {
-        let mut b = empty();
-        b.considers.push(Consider {
-            creature: "a rat".into(),
-            levels: Vec::new(),
-            rare: false,
-            raid: false,
-            considers: 1,
-        });
-        assert_eq!(declared(&b), vec!["consider".to_string()]);
 
-        // Markers alone must not claim `labels`; nor is `labels` claimable at
-        // all from here — see `OURS`.
-        b.markers.push(ZoneMarker {
-            name: "Megosh".into(),
-            zone_short: "rivervale".into(),
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            role: "Guildmaster".into(),
-            kind: "npc".into(),
-        });
-        assert_eq!(declared(&b), vec!["consider".to_string()]);
-    }
 
     /// Rows from an incomplete bundle are folded in rather than replacing,
     /// and the panel says why. This is the state everything this daemon
@@ -752,7 +688,7 @@ mod tests {
             role: "Guildmaster".into(),
             kind: "npc".into(),
         });
-        b.sources = Some(declared(&b));
+        b.sources = Some(Vec::new());
         let p = preview(&b);
         let t = p.tables.iter().find(|t| t.table == "markers").expect("markers");
         assert!(!b.complete, "this daemon must not mark a bundle complete");
@@ -790,7 +726,7 @@ mod tests {
             offered: 1,
             handins: 1,
         });
-        b.sources = Some(declared(&b));
+        b.sources = Some(Vec::new());
 
         assert!(!b.complete, "this daemon must not mark a bundle complete");
         let p = preview(&b);
