@@ -120,6 +120,35 @@ pub struct Bundle {
     #[serde(default)]
     pub sources: Option<Vec<String>>,
 
+    /// What this bundle is an observation *of*.
+    ///
+    /// The whole basis of idempotence, and the field that lets a bundle stop
+    /// being a snapshot. `sources` above says which *tables* the export
+    /// consulted; this says which *bytes* it read, so the same span is never
+    /// counted twice and a client can ask the server where to resume rather
+    /// than remembering what it sent.
+    ///
+    /// Empty is not "nothing was read" — it is a bundle written before this
+    /// field existed, or one whose producer cannot say. Those merge but
+    /// cannot be superseded or withdrawn, because nothing identifies what
+    /// they covered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<Observed>,
+
+    /// Bundles this one re-states, by `bundle_id`.
+    ///
+    /// The commonest operation while a reader is still under repair is not
+    /// *send something new* — it is **send that span again, correctly**, once
+    /// the parser is fixed. A span already held is refused, so without this
+    /// the operation performed most often would be the one the contract
+    /// forbids.
+    ///
+    /// Withdraw-then-resend would also work and is worse: it leaves a window
+    /// where the site is missing data that is about to come back. The server
+    /// withdraws these and applies this bundle in one transaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
+
     /// The logs behind the numbers, named without naming the filesystem.
     #[serde(default)]
     pub logs: Vec<LogSource>,
@@ -474,6 +503,13 @@ impl Bundle {
             // asked what it read. It has read nothing *yet*, and the export
             // fills the list in from its flags just before writing.
             sources: Some(Vec::new()),
+            // Empty, and filled in by whatever assembles the rows: only the
+            // producer knows which bytes it actually read. A bundle that
+            // never names a span still merges — it simply cannot be
+            // superseded or withdrawn later, having said nothing about what
+            // it covered.
+            covers: Vec::new(),
+            supersedes: Vec::new(),
             logs: Vec::new(),
             drops: Vec::new(),
             raids: Vec::new(),
@@ -660,6 +696,70 @@ pub struct LogSource {
     pub server: String,
     pub bytes: u64,
     pub last_seen: i64,
+}
+
+/// One thing a bundle looked at, named so that looking at it twice is
+/// recognisable.
+///
+/// Three producers exist — the daemon parsing logs, the OCR reader posting
+/// tooltip windows, and the client table dumps — and each has arrived by its
+/// own route with its own rules. One shape makes all three the same kind of
+/// statement, which is what collapses the special cases rather than adding a
+/// fourth.
+///
+/// Untagged variants are deliberately avoided: a `Shot` and a `Dump` are both
+/// "a string" on the wire, and serde would have to guess. The tag costs a few
+/// bytes per entry and removes the guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Observed {
+    /// A byte range of one log, half-open: `from` is the first byte read and
+    /// `to` is one past the last, so two adjacent spans share a number and do
+    /// not overlap.
+    ///
+    /// `log_key` is the prefix fingerprint, not a hash of the whole file —
+    /// the same value [`LogSource::id`] carries and the same one
+    /// `uploads::fingerprint` computes on the far side. That is what makes an
+    /// appended log the same log: only its first bytes decide its identity,
+    /// so a file that grew is recognised rather than re-read from zero.
+    Log {
+        log_key: String,
+        from: u64,
+        to: u64,
+    },
+    /// One screenshot, read and reviewed. The digest `POST /api/shots`
+    /// answered with.
+    ///
+    /// A picture is not appended to, so unlike a log there is no prefix
+    /// identity and no span: two files are the same picture or they are two
+    /// pictures.
+    Shot { shot_key: String },
+    /// A client data table, keyed by the content of the dump it came from.
+    Dump { digest: String },
+}
+
+impl Observed {
+    /// Whether two observations describe overlapping evidence.
+    ///
+    /// The question the server has to answer before it may add a count to
+    /// what it already holds. Deliberately here rather than at the far end:
+    /// the rule belongs beside the shape it is about, and both sides need it
+    /// — the sender to avoid building a block that will be refused, the
+    /// receiver to refuse it.
+    ///
+    /// Spans are half-open, so `0..100` and `100..200` do not overlap. A
+    /// `Shot` or a `Dump` overlaps only itself, having no extent.
+    pub fn overlaps(&self, other: &Observed) -> bool {
+        match (self, other) {
+            (
+                Observed::Log { log_key: a, from: af, to: at },
+                Observed::Log { log_key: b, from: bf, to: bt },
+            ) => a == b && at > bf && bt > af,
+            (Observed::Shot { shot_key: a }, Observed::Shot { shot_key: b }) => a == b,
+            (Observed::Dump { digest: a }, Observed::Dump { digest: b }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// One item seen dropping from one creature.
@@ -2325,4 +2425,95 @@ pub fn read_identified(path: &std::path::Path) -> anyhow::Result<(Bundle, String
         .with_context(|| format!("parsing {} as a contribution bundle", path.display()))?;
     let id = bundle_id(&bytes);
     Ok((doc, id))
+}
+
+#[cfg(test)]
+mod observed_tests {
+    use super::*;
+
+    fn span(key: &str, from: u64, to: u64) -> Observed {
+        Observed::Log { log_key: key.into(), from, to }
+    }
+
+    /// Spans are half-open, and adjacency is the case that decides whether a
+    /// catch-up walk works at all.
+    ///
+    /// A client sending a log in 24-hour blocks hands over `0..100` and then
+    /// `100..200`. If the shared boundary counted as an overlap the second
+    /// block would be refused and the walk would stop after one step — so
+    /// this is not a detail of the comparison, it is whether the feature
+    /// exists.
+    #[test]
+    fn adjacent_spans_do_not_overlap_but_a_shared_byte_does() {
+        assert!(!span("a", 0, 100).overlaps(&span("a", 100, 200)));
+        assert!(span("a", 0, 101).overlaps(&span("a", 100, 200)));
+        assert!(span("a", 0, 100).overlaps(&span("a", 50, 60)), "contained");
+        assert!(span("a", 50, 60).overlaps(&span("a", 0, 100)), "containing");
+        assert!(span("a", 0, 100).overlaps(&span("a", 0, 100)), "identical");
+    }
+
+    /// Two logs that happen to be read at the same offsets are two logs.
+    ///
+    /// Every contributor's first log starts at byte 0, so a comparison that
+    /// ignored the key would refuse the second machine's first block as a
+    /// repeat of the first machine's.
+    #[test]
+    fn a_different_log_at_the_same_offsets_is_not_an_overlap() {
+        assert!(!span("a", 0, 100).overlaps(&span("b", 0, 100)));
+    }
+
+    /// A picture has no extent, so it overlaps itself and nothing else.
+    #[test]
+    fn evidence_without_a_span_overlaps_only_itself() {
+        let one = Observed::Shot { shot_key: "abc".into() };
+        let two = Observed::Shot { shot_key: "def".into() };
+        assert!(one.overlaps(&one));
+        assert!(!one.overlaps(&two));
+        assert!(
+            !one.overlaps(&Observed::Dump { digest: "abc".into() }),
+            "the same string under a different kind is different evidence"
+        );
+    }
+
+    /// The tag travels as a word.
+    ///
+    /// `Shot` and `Dump` are both a single string on the wire, so an untagged
+    /// enum would have to guess between them by field name and would silently
+    /// pick whichever variant serde tried first.
+    #[test]
+    fn a_variant_travels_as_its_own_name() {
+        let json = serde_json::to_string(&span("k", 0, 10)).unwrap();
+        assert!(json.contains(r#""kind":"log""#), "{json}");
+        assert_eq!(serde_json::from_str::<Observed>(&json).unwrap(), span("k", 0, 10));
+
+        let shot = Observed::Shot { shot_key: "d".into() };
+        let json = serde_json::to_string(&shot).unwrap();
+        assert!(json.contains(r#""kind":"shot""#), "{json}");
+        assert_eq!(serde_json::from_str::<Observed>(&json).unwrap(), shot);
+    }
+
+    /// A bundle written before either field existed still parses, and says
+    /// nothing about what it covered rather than claiming it covered nothing.
+    ///
+    /// Every bundle on file today is this shape — 285 of them — so a change
+    /// that made them unreadable would strand the corpus rather than migrate
+    /// it.
+    #[test]
+    fn a_bundle_from_before_these_fields_still_parses() {
+        let b: Bundle = serde_json::from_str(
+            r#"{"bundle_version":1,"generated_at":0,"generator":"old",
+                "contributor":"hammackj","game":"everquest-legends","note":""}"#,
+        )
+        .expect("an older bundle must stay readable");
+        assert!(b.covers.is_empty());
+        assert!(b.supersedes.is_empty());
+    }
+
+    /// And a bundle that covers nothing does not grow the wire format.
+    #[test]
+    fn empty_fields_are_not_written() {
+        let json = serde_json::to_string(&Bundle::new("hammackj", 0)).unwrap();
+        assert!(!json.contains("covers"), "{json}");
+        assert!(!json.contains("supersedes"), "{json}");
+    }
 }
