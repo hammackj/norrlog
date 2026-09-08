@@ -1632,6 +1632,32 @@ impl ItemFacts {
                 // window look like a reading of the item, which is the wipe
                 // this method exists to prevent.
                 has_lore_tab: self.has_lore_tab,
+                // Carried across for the opposite reason to `has_lore_tab`
+                // above, and this one was measured rather than reasoned.
+                //
+                // `extra` is every key the sender wrote that this struct has
+                // no field for -- `crops`, `checkbox_label`, `captured_first`,
+                // `slots`. It is a diagnostic, not a reading: it exists so
+                // that a name added here tomorrow is seen to collide with an
+                // old bundle's spelling. Left out of this copy, any of them
+                // being present makes a Lore window look like a reading of
+                // the whole item.
+                //
+                // Which is what was happening. All 2,280 entries in
+                // `item-facts.json` carry at least one -- `crops` is on every
+                // one -- so `lore_only` answered false for every real reading
+                // ever written, including the 191 with lore, and had only
+                // ever answered true for structs built in a test. It went
+                // unnoticed because the ingest cleared `item_facts` first and
+                // there was nothing on file to blank; the moment the item
+                // family stopped being cleared, this became the wipe the
+                // method exists to prevent.
+                //
+                // It also fails in the better direction now. A reading
+                // carrying lore and nothing but unrecognised keys is merged
+                // rather than substituted, and a merge that should have been
+                // a replacement loses nothing.
+                extra: self.extra.clone(),
                 ..Default::default()
             }
     }
@@ -2457,6 +2483,66 @@ pub fn read_identified(path: &std::path::Path) -> anyhow::Result<(Bundle, String
         .with_context(|| format!("parsing {} as a contribution bundle", path.display()))?;
     let id = bundle_id(&bytes);
     Ok((doc, id))
+}
+
+#[cfg(test)]
+mod lore_only_tests {
+    use super::*;
+
+    fn lore_window() -> ItemFacts {
+        ItemFacts {
+            item: "Mote of Potential".into(),
+            server: "freeport".into(),
+            ruleset: "legends".into(),
+            source: "screenshot".into(),
+            evidence: "EQ003000.jpg".into(),
+            lore: "Strengthens an item".into(),
+            has_lore_tab: Some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_window_carrying_only_lore_is_a_reading_of_one_field() {
+        assert!(lore_window().lore_only());
+    }
+
+    /// The case that was live and unnoticed.
+    ///
+    /// Every reading `emit_itemfacts.py` writes carries `crops`, and this
+    /// struct has no field for it, so it lands in `extra`. Counted against
+    /// the real corpus: 2,280 of 2,280 entries carry at least one such key,
+    /// which made this method answer false for every reading ever written.
+    #[test]
+    fn the_readers_own_bookkeeping_does_not_make_it_a_reading_of_the_item() {
+        let mut f = lore_window();
+        f.extra.insert("crops".into(), serde_json::json!(["eql_mote.png"]));
+        f.extra.insert("captured_first".into(), serde_json::json!("2026-08-19"));
+        assert!(
+            f.lore_only(),
+            "an unrecognised key turned a Lore tab into a reading of the item"
+        );
+    }
+
+    /// And a real reading is still a real reading.
+    #[test]
+    fn a_field_of_the_item_makes_it_a_reading_of_the_item() {
+        for f in [
+            ItemFacts { slot: "Neck".into(), ..lore_window() },
+            ItemFacts { flags: vec!["Lore".into()], ..lore_window() },
+            ItemFacts {
+                stats: vec![ItemStat { name: "AC".into(), value: 10, heroic: None }],
+                ..lore_window()
+            },
+        ] {
+            assert!(!f.lore_only(), "a reading of the item was treated as one field");
+        }
+    }
+
+    #[test]
+    fn a_window_with_no_lore_is_not_a_lore_window() {
+        assert!(!ItemFacts { lore: "  ".into(), ..lore_window() }.lore_only());
+    }
 }
 
 #[cfg(test)]
