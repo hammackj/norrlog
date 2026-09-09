@@ -90,6 +90,14 @@ const WAIT_FOR_FILE: i64 = 10;
 /// the queue would show a person the wrong picture beside the right reading.
 const MTIME_SLACK: i64 = 1;
 
+/// How long a picture must have sat unchanged before the sweep takes it.
+///
+/// The sweep finds a file by looking, not by being told, so it can arrive
+/// while the client is still writing it. The log-driven path does not need
+/// this --- the announcement comes with the write --- and two seconds is long
+/// beside a JPEG and short beside a person waiting for their window.
+const SETTLE: i64 = 2;
+
 /// How long the reader is given before it is assumed to be stuck.
 const READ_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -899,15 +907,23 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
         // log's, because that is the timestamp a person will go and look for
         // in the log, and this machine's, because that is what an mtime is in.
         let mut pending: VecDeque<(i64, i64)> = VecDeque::new();
+        // What the sweep below has already taken, by name and mtime. The pair
+        // rather than the name alone because the client reuses its numbers:
+        // after the archive empties the folder it writes a fresh EQ000052.jpg,
+        // a different picture under a name this has seen.
+        let mut swept: std::collections::HashSet<(std::ffi::OsString, i64)> =
+            std::collections::HashSet::new();
+        let started = now();
         loop {
             tokio::time::sleep(TICK).await;
+            let off;
             {
                 let mut e = engine.locked("engine");
                 // Read once, with the shots it belongs to. The offset is
                 // remeasured on every live line, so taking it later would
                 // convert this batch with a slightly different number than
                 // the one in force when they were seen.
-                let off = e.clock_offset().unwrap_or(0);
+                off = e.clock_offset().unwrap_or(0);
                 for at in e.shots_taken() {
                     pending.push_back((at, at - off));
                 }
@@ -923,7 +939,15 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
             let mut again = VecDeque::new();
             while let Some((at, local)) = pending.pop_front() {
                 match reader.file_at(local) {
-                    Some(p) => reader.handle(at, p, &engine).await,
+                    Some(p) => {
+                        // So the sweep does not read it again.
+                        if let (Some(n), Ok(m)) = (p.file_name(), std::fs::metadata(&p)) {
+                            if let Some(secs) = mtime_secs(&m) {
+                                swept.insert((n.to_owned(), secs));
+                            }
+                        }
+                        reader.handle(at, p, &engine).await
+                    }
                     None if now() - local < WAIT_FOR_FILE => again.push_back((at, local)),
                     None => reader.note(Outcome {
                         shot: String::new(),
@@ -937,6 +961,31 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
                 }
             }
             pending = again;
+
+            // Then whatever the log did not announce.
+            //
+            // The daemon follows one log, because it is showing you the fight
+            // you are in, and `shots_taken()` is that log's lines. So a
+            // screenshot taken on any other character is announced to nobody:
+            // on 9 September 45 of one character's shots had been read by
+            // nothing while the daemon followed the other's, and the daemon
+            // was running the whole time. Which log is followed is a choice
+            // about the live view; it should not decide whether a photograph
+            // gets read.
+            //
+            // Only files written since this process started. The backlog in
+            // the folder belongs to the batch tree, which knows what it has
+            // already seen; re-reading it here would cost minutes of OCR on
+            // every restart and re-queue windows somebody has judged.
+            for (p, secs) in unannounced(&reader.shots, started, now(), &swept) {
+                swept.insert((p.file_name().unwrap_or_default().to_owned(), secs));
+                // `handle` is told the log's clock, which is what a person
+                // reads off a line in the log. The sweep has the machine's, so
+                // it converts --- the same offset, in the other direction from
+                // the one the announced path uses.
+                reader.handle(secs + off, p, &engine).await;
+            }
+
             // Counted after the drain, not before it. Before, a shot that had
             // just been handled was still reported as waiting until the next
             // tick, which is the one number on that endpoint a person reads as
@@ -951,6 +1000,46 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
 fn home() -> Option<PathBuf> {
     let h = PathBuf::from(std::env::var_os("HOME")?);
     h.is_absolute().then_some(h)
+}
+
+/// Pictures in `dir` that the sweep should take, with their mtimes.
+///
+/// Four clauses, each of which is a way to be wrong, which is why this is a
+/// function and not a loop body:
+///
+///   * a picture, not the archive's `index.json` or a subdirectory;
+///   * written since this daemon started --- the backlog belongs to the batch
+///     tree, which knows what it has already read;
+///   * settled for [`SETTLE`], because the sweep can arrive mid-write;
+///   * not already taken, by name *and* mtime. The client reuses its numbers:
+///     after the archive empties the folder it writes a fresh `EQ000052.jpg`,
+///     a different picture under a name this has seen.
+fn unannounced(
+    dir: &Path,
+    started: i64,
+    now: i64,
+    seen: &std::collections::HashSet<(std::ffi::OsString, i64)>,
+) -> Vec<(PathBuf, i64)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if !p.is_file() || !is_picture(&p) {
+            continue;
+        }
+        let Ok(m) = e.metadata() else { continue };
+        let Some(secs) = mtime_secs(&m) else { continue };
+        if secs < started || now - secs < SETTLE {
+            continue;
+        }
+        let Some(name) = p.file_name() else { continue };
+        if seen.contains(&(name.to_owned(), secs)) {
+            continue;
+        }
+        out.push((p, secs));
+    }
+    // Oldest first, so a burst is read in the order it was taken.
+    out.sort_by_key(|(_, secs)| *secs);
+    out
 }
 
 fn is_picture(p: &Path) -> bool {
@@ -1449,5 +1538,68 @@ mod lore_onsite_tests {
         let (teaches, onsite) = rt.block_on(r.lore_standing("Ancient Rock", "some lore"));
         assert!(teaches, "no answer does not mean the lore is on file");
         assert!(onsite.is_none(), "and claims no comparison was made");
+    }
+
+    /// A screenshot taken on a character the daemon is not following.
+    ///
+    /// The trigger for reading one is a line in the log, and the daemon
+    /// follows one log because it is showing you the fight you are in. So on
+    /// 9 September 45 of one character's screenshots had been read by nothing
+    /// while the daemon followed the other's --- and the daemon was running
+    /// for all of them. Which log is followed is a choice about the live view
+    /// and must not decide whether a photograph gets read.
+    #[test]
+    fn the_sweep_takes_what_the_log_never_announced() {
+        use std::collections::HashSet;
+        use std::ffi::OsString;
+
+        let dir = std::env::temp_dir().join(format!("eqlp-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let touch = |name: &str, secs: i64| {
+            let p = dir.join(name);
+            std::fs::write(&p, b"x").unwrap();
+            let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
+            filetime_set(&p, t);
+            p
+        };
+
+        let started = 1_000;
+        let now = 1_100;
+        touch("old.jpg", started - 5);          // before this daemon
+        touch("wet.jpg", now - (SETTLE - 1));   // still being written
+        touch("index.json", started + 10);      // not a picture
+        let fresh = touch("EQ004494.jpg", started + 10);
+        let also = touch("EQ004495.jpg", started + 20);
+
+        let none = HashSet::new();
+        let got = unannounced(&dir, started, now, &none);
+        assert_eq!(
+            got.iter().map(|(p, _)| p.file_name().unwrap()).collect::<Vec<_>>(),
+            [fresh.file_name().unwrap(), also.file_name().unwrap()],
+            "only the settled pictures written since startup, oldest first"
+        );
+
+        // Once taken, not taken again.
+        let mut seen: HashSet<(OsString, i64)> = HashSet::new();
+        for (p, secs) in &got {
+            seen.insert((p.file_name().unwrap().to_owned(), *secs));
+        }
+        assert!(unannounced(&dir, started, now, &seen).is_empty());
+
+        // But a reused name with new content is a new picture. The client
+        // writes a fresh EQ000052.jpg after the archive empties the folder.
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs((started + 40) as u64);
+        filetime_set(&fresh, t);
+        let got = unannounced(&dir, started, now, &seen);
+        assert_eq!(got.len(), 1, "same name, different mtime, read again");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `filetime` is not a dependency here and one call does not justify it.
+    fn filetime_set(p: &Path, t: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.set_modified(t).unwrap();
     }
 }
