@@ -589,15 +589,16 @@ fn render_encounters_markdown(encs: &[crate::engine::EncounterSummary]) -> Strin
 
         for g in &e.outgoing_groups {
             out.push_str(&format!(
-                "\n### {} — {} ({:.0}% of your damage)\n\n| Ability | Damage | Hits | Crits | Max | Avg |\n|---|--:|--:|--:|--:|--:|\n",
+                "\n### {} — {} ({:.0} dps, {:.0}% of your damage)\n\n| Ability | Damage | DPS | Hits | Crits | Max | Avg |\n|---|--:|--:|--:|--:|--:|--:|\n",
                 g.group,
                 g.damage,
+                g.dps,
                 g.share * 100.0
             ));
             for a in &g.abilities {
                 out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} | {:.0} |\n",
-                    a.name, a.damage, a.hits, a.crits, a.max, a.average
+                    "| {} | {} | {:.1} | {} | {} | {} | {:.0} |\n",
+                    a.name, a.damage, a.dps, a.hits, a.crits, a.max, a.average
                 ));
             }
         }

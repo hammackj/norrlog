@@ -234,6 +234,15 @@ pub struct AbilityGroup {
     pub damage: u64,
     /// Share of your damage in this fight, 0.0–1.0.
     pub share: f64,
+    /// This group's damage over the fight's whole length.
+    ///
+    /// Over the *fight*, not over the time the group was being used, so the
+    /// three groups add up to `your_dps` and can be read against it and
+    /// against each other. A melee figure divided by the seconds you were
+    /// actually swinging would be a bigger, truer-sounding number that no
+    /// longer answers "where is my damage coming from" — it would rank a
+    /// weapon you drew twice above the one you held all fight.
+    pub dps: f64,
     /// Abilities within the group, biggest first.
     pub abilities: Vec<GroupedAbility>,
 }
@@ -251,6 +260,14 @@ pub struct GroupedAbility {
     pub casts: u64,
     /// Share of its own group, so bars read within the group.
     pub share: f64,
+    /// This ability's damage over the fight's whole length.
+    ///
+    /// Same denominator as [`AbilityGroup::dps`] and for the same reason: a
+    /// group's abilities sum to the group, and the groups sum to `your_dps`.
+    /// A dot's damage spread over the fight is what it contributed to the
+    /// fight; spreading it over its own uptime instead would say something
+    /// about the spell rather than about this pull.
+    pub dps: f64,
 }
 
 /// An active buff with its remaining time.
@@ -3696,6 +3713,10 @@ impl Engine {
         let Some(you) = enc.actors.get("you") else {
             return Vec::new();
         };
+        // The fight's own length, which is what `enc.dps("you")` divides by.
+        // Sharing the denominator is the whole point: the groups then sum to
+        // the DPS already on the card, and a reader can subtract.
+        let seconds = enc.duration() as f64;
         let mut groups: std::collections::HashMap<&'static str, Vec<GroupedAbility>> =
             std::collections::HashMap::new();
         for (name, a) in &you.by_ability {
@@ -3717,6 +3738,7 @@ impl Engine {
                     average: a.average(),
                     casts: a.casts,
                     share: 0.0,
+                    dps: a.total as f64 / seconds,
                 });
         }
         let total: u64 = you.by_ability.values().map(|a| a.total).sum();
@@ -3740,6 +3762,7 @@ impl Engine {
                     } else {
                         damage as f64 / total as f64
                     },
+                    dps: damage as f64 / seconds,
                     abilities,
                 }
             })
@@ -3956,6 +3979,65 @@ mod tests {
         m.insert(buff.id, buff);
         m.insert(proc.id, proc);
         Engine::new("Tharn".to_string(), SpellDb::from_spells(m))
+    }
+
+    /// The outgoing breakdown's DPS, at both levels, against the one figure
+    /// it has to agree with.
+    ///
+    /// The property is not "the arithmetic is right" -- it is that the parts
+    /// reconcile with the whole. `your_dps` is already on the card, and a
+    /// breakdown whose groups sum to something else is worse than no
+    /// breakdown: it makes the reader distrust both numbers and gives them
+    /// no way to tell which one is lying. It holds because both sides divide
+    /// by `enc.duration()`, and this is what stops somebody "improving" the
+    /// denominator to time-on-target for one of them.
+    #[test]
+    fn the_outgoing_groups_dps_adds_up_to_your_dps() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                // Ten seconds, so the division is a number that can be read.
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 300 points of damage.",
+                "[Tue Jul 28 14:00:05 2026] You kick a giant for 200 points of damage.",
+                "[Tue Jul 28 14:00:05 2026] You hit a giant for 500 points of prismatic damage by Inferno Shock.",
+                "[Tue Jul 28 14:00:10 2026] You slash a giant for 300 points of damage.",
+            ],
+        );
+        // The live fight: nothing has ended it, and a breakdown is read
+        // mid-pull as often as after one.
+        let enc = e.tracker.current().expect("a fight");
+        let s = e.summarise(enc, true);
+        assert_eq!(s.duration, 10, "the fixture's length is the denominator");
+        assert_eq!(s.your_damage, 1300);
+
+        let melee = s.outgoing_groups.iter().find(|g| g.group == "Melee").expect("melee");
+        let spell = s.outgoing_groups.iter().find(|g| g.group == "Spell").expect("spell");
+        assert_eq!(melee.damage, 800);
+        assert_eq!(spell.damage, 500);
+        assert!((melee.dps - 80.0).abs() < 1e-9, "melee dps was {}", melee.dps);
+        assert!((spell.dps - 50.0).abs() < 1e-9, "spell dps was {}", spell.dps);
+
+        // The whole point: the groups reconcile with the headline.
+        let summed: f64 = s.outgoing_groups.iter().map(|g| g.dps).sum();
+        assert!(
+            (summed - s.your_dps).abs() < 1e-9,
+            "the groups sum to {summed} and the card says {}",
+            s.your_dps
+        );
+
+        // And each group's abilities reconcile with their group -- which is
+        // what makes "per melee type" a breakdown rather than a second,
+        // differently-scaled list. Slash was swung twice and kick once, so
+        // the two rows are distinguishable.
+        for g in &s.outgoing_groups {
+            let inner: f64 = g.abilities.iter().map(|a| a.dps).sum();
+            assert!((inner - g.dps).abs() < 1e-9, "{} splits into {inner}, not {}", g.group, g.dps);
+        }
+        let slash = melee.abilities.iter().find(|a| a.name.contains("lash")).expect("slash");
+        let kick = melee.abilities.iter().find(|a| a.name.contains("ick")).expect("kick");
+        assert!((slash.dps - 60.0).abs() < 1e-9, "slash dps was {}", slash.dps);
+        assert!((kick.dps - 20.0).abs() < 1e-9, "kick dps was {}", kick.dps);
     }
 
     /// The whole pipeline: a proc's cast line counts, an ordinary cast does
