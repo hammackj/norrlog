@@ -225,6 +225,37 @@ pub struct EncounterSummary {
     /// Per-creature split, populated alongside `meter`.
     #[serde(default)]
     pub mobs: Vec<eqlparser_core::encounter::MobBreakdown>,
+    /// The fight's damage on a time axis, one number per second.
+    #[serde(default)]
+    pub tick_series: TickSeries,
+}
+
+/// Damage per second of the fight, split by side.
+///
+/// Four runs of the same length, index 0 being the fight's first second, so a
+/// reader can add them or subtract them without lining anything up. Every run
+/// is zero-filled to the fight's length: a second nobody did anything in is a
+/// reading, and leaving it out would draw a lull as a straight line between
+/// the peaks either side of it.
+///
+/// Raw per-second totals, not a smoothed rate. A one-second bucket is spiky
+/// enough to be unreadable on its own -- a two-handed swing lands in one
+/// second and nothing lands in the next -- so the chart rolls a window over
+/// it. Which window is a display choice and belongs where the display is;
+/// what happened in each second is a fact and belongs here.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TickSeries {
+    /// Whether these describe one continuous fight; see
+    /// [`eqlparser_core::encounter::Encounter::ticks_retained`].
+    pub retained: bool,
+    /// Your own damage.
+    pub you: Vec<u32>,
+    /// Your pets', charmed or summoned.
+    pub pets: Vec<u32>,
+    /// Everyone else on your side, and their pets.
+    pub allies: Vec<u32>,
+    /// What landed on you.
+    pub incoming: Vec<u32>,
 }
 
 /// Your damage under one mechanism — Spell, Melee or Other.
@@ -3288,6 +3319,12 @@ impl Engine {
             marks: Vec::new(),
             timeline_dropped: 0,
             timeline_retained: false,
+            // Same reason as the marks above, and `merge_from` clears these
+            // anyway: the buckets are indexed from `start`, and a session's
+            // start is the evening's, not any fight's.
+            dealt_ticks: std::collections::HashMap::new(),
+            taken_ticks: Vec::new(),
+            ticks_retained: false,
         };
         let mut fights = 0usize;
         let mut combat = 0i64;
@@ -3701,7 +3738,71 @@ impl Engine {
             } else {
                 Vec::new()
             },
+            tick_series: if with_meter {
+                Self::tick_series(enc)
+            } else {
+                TickSeries::default()
+            },
         }
+    }
+
+    /// Fold the fight's per-actor buckets into the four sides the chart draws.
+    ///
+    /// The side each actor is on is decided here, from the same three flags
+    /// [`Self::meter_for`] reads, and not when the hit landed. That is the
+    /// whole reason `dealt_ticks` is kept per actor: `damaged_by_you` — which
+    /// is what makes a creature an enemy — is set *by* hits, so a mob's side
+    /// is not yet known at the moment of its first swing, and a chart that
+    /// decided as it went would put the first ten seconds of a mob's damage
+    /// on the ally line and the rest on the enemy one.
+    ///
+    /// A charmed pet's damage counts as yours for the whole fight here, where
+    /// the meter counts only what it dealt while held. The difference is
+    /// deliberate and small: the meter is apportioning credit, and this is
+    /// drawing what was happening. A charm that breaks mid-pull is a spike on
+    /// the incoming line at the same moment, which is the more useful way to
+    /// see it than a silent gap in the pet line.
+    fn tick_series(enc: &Encounter) -> TickSeries {
+        let seconds = enc.dealt_ticks.values().map(Vec::len).max().unwrap_or(0)
+            .max(enc.taken_ticks.len())
+            // The fight's own length, so a pull that ends in ten seconds of
+            // nobody hitting anything draws those ten seconds rather than
+            // stopping at the last swing and looking shorter than it was.
+            .max(if enc.ticks_retained { enc.duration() as usize } else { 0 })
+            .min(eqlparser_core::encounter::TICKS_MAX_SECONDS);
+        if !enc.ticks_retained || seconds == 0 {
+            return TickSeries::default();
+        }
+        let mut out = TickSeries {
+            retained: true,
+            you: vec![0; seconds],
+            pets: vec![0; seconds],
+            allies: vec![0; seconds],
+            incoming: vec![0; seconds],
+        };
+        let add = |into: &mut Vec<u32>, from: &[u32]| {
+            for (i, v) in from.iter().enumerate().take(into.len()) {
+                into[i] = into[i].saturating_add(*v);
+            }
+        };
+        for (key, run) in &enc.dealt_ticks {
+            let Some(st) = enc.actors.get(key) else { continue };
+            let lane = if key == "you" {
+                &mut out.you
+            } else if st.is_yours() || st.summoned {
+                &mut out.pets
+            } else if st.damaged_by_you {
+                // An enemy. Its output is on the incoming line only insofar
+                // as it landed on you, which `taken_ticks` already holds --
+                // what it did to everybody else is not this chart's subject.
+                continue;
+            } else {
+                &mut out.allies
+            };
+            add(lane, run);
+        }
+        add(&mut out.incoming, &enc.taken_ticks);
+        out
     }
 
     /// Split your output into Spell / Melee / Other, biggest group first and
@@ -3979,6 +4080,132 @@ mod tests {
         m.insert(buff.id, buff);
         m.insert(proc.id, proc);
         Engine::new("Tharn".to_string(), SpellDb::from_spells(m))
+    }
+
+    /// Dump one fight from a real log as JSON, so the chart can be looked at
+    /// against data nobody invented.
+    ///
+    /// The fixtures above prove the axis and the sides; only a real fight
+    /// shows whether the thing is *readable* — and the two cases look nothing
+    /// alike, which is why `EQL_PICK` exists. Solo, "you + pet + group" is
+    /// you, and the first version drew that line exactly underneath your own
+    /// where it could not be seen. Grouped, four lines have to stay apart.
+    ///
+    ///     EQL_SLICE=/path/to/slice.log cargo test -p eqlparserd \
+    ///         dump_a_real_fight -- --ignored --nocapture
+    ///
+    /// `EQL_PICK=group` picks the fight with the most damage from somebody
+    /// else instead of the one where you did the most.
+    #[test]
+    #[ignore]
+    fn dump_a_real_fight() {
+        let path = std::env::var("EQL_SLICE")
+            .expect("EQL_SLICE=/path/to/slice.log — a slice of a real log to read");
+        let text = std::fs::read_to_string(&path).expect("the slice");
+        let mut e = engine();
+        for l in text.lines() {
+            e.push_line(l);
+        }
+        let best = e
+            .encounters()
+            .iter()
+            .chain(e.tracker.current())
+            .max_by_key(|x| {
+                if std::env::var("EQL_PICK").as_deref() == Ok("group") {
+                    x.actors
+                        .iter()
+                        .filter(|(k, st)| {
+                            k.as_str() != "you" && !st.is_yours() && !st.summoned && !st.damaged_by_you
+                        })
+                        .map(|(_, st)| st.damage_done)
+                        .sum::<u64>()
+                } else {
+                    x.actors.get("you").map(|s| s.damage_done).unwrap_or(0)
+                }
+            })
+            .expect("a fight");
+        let s = e.summarise(best, true);
+        println!(
+            "@@{}@@",
+            serde_json::json!({
+                "summary": s,
+                "marks": best.marks,
+                "start": best.start,
+                "end": best.end,
+            })
+        );
+    }
+
+    /// The DPS-over-time series: one number per second, on the fight's axis,
+    /// with each side on its own line.
+    ///
+    /// The two properties worth pinning are the axis and the sides. A curve
+    /// whose index does not mean "seconds since the fight started" cannot be
+    /// read against the timeline under it, and a second nobody acted in has
+    /// to be a zero rather than a missing entry -- otherwise a lull is drawn
+    /// as a straight line between the peaks either side of it, which is the
+    /// opposite of what happened.
+    #[test]
+    fn the_tick_series_puts_each_side_on_the_fights_own_seconds() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 300 points of damage.",
+                // Second 1 is deliberately empty: nothing at 14:00:01.
+                "[Tue Jul 28 14:00:02 2026] A giant hits YOU for 90 points of damage.",
+                "[Tue Jul 28 14:00:03 2026] Grix slashes a giant for 40 points of damage.",
+                "[Tue Jul 28 14:00:04 2026] You slash a giant for 100 points of damage.",
+            ],
+        );
+        let enc = e.tracker.current().expect("a fight");
+        let t = e.summarise(enc, true).tick_series;
+        assert!(t.retained);
+
+        // Five seconds, 0 through 4, and every line is that long.
+        assert_eq!(t.you.len(), 5, "the axis is the fight, not the last swing");
+        assert_eq!(t.you.len(), t.incoming.len());
+        assert_eq!(t.you.len(), t.allies.len());
+        assert_eq!(t.you.len(), t.pets.len());
+
+        assert_eq!(t.you, vec![300, 0, 0, 0, 100], "your damage is not on the fight's seconds");
+        // The empty second is a zero, not a hole.
+        assert_eq!(t.you[1], 0);
+        assert_eq!(t.incoming, vec![0, 0, 90, 0, 0], "what landed on you is misplaced");
+        assert_eq!(t.allies, vec![0, 0, 0, 40, 0], "another player is not on the ally line");
+        // The giant is an enemy -- you hit it -- so its output is on the
+        // incoming line only for the part that reached you, and nowhere else.
+        assert_eq!(t.pets.iter().sum::<u32>(), 0, "no pets in this fight");
+        assert_eq!(
+            t.allies.iter().sum::<u32>(),
+            40,
+            "the giant's damage leaked onto the ally line"
+        );
+
+        // And the axis agrees with the totals the card shows.
+        let s = e.summarise(enc, true);
+        assert_eq!(t.you.iter().map(|v| *v as u64).sum::<u64>(), s.your_damage);
+    }
+
+    /// A session roll-up draws no curve, and says so rather than drawing a
+    /// flat one.
+    ///
+    /// `merge_from` spans the gaps between pulls, so an evening's best burn
+    /// and an hour of standing in the bank share one axis. The buckets are
+    /// indexed from `start`, which the merge moves.
+    #[test]
+    fn a_merged_view_keeps_no_tick_series() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a giant for 300 points of damage.",
+                "[Tue Jul 28 14:00:04 2026] You slash a giant for 100 points of damage.",
+            ],
+        );
+        let (s, _fights, _combat) = e.session_summary(false);
+        assert!(!s.tick_series.retained, "a session drew a curve across its own gaps");
+        assert!(s.tick_series.you.is_empty());
     }
 
     /// The outgoing breakdown's DPS, at both levels, against the one figure

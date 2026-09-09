@@ -738,6 +738,41 @@ pub struct Encounter {
     /// releases the per-event detail of older fights to bound memory.
     #[serde(default = "yes")]
     pub timeline_retained: bool,
+    /// Damage dealt per second of the fight, per actor. Index 0 is `start`.
+    ///
+    /// Kept per actor and folded into sides later rather than bucketed into
+    /// "yours" and "theirs" here, because at the moment a hit lands nobody
+    /// knows yet which side its source is on. `damaged_by_you` is what makes
+    /// a creature an enemy and it is set *by* hits like this one; a mob that
+    /// spends the first ten seconds hitting another player and only then
+    /// turns on you would be filed as an ally for those ten seconds and an
+    /// enemy afterwards, and the chart would disagree with the meter beside
+    /// it. Deciding once, at the end, from the same flags the meter reads
+    /// makes that impossible.
+    ///
+    /// Per *second* rather than per event, which is why this survives where
+    /// [`Encounter::timeline`] does not: it is bounded by how long the fight
+    /// ran and not by how much happened in it, so a twenty-minute fight is
+    /// 1,200 numbers however many swings it held — and a fight that ran long
+    /// enough to have a shape is exactly the one whose shape is worth seeing.
+    #[serde(default)]
+    pub dealt_ticks: HashMap<String, Vec<u32>>,
+    /// Damage *you* took per second, on the same axis.
+    ///
+    /// Separate from `dealt_ticks` rather than derived from it: what an enemy
+    /// dealt includes what it dealt to everybody else, and "how hard was I
+    /// being hit" is the question this line is on the chart to answer. The
+    /// target being you is known the instant the line is read, so unlike the
+    /// side of a source it needs no deciding later.
+    #[serde(default)]
+    pub taken_ticks: Vec<u32>,
+    /// Whether the per-second buckets describe one continuous fight.
+    ///
+    /// False on a merged view. See [`Encounter::merge_from`]: a session's
+    /// span includes the gaps between its pulls, so a rate drawn across it
+    /// would show real damage as a lull and would not be a rate at all.
+    #[serde(default = "yes")]
+    pub ticks_retained: bool,
 }
 
 fn yes() -> bool {
@@ -750,6 +785,14 @@ fn yes() -> bool {
 /// twenty minutes of unbroken output — past any real encounter, and short of
 /// letting an AFK autoattack session grow without bound.
 pub const TIMELINE_MAX: usize = 4000;
+
+/// How many seconds of a fight the per-second buckets cover.
+///
+/// Two hours. Not a display budget — a real fight never approaches it, and
+/// the chart draws whatever it is given. It is a backstop against a "fight"
+/// that is really an afternoon of unbroken autoattack, where the buckets
+/// would otherwise grow one entry per second per actor forever.
+pub const TICKS_MAX_SECONDS: usize = 7200;
 
 /// How one of your actions turned out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -912,6 +955,47 @@ impl Encounter {
             }
         }
         self.timeline_retained = false;
+        // Same argument as the timeline's, and a stronger one. These are
+        // indexed from `start`, which has just moved, and the span they now
+        // cover includes every gap between the folded pulls -- so a curve
+        // drawn from them would put the evening's best burn next to an hour
+        // of zeroes and call it a lull.
+        self.dealt_ticks.clear();
+        self.taken_ticks.clear();
+        self.ticks_retained = false;
+    }
+
+    /// Add `amount` to a per-second bucket, growing the run to reach it.
+    ///
+    /// Zero-filled rather than sparse: a gap in a DPS curve is a real reading
+    /// -- you were doing nothing -- and a map of only the seconds something
+    /// happened cannot tell that from a second nobody recorded.
+    fn add_tick(run: &mut Vec<u32>, second: usize, amount: u64) {
+        if second >= TICKS_MAX_SECONDS {
+            return;
+        }
+        if run.len() <= second {
+            run.resize(second + 1, 0);
+        }
+        run[second] = run[second].saturating_add(amount.min(u32::MAX as u64) as u32);
+    }
+
+    /// Bucket one hit onto the fight's time axis.
+    fn note_ticks(&mut self, at: i64, source_key: &str, amount: u64, target_is_you: bool) {
+        if amount == 0 {
+            return;
+        }
+        // Clamped rather than trusted: `start` is the first line of the
+        // fight, but a log whose clock steps backwards -- and they do, across
+        // a zone -- would otherwise index a Vec from a negative number.
+        let second = (at - self.start).max(0) as usize;
+        let dealt = self.dealt_ticks.entry(source_key.to_string()).or_default();
+        Self::add_tick(dealt, second, amount);
+        if target_is_you {
+            let mut taken = std::mem::take(&mut self.taken_ticks);
+            Self::add_tick(&mut taken, second, amount);
+            self.taken_ticks = taken;
+        }
     }
 
     /// Record one of your actions on the timeline, if there is room.
@@ -1967,6 +2051,10 @@ impl EncounterTracker {
                 if engaged_you {
                     enc.entry(source, &player).fought_you = true;
                 }
+                // On the time axis, once, for both sides of the hit. After
+                // `enc.entry` above rather than inside it: the source needs a
+                // canonical key, and `entry` is what creates one.
+                enc.note_ticks(entry.timestamp, &source.key(), *amount, target.is_you());
                 // Buffered outside the encounter so a death that opens its own
                 // encounter still has the run-up available.
                 if let Some(hit) = incoming {
@@ -2207,6 +2295,9 @@ impl EncounterTracker {
                 start: timestamp,
                 end: timestamp,
                 actors: HashMap::new(),
+                dealt_ticks: HashMap::new(),
+                taken_ticks: Vec::new(),
+                ticks_retained: true,
                 deaths: Vec::new(),
                 loot: Vec::new(),
                 coin_copper: 0,
