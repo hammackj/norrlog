@@ -134,6 +134,29 @@ pub struct Outcome {
     pub detail: String,
 }
 
+/// How the shots this daemon handled were found, since it started.
+///
+/// The pair at the top is the readout. `announced` is what the followed log
+/// said out loud; `unannounced` is what turned up in the folder with nothing
+/// to announce it. A climbing `unannounced` means a second character is taking
+/// pictures on a log this daemon is not listening to — which is a thing you
+/// could previously only learn by counting files in two places and subtracting.
+///
+/// Lifetime for this process, not for the folder: they start at zero on every
+/// restart, and the sweep only ever considers files written since it started,
+/// so they describe this run and say nothing about the backlog.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Tally {
+    /// Shot notices read off the followed log.
+    pub announced: u64,
+    /// Shots found on disk that no followed log had announced.
+    pub unannounced: u64,
+    /// Shots whose file actually reached the reader.
+    pub read: u64,
+    /// Announced, waited for, and no file ever turned up.
+    pub missed: u64,
+}
+
 /// The shot reader's own state: what it is still waiting for, what it did.
 #[derive(Default)]
 pub struct Log {
@@ -141,6 +164,7 @@ pub struct Log {
     /// Shots seen but whose file has not turned up yet, with the time they
     /// were first asked about.
     waiting: usize,
+    tally: Tally,
 }
 
 impl Log {
@@ -149,6 +173,11 @@ impl Log {
         while self.recent.len() > KEEP_RECENT {
             self.recent.pop_front();
         }
+    }
+
+    /// What has been found and by which route, this run.
+    pub fn tally(&self) -> Tally {
+        self.tally
     }
 
     /// Newest first, which is the order a person reads them in.
@@ -562,6 +591,7 @@ impl Reader {
 
     /// One screenshot, all the way through.
     async fn handle(&self, at: i64, path: PathBuf, engine: &Arc<Mutex<Engine>>) {
+        self.count(|t| t.read += 1);
         let shot = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -679,6 +709,20 @@ impl Reader {
         if let Ok(mut l) = self.log.lock() {
             l.note(o);
         }
+    }
+
+    /// Move one of the lifetime counters. A poisoned lock loses the count
+    /// rather than the shot: these are a readout, not a record.
+    fn count(&self, f: impl FnOnce(&mut Tally)) {
+        if let Ok(mut l) = self.log.lock() {
+            f(&mut l.tally);
+        }
+    }
+
+    /// A shot the log announced and no file ever answered for.
+    fn note_missed(&self, o: Outcome) {
+        self.count(|t| t.missed += 1);
+        self.note(o);
     }
 
     /// Drop the oldest cut windows once there are too many.
@@ -914,6 +958,10 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
         let mut swept: std::collections::HashSet<(std::ffi::OsString, i64)> =
             std::collections::HashSet::new();
         let started = now();
+        // Counted out here and posted below, because the notices are read
+        // under the engine lock and the tally lives behind the reader's, and
+        // there is no reason to hold one while taking the other.
+        let mut announced: u64 = 0;
         loop {
             tokio::time::sleep(TICK).await;
             let off;
@@ -926,6 +974,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
                 off = e.clock_offset().unwrap_or(0);
                 for at in e.shots_taken() {
                     pending.push_back((at, at - off));
+                    announced += 1;
                 }
             }
             // No reader: the notices are dropped rather than banked. A shot
@@ -949,7 +998,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
                         reader.handle(at, p, &engine).await
                     }
                     None if now() - local < WAIT_FOR_FILE => again.push_back((at, local)),
-                    None => reader.note(Outcome {
+                    None => reader.note_missed(Outcome {
                         shot: String::new(),
                         at,
                         item: None,
@@ -979,6 +1028,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
             // every restart and re-queue windows somebody has judged.
             for (p, secs) in unannounced(&reader.shots, started, now(), &swept) {
                 swept.insert((p.file_name().unwrap_or_default().to_owned(), secs));
+                reader.count(|t| t.unannounced += 1);
                 // `handle` is told the log's clock, which is what a person
                 // reads off a line in the log. The sweep has the machine's, so
                 // it converts --- the same offset, in the other direction from
@@ -992,6 +1042,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
             // "something is stuck".
             if let Ok(mut l) = shots.log().lock() {
                 l.waiting = pending.len();
+                l.tally.announced += std::mem::take(&mut announced);
             }
         }
     });
@@ -1081,6 +1132,35 @@ mod tests {
                 .expect("a client with no origin and no token still builds"),
             log: Arc::new(Mutex::new(Log::default())),
         }
+    }
+
+    /// The readout's arithmetic, which is the whole point of the counters:
+    /// a shot found by the folder sweep must not be counted as one the log
+    /// announced. If they were pooled the panel could only say "12 shots",
+    /// which is the number that was already visible and never the one that
+    /// tells you a second character's log is going unread.
+    #[test]
+    fn a_swept_shot_is_not_counted_as_an_announced_one() {
+        // Nothing here touches the folder; the counters are the subject.
+        let r = looking_at(Path::new("/nonexistent"));
+
+        r.count(|t| t.unannounced += 1);
+        r.count(|t| t.read += 1);
+        r.note_missed(Outcome {
+            shot: String::new(),
+            at: 0,
+            item: None,
+            verdict: "missed".into(),
+            detail: String::new(),
+        });
+
+        let l = r.log.lock().unwrap();
+        let t = l.tally();
+        assert_eq!(t.unannounced, 1, "the sweep found one");
+        assert_eq!(t.announced, 0, "and the log announced none of it");
+        assert_eq!(t.read, 1);
+        assert_eq!(t.missed, 1);
+        assert_eq!(l.recent().len(), 1, "a miss is still a row a person can read");
     }
 
     fn shot_at(dir: &Path, name: &str, at: i64) -> PathBuf {

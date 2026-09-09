@@ -193,6 +193,14 @@ impl Store {
         // trickles; WAL keeps those writes from blocking API reads.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Five seconds, not the default of zero. At zero a connection that
+        // meets a writer gets SQLITE_BUSY *immediately* rather than waiting,
+        // and under WAL that turns a slow write into a failed one. It has
+        // never bitten because until now only one connection ever wrote:
+        // `catchup` opens a second Store per swept log, under its own
+        // `(character, server)`, while the follower is still writing the
+        // log it tails.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let mut s = Store {
             conn,
             character: character.to_string(),

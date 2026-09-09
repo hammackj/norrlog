@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/overlay", get(overlay_page))
         .route("/api/shots/recent", get(shots_recent))
+        .route("/api/logs/status", get(logs_status))
         .route("/api/item-ids", get(item_ids))
         .route("/api/bundle/preview", get(bundle_preview))
         .route("/api/bundle/send", post(bundle_send))
@@ -1144,9 +1145,9 @@ async fn item_brief(State(s): State<AppState>, Query(q): Query<BriefQuery>) -> R
 /// lately", which is the wrong thing to believe when the truth is that
 /// nothing has been *read*.
 async fn shots_recent(State(state): State<AppState>) -> impl IntoResponse {
-    let (recent, waiting) = match state.shots.log().lock() {
-        Ok(l) => (l.recent(), l.waiting()),
-        Err(_) => (Vec::new(), 0),
+    let (recent, waiting, tally) = match state.shots.log().lock() {
+        Ok(l) => (l.recent(), l.waiting(), l.tally()),
+        Err(_) => (Vec::new(), 0, crate::shots::Tally::default()),
     };
     let (have_token, token_from) = state.shots.token_state();
     Json(serde_json::json!({
@@ -1163,7 +1164,43 @@ async fn shots_recent(State(state): State<AppState>) -> impl IntoResponse {
         // more than a few seconds' worth; a number that stays put means the
         // pictures are not landing where the reader is looking.
         "waiting": waiting,
+        // Noticed against read, this run. `unannounced` climbing is the
+        // signal: those are pictures the followed log never mentioned, which
+        // is what a screenshot taken on another character looks like from
+        // here. Before this the only way to see it was to count files.
+        "found": tally,
         "shots": recent,
+    }))
+}
+
+/// `GET /api/logs/status` — every log in the folder and how much of it has been read.
+///
+/// One log is followed and the rest are swept on a timer, so "is this log
+/// being read" no longer has a single answer, and the number that matters is
+/// per log: how far behind the parser is on each. `behind` is the whole point
+/// — a log nothing has ever opened reports its own size, which is the loudest
+/// possible way to say so.
+///
+/// The watermarks come from the history database rather than from the running
+/// engine, because that is what the sweep reads and writes; an engine's own
+/// position would answer for the followed log and invent zeroes for the rest.
+/// An unreadable database yields no marks, so every log reads as unparsed —
+/// wrong in the direction that sends somebody to look, which is the right one.
+async fn logs_status(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(dir) = crate::catchup::folder(state.logs_dir.as_deref(), &state.log_path) else {
+        return Json(serde_json::json!({ "logs": [], "why": "no folder to look in" }));
+    };
+    let marks = match crate::history_path() {
+        Some(db) => crate::catchup::watermarks_seen(&db),
+        None => Default::default(),
+    };
+    let logs = crate::catchup::status(&dir, &state.log_path, &|p| {
+        marks.get(p).copied().unwrap_or((0, 0))
+    });
+    Json(serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "every": crate::catchup::SWEEP_INTERVAL.as_secs(),
+        "logs": logs,
     }))
 }
 

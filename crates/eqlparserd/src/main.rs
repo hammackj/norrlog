@@ -5,6 +5,7 @@
 //! process, so there is a single source of truth for what is happening in game.
 
 mod bundle;
+mod catchup;
 mod dumps;
 mod engine;
 mod itemdb;
@@ -622,6 +623,23 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ids) = &ids {
         spawn_id_sweep(Arc::clone(ids));
     }
+    // The other characters' logs. Only where there is a history database to
+    // put them in -- without one there is nothing for a catch-up to be for.
+    match (
+        history_path(),
+        catchup::folder(cfg.logs_dir.as_deref(), &log_path),
+    ) {
+        (Some(db), Some(dir)) => {
+            eprintln!(
+                "[eqlparserd] catching up other logs in {} every {} min",
+                dir.display(),
+                catchup::SWEEP_INTERVAL.as_secs() / 60
+            );
+            spawn_log_catchup(dir, log_path.clone(), db, cfg.game_dir.clone(), game);
+        }
+        (None, _) => eprintln!("[eqlparserd] other logs: no history database to read them into"),
+        (_, None) => eprintln!("[eqlparserd] other logs: no folder to look in"),
+    }
 
     let state = AppState {
         log_path: log_path.clone(),
@@ -1123,6 +1141,67 @@ fn report_sweep(sweep: &dumps::Sweep, held: usize, path: &Path) {
 /// A player types `/outputfile inventory` mid-session and expects the record
 /// to know about it without restarting anything. Quiet unless something was
 /// actually folded — see `report_sweep` for why the startup pass is not.
+/// Catch the logs the daemon is not following up, on a timer.
+///
+/// See [`crate::catchup`] for why this is a sweep rather than a tailer per
+/// log. Runs once at startup after a short delay and then on the interval:
+/// the delay is so a daemon that has just started does not compete with its
+/// own initial parse of the followed log, which is the expensive one.
+///
+/// Failures are printed and the loop continues. A log that cannot be read is
+/// one log, and taking the sweep down with it would silently stop the others.
+fn spawn_log_catchup(
+    dir: PathBuf,
+    followed: PathBuf,
+    db: PathBuf,
+    game_dir: Option<PathBuf>,
+    game: Game,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(catchup::FIRST_SWEEP_AFTER).await;
+        loop {
+            let (dir, followed, db, game_dir) =
+                (dir.clone(), followed.clone(), db.clone(), game_dir.clone());
+            // On a blocking thread: this parses a file, which is CPU-bound and
+            // synchronous, and a long catch-up on the async runtime would stall
+            // every request the daemon is serving.
+            let caught = tokio::task::spawn_blocking(move || {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                // The watermarks are read once, through a store of their own,
+                // rather than borrowing the daemon's -- that one is locked by
+                // the follower for the length of every batch it ingests.
+                let marks = catchup::watermarks(&db);
+                catchup::sweep(
+                    &dir,
+                    &followed,
+                    &db,
+                    game_dir.as_deref(),
+                    game,
+                    &|p| marks.get(p).copied().unwrap_or(0),
+                    now,
+                )
+            })
+            .await
+            .unwrap_or_default();
+            for c in &caught {
+                eprintln!(
+                    "[eqlparserd] caught up {} ({} on {}): {} line(s), {} MB, {:.1}s",
+                    c.path,
+                    c.player,
+                    c.server,
+                    c.lines,
+                    (c.to - c.from) / 1_048_576,
+                    c.seconds,
+                );
+            }
+            tokio::time::sleep(catchup::SWEEP_INTERVAL).await;
+        }
+    });
+}
+
 fn spawn_id_sweep(ids: Arc<Mutex<dumps::Ids>>) {
     tokio::spawn(async move {
         loop {
@@ -1155,7 +1234,7 @@ fn history_path() -> Option<PathBuf> {
 /// safe to call as often as we like: re-flushing unchanged history is a no-op
 /// in effect, and a flush that now knows more (a build label that needed later
 /// evidence) improves the stored row.
-fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
+pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
     let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
     let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
     let grants = { engine.locked("engine").grants_to_persist() };
