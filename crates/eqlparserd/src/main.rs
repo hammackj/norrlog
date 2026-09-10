@@ -210,6 +210,7 @@ ENDPOINTS:
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
     /api/shots/recent  What the screenshot reader made of the last few pictures
+    /api/items/held    What the site still wants that is in your bags right now
     /api/bundle/preview  The contribution bundle, and what sending it would do
     /api/bundle/send   Send it. Refuses whatever the preview calls unsafe.
     /api/encounters    Historical encounters (filter, search, paginate)

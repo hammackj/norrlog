@@ -61,12 +61,14 @@
         <li><a href="/api/snapshot">/api/snapshot</a> — current state</li>
         <li><a href="/api/encounters">/api/encounters</a> — history (<code>?search=</code>, <code>?zone=</code>, <code>?limit=</code>, <code>?offset=</code>, <code>?min_duration=</code>)</li>
         <li><a href="/api/loot">/api/loot</a> — aggregated loot</li>
+        <li><a href="/api/items/held">/api/items/held</a> — items the site still needs that are in your bags</li>
         <li><a href="/api/classes">/api/classes</a> — detected classes</li>
         <li><code>/ws</code> — live snapshot stream</li>
       </ul>
 
       <h2>Status</h2>
       <pre id="status">loading…</pre>
+      <p id="held"></p>
     </main>
 
     <script>
@@ -97,6 +99,28 @@
           document.getElementById("live").textContent = "daemon unreachable";
         }
       }
+
+      // What the site still wants that is already in a bag. Its own list is
+      // ordered by how often an item drops, so these sit scattered through it
+      // and read as no different from the ones that need a trip.
+      async function held() {
+        const el = document.getElementById("held");
+        try {
+          const r = await fetch("/api/items/held");
+          const h = await r.json();
+          if (h.error) { el.textContent = h.error; return; }
+          const blocked = h.blocked
+            ? ` (${h.blocked} more need an ungraded copy you are not carrying)`
+            : "";
+          el.textContent = h.count
+            ? `${h.count} of the ${h.wanted_total} items the site wants are in your bags${blocked}`
+            : `nothing the site wants is in your bags${blocked}`;
+        } catch (e) {
+          el.textContent = "";
+        }
+      }
+      held();
+      setInterval(held, 60000);
       refresh();
       setInterval(refresh, 2000);
     </script>

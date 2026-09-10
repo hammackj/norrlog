@@ -1050,6 +1050,16 @@ impl Shots {
         self.setup.backlog_refused()
     }
 
+    /// The site client, for callers with a question this does not answer.
+    ///
+    /// `/api/items/held` needs the wanted list and this already holds the one
+    /// that is cached and rate-limited. A second `ItemDb` beside it would be a
+    /// second cache with its own age, and the two would disagree about what the
+    /// site currently wants.
+    pub fn itemdb(&self) -> &Arc<crate::itemdb::ItemDb> {
+        &self.setup.itemdb
+    }
+
     /// Where a token would be kept, if this machine has somewhere to keep it.
     pub fn token_path() -> Option<PathBuf> {
         crate::paths::config_dir().map(|d| d.join("eqldb-token"))

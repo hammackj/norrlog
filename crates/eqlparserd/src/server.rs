@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/shots/recent", get(shots_recent))
         .route("/api/logs/status", get(logs_status))
         .route("/api/item-ids", get(item_ids))
+        .route("/api/items/held", get(items_held))
         .route("/api/bundle/preview", get(bundle_preview))
         .route("/api/bundle/send", post(bundle_send))
         .route(
@@ -532,6 +533,219 @@ async fn item_ids(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "path": guard.path().to_string_lossy(),
         "registry": guard.registry(),
+    }))
+    .into_response()
+}
+
+/// What is in the bags now, by match key, from the newest dump of each
+/// character.
+///
+/// # Not the item-id record, which is a different question
+///
+/// `grades_held` in the accumulator means *has been held*, and it never
+/// forgets: `dumps` says so in its own header --- "an item sold between two
+/// dumps keeps its id here, which is the entire point." That is right for a
+/// record of which ids exist and wrong for this. Measured against one machine:
+/// the accumulator holds 1,631 items as held and 883 of them are in no current
+/// dump at all. Built from it, this list said 318 items were in the bags when
+/// 126 were, and would have sent somebody hunting through their inventory for
+/// items they sold weeks ago.
+///
+/// So the dumps are read directly. They are snapshots and go stale the moment
+/// something is sold --- which is why the answer carries each file's age, and
+/// the caller can see that a character last dumped in August is not evidence
+/// about this afternoon.
+fn bags(dumps: &[(String, String)]) -> std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> {
+    let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
+        Default::default();
+    for (_, text) in dumps {
+        let Ok(rows) = eqlparser_core::itemids::read_inventory(text) else {
+            continue;
+        };
+        for r in rows {
+            let k = crate::itemdb::match_key(&r.item);
+            if !k.is_empty() {
+                out.entry(k).or_default().insert(r.grade);
+            }
+        }
+    }
+    out
+}
+
+// An earlier draft let a carried item answer to the other names its id has been
+// written under, on the reasoning that the site might use a different spelling.
+// It is wrong here, and the real data said so: `also_known_as` conflates a
+// rename, which is the same item, with an item's Exaltation augment, which
+// shares its number and is a *different* item. This machine carries
+// `Brell's Girdle` at +3 and +5 and a `Brell's Girdle (Exaltation)` at 0;
+// pooling those grades claimed an ungraded girdle was in the bag and unblocked
+// it, when photographing the augment yields a reading of the augment. It moved
+// 9 items out of `blocked` that belong there. Nothing in the registry tells the
+// two kinds of alias apart, so names are matched as `match_key` folds them ---
+// case, the `+N` grade, and whitespace, which is every difference actually
+// observed between what the client writes and what the site stores.
+//
+// `match_key` does not fold the backtick into the apostrophe and does not need
+// to: the site stores an item under the client's own spelling, so both sides
+// write the same character. Measured against the live wanted list and four
+// dumps -- 14 backtick names on each side -- folding it gains 0 matches of 156.
+
+/// The wanted rows this player is carrying, and which of them a photograph
+/// cannot help.
+///
+/// # A graded copy does not fill a base reading
+///
+/// `needs: ["base"]` asks for the *ungraded* tooltip: the site has readings of
+/// the item at some rung and none at rung 0. Holding `Brell's Girdle +5` does
+/// not satisfy that, and photographing the +5 adds nothing the site does not
+/// have --- so those are marked `blocked` rather than listed as work.
+///
+/// Only when `base` is the *whole* remaining need. An item still wanting a
+/// tooltip or an icon is worth photographing at any rung: the reading fills
+/// those, and what is left afterwards is the base rung, which is progress
+/// rather than nothing. Measured on one inventory dump: 147 wanted items in
+/// bags, 27 of them blocked by this rule, 120 worth opening the inventory for.
+fn held_and_wanted(
+    wanted: &serde_json::Value,
+    held: &std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for it in wanted.get("items").and_then(|v| v.as_array()).into_iter().flatten() {
+        let Some(name) = it.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(grades) = held.get(&crate::itemdb::match_key(name)) else {
+            continue;
+        };
+        let needs: Vec<&str> = it
+            .get("needs")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        let blocked = needs == ["base"] && !grades.contains(&0);
+        let mut row = serde_json::Map::new();
+        row.insert("name".into(), name.into());
+        for f in ["slug", "needs", "zones", "sources", "sold_by"] {
+            if let Some(v) = it.get(f) {
+                row.insert(f.into(), v.clone());
+            }
+        }
+        row.insert(
+            "grades_held".into(),
+            grades.iter().copied().collect::<Vec<u32>>().into(),
+        );
+        row.insert("blocked".into(), blocked.into());
+        out.push(serde_json::Value::Object(row));
+    }
+    // By what it needs, then by name. Deliberately not the site's order, which
+    // is how often an item drops --- "worth the trip" is the wrong axis for a
+    // list whose whole premise is that no trip is needed.
+    out.sort_by(|a, b| {
+        let key = |v: &serde_json::Value| {
+            (
+                v.get("blocked").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                v.get("needs")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    })
+                    .unwrap_or_default(),
+                v.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    out
+}
+
+/// `GET /api/items/held` --- the wanted list, narrowed to what is in the bags.
+///
+/// The site's wanted list is a travel plan: every item it still needs, ordered
+/// by how often that item drops, tagged with the zones to go to. That is the
+/// right shape for "where should I hunt" and the wrong one for the items
+/// already in the player's inventory, which need no trip at all. On the dump
+/// this was written against they were scattered from position 3 to position
+/// 1714 of a 1,719-row list, which is indistinguishable from not being on it.
+///
+/// The site cannot answer this. It has never seen an inventory and has no way
+/// to; this daemon folds `/outputfile inventory` into the item-id record within
+/// a minute of the player typing it, so both halves are already here and
+/// nothing has ever crossed them.
+async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(ids) = &state.ids else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "no item-id record: this daemon has no config directory to keep one in"
+            })),
+        )
+            .into_response();
+    };
+    // No answer is not an empty answer. `wanted` returns the last list it got
+    // and how old it is, and `None` only when it has never reached the site at
+    // all --- and an empty list here would read as "nothing to photograph",
+    // which is the opposite of "nobody knows".
+    let Some((wanted, age)) = state.shots.itemdb().wanted(false).await else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "the site has never answered with a wanted list, so what it needs is unknown"
+            })),
+        )
+            .into_response();
+    };
+    // Read the dumps rather than the record: see `bags`. Each file's age goes
+    // out with the answer, because a snapshot is only evidence about the moment
+    // it was taken and these are often weeks apart.
+    let (rows, mut sources) = {
+        let guard = ids.locked("item ids");
+        let mut read = Vec::new();
+        let mut seen = Vec::new();
+        for (path, kind) in guard.sources() {
+            if kind != eqlparser_core::itemids::Source::Inventory {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let age = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs());
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            seen.push(serde_json::json!({ "file": name.clone(), "age_seconds": age }));
+            read.push((name, text));
+        }
+        drop(guard);
+        (held_and_wanted(&wanted, &bags(&read)), seen)
+    };
+    sources.sort_by_key(|v| {
+        v.get("age_seconds").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX)
+    });
+    let blocked = rows
+        .iter()
+        .filter(|r| r.get("blocked").and_then(serde_json::Value::as_bool) == Some(true))
+        .count();
+    Json(serde_json::json!({
+        "count": rows.len() - blocked,
+        "blocked": blocked,
+        "wanted_total": wanted.get("count").cloned().unwrap_or(serde_json::Value::Null),
+        "list_age_seconds": age,
+        // Which snapshots this is built from and how old each one is. A
+        // character who last dumped in August is not evidence about today, and
+        // the caller cannot tell that from the item list alone.
+        "dumps": sources,
+        "items": rows,
     }))
     .into_response()
 }
@@ -2829,6 +3043,156 @@ type QueryMap = HashMap<String, String>;
 mod tests {
     use super::*;
     use eqlparser_core::spell::SpellDb;
+
+    use eqlparser_core::itemids::{Entry, Registry};
+
+    /// One `/outputfile inventory` dump, as the client writes it.
+    fn dump(rows: &[&str]) -> Vec<(String, String)> {
+        let mut t = String::from("Location\tName\tID\tCount\tSlots\n");
+        for (i, n) in rows.iter().enumerate() {
+            t.push_str(&format!("General1\t{n}\t{}\t1\t0\n", 400 + i));
+        }
+        vec![("Tharn_freeport-Inventory.txt".to_string(), t)]
+    }
+
+    fn wants(rows: &[(&str, &[&str])]) -> serde_json::Value {
+        serde_json::json!({
+            "count": rows.len(),
+            "items": rows.iter().map(|(n, needs)| serde_json::json!({
+                "name": n, "slug": n.to_lowercase().replace(' ', "_"),
+                "needs": needs, "zones": [], "sources": [], "sold_by": []
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The rule the whole endpoint turns on: a `+5` in a bag is not the base
+    /// reading the site is asking for, and shooting it fills nothing.
+    #[test]
+    fn a_graded_copy_cannot_fill_a_base_reading() {
+        let b = bags(&dump(&["Brell's Girdle +5"]));
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        assert_eq!(rows.len(), 1, "it is still reported, so nobody hunts for it twice");
+        assert_eq!(rows[0]["blocked"], serde_json::json!(true));
+        assert_eq!(rows[0]["grades_held"], serde_json::json!([5]));
+    }
+
+    /// And carrying the ungraded one is what unblocks it.
+    #[test]
+    fn the_ungraded_copy_is_the_one_that_fills_it() {
+        let b = bags(&dump(&["Brell's Girdle", "Brell's Girdle +5"]));
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        assert_eq!(rows[0]["blocked"], serde_json::json!(false));
+    }
+
+    /// `base` blocks only when it is the whole remaining need. An item that
+    /// still wants a tooltip or an icon is worth photographing at any rung --
+    /// the reading fills those, and what is left is the base rung, which is
+    /// progress rather than nothing.
+    #[test]
+    fn a_graded_copy_still_fills_a_tooltip_and_an_icon() {
+        let b = bags(&dump(&["Golden Efreeti Greaves +4"]));
+        let rows = held_and_wanted(
+            &wants(&[("Golden Efreeti Greaves", &["tooltip", "icon"])]),
+            &b,
+        );
+        assert_eq!(rows[0]["blocked"], serde_json::json!(false));
+    }
+
+    /// An item nobody is carrying is not on this list, however much the site
+    /// wants it. That is the entire narrowing.
+    #[test]
+    fn what_is_not_in_a_bag_is_not_here() {
+        let b = bags(&dump(&["Bottle of Milk"]));
+        let rows = held_and_wanted(
+            &wants(&[("Bottle of Milk", &["icon"]), ("Onyx Earring", &["tooltip"])]),
+            &b,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], serde_json::json!("Bottle of Milk"));
+    }
+
+    /// The empty bag slots the client writes one row each for are not items.
+    #[test]
+    fn empty_slots_are_not_carried_items() {
+        let b = bags(&dump(&["Empty", "Bottle of Milk"]));
+        assert_eq!(b.len(), 1);
+    }
+
+    /// The KeyRing block carries its own header row mid-file. `ID` does not
+    /// parse as a number, which is what keeps a column heading from becoming an
+    /// item called `Name`.
+    #[test]
+    fn an_embedded_sub_header_is_not_an_item() {
+        let mut d = dump(&["Bottle of Milk"]);
+        d[0].1.push_str("KeyRing\tName\tID\t\n");
+        let b = bags(&d);
+        assert_eq!(b.len(), 1);
+        assert!(!b.contains_key("name"));
+    }
+
+    /// What the accumulator remembers is not what is in a bag. It never
+    /// deletes -- an item sold last month is still `grades_held` there -- so a
+    /// list built from it sends somebody looking for what they no longer have.
+    #[test]
+    fn the_record_of_what_was_held_is_not_the_bag() {
+        let mut reg = Registry::default();
+        reg.items.push(Entry {
+            item_id: 700,
+            item: "Sold Last Month".to_string(),
+            grades_held: vec![0],
+            grades_seen: Vec::new(),
+            also_known_as: Vec::new(),
+            icon_id: None,
+            sources: Vec::new(),
+        });
+        let _ = &reg;
+        let b = bags(&dump(&["Bottle of Milk"]));
+        let rows = held_and_wanted(&wants(&[("Sold Last Month", &["tooltip"])]), &b);
+        assert!(rows.is_empty(), "the accumulator remembers it; the bag does not hold it");
+    }
+
+    /// An Exaltation augment shares its item's id and is a different item, so
+    /// the two must not pool grades. Carrying the augment ungraded says nothing
+    /// about whether the item itself is in the bag at its base rung -- and a
+    /// reading of the augment is a reading of the augment.
+    #[test]
+    fn an_augment_sharing_an_id_does_not_unblock_its_item() {
+        let b = bags(&dump(&["Brell's Girdle +5", "Brell's Girdle (Exaltation)"]));
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["blocked"], serde_json::json!(true));
+        assert_eq!(rows[0]["grades_held"], serde_json::json!([5]));
+    }
+
+    /// The augment is its own row when the site asks for it by its own name.
+    #[test]
+    fn the_augment_is_matched_under_its_own_name() {
+        let b = bags(&dump(&["Brell's Girdle (Exaltation)"]));
+        let rows = held_and_wanted(
+            &wants(&[("Brell's Girdle (Exaltation)", &["icon"])]),
+            &b,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["blocked"], serde_json::json!(false));
+    }
+
+    /// Blocked rows sort last, and the rest by what they need. The site's own
+    /// order is how often an item drops, which is meaningless once the answer
+    /// is "it is in your bags".
+    #[test]
+    fn the_order_is_what_it_needs_not_what_it_is_worth() {
+        let held = bags(&dump(&["Alpha +5", "Beta", "Gamma"]));
+        let rows = held_and_wanted(
+            &wants(&[
+                ("Alpha", &["base"]),
+                ("Gamma", &["tooltip"]),
+                ("Beta", &["icon"]),
+            ]),
+            &held,
+        );
+        let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Beta", "Gamma", "Alpha"]);
+    }
 
     fn state_with(lines: &[&str]) -> AppState {
         let mut engine = Engine::new("Tharn".to_string(), SpellDb::empty());
