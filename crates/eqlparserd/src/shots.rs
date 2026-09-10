@@ -201,26 +201,18 @@ impl Log {
     }
 }
 
-/// What `oneshot.py` answers with.
-#[derive(Debug, Deserialize)]
-struct Read {
-    shots: Vec<Shot>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Shot {
-    #[serde(default)]
-    windows: Vec<Window>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
+/// What the reader answers with, per window.
 /// One item window, as the reader saw it. Everything but `crop_path` and
 /// `held` is passed through to eqdb untouched — this is deliberately not a
 /// re-modelling of the reading, which `eqldb-core` owns.
 #[derive(Debug, Deserialize)]
 struct Window {
     crop: String,
+    /// Defaulted, though the reader always sets it. A window that could not be
+    /// cut has no file to point at, and a missing path must cost that one
+    /// window rather than the whole screenshot: `serde` refusing the field
+    /// here would fail the deserialise for every readable window beside it.
+    #[serde(default)]
     crop_path: String,
     #[serde(default)]
     held: Option<String>,
@@ -339,14 +331,18 @@ fn lore_on_file(v: &serde_json::Value) -> bool {
 
 /// Everything the reader needs, or nothing and it does not run.
 pub struct Reader {
-    /// `~/Pictures/eql-items`, holding `ocr/oneshot.py`.
-    ocr: PathBuf,
+    /// The decoder, its glyph atlas and its two vocabularies.
+    ///
+    /// Behind a mutex because a reading is CPU-bound work done on a blocking
+    /// thread and because [`eqlparser_shot::Reader::refresh`] mutates the
+    /// vocabulary. Reads are already one at a time --- `handle` takes them off
+    /// a queue --- so the lock costs nothing it was not already paying.
+    read: Arc<Mutex<eqlparser_shot::Reader>>,
     /// The client's `Screenshots` folder.
     shots: PathBuf,
     /// Where cut windows are written. Under the daemon's own data directory:
     /// the OCR tree is somebody's dataset and this is a cache.
     crops: PathBuf,
-    python: String,
     itemdb: Arc<crate::itemdb::ItemDb>,
     /// The origin and the credential. Shared with the bundle sender rather
     /// than kept here: see `crate::site`.
@@ -410,7 +406,6 @@ impl Sorter {
 /// rebuilding is telling them to restart the app to use the thing they just
 /// configured.
 pub struct Setup {
-    pub ocr: Option<PathBuf>,
     pub shots: Option<PathBuf>,
     pub game_dir: Option<PathBuf>,
     pub itemdb: Arc<crate::itemdb::ItemDb>,
@@ -423,6 +418,45 @@ pub struct Setup {
     /// `--archive-dry-run`: decide every screenshot and move none, so a run
     /// can be read before it is trusted with somebody's folder.
     pub archive_dry_run: bool,
+    /// `--backlog`: read what is already in the folder, once, at startup.
+    ///
+    /// Off by default and deliberately so. The sweep otherwise takes only
+    /// files written since this process started, on the argument that the
+    /// backlog belonged to the batch tree --- which knew what it had already
+    /// seen. That tree is gone, so the backlog now belongs to nobody: 22 item
+    /// windows sat unread in this folder because the only thing that would
+    /// have read them was a batch script nobody ran.
+    ///
+    /// What makes it safe to ask for is the archive. A screenshot that reads
+    /// moves out of the inbox, so the folder is its own record of what is
+    /// left, and a crop's name is content-addressed, so re-reading one already
+    /// judged lands on the same row rather than a second one. Both of those
+    /// have to hold: see [`Setup::backlog_refused`].
+    pub backlog: bool,
+}
+
+impl Setup {
+    /// Why the backlog will not be read, if it will not.
+    ///
+    /// Filing is what stops a backlog run from repeating: without it every
+    /// restart re-reads the same folder, and each pass is minutes of decoding
+    /// and a fresh round of uploads for windows that have not changed. So the
+    /// two flags that turn filing off also refuse this one, out loud, rather
+    /// than quietly doing something expensive on every start.
+    pub fn backlog_refused(&self) -> Option<&'static str> {
+        if !self.backlog {
+            return None;
+        }
+        if self.no_archive {
+            return Some("--backlog needs the archive: with --no-archive nothing leaves the \
+                 inbox, so the same folder would be re-read on every restart");
+        }
+        if self.archive_dry_run {
+            return Some("--backlog needs the archive: --archive-dry-run moves nothing, so \
+                 the same folder would be re-read on every restart");
+        }
+        None
+    }
 }
 
 impl Reader {
@@ -432,7 +466,6 @@ impl Reader {
     /// reader is off" and "the shot reader is off *because*" are different
     /// amounts of help and the second costs nothing.
     pub fn configure(
-        ocr: Option<PathBuf>,
         shots: Option<PathBuf>,
         game_dir: Option<&Path>,
         itemdb: Arc<crate::itemdb::ItemDb>,
@@ -443,16 +476,6 @@ impl Reader {
         no_archive: bool,
         archive_dry_run: bool,
     ) -> Result<Reader, String> {
-        let ocr = ocr
-            .or_else(|| std::env::var_os("EQL_OCR_DIR").map(PathBuf::from))
-            .or_else(|| home().map(|h| h.join("Pictures/eql-items")))
-            .ok_or("no OCR tree; pass --ocr <dir>")?;
-        if !ocr.join("ocr").join("oneshot.py").is_file() {
-            return Err(format!(
-                "{} holds no ocr/oneshot.py, so screenshots are not read",
-                ocr.display()
-            ));
-        }
         let shots = shots
             .or_else(|| std::env::var_os("EQL_SHOTS_DIR").map(PathBuf::from))
             .or_else(|| game_dir.map(|g| g.join("Screenshots")))
@@ -465,6 +488,16 @@ impl Reader {
             .ok_or("nowhere to write cut windows")?
             .join("crops");
         std::fs::create_dir_all(&crops).map_err(|e| format!("{}: {e}", crops.display()))?;
+        // The item names come from the daemon's own registry --- the file it
+        // folds the client's dumps into --- and the spell names from the
+        // client's `spells_us.txt`. Neither has to be there: without the first
+        // a misread title cannot snap back to a real name, without the second
+        // a scroll's name reads as the decoder left it, and with neither the
+        // reader still reads every other field. Refusing to start over a
+        // missing vocabulary would trade a whole feature for part of one.
+        let ids = crate::paths::config_file("item-ids.json");
+        let read = eqlparser_shot::Reader::open(ids.as_deref(), game_dir)
+            .map_err(|e| format!("the reader would not load: {e}"))?;
         // Filing is not allowed to stop the reader existing. A daemon that
         // reads screenshots and leaves them alone is the one that ran until
         // now; a daemon that refuses to start because a template would not
@@ -481,11 +514,10 @@ impl Reader {
             }
         };
         Ok(Reader {
-            ocr,
+            read: Arc::new(Mutex::new(read)),
             shots,
             crops,
             archive,
-            python: std::env::var("EQL_PYTHON").unwrap_or_else(|_| "python3".into()),
             site: crate::site::Site::with_token(itemdb.base(), token)?,
             itemdb,
             log,
@@ -531,39 +563,42 @@ impl Reader {
     }
 
     /// Run the reader over one picture.
+    ///
+    /// On a blocking thread: the work is a 2560x1440 FFT and a glyph decode,
+    /// seconds of arithmetic that would otherwise sit on the async runtime and
+    /// stall every timer and socket on it.
+    ///
+    /// The timeout bounds the *wait*, not the work --- a blocking task cannot
+    /// be cancelled --- which is a weaker guarantee than it was against a
+    /// subprocess and buys less, because there is no longer anything here that
+    /// can block on a pipe, a mount or an interpreter start.
     async fn read(&self, path: &Path) -> Result<Vec<Window>, String> {
-        let script = self.ocr.join("ocr").join("oneshot.py");
-        let out = tokio::time::timeout(
+        let reader = self.read.clone();
+        let crops = self.crops.clone();
+        let file = path.to_path_buf();
+        let shot = tokio::time::timeout(
             READ_TIMEOUT,
-            tokio::process::Command::new(&self.python)
-                .arg(&script)
-                .arg("--out")
-                .arg(&self.crops)
-                .arg(path)
-                .current_dir(&self.ocr)
-                // The reader prints its own diagnostics; they belong on our
-                // stderr, where the rest of this daemon's are.
-                .stdin(std::process::Stdio::null())
-                .output(),
+            tokio::task::spawn_blocking(move || {
+                let mut r = reader.lock().map_err(|_| "the reader is poisoned".to_string())?;
+                // Whatever the registry has learned since the last screenshot.
+                // The Python path got this for free by being a new process
+                // every time.
+                r.refresh();
+                r.read_shot(&file, &crops).map_err(|e| e.to_string())
+            }),
         )
         .await
         .map_err(|_| format!("the reader did not finish within {}s", READ_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
-        if !out.status.success() {
-            let why = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "the reader failed: {}",
-                why.trim().lines().next_back().unwrap_or("no output")
-            ));
+        .map_err(|e| format!("the reader stopped: {e}"))??;
+        if let Some(e) = shot.error {
+            return Err(e);
         }
-        let parsed: Read = serde_json::from_slice(&out.stdout)
-            .map_err(|e| format!("the reader's answer did not parse: {e}"))?;
         let mut windows = Vec::new();
-        for s in parsed.shots {
-            if let Some(e) = s.error {
-                return Err(e);
-            }
-            windows.extend(s.windows);
+        for w in shot.windows {
+            windows.push(
+                serde_json::from_value::<Window>(w)
+                    .map_err(|e| format!("the reading did not parse: {e}"))?,
+            );
         }
         Ok(windows)
     }
@@ -942,7 +977,6 @@ impl Shots {
             return Err("--no-shots".into());
         }
         match Reader::configure(
-            self.setup.ocr.clone(),
             self.setup.shots.clone(),
             self.setup.game_dir.as_deref(),
             Arc::clone(&self.setup.itemdb),
@@ -1001,6 +1035,19 @@ impl Shots {
 
     pub fn log(&self) -> &Arc<Mutex<Log>> {
         &self.log
+    }
+
+    /// Whether the first sweep should look past this process's start time.
+    ///
+    /// Asked here rather than read off the flag so that a refusal is decided
+    /// in one place and said in one place.
+    pub fn backlog(&self) -> bool {
+        self.setup.backlog && self.setup.backlog_refused().is_none()
+    }
+
+    /// The sentence to print when `--backlog` was asked for and will not run.
+    pub fn refused_backlog(&self) -> Option<&'static str> {
+        self.setup.backlog_refused()
     }
 
     /// Where a token would be kept, if this machine has somewhere to keep it.
@@ -1104,6 +1151,11 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
         let mut swept: std::collections::HashSet<(std::ffi::OsString, i64)> =
             std::collections::HashSet::new();
         let started = now();
+        // The first tick may look at the whole folder; every tick after it
+        // looks only at what has arrived since. One pass, because filing is
+        // what empties the inbox and a second pass would find whatever filing
+        // refused --- which is by definition what nothing can read.
+        let mut floor = if shots.backlog() { 0 } else { started };
         // Counted out here and posted below, because the notices are read
         // under the engine lock and the tally lives behind the reader's, and
         // there is no reason to hold one while taking the other.
@@ -1173,7 +1225,16 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
             // the folder belongs to the batch tree, which knows what it has
             // already seen; re-reading it here would cost minutes of OCR on
             // every restart and re-queue windows somebody has judged.
-            for (p, secs) in unannounced(&reader.shots, started, now(), &swept) {
+            let found = unannounced(&reader.shots, floor, now(), &swept);
+            if floor != started {
+                eprintln!(
+                    "[eqlparserd] reading the backlog in {}: {} picture(s)",
+                    reader.shots.display(),
+                    found.len()
+                );
+                floor = started;
+            }
+            for (p, secs) in found {
                 swept.insert((p.file_name().unwrap_or_default().to_owned(), secs));
                 reader.count(|t| t.unannounced += 1);
                 // `handle` is told the log's clock, which is what a person
@@ -1193,11 +1254,6 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
             }
         }
     });
-}
-
-fn home() -> Option<PathBuf> {
-    let h = PathBuf::from(std::env::var_os("HOME")?);
-    h.is_absolute().then_some(h)
 }
 
 /// Pictures in `dir` that the sweep should take, with their mtimes.
@@ -1270,10 +1326,11 @@ mod tests {
     /// is either the network or a subprocess, and `file_at` touches neither.
     pub(super) fn looking_at(dir: &Path) -> Reader {
         Reader {
-            ocr: PathBuf::new(),
+            read: Arc::new(Mutex::new(
+                eqlparser_shot::Reader::open(None, None).expect("the built-in atlas loads"),
+            )),
             shots: dir.to_path_buf(),
             crops: PathBuf::new(),
-            python: "python3".into(),
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
             site: crate::site::Site::with_token(String::new(), String::new())
                 .expect("a client with no origin and no token still builds"),
@@ -1480,21 +1537,42 @@ mod tests {
 
     #[test]
     fn the_readers_answer_parses_as_the_reader_writes_it() {
-        // Pinned against `ocr/oneshot.py`'s actual output for a real window,
-        // so a change to its shape fails here rather than at 3am in a
-        // deserialise error nobody sees.
-        let raw = r#"{"shots":[{"shot":"eq-20260904-141833.jpg","sha":"b4b4","score":8.44,
+        // Pinned against a real window as `eqlparser_shot` emits it, so a
+        // change to that shape fails here rather than at 3am in a deserialise
+        // error nobody sees. It was `oneshot.py`'s output and it is byte for
+        // byte the same shape, which is the point of having kept it.
+        let raw = r#"{"shot":"eq-20260904-141833.jpg","sha":"b4b4","score":8.44,
             "windows":[{"crop":"live_eq_20260904_141833_b4b42231_0.png",
               "crop_path":"/tmp/live_eq_20260904_141833_b4b42231_0.png",
               "box":[1066,250,640,477],"held":null,
               "record":{"item":"Maid's Stockings","slot":"LEGS"},
               "fields":{"item":{"ok":true}},"needs_review":[],
-              "lines":[{"y":12,"text":"Maid's Stockings"}]}]}]}"#;
-        let r: Read = serde_json::from_str(raw).unwrap();
-        let w = &r.shots[0].windows[0];
+              "lines":[{"y":12,"text":"Maid's Stockings"}]}]}"#;
+        let shot: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let w: Window =
+            serde_json::from_value(shot["windows"][0].clone()).expect("the window deserialises");
         assert_eq!(w.item(), "Maid's Stockings");
         assert!(w.held.is_none());
         assert!(!w.unread());
+    }
+
+    /// The same, through the reader itself rather than a copy of its output.
+    ///
+    /// The pin above is a string somebody typed. This one asks the type that
+    /// actually writes the JSON what it writes, so a field renamed in
+    /// `eqlparser_shot` fails here even if nobody remembers to retype the
+    /// fixture.
+    #[test]
+    fn a_reading_the_reader_could_not_make_still_deserialises() {
+        let broken = eqlparser_shot::unreadable(
+            "a.png",
+            "/tmp/a.png",
+            "item",
+            "the window could not be cut",
+        );
+        let w: Window = serde_json::from_value(broken).expect("an error window deserialises");
+        assert!(w.unread(), "a window the reader could not read must read as unread");
+        assert!(w.item().is_empty());
     }
 }
 

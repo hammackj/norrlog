@@ -56,14 +56,14 @@ struct Config {
     since: Option<i64>,
     /// Exit when the process that started this one goes away.
     exit_with_parent: bool,
-    /// The screenshot-reading tree, holding `ocr/oneshot.py`.
-    ocr: Option<PathBuf>,
     /// The client's `Screenshots` folder, when it is not under `--game-dir`.
     shots: Option<PathBuf>,
     /// Do not read screenshots at all, even where everything for it is here.
     no_shots: bool,
     no_archive: bool,
     archive_dry_run: bool,
+    /// Read what is already in the Screenshots folder, once, at startup.
+    backlog: bool,
     /// A previously accumulated item-id record to take on, once.
     adopt_item_ids: Option<PathBuf>,
     /// Read the log once, write the record's reports as JSON, and exit.
@@ -140,19 +140,24 @@ OPTIONS:
                        two-hour window means two hours of loot, kills and
                        encounters, not a lifetime of them. Durable history in
                        the database is unaffected.
-    --ocr <dir>        The screenshot-reading tree, holding ocr/oneshot.py
-                       (default $EQL_OCR_DIR, else ~/Pictures/eql-items). When
-                       it is there and a token is set, every screenshot the
-                       client announces is read, and any item window in it that
-                       eqdb wants — or has never heard of — is sent to eqdb's
-                       review queue. The token comes from $EQLDB_TOKEN or from
+    --ocr <dir>        Accepted and ignored. Screenshots are read by this
+                       binary; there is no longer a Python tree to point at.
+                       Reading needs only a token, from $EQLDB_TOKEN or
                        ~/.config/eqlparser/eqldb-token at mode 600, never from
-                       a flag: /proc/<pid>/cmdline is world-readable.
+                       a flag: /proc/<pid>/cmdline is world-readable. With one
+                       set, every screenshot the client announces is read, and
+                       any item window in it that eqdb wants — or has never
+                       heard of — is sent to eqdb's review queue.
     --shots <dir>      The client's Screenshots folder. Defaults to
                        $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
     --no-shots         Do not read screenshots, whatever else is configured.
     --no-archive       Read screenshots but leave them in the client's folder.
     --archive-dry-run  Decide where every screenshot belongs and move none.
+    --backlog          Read what is already in the Screenshots folder, once, on
+                       startup, rather than only what arrives after it. Needs
+                       the archive on: filing is what empties the inbox, so
+                       without it the same folder would be re-read on every
+                       restart.
     --adopt-item-ids <file>
                        Fold a previously accumulated item-id record into this
                        machine's, sweep the game folder once, and exit without
@@ -307,11 +312,11 @@ fn parse_args() -> Config {
         // Off by default: run from a terminal, this daemon belongs to whoever
         // started it and should outlive nothing in particular.
         exit_with_parent: false,
-        ocr: None,
         shots: None,
         no_shots: false,
         no_archive: false,
         archive_dry_run: false,
+        backlog: false,
         adopt_item_ids: None,
         record_out: None,
         logs: Vec::new(),
@@ -376,11 +381,22 @@ fn parse_args() -> Config {
                     cfg.eqdb.extend(split_origins(&u));
                 }
             }
-            "--ocr" => cfg.ocr = args.next().map(PathBuf::from),
+            // Gone: the reader is in this binary now and needs no tree
+            // beside it. Still swallowed, with its argument, so that a saved
+            // command line or a desktop launcher carrying it keeps working
+            // rather than dying on an unknown flag.
+            "--ocr" => {
+                let _ = args.next();
+                eprintln!(
+                    "[eqlparserd] --ocr is no longer used: screenshots are read by this \
+                     binary, not by a Python tree beside it"
+                );
+            }
             "--shots" => cfg.shots = args.next().map(PathBuf::from),
             "--no-shots" => cfg.no_shots = true,
             "--no-archive" => cfg.no_archive = true,
             "--archive-dry-run" => cfg.archive_dry_run = true,
+            "--backlog" => cfg.backlog = true,
             "--adopt-item-ids" => cfg.adopt_item_ids = args.next().map(PathBuf::from),
             "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
             "--bundle-out" => cfg.bundle_out = args.next().map(PathBuf::from),
@@ -615,14 +631,17 @@ async fn main() -> anyhow::Result<()> {
     // feature that is silently not running is indistinguishable from one that
     // is running and finding nothing.
     let shots = shots::Shots::new(shots::Setup {
-        ocr: cfg.ocr.clone(),
         shots: cfg.shots.clone(),
         game_dir: cfg.game_dir.clone(),
         itemdb: std::sync::Arc::clone(&itemdb),
         off: cfg.no_shots,
         no_archive: cfg.no_archive,
         archive_dry_run: cfg.archive_dry_run,
+        backlog: cfg.backlog,
     });
+    if let Some(why) = shots.refused_backlog() {
+        eprintln!("[eqlparserd] {why}");
+    }
     match shots.running() {
         true => eprintln!("[eqlparserd] screenshots: {}", shots.why_running()),
         false => eprintln!("[eqlparserd] screenshots: not read — {}", shots.why()),
@@ -1394,11 +1413,11 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
-            ocr: None,
             shots: None,
             no_shots: false,
             no_archive: false,
             archive_dry_run: false,
+            backlog: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
@@ -1423,11 +1442,11 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
-            ocr: None,
             shots: None,
             no_shots: false,
             no_archive: false,
             archive_dry_run: false,
+            backlog: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),

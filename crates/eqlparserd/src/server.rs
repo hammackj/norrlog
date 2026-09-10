@@ -2852,7 +2852,6 @@ mod tests {
             ])),
             ids: None,
             shots: crate::shots::Shots::new(crate::shots::Setup {
-                ocr: None,
                 shots: None,
                 game_dir: None,
                 itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
@@ -2866,6 +2865,7 @@ mod tests {
                 // depending on that.
                 no_archive: true,
                 archive_dry_run: true,
+                backlog: false,
             }),
         }
     }

@@ -349,6 +349,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eqlparser-shot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eqlparser-parse",
+ "eqlparser-read",
+ "eqlparser-vision",
+ "serde",
+ "serde_json",
+ "sha1",
+]
+
+[[package]]
 name = "eqlparser-vision"
 version = "0.1.0"
 dependencies = [
@@ -364,6 +377,7 @@ dependencies = [
  "anyhow",
  "axum",
  "eqlparser-core",
+ "eqlparser-shot",
  "eqlparser-vision",
  "flate2",
  "reqwest",
