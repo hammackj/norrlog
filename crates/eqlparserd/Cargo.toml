@@ -19,3 +19,9 @@ axum = { version = "0.8.9", features = ["ws"] }
 sha2 = { workspace = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "charset", "http2"] }
+
+[dev-dependencies]
+# For the one test that pins the blocked rule to the reader's own refusal.
+# Not a runtime dependency: the daemon reaches `held_reason` through
+# eqlparser-shot, which is the only thing that should be calling it.
+eqlparser-parse = { path = "../eqlparser-parse" }

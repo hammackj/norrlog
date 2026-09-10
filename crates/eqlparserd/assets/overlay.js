@@ -483,10 +483,15 @@
        is drawn once, as a pickup, because that row carries the fact that it
        may be about to be sold.
 
-     Its own minute-long clock rather than the pickups' twelve seconds: this
-     changes when a dump lands, a few times an evening, and answering it costs
-     the daemon a read of every inventory file it knows about. */
-  const HELD_POLL_MS = 60000;
+     On the pickups' clock, not a slower one of its own. This first shipped at
+     sixty seconds on the theory that the underlying facts --- what is in your
+     bags --- only change when a dump lands, a few times an evening. That is
+     true of the bags and false of the panel: the *marks* change the moment the
+     reader finishes a picture, and a minute of an overlay still asking for the
+     item you just photographed is the whole of hammackj's "it still needs to
+     check them off". Measured rather than assumed the second time: the answer
+     costs the daemon 7ms, which is nothing next to the twelve-second tick it
+     now rides. */
   let heldOffer = [];
   let heldTotal = 0;
 
@@ -610,14 +615,18 @@
     return Math.floor(Date.now() / 1000) - new Date().getTimezoneOffset() * 60;
   }
 
+  /* One tick, in order: the bags are read and awaited before the panel is
+     drawn, so a paint never uses last tick's marks and the overlay's first
+     paint already has them. Two timers would have raced --- the item you
+     photographed would vanish on whichever tick happened to run second. */
+  async function pollWantedPanel() {
+    await pollHeld();
+    await pollWanted();
+  }
+
   if (opt.panels.includes("wanted")) {
-    /* The bags are read first and awaited, so the panel's first paint already
-       has them. Without that the overlay opens on a quiet evening showing
-       nothing, then fills a minute later --- which looks like a panel that
-       does not work. */
-    pollHeld().then(pollWanted);
-    setInterval(pollWanted, WANTED_POLL_MS);
-    setInterval(pollHeld, HELD_POLL_MS);
+    pollWantedPanel();
+    setInterval(pollWantedPanel, WANTED_POLL_MS);
   }
 
   /* Session totals.

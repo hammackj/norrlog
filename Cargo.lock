@@ -377,6 +377,7 @@ dependencies = [
  "anyhow",
  "axum",
  "eqlparser-core",
+ "eqlparser-parse",
  "eqlparser-shot",
  "eqlparser-vision",
  "flate2",

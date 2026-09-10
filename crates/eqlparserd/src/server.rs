@@ -593,18 +593,34 @@ fn bags(dumps: &[(String, String)]) -> std::collections::BTreeMap<String, std::c
 /// The wanted rows this player is carrying, and which of them a photograph
 /// cannot help.
 ///
-/// # A graded copy does not fill a base reading
+/// # A graded copy is not worth photographing, whatever the item needs
 ///
-/// `needs: ["base"]` asks for the *ungraded* tooltip: the site has readings of
-/// the item at some rung and none at rung 0. Holding `Brell's Girdle +5` does
-/// not satisfy that, and photographing the +5 adds nothing the site does not
-/// have --- so those are marked `blocked` rather than listed as work.
+/// The blocked rule is `!grades.contains(&0)`: you hold this item, but every
+/// copy of it is a `+N`, and a photograph of a `+N` goes nowhere.
 ///
-/// Only when `base` is the *whole* remaining need. An item still wanting a
-/// tooltip or an icon is worth photographing at any rung: the reading fills
-/// those, and what is left afterwards is the base rung, which is progress
-/// rather than nothing. Measured on one inventory dump: 147 wanted items in
-/// bags, 27 of them blocked by this rule, 120 worth opening the inventory for.
+/// That is the reader's rule, not a guess at it. `eqlparser_parse::held_reason`
+/// refuses a
+/// graded window *before* anything asks what the site wants --- the site
+/// derives graded stats from a base reading and its own grade rule, so a
+/// window shot at +4 is an output of that rule rather than an input to it ---
+/// and the verdict comes back `held: graded +4`.
+///
+/// This first shipped as `needs == ["base"] && !grades.contains(&0)`, on my
+/// own reasoning that an item still wanting a tooltip or an icon was worth
+/// photographing at any rung because the reading fills those. It is not: the
+/// reading never happens. hammackj found it the way it had to be found ---
+/// the panel asked for `Refugee Shroud` and `Apothic Kilt`, he photographed
+/// the `+3`s in his bags, and both came back `held: graded +3`. A prompt whose
+/// answer is refused is worse than no prompt, because it costs the trip and
+/// then blames the picture.
+///
+/// An `(Exaltation)` is exempt from the reader's hold and needs no exemption
+/// here: it carries no `+N`, so it is already grade 0 under its own name.
+///
+/// Measured against the live list and four dumps: 151 wanted items in bags,
+/// 58 blocked by this rule where the old one blocked 30, leaving 93 that a
+/// photograph can reach and 65 not yet photographed.
+///
 fn held_and_wanted(
     wanted: &serde_json::Value,
     held: &std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
@@ -618,12 +634,10 @@ fn held_and_wanted(
         let Some(grades) = held.get(&crate::itemdb::match_key(name)) else {
             continue;
         };
-        let needs: Vec<&str> = it
-            .get("needs")
-            .and_then(serde_json::Value::as_array)
-            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
-            .unwrap_or_default();
-        let blocked = needs == ["base"] && !grades.contains(&0);
+        // Every copy is a `+N`. What the item needs does not enter into it: the
+        // reader refuses the window before it asks. `needs` still travels on
+        // the row, because it is what the row says and what the list sorts on.
+        let blocked = !grades.contains(&0);
         let mut row = serde_json::Map::new();
         row.insert("name".into(), name.into());
         for f in ["slug", "needs", "zones", "sources", "sold_by"] {
@@ -3136,15 +3150,55 @@ mod tests {
         assert_eq!(rows[0]["blocked"], serde_json::json!(false));
     }
 
-    /// `base` blocks only when it is the whole remaining need. An item that
-    /// still wants a tooltip or an icon is worth photographing at any rung --
-    /// the reading fills those, and what is left is the base rung, which is
-    /// progress rather than nothing.
+    /// The rule is the reader's, and this is the test that says so.
+    ///
+    /// It replaces one asserting the opposite: that a graded copy was still
+    /// worth photographing while the item wanted a tooltip or an icon, because
+    /// the reading would fill those. It would, if it happened. It does not ---
+    /// `held_reason` refuses a graded window before anything asks what the site
+    /// wants --- so the panel prompted for items whose pictures came back
+    /// `held: graded +3`, which is a trip spent and then blamed on the picture.
+    ///
+    /// Both halves are asserted here rather than only the endpoint's, so the
+    /// day the reader learns to accept a graded window this fails and says
+    /// where the other half is.
     #[test]
-    fn a_graded_copy_still_fills_a_tooltip_and_an_icon() {
-        let b = bags(&dump(&["Golden Efreeti Greaves +4"]));
+    fn a_graded_copy_is_blocked_whatever_the_item_needs() {
+        for needs in [&["base"][..], &["tooltip"][..], &["tooltip", "icon"][..]] {
+            let b = bags(&dump(&["Refugee Shroud +3"]));
+            let rows = held_and_wanted(
+                &wants(&[("Refugee Shroud", needs)]),
+                &b,
+                &unmarked,
+            );
+            assert_eq!(
+                rows[0]["blocked"],
+                serde_json::json!(true),
+                "needs {needs:?}: the reader will not send a graded window for any of them"
+            );
+        }
+        // The other half of the same fact, in the crate that owns it.
+        let graded: eqlparser_parse::lines::Record = [
+            ("item".to_string(), serde_json::Value::from("Refugee Shroud +3")),
+            ("tier".to_string(), serde_json::Value::from(3)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            eqlparser_parse::held_reason(&graded),
+            Some("graded +3".into()),
+            "if this changes, the blocked rule above is now too strict"
+        );
+    }
+
+    /// And an exaltation needs no exemption. It carries no `+N`, so it is
+    /// already grade 0 under its own name -- which is the same reason the
+    /// reader lets its window through.
+    #[test]
+    fn an_exaltation_is_not_a_graded_copy() {
+        let b = bags(&dump(&["Refugee Shroud (Exaltation)"]));
         let rows = held_and_wanted(
-            &wants(&[("Golden Efreeti Greaves", &["tooltip", "icon"])]),
+            &wants(&[("Refugee Shroud (Exaltation)", &["tooltip"])]),
             &b,
             &unmarked,
         );
