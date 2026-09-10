@@ -226,6 +226,17 @@ struct Window {
     needs_review: Vec<String>,
     #[serde(default)]
     lines: serde_json::Value,
+    /// Which detector claimed it. A book page is prose and reaches none of the
+    /// item logic below, so this is the one field that decides which path a
+    /// window takes.
+    #[serde(default)]
+    window: String,
+    /// A book page's number, where the strip above the text decoded.
+    #[serde(default)]
+    page: Option<i64>,
+    /// A book page's prose.
+    #[serde(default)]
+    text: String,
 }
 
 impl Window {
@@ -707,6 +718,50 @@ impl Reader {
             .to_string())
     }
 
+    /// Keep one book page, and say what happened to it.
+    ///
+    /// Appended as one JSON object per line beside the item-id record, because
+    /// that is the shape the step after it wants and because appending cannot
+    /// lose the pages already there if the daemon is killed mid-write. Nothing
+    /// is de-duplicated: the crop name is content-addressed, so a page
+    /// photographed twice is the same line twice, and a page re-photographed
+    /// because the first came out badly is a different one --- which is the
+    /// pair a person choosing between them needs.
+    ///
+    /// The book's name is deliberately not guessed at. Nothing in the window
+    /// says which book it is: the panel holds two pages and a Done button, and
+    /// the name comes from the item you clicked to open it. Taking the first
+    /// line would be right on a title page and would file a book that opens
+    /// mid-sentence under `With your sewing kit, place`.
+    fn keep_page(&self, shot: &str, at: i64, w: &Window) -> String {
+        let Some(dir) = crate::paths::config_dir() else {
+            return "read, but there is no config directory to keep it in".into();
+        };
+        let path = dir.join("book-pages.jsonl");
+        let row = serde_json::json!({
+            "at": at,
+            "shot": shot,
+            "crop": w.crop,
+            "crop_path": w.crop_path,
+            "page": w.page,
+            "text": w.text,
+        });
+        let line = format!("{row}\n");
+        let wrote = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+        match wrote {
+            Ok(()) => {
+                let n = w.page.map(|p| format!("page {p}")).unwrap_or_else(|| "unnumbered".into());
+                let words = w.text.split_whitespace().count();
+                format!("{n}, {words} words --- kept in book-pages.jsonl")
+            }
+            Err(e) => format!("read, but {}: {e}", path.display()),
+        }
+    }
+
     /// One screenshot, all the way through.
     async fn handle(&self, at: i64, path: PathBuf, engine: &Arc<Mutex<Engine>>) {
         self.count(|t| t.read += 1);
@@ -735,7 +790,13 @@ impl Reader {
         // Whether anything was *read*, which is the question `decide` asks.
         // Computed before the loop so the shot can be filed before its
         // outcomes are noted, and each one can say where it went.
-        let read_item = windows.iter().any(|w| !w.unread() && !w.item().is_empty());
+        // A book page counts. It has no item name and never will --- the
+        // window does not carry one --- and filing on the name alone would put
+        // every book back in with the scenery, which is the whole mistake this
+        // change exists to stop making.
+        let read_item = windows
+            .iter()
+            .any(|w| !w.unread() && (!w.item().is_empty() || w.window == "book"));
         let clock = engine.locked("engine").clock_offset();
         let filed = self.file_away(&path, read_item, clock).await;
         if windows.is_empty() {
@@ -762,6 +823,22 @@ impl Reader {
             if w.unread() {
                 out.verdict = "unread".into();
                 out.detail = w.error.clone().unwrap_or_else(|| "the reader could not read it".into());
+            } else if w.window == "book" {
+                // A page of an open book, which reaches none of the item logic
+                // below: it has no name to mark off, nothing eqdb's wanted
+                // list can be asked about, and no fields for the review page
+                // to score. eqldb takes books through a draft file a person
+                // edits instead --- the prose reads at 0.97 to 0.995 and its
+                // mistakes are capitals, so `Bite` arrives as `tlife` and
+                // `Cooking` as `I?ooking`, which on a page of text reads as a
+                // typo rather than as a misreading.
+                //
+                // So the daemon's whole job here is to not lose it. The crop
+                // is already on disk beside the item crops; this records what
+                // it said, and `tools/import-books.py draft` in eqldb is the
+                // step after.
+                out.verdict = "book page".into();
+                out.detail = self.keep_page(&shot, at, w);
             } else if item.is_empty() {
                 out.verdict = "no window".into();
             } else if let Some(why) = w.held.clone() {
@@ -1732,6 +1809,9 @@ mod lore_tests {
             fields: serde_json::Value::Null,
             needs_review: vec![],
             lines: serde_json::Value::Null,
+            window: "item".into(),
+            page: None,
+            text: String::new(),
         }
     }
 
