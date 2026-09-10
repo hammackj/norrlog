@@ -4,6 +4,7 @@
 //! API and the overlay page. The Electron GUI and OBS both talk to this one
 //! process, so there is a single source of truth for what is happening in game.
 
+mod archive;
 mod bundle;
 mod catchup;
 mod dumps;
