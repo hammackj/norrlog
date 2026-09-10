@@ -460,6 +460,50 @@
   const WANTED_ROWS = 5;
   const WANTED_WINDOW = 3600;
 
+  /* And what is already in your bags, which is the same prompt with the clock
+     taken off it.
+
+     The hour above is what makes the pickups usable, and it is also what makes
+     them run out: on a quiet evening nothing has dropped and the panel is
+     empty, while the same bags hold a hundred and twenty-six items eqldb has
+     no picture of. Those do not expire, nobody is going to loot them for you,
+     and the only reason they were invisible here is that the site's own list
+     is ordered by how often a thing drops --- which scattered them from row 3
+     to row 1,714 of a 1,719-row list.
+
+     Three filters, all of them the same rule the pickups already follow:
+
+     - Nothing blocked. eqldb missing an item's *base* facts is not answered by
+       the `+3` in your bag, whose window states the graded item's numbers ---
+       the same reason a graded drop is never offered above.
+     - Nothing ticked, and nothing already sent up. This panel has no tickbox,
+       so a row it keeps offering after you have photographed it is a row that
+       teaches you to stop reading the panel.
+     - The pickups win a tie. An item that is both just-looted and in your bags
+       is drawn once, as a pickup, because that row carries the fact that it
+       may be about to be sold.
+
+     Its own minute-long clock rather than the pickups' twelve seconds: this
+     changes when a dump lands, a few times an evening, and answering it costs
+     the daemon a read of every inventory file it knows about. */
+  const HELD_POLL_MS = 60000;
+  let heldOffer = [];
+  let heldTotal = 0;
+
+  async function pollHeld() {
+    if (!opt.panels.includes("wanted")) return;
+    try {
+      const r = await fetch("/api/items/held");
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!Array.isArray(d.items)) return;
+      heldOffer = d.items.filter((i) => !i.blocked && !i.have && !i.sent);
+      heldTotal = heldOffer.length;
+    } catch (e) {
+      /* daemon busy or restarting; the last answer stands until next tick */
+    }
+  }
+
   async function pollWanted() {
     if (!opt.panels.includes("wanted")) return;
     try {
@@ -468,11 +512,27 @@
       );
       if (!r.ok) return;
       const d = await r.json();
-      const rows = d.items || [];
-      el.wantedPanel.classList.toggle("hidden", rows.length === 0);
-      if (!rows.length) return;
+      const rows = (d.items || []).slice(0, WANTED_ROWS);
+      /* Whatever room the pickups left, filled from the bags. Pickups lead
+         because they are the perishable half --- an item auto-sold or vendored
+         is gone, while a bag holds still --- and a name in both is drawn once,
+         as the pickup. */
+      const looted = new Set(rows.map((i) => (i.item || "").toLowerCase()));
+      const bag = heldOffer
+        .filter((i) => !looted.has((i.name || "").toLowerCase()))
+        .slice(0, Math.max(0, WANTED_ROWS - rows.length));
+      el.wantedPanel.classList.toggle("hidden", rows.length + bag.length === 0);
+      if (!rows.length && !bag.length) return;
       const extra = (d.total || rows.length) - rows.length;
-      el.wantedMeta.textContent = extra > 0 ? `${d.total}, showing ${rows.length}` : "";
+      /* Both halves counted, and each said only when it is there. "126 in your
+         bags" is the number that changes what you do next, and it is not
+         derivable from five rows on screen. */
+      el.wantedMeta.textContent = [
+        extra > 0 ? `${d.total} just looted` : "",
+        heldTotal ? `${heldTotal} in your bags` : "",
+      ]
+        .filter(Boolean)
+        .join(" \u00b7 ");
       el.wantedRows.innerHTML = rows
         .map((i) => {
           // An item the site has never seen outranks one it has merely asked
@@ -514,7 +574,24 @@
             <span class="nums"><span class="dmg">${ago(i.at)}</span></span>
           </div>`;
         })
-        .join("");
+        .join("") +
+        /* One line each, where a pickup takes two. A pickup's second line says
+           where the thing physically is and how long ago it landed, both of
+           which can stop being true while you read them; a bag item is in your
+           bags and has no clock, so the row is the name and what eqldb wants
+           of it. `\u00b7 in bags` rather than a colour alone, because the two
+           kinds sit in one list and a reader should not have to know the
+           palette to tell them apart. */
+        bag
+          .map(
+            (i) => `<div class="row you" style="--share:100%">
+            <span class="name">${esc(i.name)}</span>
+            <span class="nums"><span class="dmg">${esc(
+              (i.needs || []).join(" + ") || "a picture"
+            )} \u00b7 in bags</span></span>
+          </div>`
+          )
+          .join("");
     } catch (e) {
       /* daemon busy or restarting; try again next tick */
     }
@@ -534,8 +611,13 @@
   }
 
   if (opt.panels.includes("wanted")) {
-    pollWanted();
+    /* The bags are read first and awaited, so the panel's first paint already
+       has them. Without that the overlay opens on a quiet evening showing
+       nothing, then fills a minute later --- which looks like a panel that
+       does not work. */
+    pollHeld().then(pollWanted);
     setInterval(pollWanted, WANTED_POLL_MS);
+    setInterval(pollHeld, HELD_POLL_MS);
   }
 
   /* Session totals.

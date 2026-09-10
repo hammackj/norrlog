@@ -625,7 +625,12 @@ fn held_and_wanted(
         let blocked = needs == ["base"] && !grades.contains(&0);
         let mut row = serde_json::Map::new();
         row.insert("name".into(), name.into());
-        for f in ["slug", "needs", "zones", "sources", "sold_by"] {
+        // `have` and `sent` come along because the overlay draws from this and
+        // has no tickbox: a panel that keeps offering the five items you
+        // photographed an hour ago is one you stop reading. The window does not
+        // need them --- it rebuilds its rows out of the wanted list itself ---
+        // but this is the only copy the overlay gets.
+        for f in ["slug", "needs", "zones", "sources", "sold_by", "have", "sent"] {
             if let Some(v) = it.get(f) {
                 row.insert(f.into(), v.clone());
             }
@@ -3074,6 +3079,25 @@ mod tests {
         assert_eq!(rows.len(), 1, "it is still reported, so nobody hunts for it twice");
         assert_eq!(rows[0]["blocked"], serde_json::json!(true));
         assert_eq!(rows[0]["grades_held"], serde_json::json!([5]));
+    }
+
+    /// The overlay draws from this and has no tickbox, so a mark it cannot see
+    /// is a row it offers forever. Both marks ride along; a wanted list that
+    /// omits them leaves them off rather than inventing a `false`, because
+    /// "not ticked" and "this list does not say" are different answers.
+    #[test]
+    fn a_mark_travels_with_the_row() {
+        let b = bags(&dump(&["Onyx Earring", "Bone Chips"]));
+        let mut w = wants(&[("Onyx Earring", &["icon"]), ("Bone Chips", &["icon"])]);
+        w["items"][0]["have"] = serde_json::json!(true);
+        w["items"][0]["sent"] = serde_json::json!(false);
+        let rows = held_and_wanted(&w, &b);
+        let by = |n: &str| {
+            rows.iter().find(|r| r["name"] == serde_json::json!(n)).unwrap().clone()
+        };
+        assert_eq!(by("Onyx Earring")["have"], serde_json::json!(true));
+        assert_eq!(by("Onyx Earring")["sent"], serde_json::json!(false));
+        assert!(by("Bone Chips").get("have").is_none(), "an unstated mark stays unstated");
     }
 
     /// And carrying the ungraded one is what unblocks it.
