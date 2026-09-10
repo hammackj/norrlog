@@ -333,6 +333,7 @@ name = "eqlparser-parse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "eqlparser-read",
  "serde",
  "serde_json",
 ]
