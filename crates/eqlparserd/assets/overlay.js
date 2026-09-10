@@ -494,6 +494,9 @@
      now rides. */
   let heldOffer = [];
   let heldTotal = 0;
+  /* Whose bags. Said on the panel because the evening this shipped without it,
+     it was offering another character's dump and nothing on screen said so. */
+  let heldWho = "";
 
   async function pollHeld() {
     if (!opt.panels.includes("wanted")) return;
@@ -504,6 +507,7 @@
       if (!Array.isArray(d.items)) return;
       heldOffer = d.items.filter((i) => !i.blocked && !i.have && !i.sent);
       heldTotal = heldOffer.length;
+      heldWho = d.character || "";
     } catch (e) {
       /* daemon busy or restarting; the last answer stands until next tick */
     }
@@ -534,7 +538,9 @@
          derivable from five rows on screen. */
       el.wantedMeta.textContent = [
         extra > 0 ? `${d.total} just looted` : "",
-        heldTotal ? `${heldTotal} in your bags` : "",
+        heldTotal
+          ? `${heldTotal} in ${heldWho ? heldWho + "'s" : "your"} bags`
+          : "",
       ]
         .filter(Boolean)
         .join(" \u00b7 ");

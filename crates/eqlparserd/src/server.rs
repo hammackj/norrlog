@@ -590,6 +590,22 @@ fn bags(dumps: &[(String, String)]) -> std::collections::BTreeMap<String, std::c
 // write the same character. Measured against the live wanted list and four
 // dumps -- 14 backtick names on each side -- folding it gains 0 matches of 156.
 
+/// Is this dump the bags of the character the daemon is following?
+///
+/// Both halves have to be known before a file is refused. The daemon learns
+/// who it is from the log's filename and whose a dump is from the dump's, and
+/// either can be missing --- a renamed file parses to nothing, and a daemon
+/// started on a log with no identity in its name knows nobody. Refusing on a
+/// half-known answer would empty the list for a reason invisible from the
+/// outside, so an unknown on either side lets the file through and the answer
+/// says which case it is in.
+fn mine(file: &str, me: Option<&(String, String)>) -> bool {
+    let (Some(me), Some(whose)) = (me, eqlparser_core::itemids::who(file)) else {
+        return true;
+    };
+    &whose == me
+}
+
 /// The wanted rows this player is carrying, and which of them a photograph
 /// cannot help.
 ///
@@ -727,6 +743,20 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
         )
             .into_response();
     };
+    // Whose bags. The client writes one dump per character and this daemon
+    // follows one log, so "in your bags" means the character on that log and
+    // not every character who has ever typed the command.
+    //
+    // It read all of them. hammackj was on Tharn and the list was offering
+    // things sitting in Mirela's bags 44 hours ago --- which is not a prompt, it
+    // is a trip to the bank and a character select. The dump names carry the
+    // character and server (`Tharn_freeport-Inventory.txt`), which is the same
+    // place the daemon learns who it is following.
+    let me: Option<(String, String)> = state.store.as_ref().and_then(|st| {
+        let st = st.lock().ok()?;
+        let (c, sv) = st.identity();
+        (!c.is_empty() && !sv.is_empty()).then(|| (c.to_string(), sv.to_string()))
+    });
     // Read the dumps rather than the record: see `bags`. Each file's age goes
     // out with the answer, because a snapshot is only evidence about the moment
     // it was taken and these are often weeks apart.
@@ -738,6 +768,10 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
             if kind != eqlparser_core::itemids::Source::Inventory {
                 continue;
             }
+            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if !mine(&file, me.as_ref()) {
+                continue;
+            }
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
@@ -746,12 +780,8 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .map(|d| d.as_secs());
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            seen.push(serde_json::json!({ "file": name.clone(), "age_seconds": age }));
-            read.push((name, text));
+            seen.push(serde_json::json!({ "file": file.clone(), "age_seconds": age }));
+            read.push((file, text));
         }
         drop(guard);
         // Locked only to read the marks, and never across the fetch above: the
@@ -776,6 +806,13 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
         // character who last dumped in August is not evidence about today, and
         // the caller cannot tell that from the item list alone.
         "dumps": sources,
+        // Whose bags these are, so a caller can say so rather than implying
+        // that every dump on the disk is one pile. Null when the daemon does
+        // not know who it is following, which is also when the filter above
+        // does nothing --- the two have to be reported together or the answer
+        // silently changes meaning.
+        "character": me.as_ref().map(|(c, _)| c.clone()),
+        "server": me.as_ref().map(|(_, sv)| sv.clone()),
         "items": rows,
     }))
     .into_response()
@@ -3148,6 +3185,25 @@ mod tests {
         let b = bags(&dump(&["Brell's Girdle", "Brell's Girdle +5"]));
         let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b, &unmarked);
         assert_eq!(rows[0]["blocked"], serde_json::json!(false));
+    }
+
+    /// One character's bags, not every character's.
+    ///
+    /// hammackj was playing Tharn and the list offered items sitting in Mirela's
+    /// bags in a dump 44 hours old. That is not a prompt to take a picture ---
+    /// it is a trip to the bank and a character select --- and nothing on the
+    /// row said whose it was.
+    #[test]
+    fn another_characters_dump_is_not_your_bags() {
+        let tharn = ("Tharn".to_string(), "freeport".to_string());
+        assert!(mine("Tharn_freeport-Inventory.txt", Some(&tharn)));
+        assert!(!mine("Mirela_freeport-Inventory.txt", Some(&tharn)));
+        // The same name on another server is another character.
+        assert!(!mine("Tharn_halas-Inventory.txt", Some(&tharn)));
+        // Neither half known is not a refusal: a renamed dump still holds ids,
+        // and a daemon that knows nobody must not answer with nothing.
+        assert!(mine("inventory.txt", Some(&tharn)));
+        assert!(mine("Mirela_freeport-Inventory.txt", None));
     }
 
     /// The rule is the reader's, and this is the test that says so.
