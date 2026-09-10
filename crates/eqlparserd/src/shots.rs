@@ -137,6 +137,17 @@ pub struct Outcome {
     /// one screenshot carries the same sentence.
     #[serde(skip_serializing_if = "str::is_empty")]
     pub filed: String,
+    /// Which window this was, where that is not the ordinary one.
+    ///
+    /// `lore` for an item's Lore tab, `book` for a page of an open book, and
+    /// empty for a Description tab, which is what almost every row is and
+    /// wants no label. The daemon has always known --- `Window::is_lore` reads
+    /// it off the record --- and never said, so a Lore shot and a stats shot
+    /// left the same trace: the item's name and `queued`. Two photographs of
+    /// the same item, one each, are the ordinary way to capture one, and from
+    /// the list there was no telling whether you had taken the second.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub tab: String,
 }
 
 /// How the shots this daemon handled were found, since it started.
@@ -783,6 +794,7 @@ impl Reader {
                     verdict: "unread".into(),
                     detail: e,
                     filed: "left in the inbox --- the reader did not finish".into(),
+                    tab: String::new(),
                 });
                 return;
             }
@@ -807,6 +819,7 @@ impl Reader {
                 verdict: "no window".into(),
                 detail: String::new(),
                 filed,
+                tab: String::new(),
             });
             return;
         }
@@ -819,6 +832,17 @@ impl Reader {
                 item: (!item.is_empty()).then(|| item.clone()),
                 verdict: String::new(),
                 detail: String::new(),
+                // Read off the window rather than inferred from the verdict: a
+                // Lore tab that eqdb already holds is `covered` like any other,
+                // and the label is about what you photographed, not about what
+                // the site did with it.
+                tab: if w.window == "book" {
+                    "book".into()
+                } else if w.is_lore() {
+                    "lore".into()
+                } else {
+                    String::new()
+                },
             };
             if w.unread() {
                 out.verdict = "unread".into();
@@ -1292,6 +1316,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
                                  with that timestamp turned up"
                             .into(),
                         filed: String::new(),
+                        tab: String::new(),
                     }),
                 }
             }
@@ -1511,6 +1536,7 @@ mod tests {
             filed: String::new(),
             verdict: "missed".into(),
             detail: String::new(),
+            tab: String::new(),
         });
 
         let l = r.log.lock().unwrap();
