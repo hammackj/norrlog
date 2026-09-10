@@ -289,7 +289,9 @@ pub fn build(
     }
 
     // The history-derived tables. Carried so the panel can show what is
-    // there, and deliberately *not* declared as a source — see `OURS`.
+    // there. Nothing here declares a source any more --- see the module doc
+    // for what this daemon holds only half of, which is the record that
+    // outlived the allowlist.
     b.logs = store
         .sources()?
         .into_iter()
