@@ -373,6 +373,24 @@ pub struct Reader {
     /// leaves them where it found them, which is what it did before this
     /// existed and what `--no-archive` asks for.
     archive: Option<Arc<Sorter>>,
+    /// The last item window read, and the screenshot it came from.
+    ///
+    /// Which book a page belongs to. Nothing in the book window says: the
+    /// panel holds two pages and a Done button, and the name is on the item
+    /// you clicked to open it --- one screenshot earlier, because that is the
+    /// order the act happens in. You inspect the book, then you open it.
+    ///
+    /// Backwards, and that direction is the whole of it. Grouping a page run
+    /// *forward* to the next item window gives every book its successor's
+    /// name, which is a mistake this tree has made before.
+    ///
+    /// A suggestion, never an answer: it is recorded as `book_guess` beside
+    /// the shot it came from, and a person confirms it in eqldb's draft. The
+    /// flow it assumes --- inspect, open, photograph --- is what a capture
+    /// pass looks like, and an item photographed in between would put the
+    /// wrong name here with nothing to catch it. Saying where the guess came
+    /// from is what makes it checkable.
+    lead: Arc<Mutex<Option<(String, String)>>>,
     pub log: Arc<Mutex<Log>>,
 }
 
@@ -537,6 +555,7 @@ impl Reader {
         };
         Ok(Reader {
             read: Arc::new(Mutex::new(read)),
+            lead: Arc::new(Mutex::new(None)),
             shots,
             crops,
             archive,
@@ -744,7 +763,7 @@ impl Reader {
     /// the name comes from the item you clicked to open it. Taking the first
     /// line would be right on a title page and would file a book that opens
     /// mid-sentence under `With your sewing kit, place`.
-    fn keep_page(&self, shot: &str, at: i64, w: &Window) -> String {
+    fn keep_page(&self, shot: &str, at: i64, w: &Window, lead: Option<&(String, String)>) -> String {
         let Some(dir) = crate::paths::config_dir() else {
             return "read, but there is no config directory to keep it in".into();
         };
@@ -756,6 +775,11 @@ impl Reader {
             "crop_path": w.crop_path,
             "page": w.page,
             "text": w.text,
+            // Which book, guessed from the item window before this page run,
+            // and the shot that guess came from. Named `_guess` because it is
+            // one: see `Reader::lead`.
+            "book_guess": lead.map(|(n, _)| n.clone()),
+            "book_from": lead.map(|(_, s)| s.clone()),
         });
         let line = format!("{row}\n");
         let wrote = std::fs::OpenOptions::new()
@@ -767,7 +791,10 @@ impl Reader {
             Ok(()) => {
                 let n = w.page.map(|p| format!("page {p}")).unwrap_or_else(|| "unnumbered".into());
                 let words = w.text.split_whitespace().count();
-                format!("{n}, {words} words --- kept in book-pages.jsonl")
+                let of = lead
+                    .map(|(n, _)| format!(" of {n}"))
+                    .unwrap_or_else(|| " of an unnamed book".into());
+                format!("{n}{of}, {words} words --- kept in book-pages.jsonl")
             }
             Err(e) => format!("read, but {}: {e}", path.display()),
         }
@@ -862,7 +889,8 @@ impl Reader {
                 // it said, and `tools/import-books.py draft` in eqldb is the
                 // step after.
                 out.verdict = "book page".into();
-                out.detail = self.keep_page(&shot, at, w);
+                let lead = self.lead.lock().ok().and_then(|l| l.clone());
+                out.detail = self.keep_page(&shot, at, w, lead.as_ref());
             } else if item.is_empty() {
                 out.verdict = "no window".into();
             } else if let Some(why) = w.held.clone() {
@@ -882,6 +910,10 @@ impl Reader {
                 // again — of an item eqdb is still asking for. The mark can
                 // also predate this feature, having been ticked by hand.
                 engine.locked("engine").set_screenshot_mark(&item, true);
+                // What a book page opened next will be named after.
+                if let Ok(mut lead) = self.lead.lock() {
+                    *lead = Some((item.clone(), shot.clone()));
+                }
                 let (wanted, known) = self.standing(&item).await;
                 // A Lore window for an item whose lore eqdb does not have is
                 // sent even though the item itself is covered. The wanted
@@ -1441,6 +1473,7 @@ mod tests {
             read: Arc::new(Mutex::new(
                 eqlparser_shot::Reader::open(None, None).expect("the built-in atlas loads"),
             )),
+            lead: Arc::new(Mutex::new(None)),
             shots: dir.to_path_buf(),
             crops: PathBuf::new(),
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
