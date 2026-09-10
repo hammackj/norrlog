@@ -62,6 +62,8 @@ struct Config {
     shots: Option<PathBuf>,
     /// Do not read screenshots at all, even where everything for it is here.
     no_shots: bool,
+    no_archive: bool,
+    archive_dry_run: bool,
     /// A previously accumulated item-id record to take on, once.
     adopt_item_ids: Option<PathBuf>,
     /// Read the log once, write the record's reports as JSON, and exit.
@@ -149,6 +151,8 @@ OPTIONS:
     --shots <dir>      The client's Screenshots folder. Defaults to
                        $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
     --no-shots         Do not read screenshots, whatever else is configured.
+    --no-archive       Read screenshots but leave them in the client's folder.
+    --archive-dry-run  Decide where every screenshot belongs and move none.
     --adopt-item-ids <file>
                        Fold a previously accumulated item-id record into this
                        machine's, sweep the game folder once, and exit without
@@ -306,6 +310,8 @@ fn parse_args() -> Config {
         ocr: None,
         shots: None,
         no_shots: false,
+        no_archive: false,
+        archive_dry_run: false,
         adopt_item_ids: None,
         record_out: None,
         logs: Vec::new(),
@@ -373,6 +379,8 @@ fn parse_args() -> Config {
             "--ocr" => cfg.ocr = args.next().map(PathBuf::from),
             "--shots" => cfg.shots = args.next().map(PathBuf::from),
             "--no-shots" => cfg.no_shots = true,
+            "--no-archive" => cfg.no_archive = true,
+            "--archive-dry-run" => cfg.archive_dry_run = true,
             "--adopt-item-ids" => cfg.adopt_item_ids = args.next().map(PathBuf::from),
             "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
             "--bundle-out" => cfg.bundle_out = args.next().map(PathBuf::from),
@@ -612,6 +620,8 @@ async fn main() -> anyhow::Result<()> {
         game_dir: cfg.game_dir.clone(),
         itemdb: std::sync::Arc::clone(&itemdb),
         off: cfg.no_shots,
+        no_archive: cfg.no_archive,
+        archive_dry_run: cfg.archive_dry_run,
     });
     match shots.running() {
         true => eprintln!("[eqlparserd] screenshots: {}", shots.why_running()),
@@ -1387,6 +1397,8 @@ mod tests {
             ocr: None,
             shots: None,
             no_shots: false,
+            no_archive: false,
+            archive_dry_run: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
@@ -1414,6 +1426,8 @@ mod tests {
             ocr: None,
             shots: None,
             no_shots: false,
+            no_archive: false,
+            archive_dry_run: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),

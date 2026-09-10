@@ -31,6 +31,7 @@
 //! landing on top of its twin.
 
 use anyhow::{bail, Context, Result};
+use eqlparser_vision::Kind;
 use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, UtcOffset};
 
@@ -80,11 +81,105 @@ impl Tree {
     }
 }
 
+/// This machine's UTC offset, from the log clock's disagreement with it.
+///
+/// The archive's names are local wall time because the Python's were, and
+/// `time` is built here without `local-offset` --- which is also unsound in a
+/// process with threads, and the daemon has them from startup. So the offset
+/// is measured rather than asked for: the client writes local wall time into
+/// its log with no zone on it, so `Engine::clock_offset`, which is that
+/// timestamp read as UTC minus the real epoch, *is* the offset.
+///
+/// Snapped to the nearest quarter hour, and that is not tidying. The measured
+/// value carries however long it took the line to reach the daemon, and a
+/// name is built from `mtime + offset`: an offset three seconds out moves a
+/// screenshot taken at 19:57:57 to `eq-20260814-195800.jpg`, which is a
+/// different file from the one the Python would have written. Every real UTC
+/// offset is a whole number of quarter hours, so rounding to one throws away
+/// the drift and nothing else.
+pub fn offset_from_clock(seconds: i64) -> Option<UtcOffset> {
+    const QUARTER: i64 = 15 * 60;
+    let snapped = ((seconds as f64) / QUARTER as f64).round() as i64 * QUARTER;
+    UtcOffset::from_whole_seconds(snapped as i32).ok()
+}
+
+/// Where one screenshot should go, given what was read out of it and what
+/// the classifier saw in it.
+///
+/// A third answer besides the two trees, and it is the point of the type. The
+/// Python sorted every screenshot it could not read into `not_items/`, and
+/// that is how 26 Actions windows, 20 Spell Display windows and a Quest
+/// Journal came to be filed as scenery: `newpass` reads item windows, so
+/// everything else is "nothing" to it. A window this daemon cannot read is
+/// not scenery, and the only honest thing to do with one is leave it in the
+/// inbox where the next pass will still find it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Plan {
+    /// File it here.
+    File(Tree),
+    /// Leave it in the inbox, for this reason.
+    Leave(String),
+}
+
+/// Decide, from a reading and a classification.
+///
+/// `read_item` is whether the reader got an item name out of the shot ---
+/// not whether it tried. `seen` is what matched, which is a list of what was
+/// recognised and never a claim that nothing else is there: see
+/// `eqlparser_vision::Windows::seen`.
+pub fn decide(read_item: bool, seen: &[Kind]) -> Plan {
+    // A reading is the strongest evidence there is, and it settles the
+    // question regardless of what else the classifier noticed --- a shot can
+    // hold an item window and a spell window at once, and the item window is
+    // why it was taken.
+    if read_item {
+        return Plan::File(Tree::Processed);
+    }
+    // An item window the reader could not turn into a name. Filing this is
+    // the expensive mistake: `not_items/` is where screenshots go to stop
+    // being looked at, and this one holds an item.
+    if seen.contains(&Kind::Item) || seen.contains(&Kind::ItemSkin2) {
+        return Plan::Leave(
+            "an item window the reader could not read --- filing it would \
+             bury an item in with the scenery"
+                .into(),
+        );
+    }
+    // AA panels have their own tree and their own pass.
+    if seen == [Kind::Aa] {
+        return Plan::File(Tree::Aa);
+    }
+    // Anything else that matched is a window some pass reads and this daemon
+    // does not.
+    let unread: Vec<Kind> = seen.iter().copied().filter(|k| *k != Kind::Aa).collect();
+    if !unread.is_empty() {
+        let names: Vec<&str> = unread.iter().map(|k| k.window()).collect();
+        return Plan::Leave(format!(
+            "holds {} --- nothing here reads {} yet, and not_items/ is where \
+             a screenshot stops being looked at",
+            names.join(" and "),
+            if names.len() == 1 { "that" } else { "those" }
+        ));
+    }
+    // Nothing matched. This is the one place the answer is genuinely
+    // "scenery", and it is only worth trusting because every window the
+    // client draws now has a template --- the same sentence was true when
+    // three of them did, and it was wrong 47 times in one folder.
+    Plan::File(Tree::NotItems)
+}
+
 /// What happened to one screenshot.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filed {
-    /// Moved (or, under a dry run, would be) to this archive-relative path.
-    Moved { original: String, archived: String },
+    /// Moved (or, under a dry run, would be) into `tree`, at `archived`.
+    ///
+    /// `archived` is relative to the tree and not to the archive, because
+    /// that is what goes into `index.json` and the Python's records are
+    /// written that way. The tree is carried alongside rather than folded in:
+    /// a report that says only `2026-09-09/eq-20260909-133617.jpg` does not
+    /// say whether the screenshot was kept or set aside, which is the half a
+    /// person reading the line actually wants.
+    Moved { original: String, tree: Tree, archived: String },
     /// Left in the inbox, with the reason a person needs to act on.
     Refused { original: String, why: String },
 }
@@ -210,7 +305,7 @@ impl Archive {
         let rel = format!("{day}/{name}");
 
         if dry {
-            return Ok(Filed::Moved { original, archived: rel });
+            return Ok(Filed::Moved { original, tree, archived: rel });
         }
 
         let dst_dir = dir.join(&day);
@@ -246,7 +341,7 @@ impl Archive {
             }),
         );
         index.write()?;
-        Ok(Filed::Moved { original, archived: rel })
+        Ok(Filed::Moved { original, tree, archived: rel })
     }
 
     /// `(day folder, filename)`.
@@ -347,6 +442,109 @@ fn set_mtime(p: &Path, t: std::time::SystemTime) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The measured offset is drift plus a real zone; only the zone survives.
+    #[test]
+    fn the_clock_offset_is_rounded_to_a_real_zone() {
+        let h = |n: i64| n * 3600;
+        // -5h, as measured on the machine this was written on, with the
+        // three seconds it took the line to arrive still in it.
+        assert_eq!(offset_from_clock(-h(5) + 3), UtcOffset::from_hms(-5, 0, 0).ok());
+        assert_eq!(offset_from_clock(-h(5) - 3), UtcOffset::from_hms(-5, 0, 0).ok());
+        assert_eq!(offset_from_clock(-h(5)), UtcOffset::from_hms(-5, 0, 0).ok());
+        // UTC, and the half-hour and quarter-hour zones that exist.
+        assert_eq!(offset_from_clock(12), UtcOffset::from_hms(0, 0, 0).ok());
+        assert_eq!(offset_from_clock(h(5) + 1800 - 4), UtcOffset::from_hms(5, 30, 0).ok());
+        assert_eq!(offset_from_clock(h(5) + 2700 + 9), UtcOffset::from_hms(5, 45, 0).ok());
+    }
+
+    /// Three seconds of drift is a different filename.
+    ///
+    /// This is why the snapping is there rather than a nicety. The name comes
+    /// out of `mtime + offset` to the second.
+    #[test]
+    fn unrounded_drift_would_move_the_second() {
+        let drifted = UtcOffset::from_whole_seconds((-5 * 3600 + 3) as i32).unwrap();
+        let snapped = offset_from_clock(-5 * 3600 + 3).unwrap();
+        let at = OffsetDateTime::from_unix_timestamp(AT).unwrap();
+        assert_ne!(
+            at.to_offset(drifted).second(),
+            at.to_offset(snapped).second(),
+            "the rounding is what stops the drift reaching the filename"
+        );
+    }
+
+    /// A reading settles it, whatever else is in the picture.
+    #[test]
+    fn a_shot_that_produced_a_reading_is_processed() {
+        assert_eq!(decide(true, &[Kind::Item]), Plan::File(Tree::Processed));
+        // Both windows present. The item window is why the picture exists.
+        assert_eq!(decide(true, &[Kind::Item, Kind::Spell]), Plan::File(Tree::Processed));
+        // A reading with nothing recognised is still a reading. The
+        // classifier is evidence, not a veto.
+        assert_eq!(decide(true, &[]), Plan::File(Tree::Processed));
+    }
+
+    /// Nothing recognised, nothing read: the one honest "scenery".
+    #[test]
+    fn a_shot_with_no_window_in_it_is_not_items() {
+        assert_eq!(decide(false, &[]), Plan::File(Tree::NotItems));
+    }
+
+    #[test]
+    fn an_aa_panel_has_its_own_tree() {
+        assert_eq!(decide(false, &[Kind::Aa]), Plan::File(Tree::Aa));
+    }
+
+    /// The 47 misfiled screenshots, as a test.
+    ///
+    /// Every one of these was sitting in `not_items/` when the classifier
+    /// could only recognise three window types. Each has a pass that reads
+    /// it; none of those passes is in this daemon yet. Filing them is what
+    /// went wrong, so the answer is to leave them alone.
+    #[test]
+    fn a_window_nothing_here_reads_stays_in_the_inbox() {
+        for k in [Kind::Actions, Kind::Merchant, Kind::Book, Kind::Quest, Kind::Spell] {
+            match decide(false, &[k]) {
+                Plan::Leave(why) => {
+                    assert!(why.contains(k.window()), "{k:?} refusal did not say what it saw: {why}");
+                }
+                other => panic!("{k:?} was filed as {other:?}"),
+            }
+        }
+    }
+
+    /// An AA panel next to a window nothing reads is not an AA screenshot.
+    ///
+    /// `aa_processed/` is read by a pass that cuts AA entries out of it. A
+    /// shot filed there because of its AA panel takes the spell window beside
+    /// it out of circulation just as quietly as `not_items/` would.
+    #[test]
+    fn aa_only_means_only_aa() {
+        assert_eq!(decide(false, &[Kind::Aa]), Plan::File(Tree::Aa));
+        match decide(false, &[Kind::Aa, Kind::Spell]) {
+            Plan::Leave(why) => assert!(why.contains("a Spell Display window"), "{why}"),
+            other => panic!("filed as {other:?}"),
+        }
+    }
+
+    /// An item window the reader could not read is the expensive one.
+    ///
+    /// This is the case the whole three-way answer exists for. `not_items/`
+    /// is where a screenshot goes to stop being looked at; an item window
+    /// that defeated the reader is exactly the thing somebody has to come
+    /// back to.
+    #[test]
+    fn an_unread_item_window_is_never_filed() {
+        for k in [Kind::Item, Kind::ItemSkin2] {
+            match decide(false, &[k]) {
+                Plan::Leave(why) => assert!(why.contains("bury an item"), "{k:?}: {why}"),
+                other => panic!("{k:?} was filed as {other:?}"),
+            }
+        }
+        // Even alongside an AA panel, which would otherwise claim it.
+        assert!(matches!(decide(false, &[Kind::Item, Kind::Aa]), Plan::Leave(_)));
+    }
+
     /// A directory that removes itself, because the crate has no `tempfile`
     /// and one test's leftovers are the next test's collision.
     struct Dir(PathBuf);
@@ -400,6 +598,7 @@ mod tests {
             got,
             Filed::Moved {
                 original: "EQ001234.jpg".into(),
+                tree: Tree::Processed,
                 archived: "2026-08-14/eq-20260814-195757.jpg".into(),
             }
         );
@@ -505,6 +704,7 @@ mod tests {
             got,
             Filed::Moved {
                 original: "window.PNG".into(),
+                tree: Tree::NotItems,
                 archived: "2026-08-14/eq-20260814-195757.png".into(),
             }
         );
@@ -520,6 +720,7 @@ mod tests {
             got,
             Filed::Moved {
                 original: "EQ9.jpg".into(),
+                tree: Tree::Aa,
                 archived: "2026-08-14/eq-20260814-195757.jpg".into(),
             }
         );
@@ -650,6 +851,7 @@ mod tests {
                 got,
                 Filed::Moved {
                     original: n.into(),
+                    tree: t,
                     archived: "2026-08-14/eq-20260814-195757.jpg".into(),
                 },
                 "{t:?} did not name its own file"

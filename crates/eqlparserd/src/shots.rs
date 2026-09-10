@@ -132,6 +132,11 @@ pub struct Outcome {
     /// Why, in a sentence, for the verdicts where why is the interesting part.
     #[serde(skip_serializing_if = "str::is_empty")]
     pub detail: String,
+    /// Where the screenshot itself ended up, or why it was left alone. A
+    /// property of the shot rather than of this window, so every outcome from
+    /// one screenshot carries the same sentence.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub filed: String,
 }
 
 /// How the shots this daemon handled were found, since it started.
@@ -155,6 +160,12 @@ pub struct Tally {
     pub read: u64,
     /// Announced, waited for, and no file ever turned up.
     pub missed: u64,
+    /// Shots moved out of the inbox into one of the three trees.
+    pub filed: u64,
+    /// Shots deliberately left in the inbox --- they hold a window nothing
+    /// here reads, so filing one would take it out of circulation. A number
+    /// that climbs is a pass worth porting, not a fault.
+    pub left: u64,
 }
 
 /// The shot reader's own state: what it is still waiting for, what it did.
@@ -340,7 +351,56 @@ pub struct Reader {
     /// The origin and the credential. Shared with the bundle sender rather
     /// than kept here: see `crate::site`.
     site: crate::site::Site,
+    /// Filing, when it is on. `None` means the daemon reads screenshots and
+    /// leaves them where it found them, which is what it did before this
+    /// existed and what `--no-archive` asks for.
+    archive: Option<Arc<Sorter>>,
     pub log: Arc<Mutex<Log>>,
+}
+
+/// The classifier and the archive, together, because neither is any use here
+/// without the other: the archive needs a tree and only the classifier can
+/// name one for a shot that produced no reading.
+pub struct Sorter {
+    tmpl: eqlparser_vision::Templates,
+    root: PathBuf,
+    /// Decide everything, move nothing.
+    dry: bool,
+}
+
+impl Sorter {
+    pub fn new(root: PathBuf, dry: bool) -> anyhow::Result<Sorter> {
+        Ok(Sorter { tmpl: eqlparser_vision::Templates::builtin()?, root, dry })
+    }
+
+    /// Classify if needed, decide, and act. Blocking: the classification is
+    /// eight FFT correlations over a 2560-wide picture.
+    fn file(
+        &self,
+        path: &Path,
+        read_item: bool,
+        offset: time::UtcOffset,
+    ) -> anyhow::Result<crate::archive::Filed> {
+        // Skipped entirely when something was read. A reading settles the
+        // tree on its own, and this is the common case --- paying two seconds
+        // of correlation to confirm what is already known would make the
+        // daemon slower at the thing it is for.
+        let seen: Vec<eqlparser_vision::Kind> = if read_item {
+            Vec::new()
+        } else {
+            self.tmpl.look(path)?.seen().iter().map(|(k, _)| *k).collect()
+        };
+        let original =
+            path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        match crate::archive::decide(read_item, &seen) {
+            crate::archive::Plan::File(tree) => {
+                crate::archive::Archive::new(self.root.clone(), offset).file(path, tree, self.dry)
+            }
+            crate::archive::Plan::Leave(why) => {
+                Ok(crate::archive::Filed::Refused { original, why })
+            }
+        }
+    }
 }
 
 /// What the reader would be built from, kept so it can be built again.
@@ -358,6 +418,11 @@ pub struct Setup {
     /// "off because you asked" and "off because a piece is missing" come out
     /// of one place and read the same way.
     pub off: bool,
+    /// `--no-archive`: read screenshots and leave them where they were found.
+    pub no_archive: bool,
+    /// `--archive-dry-run`: decide every screenshot and move none, so a run
+    /// can be read before it is trusted with somebody's folder.
+    pub archive_dry_run: bool,
 }
 
 impl Reader {
@@ -375,6 +440,8 @@ impl Reader {
         // swapping the reader -- which is what pasting a token does -- keeps
         // the list a person is looking at.
         log: Arc<Mutex<Log>>,
+        no_archive: bool,
+        archive_dry_run: bool,
     ) -> Result<Reader, String> {
         let ocr = ocr
             .or_else(|| std::env::var_os("EQL_OCR_DIR").map(PathBuf::from))
@@ -398,10 +465,26 @@ impl Reader {
             .ok_or("nowhere to write cut windows")?
             .join("crops");
         std::fs::create_dir_all(&crops).map_err(|e| format!("{}: {e}", crops.display()))?;
+        // Filing is not allowed to stop the reader existing. A daemon that
+        // reads screenshots and leaves them alone is the one that ran until
+        // now; a daemon that refuses to start because a template would not
+        // parse would be a worse trade than an unsorted folder.
+        let archive = if no_archive {
+            None
+        } else {
+            match Sorter::new(shots.clone(), archive_dry_run) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(e) => {
+                    eprintln!("[eqlparserd] not filing screenshots: {e}");
+                    None
+                }
+            }
+        };
         Ok(Reader {
             ocr,
             shots,
             crops,
+            archive,
             python: std::env::var("EQL_PYTHON").unwrap_or_else(|_| "python3".into()),
             site: crate::site::Site::with_token(itemdb.base(), token)?,
             itemdb,
@@ -599,10 +682,27 @@ impl Reader {
         let windows = match self.read(&path).await {
             Ok(w) => w,
             Err(e) => {
-                self.note(Outcome { shot, at, item: None, verdict: "unread".into(), detail: e });
+                // The reader fell over. That is not evidence about the
+                // picture, so the shot stays where it is --- filing it would
+                // be reading a crash as "no window", which is the mistake
+                // this whole path exists to stop making.
+                self.note(Outcome {
+                    shot,
+                    at,
+                    item: None,
+                    verdict: "unread".into(),
+                    detail: e,
+                    filed: "left in the inbox --- the reader did not finish".into(),
+                });
                 return;
             }
         };
+        // Whether anything was *read*, which is the question `decide` asks.
+        // Computed before the loop so the shot can be filed before its
+        // outcomes are noted, and each one can say where it went.
+        let read_item = windows.iter().any(|w| !w.unread() && !w.item().is_empty());
+        let clock = engine.locked("engine").clock_offset();
+        let filed = self.file_away(&path, read_item, clock).await;
         if windows.is_empty() {
             self.note(Outcome {
                 shot,
@@ -610,6 +710,7 @@ impl Reader {
                 item: None,
                 verdict: "no window".into(),
                 detail: String::new(),
+                filed,
             });
             return;
         }
@@ -618,6 +719,7 @@ impl Reader {
             let mut out = Outcome {
                 shot: shot.clone(),
                 at,
+                filed: filed.clone(),
                 item: (!item.is_empty()).then(|| item.clone()),
                 verdict: String::new(),
                 detail: String::new(),
@@ -703,6 +805,48 @@ impl Reader {
             self.note(out);
         }
         self.prune();
+    }
+
+    /// File one screenshot, and say in a sentence what became of it.
+    ///
+    /// Returns the empty string when filing is off, so an outcome from a
+    /// daemon that was told not to archive says nothing about archiving
+    /// rather than saying it declined to.
+    async fn file_away(&self, path: &Path, read_item: bool, clock: Option<i64>) -> String {
+        let Some(sorter) = self.archive.clone() else { return String::new() };
+        // No offset, no filing. The archive's names are local wall time, and
+        // the offset is measured off the log's clock --- before a live line
+        // has been seen there is nothing to measure. Guessing UTC would put a
+        // whole evening's screenshots under the wrong day.
+        let Some(offset) = clock.and_then(crate::archive::offset_from_clock) else {
+            self.count(|t| t.left += 1);
+            return "left in the inbox --- no log line yet to measure the clock against".into();
+        };
+        let p = path.to_path_buf();
+        // On the blocking pool: eight correlations is seconds of CPU, and the
+        // runtime this is on also serves the GUI's websocket.
+        let done = tokio::task::spawn_blocking(move || sorter.file(&p, read_item, offset)).await;
+        match done {
+            Ok(Ok(crate::archive::Filed::Moved { tree, archived, .. })) => {
+                self.count(|t| t.filed += 1);
+                format!("filed as {}/{archived}", tree.dir())
+            }
+            Ok(Ok(crate::archive::Filed::Refused { why, .. })) => {
+                self.count(|t| t.left += 1);
+                format!("left in the inbox --- {why}")
+            }
+            // A filing failure must not lose the screenshot or the reading.
+            // The picture is still in the inbox, which is the safe place for
+            // it to be, so this is reported and not retried.
+            Ok(Err(e)) => {
+                self.count(|t| t.left += 1);
+                format!("left in the inbox --- filing failed: {e}")
+            }
+            Err(e) => {
+                self.count(|t| t.left += 1);
+                format!("left in the inbox --- the classifier did not finish: {e}")
+            }
+        }
     }
 
     fn note(&self, o: Outcome) {
@@ -803,6 +947,8 @@ impl Shots {
             self.setup.game_dir.as_deref(),
             Arc::clone(&self.setup.itemdb),
             Arc::clone(&self.log),
+            self.setup.no_archive,
+            self.setup.archive_dry_run,
         ) {
             Ok(r) => {
                 let where_ = r.watching().display().to_string();
@@ -1006,6 +1152,7 @@ pub fn spawn(shots: Arc<Shots>, engine: Arc<Mutex<Engine>>) {
                         detail: "the client said it took a picture and no file \
                                  with that timestamp turned up"
                             .into(),
+                        filed: String::new(),
                     }),
                 }
             }
@@ -1130,8 +1277,75 @@ mod tests {
             itemdb: Arc::new(crate::itemdb::ItemDb::new(vec![])),
             site: crate::site::Site::with_token(String::new(), String::new())
                 .expect("a client with no origin and no token still builds"),
+            // Off: `file_at` does not file, and a fixture that quietly moved
+            // the test's own fixtures around would be a poor one.
+            archive: None,
             log: Arc::new(Mutex::new(Log::default())),
         }
+    }
+
+    /// Every screenshot in a real inbox, decided and not moved.
+    ///
+    /// The part worth exercising against real pixels rather than a fixture is
+    /// the join: classify, decide, and build the name the file would get. A
+    /// dry run does all three and touches nothing, so this can be pointed at
+    /// somebody's actual folder.
+    ///
+    /// ```text
+    /// EQL_SHOTS_DIR="$SCREENSHOTS" EQL_CLOCK=-18000 \
+    ///     cargo test -p eqlparserd -- --ignored --nocapture the_inbox
+    /// ```
+    ///
+    /// `EQL_CLOCK` is what `Engine::clock_offset` would have measured. There
+    /// is no engine here, and defaulting it would be the one mistake this
+    /// path must not make quietly: see `file_away`.
+    #[test]
+    #[ignore = "needs a real screenshot folder"]
+    fn the_inbox_decided_without_moving_anything() {
+        let root = PathBuf::from(std::env::var("EQL_SHOTS_DIR").expect("EQL_SHOTS_DIR"));
+        let clock: i64 = std::env::var("EQL_CLOCK").expect("EQL_CLOCK").parse().unwrap();
+        let offset = crate::archive::offset_from_clock(clock).expect("a real offset");
+        let sorter = Sorter::new(root.clone(), true).unwrap();
+        let mut loose: Vec<PathBuf> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
+            .collect();
+        loose.sort();
+        println!("{} in the inbox, offset {offset}", loose.len());
+        let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
+        for p in &loose {
+            // `false`: nothing here runs the reader, so this is the branch a
+            // shot takes when no item window was read --- which is the branch
+            // the classifier decides and the only one worth a real folder.
+            let what = match sorter.file(p, false, offset) {
+                Ok(crate::archive::Filed::Moved { original, tree, archived }) => {
+                    format!("{original} -> {}/{archived}", tree.dir())
+                }
+                Ok(crate::archive::Filed::Refused { original, why }) => {
+                    format!("{original} stays: {why}")
+                }
+                Err(e) => format!("{}: FAILED {e}", p.display()),
+            };
+            println!("  {what}");
+            let bucket = what
+                .split_once(" -> ")
+                .map(|(_, a)| a.split('/').next().unwrap_or("?").to_string())
+                .unwrap_or_else(|| "left in the inbox".into());
+            *tally.entry(bucket).or_default() += 1;
+        }
+        for (k, n) in &tally {
+            println!("{n:4}  {k}");
+        }
+        // The folder must be exactly as it was.
+        let after = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
+            .count();
+        assert_eq!(after, loose.len(), "a dry run moved something");
     }
 
     /// The readout's arithmetic, which is the whole point of the counters:
@@ -1150,6 +1364,7 @@ mod tests {
             shot: String::new(),
             at: 0,
             item: None,
+            filed: String::new(),
             verdict: "missed".into(),
             detail: String::new(),
         });

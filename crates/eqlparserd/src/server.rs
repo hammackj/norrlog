@@ -2860,6 +2860,12 @@ mod tests {
                 // anything anywhere, or notice a token that happens to be in
                 // the environment they run in.
                 off: true,
+                // Belt and braces: `off` already means no reader and so no
+                // filing, but a test suite that could move somebody's
+                // screenshots if a flag changed meaning is not one to leave
+                // depending on that.
+                no_archive: true,
+                archive_dry_run: true,
             }),
         }
     }

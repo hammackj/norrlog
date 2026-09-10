@@ -344,6 +344,7 @@ dependencies = [
  "anyhow",
  "axum",
  "eqlparser-core",
+ "eqlparser-vision",
  "flate2",
  "reqwest",
  "rusqlite",
