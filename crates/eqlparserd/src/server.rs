@@ -608,6 +608,7 @@ fn bags(dumps: &[(String, String)]) -> std::collections::BTreeMap<String, std::c
 fn held_and_wanted(
     wanted: &serde_json::Value,
     held: &std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
+    marks: &dyn Fn(&str) -> (bool, bool),
 ) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     for it in wanted.get("items").and_then(|v| v.as_array()).into_iter().flatten() {
@@ -625,16 +626,23 @@ fn held_and_wanted(
         let blocked = needs == ["base"] && !grades.contains(&0);
         let mut row = serde_json::Map::new();
         row.insert("name".into(), name.into());
-        // `have` and `sent` come along because the overlay draws from this and
-        // has no tickbox: a panel that keeps offering the five items you
-        // photographed an hour ago is one you stop reading. The window does not
-        // need them --- it rebuilds its rows out of the wanted list itself ---
-        // but this is the only copy the overlay gets.
-        for f in ["slug", "needs", "zones", "sources", "sold_by", "have", "sent"] {
+        for f in ["slug", "needs", "zones", "sources", "sold_by"] {
             if let Some(v) = it.get(f) {
                 row.insert(f.into(), v.clone());
             }
         }
+        // The marks, which are the engine's and are not in the site's payload
+        // at all --- `/api/wanted` attaches them to each row as it answers, and
+        // the cached copy this reads has never carried them. Taken as an
+        // argument rather than copied off `it` for exactly that reason: copying
+        // measured whether the payload happened to have a field, which it never
+        // does, and the overlay was offered every item it had already been
+        // shown. They are here because the overlay draws from this and has no
+        // tickbox: a panel still naming the item you photographed an hour ago
+        // is one you stop reading.
+        let (have, sent) = marks(name);
+        row.insert("have".into(), have.into());
+        row.insert("sent".into(), sent.into());
         row.insert(
             "grades_held".into(),
             grades.iter().copied().collect::<Vec<u32>>().into(),
@@ -732,7 +740,11 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
             read.push((name, text));
         }
         drop(guard);
-        (held_and_wanted(&wanted, &bags(&read)), seen)
+        // Locked only to read the marks, and never across the fetch above: the
+        // follower thread holds this lock while ingesting lines.
+        let engine = state.engine.locked("engine");
+        let marks = |n: &str| (engine.has_screenshot(n), engine.has_sent(n));
+        (held_and_wanted(&wanted, &bags(&read), &marks), seen)
     };
     sources.sort_by_key(|v| {
         v.get("age_seconds").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX)
@@ -3060,6 +3072,12 @@ mod tests {
         vec![("Tharn_freeport-Inventory.txt".to_string(), t)]
     }
 
+    /// Nothing photographed and nothing sent, which is what most of these
+    /// tests are about and none of them are testing.
+    fn unmarked(_: &str) -> (bool, bool) {
+        (false, false)
+    }
+
     fn wants(rows: &[(&str, &[&str])]) -> serde_json::Value {
         serde_json::json!({
             "count": rows.len(),
@@ -3075,36 +3093,46 @@ mod tests {
     #[test]
     fn a_graded_copy_cannot_fill_a_base_reading() {
         let b = bags(&dump(&["Brell's Girdle +5"]));
-        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b, &unmarked);
         assert_eq!(rows.len(), 1, "it is still reported, so nobody hunts for it twice");
         assert_eq!(rows[0]["blocked"], serde_json::json!(true));
         assert_eq!(rows[0]["grades_held"], serde_json::json!([5]));
     }
 
-    /// The overlay draws from this and has no tickbox, so a mark it cannot see
-    /// is a row it offers forever. Both marks ride along; a wanted list that
-    /// omits them leaves them off rather than inventing a `false`, because
-    /// "not ticked" and "this list does not say" are different answers.
+    /// The marks do not come from the site.
+    ///
+    /// This is where the first cut of the endpoint was wrong, and the shape of
+    /// the mistake is worth keeping: it copied `have` and `sent` off the wanted
+    /// payload, which reads perfectly and is never true --- `/api/wanted`
+    /// attaches them per request from the engine, and the cached payload this
+    /// crosses has never held them. Every row came back unmarked, so the
+    /// overlay offered all 123 items in the bags including the ones already
+    /// photographed. Asserting against a payload that *does* carry the fields
+    /// is what hid it, so this asserts the opposite: the payload states a mark
+    /// and it is ignored, because the caller is the only thing that knows.
     #[test]
-    fn a_mark_travels_with_the_row() {
+    fn the_marks_come_from_the_caller_not_the_payload() {
         let b = bags(&dump(&["Onyx Earring", "Bone Chips"]));
         let mut w = wants(&[("Onyx Earring", &["icon"]), ("Bone Chips", &["icon"])]);
-        w["items"][0]["have"] = serde_json::json!(true);
+        w["items"][0]["have"] = serde_json::json!(false);
         w["items"][0]["sent"] = serde_json::json!(false);
-        let rows = held_and_wanted(&w, &b);
+        let marks = |n: &str| (n == "Onyx Earring", false);
+        let rows = held_and_wanted(&w, &b, &marks);
         let by = |n: &str| {
             rows.iter().find(|r| r["name"] == serde_json::json!(n)).unwrap().clone()
         };
         assert_eq!(by("Onyx Earring")["have"], serde_json::json!(true));
-        assert_eq!(by("Onyx Earring")["sent"], serde_json::json!(false));
-        assert!(by("Bone Chips").get("have").is_none(), "an unstated mark stays unstated");
+        assert_eq!(by("Bone Chips")["have"], serde_json::json!(false));
+        // Stated on every row, never left absent: the overlay filters on it,
+        // and a missing field there reads as "not photographed".
+        assert_eq!(by("Bone Chips")["sent"], serde_json::json!(false));
     }
 
     /// And carrying the ungraded one is what unblocks it.
     #[test]
     fn the_ungraded_copy_is_the_one_that_fills_it() {
         let b = bags(&dump(&["Brell's Girdle", "Brell's Girdle +5"]));
-        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b, &unmarked);
         assert_eq!(rows[0]["blocked"], serde_json::json!(false));
     }
 
@@ -3118,6 +3146,7 @@ mod tests {
         let rows = held_and_wanted(
             &wants(&[("Golden Efreeti Greaves", &["tooltip", "icon"])]),
             &b,
+            &unmarked,
         );
         assert_eq!(rows[0]["blocked"], serde_json::json!(false));
     }
@@ -3130,6 +3159,7 @@ mod tests {
         let rows = held_and_wanted(
             &wants(&[("Bottle of Milk", &["icon"]), ("Onyx Earring", &["tooltip"])]),
             &b,
+            &unmarked,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["name"], serde_json::json!("Bottle of Milk"));
@@ -3171,7 +3201,7 @@ mod tests {
         });
         let _ = &reg;
         let b = bags(&dump(&["Bottle of Milk"]));
-        let rows = held_and_wanted(&wants(&[("Sold Last Month", &["tooltip"])]), &b);
+        let rows = held_and_wanted(&wants(&[("Sold Last Month", &["tooltip"])]), &b, &unmarked);
         assert!(rows.is_empty(), "the accumulator remembers it; the bag does not hold it");
     }
 
@@ -3182,7 +3212,7 @@ mod tests {
     #[test]
     fn an_augment_sharing_an_id_does_not_unblock_its_item() {
         let b = bags(&dump(&["Brell's Girdle +5", "Brell's Girdle (Exaltation)"]));
-        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b);
+        let rows = held_and_wanted(&wants(&[("Brell's Girdle", &["base"])]), &b, &unmarked);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["blocked"], serde_json::json!(true));
         assert_eq!(rows[0]["grades_held"], serde_json::json!([5]));
@@ -3195,6 +3225,7 @@ mod tests {
         let rows = held_and_wanted(
             &wants(&[("Brell's Girdle (Exaltation)", &["icon"])]),
             &b,
+            &unmarked,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["blocked"], serde_json::json!(false));
@@ -3213,6 +3244,7 @@ mod tests {
                 ("Beta", &["icon"]),
             ]),
             &held,
+            &unmarked,
         );
         let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["Beta", "Gamma", "Alpha"]);
