@@ -848,6 +848,26 @@ impl Store {
             -- dropped the first time the grammar changes. Today's grammar
             -- requires `(Lvl: N)`, so the placeholder is defensive and the
             -- rows it guards do not yet occur.
+            -- What forage yielded, per zone, per log.
+            --
+            -- One row per (zone, item), plus one with an empty `item` for the
+            -- attempts that yielded nothing. That row is not a placeholder to
+            -- be skipped: it is the denominator, and a zone whose only row is
+            -- the empty one is a zone somebody foraged in and got nothing
+            -- from, which is a fact about the zone.
+            CREATE TABLE IF NOT EXISTS forage (
+                game      TEXT NOT NULL,
+                character TEXT NOT NULL,
+                server    TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                zone      TEXT NOT NULL,
+                item      TEXT NOT NULL,
+                times     INTEGER NOT NULL,
+                first_seen INTEGER NOT NULL DEFAULT 0,
+                last_seen  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (game, character, server, source, zone, item)
+            );
+
             CREATE TABLE IF NOT EXISTS considers (
                 game      TEXT NOT NULL,
                 character TEXT NOT NULL,
@@ -1479,6 +1499,34 @@ impl Store {
             }
         }
         {
+            // Forage. The empty-item row carries the failures — see the
+            // schema. Written even when a zone yielded nothing at all, which
+            // is the only way "foraged here, got nothing" is recorded.
+            tx.execute(
+                "DELETE FROM forage WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
+                params![game, c, sv, source],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO forage
+                 (game, character, server, source, zone, item, times, first_seen, last_seen)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            )?;
+            for (zone, z) in r.forage.zones() {
+                for (item, times) in &z.found {
+                    stmt.execute(params![
+                        game, c, sv, source, zone, item, *times as i64, z.first, z.last
+                    ])?;
+                    n += 1;
+                }
+                if z.empty > 0 {
+                    stmt.execute(params![
+                        game, c, sv, source, zone, "", z.empty as i64, z.first, z.last
+                    ])?;
+                    n += 1;
+                }
+            }
+        }
+        {
             // Faction. Three tables; see the schema for why the offer counts
             // are not columns on the adjustments.
             for t in ["faction_hits", "faction_turnins", "faction_offers", "faction_bursts"] {
@@ -1641,6 +1689,57 @@ impl Store {
     pub fn record_reports(&self, game: &str) -> Result<crate::record::Reports> {
         use crate::record::*;
         const SOURCE: &str = "history";
+
+        // Forage, pooled across every log. The empty-item row is the
+        // failures; see the schema.
+        let mut forage_zones: Vec<ForageZoneRow> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT zone, item, SUM(times), MIN(NULLIF(first_seen,0)), MAX(last_seen)
+                 FROM forage WHERE game = ?1
+                 GROUP BY zone, item ORDER BY zone, item",
+            )?;
+            let rows = stmt
+                .query_map(params![game], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (zone, item, times, first, last) in rows {
+                let row = match forage_zones.last_mut() {
+                    Some(r) if r.zone == zone => r,
+                    _ => {
+                        forage_zones.push(ForageZoneRow {
+                            zone: zone.clone(),
+                            game: GAME_TAG,
+                            attempts: 0,
+                            hits: 0,
+                            empty: 0,
+                            first_seen: first,
+                            last_seen: last,
+                            items: Vec::new(),
+                        });
+                        forage_zones.last_mut().expect("just pushed")
+                    }
+                };
+                if item.is_empty() {
+                    row.empty += times as u64;
+                } else {
+                    row.hits += times as u64;
+                    row.items.push(ForagedItem { item, times: times as u64 });
+                }
+                row.attempts = row.hits + row.empty;
+                if first != 0 && (row.first_seen == 0 || first < row.first_seen) {
+                    row.first_seen = first;
+                }
+                row.last_seen = row.last_seen.max(last);
+            }
+        }
 
         let mut considers: Vec<ConsiderRow> = Vec::new();
         {
@@ -1918,6 +2017,15 @@ impl Store {
                 source: SOURCE.to_string(),
                 game: GAME_TAG,
                 players,
+            },
+            forage: ForageReport {
+                note: FORAGE_NOTE,
+                source: SOURCE.to_string(),
+                zones: forage_zones,
+                // The history has no record of an attempt it could not place,
+                // because an unplaced one was never written: there is no zone
+                // to key it on.
+                unplaced: 0,
             },
             consider: ConsiderReport {
                 note: CONSIDER_NOTE,
@@ -3708,4 +3816,83 @@ fn split_packed(packed: &str) -> Vec<String> {
         return Vec::new();
     }
     packed.split('|').map(str::to_string).collect()
+}
+
+#[cfg(test)]
+mod forage_tests {
+    use super::*;
+
+    fn record_over(text: &str) -> crate::record::Settled {
+        let mut e = crate::engine::Engine::with_game(
+            "Tharn".to_string(),
+            eqlparser_core::spell::SpellDb::empty(),
+            eqlparser_core::game::Game::EverQuestLegends,
+        );
+        for line in text.lines() {
+            e.push_line(line);
+        }
+        e.record()
+    }
+
+    const FORAGING: &str = "\
+[Tue Jul 28 15:03:10 2026] You have entered Everfrost Peaks.
+[Tue Jul 28 15:03:12 2026] You have scrounged up Pod of Water.
+[Tue Jul 28 15:03:20 2026] You have scrounged up Pod of Water.
+[Tue Jul 28 15:03:28 2026] You fail to locate any food nearby.
+[Tue Jul 28 16:00:00 2026] You have entered Nagafen's Lair.
+[Tue Jul 28 16:00:10 2026] You fail to locate any food nearby.
+[Tue Jul 28 16:00:20 2026] You fail to locate any food nearby.
+";
+
+    #[test]
+    fn the_forage_record_survives_a_round_trip() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
+        assert_eq!(ef.items.len(), 1);
+        assert_eq!(ef.items[0].item, "Pod of Water");
+        assert_eq!(ef.items[0].times, 2);
+    }
+
+    /// A zone somebody foraged in and got nothing from is a fact about the
+    /// zone, so it has to come back as a row rather than as an absence.
+    #[test]
+    fn a_zone_that_yielded_nothing_still_comes_back() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        let nl = r.forage.zones.iter().find(|z| z.zone == "Nagafen's Lair").unwrap();
+        assert_eq!((nl.hits, nl.empty, nl.attempts), (0, 2, 2));
+        assert!(nl.items.is_empty());
+    }
+
+    /// Two logs of the same zone add up rather than replacing each other.
+    #[test]
+    fn two_logs_pool_into_one_zone() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record("eql", "log-b", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        assert_eq!((ef.hits, ef.empty, ef.attempts), (4, 2, 6));
+        assert_eq!(ef.items.len(), 1, "the same item from two logs is one row");
+        assert_eq!(ef.items[0].times, 4);
+    }
+
+    /// Re-reading one log replaces its own rows and nothing else's.
+    #[test]
+    fn a_second_pass_over_the_same_log_does_not_double_it() {
+        let mut st = Store::in_memory().unwrap();
+        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports("eql").unwrap();
+
+        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
+    }
 }

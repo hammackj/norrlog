@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/procs", get(procs))
         .route("/api/lockouts", get(lockouts))
         .route("/api/tradeskills", get(tradeskills))
+        .route("/api/forage", get(forage))
         .route("/api/items", get(items))
         .route("/api/drops", get(drops))
         .route("/api/bestiary", get(bestiary))
@@ -2464,6 +2465,24 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
 async fn npcs(State(s): State<AppState>) -> Json<eqlparser_core::npc::NpcReport> {
     let engine = s.engine.locked("engine");
     Json(engine.npc_report())
+}
+
+/// What forage has yielded, per zone.
+///
+/// The log's own stem is the source tag, the same one every other record
+/// report carries.
+async fn forage(State(s): State<AppState>) -> Json<crate::record::ForageReport> {
+    // The history, not the live engine: a forage record is the whole of what
+    // has ever been seen, and the engine holds only the log it is following.
+    // The engine is the fallback for a daemon started without a store.
+    if let Some(store) = &s.store {
+        let st = store.locked("history");
+        if let Ok(r) = st.record_reports(crate::record::GAME_TAG) {
+            return Json(r.forage);
+        }
+    }
+    let engine = s.engine.locked("engine");
+    Json(engine.record().forage("live"))
 }
 
 /// The quest database.

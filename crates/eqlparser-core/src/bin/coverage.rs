@@ -264,6 +264,7 @@ fn kind_name(e: &Event) -> &'static str {
         Event::Resisted { .. } => "Resisted",
         Event::SkillUp { .. } => "SkillUp",
         Event::Craft { .. } => "Craft",
+        Event::Forage { .. } => "Forage",
         Event::ComponentConsumed { .. } => "ComponentConsumed",
         Event::ItemPurchased { .. } => "ItemPurchased",
         Event::ItemQuoted { .. } => "ItemQuoted",

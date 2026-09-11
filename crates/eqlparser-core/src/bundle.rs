@@ -172,6 +172,9 @@ pub struct Bundle {
     /// Levels and rare markers, from consider lines.
     #[serde(default)]
     pub considers: Vec<Consider>,
+    /// What forage yields, per zone, from the log.
+    #[serde(default)]
+    pub forage: Vec<ZoneForaged>,
     /// Every zone the game has, from its own achievements.
     #[serde(default)]
     pub zone_roster: Vec<RosterZone>,
@@ -415,6 +418,7 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("faction_hits", &["faction"]),
     ("turnins", &["faction"]),
     ("considers", &["consider"]),
+    ("forage", &["forage"]),
     ("spawn_rules", &["spawn_rules"]),
     ("item_icons", &["item_icons"]),
     ("zone_roster", &["zone_roster"]),
@@ -496,6 +500,7 @@ impl Bundle {
             faction_hits: Vec::new(),
             turnins: Vec::new(),
             considers: Vec::new(),
+            forage: Vec::new(),
             zone_roster: Vec::new(),
             item_icons: Vec::new(),
             spawn_rules: Vec::new(),
@@ -629,7 +634,7 @@ impl Bundle {
              {} granted spells, {} skills, {} abilities, \
              {} tooltip readings, {} faction pairs, {} turn-in pairs, \
              {} considered, {} spawn rules, {} item icons, {} item ids, {} map markers, \
-             {} creature spots, {} books ({} pages), {} logs",
+             {} creature spots, {} books ({} pages), {} foraged zones, {} logs",
             self.drops.len(),
             self.kills.len(),
             self.vendors.len(),
@@ -653,6 +658,7 @@ impl Bundle {
             self.spots.len(),
             self.books.len(),
             self.books.iter().map(|b| b.pages.len()).sum::<usize>(),
+            self.forage.len(),
             self.logs.len(),
         )
     }
@@ -1674,7 +1680,34 @@ pub struct Consider {
     pub considers: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// What one zone yielded to forage, and how often it yielded nothing.
+///
+/// One row per (zone, item), with the attempts that found nothing carried
+/// alongside as `empty` rather than as rows of their own. A zone with an
+/// empty `items` and a non-zero `empty` is a zone somebody foraged in and got
+/// nothing from — which is a statement about the zone, and the reason the
+/// failures are carried at all.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ZoneForaged {
+    pub zone: String,
+    #[serde(default)]
+    pub items: Vec<ForagedItem>,
+    /// Attempts that named nothing.
+    #[serde(default)]
+    pub empty: u64,
+    #[serde(default)]
+    pub first_seen: i64,
+    #[serde(default)]
+    pub last_seen: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForagedItem {
+    pub item: String,
+    pub times: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsiderLevel {
     pub level: u32,
     pub times: u64,

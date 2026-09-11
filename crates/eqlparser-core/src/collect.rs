@@ -2244,3 +2244,179 @@ mod spot_tests {
         assert_eq!(got.len(), 1, "{got:?}");
     }
 }
+
+/// What one zone yields to forage, folded across a log.
+///
+/// Keyed on the zone's display name, which is what [`crate::zone::Zone`]
+/// settles — a zone announced as `Everfrost Peaks` and as
+/// `Everfrost Peaks - Group` is one place to forage in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ZoneForage {
+    /// As the client printed it, and how many times.
+    pub found: BTreeMap<String, u64>,
+    /// Attempts that named nothing.
+    ///
+    /// Kept because it is the denominator: `Pod of Water` seen four times
+    /// says something quite different in a zone with six attempts than in one
+    /// with sixty, and only this side of the pair carries that.
+    pub empty: u64,
+    /// First and last attempt here, successful or not.
+    pub first: i64,
+    pub last: i64,
+}
+
+impl ZoneForage {
+    /// Attempts that yielded something.
+    pub fn hits(&self) -> u64 {
+        self.found.values().sum()
+    }
+
+    /// Every attempt, including the ones that found nothing.
+    pub fn attempts(&self) -> u64 {
+        self.hits() + self.empty
+    }
+}
+
+/// What forage yields, per zone.
+///
+/// # Why the zone comes from the context and not the line
+///
+/// `You have scrounged up Pod of Water.` names the item and nothing else. It
+/// does not say where, who, or which skill — forage is self-only, so the who
+/// is the log's owner by construction, and the where is whatever zone the
+/// feed last saw announced. That is the same arrangement drops and creature
+/// spots already have, and for the same reason: a line does not know where it
+/// happened.
+///
+/// An attempt before any zone has been announced is counted in
+/// [`Self::homeless`] rather than filed under a guess. That happens when a
+/// log begins mid-session, which is routine — the client announces the zone
+/// on arrival, not on `/log on`.
+#[derive(Debug, Clone, Default)]
+pub struct ForageCollector {
+    zones: BTreeMap<String, ZoneForage>,
+    /// Attempts that arrived before any zone was announced.
+    pub homeless: u64,
+}
+
+impl ForageCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn zones(&self) -> &BTreeMap<String, ZoneForage> {
+        &self.zones
+    }
+
+    /// Every item ever foraged anywhere, and how often.
+    pub fn items(&self) -> BTreeMap<&str, u64> {
+        let mut out: BTreeMap<&str, u64> = BTreeMap::new();
+        for z in self.zones.values() {
+            for (item, n) in &z.found {
+                *out.entry(item.as_str()).or_default() += n;
+            }
+        }
+        out
+    }
+}
+
+impl Observer for ForageCollector {
+    fn name(&self) -> &'static str {
+        "forage"
+    }
+
+    fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
+        let Event::Forage { item } = &entry.event else {
+            return;
+        };
+        let Some(zone) = cx.zone else {
+            self.homeless += 1;
+            return;
+        };
+        let name = crate::zone::Zone::parse(zone).name;
+        let row = self.zones.entry(name).or_insert_with(|| ZoneForage {
+            first: entry.timestamp,
+            ..Default::default()
+        });
+        match item {
+            Some(i) if !i.trim().is_empty() => {
+                *row.found.entry(i.trim().to_string()).or_default() += 1;
+            }
+            // Both the failure line and a success whose item did not survive
+            // the match land here. Counting the second as an attempt rather
+            // than dropping it keeps the ratio honest.
+            _ => row.empty += 1,
+        }
+        if row.first == 0 {
+            row.first = entry.timestamp;
+        }
+        row.last = entry.timestamp;
+    }
+}
+
+#[cfg(test)]
+mod forage_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    fn run(text: &str) -> ForageCollector {
+        let mut c = ForageCollector::new();
+        let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+        }
+        c
+    }
+
+    #[test]
+    fn a_forage_is_filed_under_the_zone_last_announced() {
+        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+                     [Mon Aug 03 00:37:12 2026] You have scrounged up Pod of Water.\n");
+        let z = &c.zones()["Everfrost Peaks"];
+        assert_eq!(z.found.get("Pod of Water"), Some(&1));
+        assert_eq!(z.attempts(), 1);
+    }
+
+    #[test]
+    fn a_failure_is_an_attempt_and_not_an_item() {
+        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+                     [Mon Aug 03 00:37:12 2026] You have scrounged up Roots.\n\
+                     [Mon Aug 03 00:37:20 2026] You fail to locate any food nearby.\n\
+                     [Mon Aug 03 00:37:28 2026] You fail to locate any food nearby.\n");
+        let z = &c.zones()["Everfrost Peaks"];
+        assert_eq!((z.hits(), z.empty, z.attempts()), (1, 2, 3));
+        assert_eq!(z.found.len(), 1);
+    }
+
+    #[test]
+    fn a_mode_suffix_is_the_same_place_to_forage_in() {
+        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+                     [Mon Aug 03 00:37:12 2026] You have scrounged up Roots.\n\
+                     [Mon Aug 03 00:40:00 2026] You have entered Everfrost Peaks - Group.\n\
+                     [Mon Aug 03 00:40:12 2026] You have scrounged up Roots.\n");
+        assert_eq!(c.zones().len(), 1);
+        assert_eq!(c.zones()["Everfrost Peaks"].found["Roots"], 2);
+    }
+
+    #[test]
+    fn an_attempt_before_any_zone_is_not_filed_under_a_guess() {
+        let c = run("[Mon Aug 03 00:37:12 2026] You have scrounged up Berries.\n");
+        assert!(c.zones().is_empty());
+        assert_eq!(c.homeless, 1);
+    }
+
+    #[test]
+    fn the_item_tally_pools_every_zone() {
+        let c = run("[Mon Aug 03 00:00:00 2026] You have entered Everfrost Peaks.\n\
+                     [Mon Aug 03 00:00:02 2026] You have scrounged up Berries.\n\
+                     [Mon Aug 03 01:00:00 2026] You have entered Misty Thicket.\n\
+                     [Mon Aug 03 01:00:02 2026] You have scrounged up Berries.\n\
+                     [Mon Aug 03 01:00:04 2026] You have scrounged up Fruit.\n");
+        let items = c.items();
+        assert_eq!(items["Berries"], 2);
+        assert_eq!(items["Fruit"], 1);
+        assert_eq!(c.zones().len(), 2);
+    }
+}

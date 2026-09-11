@@ -33,7 +33,7 @@
 //! the record does not disturb it.
 
 use eqlparser_core::collect::{
-    ConsiderCollector, FactionCause, FactionCollector, MarkerCollector, MarkerKind,
+    ConsiderCollector, FactionCause, FactionCollector, ForageCollector, MarkerCollector, MarkerKind,
     PlayerCollector, SkillCollector, SpotCollector,
 };
 use eqlparser_core::feed::{Context, Observer};
@@ -63,6 +63,9 @@ pub const SPAWN_RADIUS: f64 = 15.0;
 /// would make a diff of the two report a difference that is not there.
 pub const PLAYERS_NOTE: &str = "Player characters named by /who, read straight from the log.";
 pub const CONSIDER_NOTE: &str = "Levels and rare markers read from consider lines.";
+pub const FORAGE_NOTE: &str =
+    "What forage yielded, per zone, with the attempts that yielded nothing. A zone \
+     with no items is a zone that was foraged in and gave up none.";
 pub const FACTION_NOTE: &str = "Which creatures and hand-ins move which factions.";
 pub const SPOTS_NOTE: &str = "Creature positions from a /loc taken over its corpse. \
                               Many rows per creature is the shape: a creature with \
@@ -96,9 +99,10 @@ pub fn kind_of(word: &str) -> &'static str {
     }
 }
 
-/// The six collectors the engine drives alongside its own trackers.
+/// The seven collectors the engine drives alongside its own trackers.
 pub struct Record {
     consider: ConsiderCollector,
+    forage: ForageCollector,
     faction: FactionCollector,
     players: PlayerCollector,
     skills: SkillCollector,
@@ -116,6 +120,7 @@ impl Record {
     pub fn new() -> Record {
         Record {
             consider: ConsiderCollector::new(),
+            forage: ForageCollector::new(),
             faction: FactionCollector::new(),
             players: PlayerCollector::new(),
             skills: SkillCollector::new(),
@@ -141,9 +146,10 @@ impl Record {
         }
     }
 
-    fn observers(&mut self) -> [&mut dyn Observer; 6] {
+    fn observers(&mut self) -> [&mut dyn Observer; 7] {
         [
             &mut self.consider,
+            &mut self.forage,
             &mut self.faction,
             &mut self.players,
             &mut self.skills,
@@ -159,6 +165,7 @@ impl Record {
     pub fn settle(&self, player: &str, game: Game, zone: Option<&str>) -> Settled {
         let mut s = Settled {
             consider: self.consider.clone(),
+            forage: self.forage.clone(),
             faction: self.faction.clone(),
             players: self.players.clone(),
             skills: self.skills.clone(),
@@ -174,6 +181,7 @@ impl Record {
         };
         for o in [
             &mut s.consider as &mut dyn Observer,
+            &mut s.forage,
             &mut s.faction,
             &mut s.players,
             &mut s.skills,
@@ -189,6 +197,7 @@ impl Record {
 /// A settled copy of the record, safe to report off.
 pub struct Settled {
     pub consider: ConsiderCollector,
+    pub forage: ForageCollector,
     pub faction: FactionCollector,
     pub players: PlayerCollector,
     pub skills: SkillCollector,
@@ -205,6 +214,7 @@ impl Settled {
         Reports {
             players: self.players(source),
             consider: self.consider(source),
+            forage: self.forage(source),
             faction: self.faction(source),
             spots: self.spots(source),
             carto: self.carto(source),
@@ -255,6 +265,42 @@ impl Settled {
                     considers: r.considers(),
                 })
                 .collect(),
+        }
+    }
+
+    /// What forage has yielded, per zone.
+    ///
+    /// Zones with no success are kept. "Nobody has ever foraged anything in
+    /// Nagafen's Lair, in four attempts" is a statement about the zone, and
+    /// dropping the empty rows would turn it into silence — the same reason
+    /// the failure count is collected at all.
+    pub fn forage(&self, source: &str) -> ForageReport {
+        ForageReport {
+            note: FORAGE_NOTE,
+            source: source.to_string(),
+            zones: self
+                .forage
+                .zones()
+                .iter()
+                .map(|(zone, z)| ForageZoneRow {
+                    zone: zone.clone(),
+                    game: GAME_TAG,
+                    attempts: z.attempts(),
+                    hits: z.hits(),
+                    empty: z.empty,
+                    first_seen: z.first,
+                    last_seen: z.last,
+                    items: z
+                        .found
+                        .iter()
+                        .map(|(item, times)| ForagedItem {
+                            item: item.clone(),
+                            times: *times,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            unplaced: self.forage.homeless,
         }
     }
 
@@ -397,6 +443,7 @@ impl Settled {
 pub struct Reports {
     pub players: PlayersReport,
     pub consider: ConsiderReport,
+    pub forage: ForageReport,
     pub faction: FactionReport,
     pub spots: SpotsReport,
     pub carto: CartoReport,
@@ -424,6 +471,33 @@ pub struct ConsiderReport {
     pub note: &'static str,
     pub source: String,
     pub considers: Vec<ConsiderRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForageReport {
+    pub note: &'static str,
+    pub source: String,
+    pub zones: Vec<ForageZoneRow>,
+    /// Attempts made before the log announced any zone.
+    pub unplaced: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForageZoneRow {
+    pub zone: String,
+    pub game: &'static str,
+    pub attempts: u64,
+    pub hits: u64,
+    pub empty: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub items: Vec<ForagedItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForagedItem {
+    pub item: String,
+    pub times: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

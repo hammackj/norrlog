@@ -86,6 +86,8 @@ enum RuleId {
     AchievementEarned,
     CraftSuccess,
     CraftFailure,
+    ForageSuccess,
+    ForageFailure,
     ComponentConsumed,
     ItemPurchased,
     MerchantQuotePer,
@@ -561,6 +563,22 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::CraftFailure,
         r"^You lacked the skills to fashion (?P<item>.+?)\.$",
+    ),
+    // ---- Forage -------------------------------------------------------------
+    // "You have scrounged up Pod of Water."
+    //
+    // No article, on any of the 33 in this log: the client prints the item's
+    // name exactly as the database holds it, which is what makes these worth
+    // recording against a zone without a cleaning pass first.
+    (
+        RuleId::ForageSuccess,
+        r"^You have scrounged up (?P<item>.+?)\.$",
+    ),
+    // "You fail to locate any food nearby." — the attempt that found nothing,
+    // and the denominator for everything the success line says.
+    (
+        RuleId::ForageFailure,
+        r"^You fail to locate any food nearby\.$",
     ),
     // "Consumed 1 x Fenugreek (leaving 314) from your personal depot."
     (
@@ -1281,6 +1299,10 @@ impl Parser {
                     item: g("item").unwrap_or_default().to_string(),
                     success: false,
                 },
+                RuleId::ForageSuccess => Event::Forage {
+                    item: Some(g("item").unwrap_or_default().trim().to_string()),
+                },
+                RuleId::ForageFailure => Event::Forage { item: None },
                 RuleId::ComponentConsumed => Event::ComponentConsumed {
                     item: g("item").unwrap_or_default().to_string(),
                     quantity: num("qty"),

@@ -86,6 +86,7 @@ use eqlparser_core::bundle::{
     Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
     DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
     VendorRow,
+    ForagedItem as BundleForagedItem, ZoneForaged,
     ZoneMarker, ZoneShortname, NEVER_CLEARED, TABLE_SOURCES,
 };
 use eqlparser_core::game::Game;
@@ -171,6 +172,27 @@ pub fn build(
         .generated_by(concat!("eqlparserd ", env!("CARGO_PKG_VERSION")));
 
     let reports = store.record_reports(crate::record::GAME_TAG)?;
+
+    // Forage. Zones with no successes travel too: see `ZoneForaged`.
+    b.forage = reports
+        .forage
+        .zones
+        .into_iter()
+        .map(|z| ZoneForaged {
+            zone: z.zone,
+            items: z
+                .items
+                .into_iter()
+                .map(|i| BundleForagedItem {
+                    item: i.item,
+                    times: i.times,
+                })
+                .collect(),
+            empty: z.empty,
+            first_seen: z.first_seen,
+            last_seen: z.last_seen,
+        })
+        .collect();
 
     b.considers = reports
         .consider
@@ -422,6 +444,9 @@ fn rows_in(b: &Bundle, table: &str) -> usize {
         "faction_hits" => b.faction_hits.len(),
         "turnins" => b.turnins.len(),
         "considers" => b.considers.len(),
+        // One row per zone, not per item: the panel counts what the ingest
+        // writes, and a zone with no items still writes one.
+        "forage" => b.forage.len(),
         "spawn_rules" => b.spawn_rules.len(),
         "item_icons" => b.item_icons.len(),
         "zone_roster" => b.zone_roster.len(),

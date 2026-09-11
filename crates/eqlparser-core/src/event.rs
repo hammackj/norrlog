@@ -561,6 +561,15 @@ pub enum Event {
     /// The client never names the tradeskill here — see [`crate::tradeskill`]
     /// for how it is attributed.
     Craft { item: String, success: bool },
+    /// A forage attempt resolved. `None` is the failure.
+    ///
+    /// The success line names the item and nothing else — not the zone, not
+    /// the skill, not whose it was. Forage is self-only, so the actor is the
+    /// log's owner by construction, and the zone comes from the feed's
+    /// context. Success and failure are one event because the interesting
+    /// number is the ratio: what a zone yields is only half of it, and how
+    /// often it yields nothing is the other.
+    Forage { item: Option<String> },
     /// A component was consumed by a combine.
     ComponentConsumed {
         item: String,
