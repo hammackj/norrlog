@@ -801,4 +801,48 @@ mod tests {
             );
         }
     }
+
+    /// The panel groups tables by verdict, and it does it with one `filter`
+    /// per group --- which drops anything it does not match instead of
+    /// complaining. So a verdict the enum renames and the panel does not is
+    /// silent by construction.
+    ///
+    /// That is not hypothetical. `Verdict::Merges` serialises `"merges"`, the
+    /// panel filtered for `"adds-only"`, and on 10 Sep 2026 the inspector
+    /// showed the 25 tables carrying nothing and hid all 17 carrying rows ---
+    /// 49,383 of them, including every drop, kill and creature. The bundle it
+    /// was describing was fine; the description had a hole in it.
+    ///
+    /// The panel has a catch-all group now, so the next one is loud rather
+    /// than invisible. This is the other half: the names are checked against
+    /// each other rather than trusted to stay in step.
+    #[test]
+    fn every_verdict_has_a_group_in_the_panel() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        // The daemon is usable without the desktop app beside it.
+        let Ok(js) = std::fs::read_to_string(root.join("gui/renderer/bundle.js")) else {
+            return;
+        };
+
+        for v in [
+            Verdict::Replaces,
+            Verdict::Merges,
+            Verdict::Deletes,
+            Verdict::Absent,
+        ] {
+            // Through serde, so the test reads the name the panel actually
+            // receives rather than one spelled out twice here.
+            let name = serde_json::to_string(&v).expect("verdict serialises");
+            let name = name.trim_matches('"');
+            assert!(
+                js.contains(&format!("key: \"{name}\"")),
+                "the daemon sends the verdict {name:?} and gui/renderer/bundle.js \
+                 has no group with that key --- every table with that verdict is \
+                 dropped from the inspector without a word"
+            );
+        }
+    }
 }
