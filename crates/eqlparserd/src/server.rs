@@ -1657,12 +1657,20 @@ async fn bundle_send(State(state): State<AppState>) -> impl IntoResponse {
     match sent {
         Ok(v) => Json(serde_json::json!({
             "ok": true,
+            // What happens next is a person reading it, not a command. The
+            // message used to name `deploy/worker.sh --bundles`, which is
+            // wrong twice: it skips the gate -- an upload is admitted by
+            // somebody logged in at /bundles, and the worker ingests only
+            // what has been admitted -- and it hands an operator command to
+            // a contributor who has no shell on that server and could do
+            // nothing with it.
             "said": format!(
-                "{} rows sent to {} as {} KB. It is filed, not ingested — somebody \
-                 runs `deploy/worker.sh --bundles` on the server next.",
+                "{} rows sent to {} as {} KB. Pending review: it is filed and waiting \
+                 for somebody to accept it at {}/bundles before anything is ingested.",
                 p.rows,
                 site.base(),
                 sent_bytes.div_ceil(1024),
+                site.base(),
             ),
             "rows": p.rows,
             "bytes": json.len(),
