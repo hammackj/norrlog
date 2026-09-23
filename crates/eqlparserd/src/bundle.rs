@@ -171,6 +171,10 @@ pub fn build(
     let mut b = Bundle::new(contributor.trim(), now)
         .generated_by(concat!("eqlparserd ", env!("CARGO_PKG_VERSION")));
 
+    // Only what was played: not the test server, not a fixture under /tmp.
+    // Everything below reads through these views; see `Store::played_only`.
+    let _played = store.played_only()?;
+
     let reports = store.record_reports(crate::record::GAME_TAG)?;
 
     // Forage. Zones with no successes travel too: see `ZoneForaged`.

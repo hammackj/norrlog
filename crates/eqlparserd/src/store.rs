@@ -172,6 +172,25 @@ pub struct QuestLine {
     pub text: String,
 }
 
+/// Servers whose logs are not the game being played. The test server runs
+/// changes before they ship, and not all of them ship. The same list as
+/// eqldb's `UNPLAYED_SERVERS`, which refuses a bundle built from one.
+pub const UNPLAYED_SERVERS: &[&str] = &["test"];
+
+/// What [`Store::played_only`] returns. Dropping it drops the views.
+pub struct PlayedOnly<'a> {
+    conn: &'a Connection,
+    views: Vec<String>,
+}
+
+impl Drop for PlayedOnly<'_> {
+    fn drop(&mut self) {
+        for v in &self.views {
+            let _ = self.conn.execute_batch(&format!("DROP VIEW IF EXISTS temp.\"{v}\""));
+        }
+    }
+}
+
 /// The persistent history database.
 pub struct Store {
     conn: Connection,
@@ -2645,6 +2664,68 @@ impl Store {
         Ok(())
     }
 
+    /// Hide what nobody played from this connection, until the guard drops.
+    ///
+    /// For building a bundle. The history follows every log it is pointed at,
+    /// and on 23 Sep 2026 that was the test server and six fixture logs under
+    /// Claude scratchpads beside the real ones -- all of which the bundles of
+    /// 10--12 Sep sent to eqldb as the operator's own play: 2,728 drop
+    /// pairings and 522 kill tallies from `eqlog_Brennagh_test.txt` alone.
+    /// eqldb now refuses such a bundle outright, because once built its totals
+    /// cannot be taken apart.
+    ///
+    /// Done as TEMP views named after the tables, rather than a filter added
+    /// to each query. A temp view shadows the main table for every
+    /// unqualified name on this connection, so every statement the builder
+    /// runs -- and any added later -- reads only what was played, while the
+    /// daemon's own pages, which read the same functions on other calls, keep
+    /// seeing everything. The views are this connection's alone and go when
+    /// the guard does.
+    ///
+    /// Two rules, the same two eqldb refuses on: a server in
+    /// [`UNPLAYED_SERVERS`], and a log read out of `/tmp`. Tables are found by
+    /// their `server` column rather than listed, so a new one is covered.
+    pub fn played_only(&self) -> Result<PlayedOnly<'_>> {
+        let servers = UNPLAYED_SERVERS
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tables: Vec<(String, bool)> = self
+            .conn
+            .prepare(
+                "SELECT m.name, SUM(p.name = 'source') > 0
+                   FROM sqlite_master m JOIN pragma_table_info(m.name) p
+                  WHERE m.type = 'table' AND p.name IN ('server', 'source')
+                  GROUP BY m.name HAVING SUM(p.name = 'server') > 0",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut guard = PlayedOnly { conn: &self.conn, views: Vec::new() };
+        for (table, has_source) in tables {
+            let scratch = if has_source { " AND source NOT LIKE '/tmp/%'" } else { "" };
+            self.conn.execute_batch(&format!(
+                "DROP VIEW IF EXISTS temp.\"{table}\";
+                 CREATE TEMP VIEW \"{table}\" AS SELECT * FROM main.\"{table}\"
+                  WHERE lower(server) NOT IN ({servers}){scratch}"
+            ))?;
+            guard.views.push(table);
+        }
+        // `sources` has only the path. The server is in the file name, which
+        // is where `identity_from_filename` reads it for the bundle.
+        let test_names: String = UNPLAYED_SERVERS
+            .iter()
+            .map(|s| format!(" AND lower(path) NOT LIKE '%\\_{s}.txt' ESCAPE '\\'"))
+            .collect();
+        self.conn.execute_batch(&format!(
+            "DROP VIEW IF EXISTS temp.sources;
+             CREATE TEMP VIEW sources AS SELECT * FROM main.sources
+              WHERE path NOT LIKE '/tmp/%'{test_names}"
+        ))?;
+        guard.views.push("sources".to_string());
+        Ok(guard)
+    }
+
     pub fn sources(&self) -> Result<Vec<(String, i64, i64)>> {
         let mut stmt = self
             .conn
@@ -2796,6 +2877,51 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bundle carries only what was played, and the daemon's own reads do
+    /// not change.
+    #[test]
+    fn a_bundle_leaves_out_the_test_server_and_scratch_logs() {
+        let s = Store::in_memory().unwrap();
+        for (server, source, item, n) in [
+            ("freeport", "/mnt/Logs/eqlog_Tharn_freeport.txt", "Rusty Dagger", 3),
+            ("test", "/mnt/Logs/eqlog_Brennagh_test.txt", "Rusty Dagger", 5),
+            ("freeport", "/tmp/scratch/eqlog_Capped_freeport.txt", "Bone Chips", 7),
+        ] {
+            s.conn
+                .execute(
+                    "INSERT INTO item_drops (game, character, server, source, item, npc,
+                                             zones, looted, quantity, first_seen, last_seen)
+                     VALUES ('everquest-legends', 'X', ?1, ?2, ?3, 'a skeleton', '', ?4, ?4, 1, 2)",
+                    params![server, source, item, n],
+                )
+                .unwrap();
+            s.conn
+                .execute(
+                    "INSERT INTO npc_kills (game, character, server, source, npc, kills)
+                     VALUES ('everquest-legends', 'X', ?1, ?2, 'a skeleton', ?3)",
+                    params![server, source, n],
+                )
+                .unwrap();
+            s.conn
+                .execute(
+                    "INSERT INTO sources (path, last_seen, bytes) VALUES (?1, 2, 1)",
+                    params![source],
+                )
+                .unwrap();
+        }
+        let b = crate::bundle::build(&s, None, "hammackj", 10).unwrap();
+        let drops: Vec<(String, u64)> = b.drops.iter().map(|d| (d.item.clone(), d.looted)).collect();
+        assert_eq!(drops, [("Rusty Dagger".to_string(), 3)]);
+        assert_eq!(b.kills.iter().map(|k| k.kills).sum::<u64>(), 3);
+        let logs: Vec<&str> = b.logs.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(logs, ["/mnt/Logs/eqlog_Tharn_freeport.txt"]);
+
+        // Gone with the guard: the daemon's own pages still see every log.
+        let all: u64 = s.all_drops().unwrap().iter().map(|d| d.4).sum();
+        assert_eq!(all, 15);
+        assert_eq!(s.sources().unwrap().len(), 3);
+    }
 
     /// A record built the way the engine builds one, so these exercise the
     /// real collectors rather than hand-written rows.
