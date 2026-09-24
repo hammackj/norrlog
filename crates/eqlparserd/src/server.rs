@@ -81,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", get(tasks).post(define_task))
         .route("/api/builds", get(builds))
         .route("/api/history", get(history))
+        .route("/api/raid-kills", get(raid_kills))
         .route("/api/logs", get(logs))
         .route("/api/class-levels", get(class_levels).post(set_class_level))
         .route("/api/aa-spent", post(set_aa_spent))
@@ -2467,6 +2468,68 @@ async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
         })).collect::<Vec<_>>(),
         "counts": { "kills": nk, "encounters": ne, "levels": nl },
     }))
+}
+
+/// Every raid boss kill on file, for the site's leaderboard.
+///
+/// # Why this is served and not exported to a file
+///
+/// Because the daemon owns `history.db` and is holding it open in WAL mode.
+/// Reading it from another process while this one is appending is the kind of
+/// thing that works until it does not, and the failure is a short read rather
+/// than an error. Asking the owner is free.
+///
+/// # Why it is unscoped
+///
+/// Every other reader here wants the character being followed. This one wants
+/// all of them: the leaderboard compares builds, and on this machine four of
+/// the nine builds on file belong to a character nobody is playing. Scoping it
+/// to the current one would silently publish a leaderboard missing half its
+/// history, which is worse than one that is plainly incomplete.
+///
+/// The boss names are the parser's own. Reconciling them with the bestiary's
+/// spelling — `Innoruuk` against `Innoruuk, the Prince of Hate` — happens at
+/// the other end, in `eqldb-ingest`, where the bestiary is. A daemon that knew
+/// the site's spellings would be a daemon that has to be redeployed when the
+/// site renames a creature.
+///
+///     curl -s localhost:PORT/api/raid-kills > kills.json
+///     eqldb-ingest --raid-kills kills.json
+async fn raid_kills(State(s): State<AppState>) -> Response {
+    let Some(store) = &s.store else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "history database unavailable, so there is nothing durable to export",
+        )
+            .into_response();
+    };
+    let st = store.locked("history");
+    // The same rule a bundle obeys: nothing from the test server or a scratch
+    // log reaches the site. See `Store::played_only`.
+    let _played = match st.played_only() {
+        Ok(g) => g,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let kills = match st.exported_kills() {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let scopes = match st.kill_scopes() {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    // How many kills could not be placed in a fight. Reported rather than left
+    // to be counted at the far end, because this is the side that knows why:
+    // the encounter was pruned, or the kill predates the encounter table.
+    let orphans = kills.iter().filter(|k| k.enc_start == 0).count();
+    Json(serde_json::json!({
+        "covers": scopes.iter().map(|(c, sv)| serde_json::json!({
+            "character": c, "server": sv,
+        })).collect::<Vec<_>>(),
+        "kills": kills,
+        "orphans": orphans,
+    }))
+    .into_response()
 }
 
 /// Captured NPC interactions, the raw material for a quest write-up.

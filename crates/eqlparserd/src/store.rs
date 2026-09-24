@@ -50,6 +50,47 @@ pub struct StoredKill {
     pub your_dps: f64,
 }
 
+/// One boss kill, with the fight it happened in, for export to eqldb.
+///
+/// # Why this exists beside `StoredKill`
+///
+/// `StoredKill` is scoped to the character the daemon is currently following,
+/// because every other reader of this store wants exactly that. An export
+/// wants the opposite: every character on file, because the leaderboard is a
+/// comparison across builds and half the builds on this machine belong to a
+/// character nobody is playing today.
+///
+/// It also carries the containing encounter. The site it goes to does not hold
+/// fights — they are on the never-copy list there, on purpose — so the figures
+/// a kill page can show have to travel with the kill or not at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportedKill {
+    pub character: String,
+    pub server: String,
+    /// The moment the boss died. Not the fight's start, which is `enc_start`.
+    pub at: i64,
+    pub boss: String,
+    pub difficulty: u8,
+    pub solo: bool,
+    pub zone: String,
+    pub build: String,
+    /// The *finished* encounter's length. Deliberately not `boss_kills.duration`
+    /// -- that is `parser_seconds` below, and it is frequently a snapshot taken
+    /// while the fight was still running.
+    pub duration: i64,
+    /// What `boss_kills` recorded, carried so the far end can see the two
+    /// disagree rather than being handed one number and no way to check it.
+    pub parser_seconds: i64,
+    pub your_damage: i64,
+    pub your_dps: f64,
+    pub enc_start: i64,
+    pub enc_end: i64,
+    pub enc_title: String,
+    pub total_damage: i64,
+    pub enc_kills: i64,
+    pub deaths: i64,
+}
+
 /// One completed fight, kept for per-raid averages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEncounter {
@@ -2761,6 +2802,112 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every boss kill on file, every character, with its fight.
+    ///
+    /// Unscoped, unlike [`Self::kills`], and that is the whole point — see
+    /// [`ExportedKill`]. Oldest first, because an export is read as a record
+    /// and a record reads forwards.
+    ///
+    /// # The join
+    ///
+    /// A kill is matched to the encounter whose span contains it. The parser
+    /// already did this once, when the kill was recorded — `duration`,
+    /// `your_damage` and `your_dps` on the row came from exactly this match —
+    /// so this is not a second opinion; it is recovering the rest of the
+    /// columns from the same row. `LEFT JOIN`, because a kill whose encounter
+    /// has since been pruned is still a kill, and dropping it here would make
+    /// the export quietly smaller than the history it claims to be.
+    ///
+    /// # Picking one encounter out of several
+    ///
+    /// A kill can sit inside more than one stored encounter, and on this
+    /// machine 46 of 198 do. Two causes, and they need different care.
+    ///
+    /// The first is re-titling: a growing pull is stored again under a new
+    /// title -- `a Pickclaw Arroweater`, then `(+3 more)`, then `(+7 more)` --
+    /// and the primary key is `(character, server, start, title)`, so every
+    /// re-title is a new row at the same start. Sixteen of them on one fight.
+    ///
+    /// The second is overlap, and it is the dangerous one. A fight beginning
+    /// at the instant the boss dies contains the kill by a `BETWEEN`: the
+    /// Innoruuk kill at 1786543026 is inside `Innoruuk\`s Chosen`, which
+    /// starts exactly then and is plainly the *next* fight. An obvious
+    /// `MAX(start)` rule picks it every time.
+    ///
+    /// So the pick prefers, in order: the encounter whose own figures match
+    /// what the kill row recorded -- which identifies it exactly, since those
+    /// figures were copied from it; then one ending at the kill; then one that
+    /// had already started; then the tightest span. 169 of 198 are settled by
+    /// the first test alone, and the rest are the rows whose stored figure was
+    /// a mid-fight snapshot and matches nothing.
+    pub fn exported_kills(&self) -> Result<Vec<ExportedKill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT k.character, k.server, k.timestamp, k.boss, k.difficulty,
+                    k.solo, k.zone, k.build,
+                    COALESCE(e.duration, k.duration), k.duration,
+                    k.your_damage, k.your_dps,
+                    COALESCE(e.start, 0), COALESCE(e.end, 0),
+                    COALESCE(e.title, ''), COALESCE(e.total_damage, 0),
+                    COALESCE(e.kills, 0), COALESCE(e.deaths, 0)
+               FROM boss_kills k
+               LEFT JOIN encounters e
+                 ON e.character = k.character AND e.server = k.server
+                AND (e.start, e.title) = (
+                      SELECT x.start, x.title FROM encounters x
+                       WHERE x.character = k.character AND x.server = k.server
+                         AND k.timestamp BETWEEN x.start AND x.end
+                       ORDER BY (x.duration = k.duration
+                                 AND x.your_damage = k.your_damage) DESC,
+                                (x.end = k.timestamp) DESC,
+                                (x.start < k.timestamp) DESC,
+                                (x.end - x.start) ASC,
+                                x.title ASC
+                       LIMIT 1)
+              ORDER BY k.timestamp ASC, k.boss ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ExportedKill {
+                    character: r.get(0)?,
+                    server: r.get(1)?,
+                    at: r.get(2)?,
+                    boss: r.get(3)?,
+                    difficulty: r.get(4)?,
+                    solo: r.get::<_, i64>(5)? != 0,
+                    zone: r.get(6)?,
+                    build: r.get(7)?,
+                    duration: r.get(8)?,
+                    parser_seconds: r.get(9)?,
+                    your_damage: r.get(10)?,
+                    your_dps: r.get(11)?,
+                    enc_start: r.get(12)?,
+                    enc_end: r.get(13)?,
+                    enc_title: r.get(14)?,
+                    total_damage: r.get(15)?,
+                    enc_kills: r.get(16)?,
+                    deaths: r.get(17)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every (character, server) that has a boss kill on file.
+    ///
+    /// The export declares this as its scope, so the ingest knows what it is
+    /// allowed to replace. Derived from the kills rather than from the logs:
+    /// the claim being made is "this is the whole of what I have for these
+    /// characters", and only the kills can support it.
+    pub fn kill_scopes(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT character, server FROM boss_kills ORDER BY character, server",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn levels(&self) -> Result<Vec<StoredLevel>> {
         let mut stmt = self.conn.prepare(
             "SELECT level, started, ended, seconds, kills, percent, build, zones
@@ -2921,6 +3068,32 @@ mod tests {
         let all: u64 = s.all_drops().unwrap().iter().map(|d| d.4).sum();
         assert_eq!(all, 15);
         assert_eq!(s.sources().unwrap().len(), 3);
+    }
+
+    /// The raid-kill export obeys the same guard as a bundle.
+    ///
+    /// The history on this machine holds 46 test-server kills of Brennagh's,
+    /// and the first export sent every one of them to the site.
+    #[test]
+    fn the_raid_kill_export_leaves_out_the_test_server() {
+        let s = Store::in_memory().unwrap();
+        for (at, character, server) in [(100, "Tharn", "freeport"), (200, "Brennagh", "test")] {
+            s.conn
+                .execute(
+                    "INSERT INTO boss_kills (timestamp, boss, difficulty, character, server)
+                     VALUES (?1, 'Lady Vox', 0, ?2, ?3)",
+                    params![at, character, server],
+                )
+                .unwrap();
+        }
+        {
+            let _played = s.played_only().unwrap();
+            let kills: Vec<String> =
+                s.exported_kills().unwrap().into_iter().map(|k| k.character).collect();
+            assert_eq!(kills, ["Tharn"]);
+            assert_eq!(s.kill_scopes().unwrap(), [("Tharn".to_string(), "freeport".to_string())]);
+        }
+        assert_eq!(s.exported_kills().unwrap().len(), 2, "unguarded, the daemon sees both");
     }
 
     /// A record built the way the engine builds one, so these exercise the
