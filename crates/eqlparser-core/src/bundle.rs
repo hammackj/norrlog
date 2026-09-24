@@ -1175,6 +1175,7 @@ pub struct ItemFacts {
     pub ruleset: String,
     /// The grade these values were observed at. 0 is an ungraded base item.
     #[serde(default)]
+    #[serde(deserialize_with = "whole_of")]
     pub tier: u8,
     /// How this was established: "screenshot" today.
     #[serde(default)]
@@ -1255,11 +1256,11 @@ pub struct ItemFacts {
     #[serde(default)]
     pub skill: String,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_opt")]
     pub base_dmg: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_opt")]
     pub delay: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_opt")]
     pub dmg_bon: Option<u32>,
     /// The tooltip prints this, and it must equal `base_dmg / delay`. That
     /// redundancy is the whole reason it is carried: see
@@ -1351,7 +1352,7 @@ pub struct ItemFacts {
     /// not that the item has no lore.
     #[serde(default)]
     pub lore: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_opt")]
     pub value_copper: Option<u64>,
     /// The Value line as the window printed it — "3 platinum 4 gold 2 silver
     /// 9 copper", or "absolutely nothing" for an item worth none.
@@ -1383,7 +1384,7 @@ pub struct ItemFacts {
     /// This records what the window actually said, because a disagreement
     /// between the two is evidence about one of them and discarding it means
     /// discovering it again later.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub tier_observed: Option<u8>,
     #[serde(default)]
     pub tier_note: String,
@@ -1400,22 +1401,22 @@ pub struct ItemFacts {
     /// interpreting it is not this struct's job.
     #[serde(default)]
     pub container: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub capacity: Option<u32>,
     #[serde(default)]
     pub size_capacity: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub weight_reduction: Option<u32>,
 
     /// Damage the window states separately from `base_dmg`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub backstab_dmg: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub fire_dmg: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub cold_dmg: Option<u32>,
     /// A bow or thrown weapon's range.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
     pub range: Option<u32>,
 
     /// Deities the item is restricted to, as `classes` and `races` are.
@@ -1572,13 +1573,109 @@ pub struct Augment {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ItemStat {
     pub name: String,
+    /// Deserialised through [`whole_number`] rather than as a plain `i64`,
+    /// because the readers upstream do not all agree that a stat is an
+    /// integer. A tooltip that says `AGI 6` has arrived as `6.0` often
+    /// enough to stop two accepted readings reaching their item pages:
+    ///
+    /// ```text
+    /// invalid type: floating point `6.0`, expected i64
+    /// ```
+    ///
+    /// Six-point-zero *is* six, and refusing it loses a reading somebody
+    /// photographed, transcribed and approved over a JSON spelling. What is
+    /// still refused is `6.5`: a stat with a fraction in it is a misread, and
+    /// silently truncating it would put a number on a page that no tooltip
+    /// ever showed.
+    #[serde(deserialize_with = "whole_number")]
     pub value: i64,
     /// The heroic half, where the tooltip shows one: EverQuest writes
     /// "Strength: 42 +19", two numbers for one line. Legends has no such
     /// thing, so this is absent on every reading taken there rather than
     /// zero — a zero would claim the tooltip said "+0", which it did not.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none",
+            deserialize_with = "whole_opt")]
     pub heroic: Option<i64>,
+}
+
+/// An integer, written as an integer or as a float that is one.
+///
+/// # Why this is not `#[serde(flatten)]` or a plain `i64`
+///
+/// Because the number arrives from several readers and one of them prints
+/// `6.0`. That is the same quantity as `6`, and the only thing a strict `i64`
+/// buys is a refusal whose cost falls on a person: the reading was taken,
+/// checked and accepted, and then did not appear on the item's page.
+///
+/// A fraction is a different matter and is still an error. `6.5` is not a
+/// stat EverQuest prints, so it is a misread of the crop; accepting it by
+/// truncation would publish `6` on the authority of a picture that said
+/// something else. The same goes for a float too large to be an `i64`.
+fn whole_number<'de, D>(d: D) -> std::result::Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                return Ok(i);
+            }
+            let f = n.as_f64().ok_or_else(|| {
+                D::Error::custom(format!("{n} is not a number this can hold"))
+            })?;
+            if f.fract() != 0.0 {
+                return Err(D::Error::custom(format!(
+                    "{f} is not a whole number, and a stat with a fraction in it is a misread rather than a value to round"
+                )));
+            }
+            if f < i64::MIN as f64 || f > i64::MAX as f64 {
+                return Err(D::Error::custom(format!("{f} is too large to be a stat")));
+            }
+            Ok(f as i64)
+        }
+        other => Err(D::Error::custom(format!(
+            "expected a number, found {other}"
+        ))),
+    }
+}
+
+/// [`whole_number`], narrowed to whatever integer the field actually is.
+///
+/// Every count on a tooltip goes through here -- damage, delay, capacity,
+/// range, the coin value -- and not only the stat block. `stats.value` was
+/// fixed alone first, which would have held exactly until a reader printed
+/// `28.0` for a delay: twelve other fields on this struct are integers and
+/// all twelve refused a whole float in the same way, for the same reason,
+/// with the same cost to the person who took the photograph.
+///
+/// The narrowing is `TryFrom`, so a negative into a `u32` is still an error
+/// rather than a very large number.
+fn whole_of<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: std::fmt::Display,
+{
+    use serde::de::Error as _;
+    let n = whole_number(d)?;
+    T::try_from(n).map_err(|e| D::Error::custom(format!("{n} does not fit here: {e}")))
+}
+
+/// [`whole_of`], for the optional fields. `null` and absent are both `None`.
+fn whole_opt<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: std::fmt::Display,
+{
+    use serde::de::Error as _;
+    match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => whole_of::<_, T>(v)
+            .map(Some)
+            .map_err(|e: serde_json::Error| D::Error::custom(e.to_string())),
+    }
 }
 
 /// What killing one creature does to one faction.
@@ -2393,6 +2490,139 @@ pub fn read_identified(path: &std::path::Path) -> anyhow::Result<(Bundle, String
         .with_context(|| format!("parsing {} as a contribution bundle", path.display()))?;
     let id = bundle_id(&bytes);
     Ok((doc, id))
+}
+
+#[cfg(test)]
+mod stat_value_tests {
+    use super::*;
+
+    fn stats_of(json: &str) -> std::result::Result<Vec<ItemStat>, String> {
+        serde_json::from_str::<ItemFacts>(json)
+            .map(|f| f.stats)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The bug two accepted readings hit on 11 Sep 2026. Both were
+    /// photographed, transcribed and approved, and neither reached its item's
+    /// page: the record said `6.0` and `7.0` where the struct said `i64`.
+    #[test]
+    fn a_stat_written_as_a_whole_float_is_the_integer_it_is() {
+        let got = stats_of(
+            r#"{"item":"Fine Steel Morning Star","stats":[
+                 {"name":"AGI","value":6.0},
+                 {"name":"STA","value":7.0},
+                 {"name":"STR","value":8},
+                 {"name":"WIS","value":-3.0}]}"#,
+        )
+        .expect("6.0 is 6, and refusing it loses a reading over a JSON spelling");
+        assert_eq!(
+            got.iter().map(|s| s.value).collect::<Vec<_>>(),
+            vec![6, 7, 8, -3],
+            "a negative whole float is a whole number too"
+        );
+    }
+
+    /// The other half of the rule, and the reason this is not a cast.
+    #[test]
+    fn a_stat_with_a_fraction_is_still_refused() {
+        let e = stats_of(r#"{"item":"X","stats":[{"name":"AGI","value":6.5}]}"#)
+            .expect_err("6.5 is not a stat EverQuest prints; it is a misread");
+        assert!(
+            e.contains("whole number"),
+            "the message should say what is wrong with it, got: {e}"
+        );
+    }
+
+    #[test]
+    fn the_heroic_half_reads_the_same_way() {
+        let got = stats_of(
+            r#"{"item":"X","stats":[{"name":"STR","value":42.0,"heroic":19.0}]}"#,
+        )
+        .expect("the heroic half is a number in the same tooltip");
+        assert_eq!((got[0].value, got[0].heroic), (42, Some(19)));
+
+        // Absent and null both stay absent: a zero would claim the tooltip
+        // said "+0", which is the distinction the field already documents.
+        let none = stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1}]}"#).unwrap();
+        assert_eq!(none[0].heroic, None);
+        let null =
+            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":null}]}"#)
+                .unwrap();
+        assert_eq!(null[0].heroic, None, "an explicit null is not a zero");
+
+        assert!(
+            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":1.5}]}"#)
+                .is_err(),
+            "a fractional heroic is a misread like any other"
+        );
+    }
+
+    /// Every integer on a tooltip, not just the stat block.
+    ///
+    /// `stats.value` was fixed on its own first. That would have held until a
+    /// reader printed `28.0` for a delay -- twelve other fields are integers
+    /// and all twelve refused a whole float the same way. Enumerated here so
+    /// a field added as an integer without the attribute fails in this test
+    /// rather than on somebody's accepted reading.
+    #[test]
+    fn every_count_on_a_tooltip_reads_a_whole_float() {
+        for (what, json) in [
+            ("tier", r#"{"item":"X","tier":2.0}"#),
+            ("base_dmg", r#"{"item":"X","base_dmg":20.0}"#),
+            ("delay", r#"{"item":"X","delay":28.0}"#),
+            ("dmg_bon", r#"{"item":"X","dmg_bon":3.0}"#),
+            ("value_copper", r#"{"item":"X","value_copper":1200.0}"#),
+            ("capacity", r#"{"item":"X","capacity":10.0}"#),
+            ("weight_reduction", r#"{"item":"X","weight_reduction":25.0}"#),
+            ("backstab_dmg", r#"{"item":"X","backstab_dmg":9.0}"#),
+            ("fire_dmg", r#"{"item":"X","fire_dmg":5.0}"#),
+            ("cold_dmg", r#"{"item":"X","cold_dmg":5.0}"#),
+            ("range", r#"{"item":"X","range":100.0}"#),
+            ("tier_observed", r#"{"item":"X","tier_observed":3.0}"#),
+        ] {
+            assert!(
+                serde_json::from_str::<ItemFacts>(json).is_ok(),
+                "{what} still refuses a whole float, so a reading carrying one \
+                 is accepted and never reaches its item page"
+            );
+        }
+    }
+
+    /// The narrowing is still a narrowing. A count that cannot be negative
+    /// stays that way, and a fraction is a misread wherever it appears.
+    #[test]
+    fn a_count_that_cannot_be_negative_still_cannot() {
+        assert!(
+            serde_json::from_str::<ItemFacts>(r#"{"item":"X","delay":-28.0}"#).is_err(),
+            "a delay of minus twenty-eight is not a reading, it is a misread"
+        );
+        assert!(
+            serde_json::from_str::<ItemFacts>(r#"{"item":"X","delay":28.5}"#).is_err(),
+            "a fractional delay is a misread like any other"
+        );
+        // And a weight really is fractional -- 0.1 stone is a real tooltip.
+        // This rule must not have widened to it.
+        let f = serde_json::from_str::<ItemFacts>(r#"{"item":"X","weight":1.5}"#)
+            .expect("weight is a decimal on the tooltip and stays one");
+        assert_eq!(f.weight, Some(1.5));
+    }
+
+    /// A stat still has to be a number. This is a widening, not an opening.
+    #[test]
+    fn a_stat_that_is_not_a_number_is_refused() {
+        assert!(stats_of(r#"{"item":"X","stats":[{"name":"AGI","value":"6"}]}"#).is_err());
+        assert!(stats_of(r#"{"item":"X","stats":[{"name":"AGI","value":null}]}"#).is_err());
+    }
+
+    /// What is written back out is an integer, so a record that came in as
+    /// `6.0` does not go on being `6.0` everywhere it is copied.
+    #[test]
+    fn it_is_written_back_as_an_integer() {
+        let got = stats_of(r#"{"item":"X","stats":[{"name":"AGI","value":6.0}]}"#).unwrap();
+        let out = serde_json::to_string(&got[0]).unwrap();
+        assert!(out.contains("\"value\":6"), "round-tripped as {out}");
+        assert!(!out.contains("6.0"), "still a float on the way out: {out}");
+    }
 }
 
 #[cfg(test)]
