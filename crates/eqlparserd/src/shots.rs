@@ -801,7 +801,12 @@ impl Reader {
                 let game = game?;
                 match eqlparser_shot::icon::Sheets::from_game(&game) {
                     Ok(s) => {
-                        eprintln!("[eqlparserd] icon matching: {} icons from {}", s.len(), game.display());
+                        eprintln!(
+                            "[eqlparserd] icon matching: {} icons, skin {}, from {}",
+                            s.len(),
+                            s.skin,
+                            game.display()
+                        );
                         Some(Arc::new(s))
                     }
                     Err(e) => {
