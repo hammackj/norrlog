@@ -71,6 +71,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+/// How many icon candidates a reading carries. The top one is often not the
+/// answer --- just under half the readings queued on 9 September matched
+/// below the site's bar --- and the runners-up turn a hunt through 13,644
+/// sprites into a choice between twelve. Twelve is what `push.py` sends.
+const ICON_CANDIDATES: usize = 12;
+
+/// A score as `push.py` sends it: four decimal places.
+fn round4(v: f32) -> f64 {
+    (v as f64 * 10_000.0).round() / 10_000.0
+}
+
 /// How often the drain runs.
 const TICK: Duration = Duration::from_secs(2);
 
@@ -369,6 +380,13 @@ pub struct Reader {
     /// The origin and the credential. Shared with the bundle sender rather
     /// than kept here: see `crate::site`.
     site: crate::site::Site,
+    /// The client's icon sheets, for matching the sprite in each window.
+    /// Loaded on the first send rather than at start: 65 MB that a daemon
+    /// which never sends anything should not be holding. `None` inside once
+    /// loading has failed, so it is tried once, not on every window.
+    icons: Arc<std::sync::OnceLock<Option<Arc<eqlparser_shot::icon::Sheets>>>>,
+    /// Where the sheets are: the game folder, or the one holding Screenshots.
+    icon_game: Option<PathBuf>,
     /// Filing, when it is on. `None` means the daemon reads screenshots and
     /// leaves them where it found them, which is what it did before this
     /// existed and what `--no-archive` asks for.
@@ -553,7 +571,12 @@ impl Reader {
                 }
             }
         };
+        let icon_game = game_dir
+            .map(Path::to_path_buf)
+            .or_else(|| shots.parent().map(Path::to_path_buf));
         Ok(Reader {
+            icons: Arc::new(std::sync::OnceLock::new()),
+            icon_game,
             read: Arc::new(Mutex::new(read)),
             lead: Arc::new(Mutex::new(None)),
             shots,
@@ -730,6 +753,27 @@ impl Reader {
             "reader": "eqlparserd",
             "read_at": now(),
         });
+        // Which sprite the window drew, the way `ocr/push.py` attaches it.
+        // Without it an editor accepting the reading gets the tooltip and no
+        // icon, and the item stays on the wanted list for want of a picture
+        // it was already sent: 42 readings in review on 11 November had
+        // arrived from here with none. Best effort, as there: a failed match
+        // costs the icon, not the reading.
+        if let (Some(r), Some(map)) = (self.match_icon(&w.crop_path).await, reading.as_object_mut()) {
+            if let Some(&(icon, _)) = r.candidates.first() {
+                map.insert("icon".into(), icon.into());
+                map.insert("icon_score".into(), round4(r.score).into());
+                map.insert("icon_gap".into(), round4(r.gap).into());
+                map.insert(
+                    "icon_candidates".into(),
+                    r.candidates
+                        .iter()
+                        .map(|&(n, sc)| serde_json::json!([n, round4(sc)]))
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+            }
+        }
         // Omitted rather than sent as null where there is nothing to say:
         // `Reading::onsite` is an `Option`, and the page tells "no comparison
         // was made" from "a comparison that found nothing" by its absence.
@@ -746,6 +790,37 @@ impl Reader {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("queued")
             .to_string())
+    }
+
+    /// Rank the client's icon sheets against one crop. Off the async
+    /// runtime: the match is a couple of seconds of arithmetic.
+    async fn match_icon(&self, crop: &str) -> Option<eqlparser_shot::icon::Rank> {
+        let (icons, game, crop) = (Arc::clone(&self.icons), self.icon_game.clone(), PathBuf::from(crop));
+        let done = tokio::task::spawn_blocking(move || {
+            let sheets = icons.get_or_init(|| {
+                let game = game?;
+                match eqlparser_shot::icon::Sheets::from_game(&game) {
+                    Ok(s) => {
+                        eprintln!("[eqlparserd] icon matching: {} icons from {}", s.len(), game.display());
+                        Some(Arc::new(s))
+                    }
+                    Err(e) => {
+                        eprintln!("[eqlparserd] icon matching off: {e}");
+                        None
+                    }
+                }
+            });
+            let sheets = sheets.as_ref()?;
+            match sheets.rank_file(&crop, ICON_CANDIDATES) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[eqlparserd] icon match failed for {}: {e}", crop.display());
+                    None
+                }
+            }
+        })
+        .await;
+        done.ok().flatten()
     }
 
     /// Keep one book page, and say what happened to it.
@@ -1470,6 +1545,8 @@ mod tests {
     /// is either the network or a subprocess, and `file_at` touches neither.
     pub(super) fn looking_at(dir: &Path) -> Reader {
         Reader {
+            icons: Arc::new(std::sync::OnceLock::new()),
+            icon_game: None,
             read: Arc::new(Mutex::new(
                 eqlparser_shot::Reader::open(None, None).expect("the built-in atlas loads"),
             )),
