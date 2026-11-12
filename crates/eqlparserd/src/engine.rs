@@ -3384,7 +3384,10 @@ impl Engine {
             }
         }
         let mut v: Vec<LootTally> = map.into_values().collect();
-        v.sort_by_key(|t| std::cmp::Reverse(t.last_seen));
+        // Newest first; a chest's items all land in the same second, so the
+        // name breaks the tie, or the order is the HashMap's and changes on
+        // every start.
+        v.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| a.item.cmp(&b.item)));
         v
     }
 
@@ -5103,6 +5106,27 @@ mod tests {
         let ear = tally.iter().find(|t| t.item == "Rat Ear").expect("Rat Ear");
         assert_eq!(ear.count, 2);
         assert_eq!(ear.sources, vec!["a rat"]);
+    }
+
+    #[test]
+    fn loot_tally_is_newest_first_and_a_same_second_tie_goes_by_name() {
+        let mut e = engine();
+        let mut lines = vec![
+            "[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage.".to_string(),
+            "[Tue Jul 28 14:00:01 2026] You have slain a rat!".to_string(),
+        ];
+        // A chest's worth in one second, in no particular order.
+        for item in ["Silver Ring", "Bone Chips", "Rusty Dagger", "Ale", "Moss Snake Skin", "Cloth Cap"] {
+            lines.push(format!("[Tue Jul 28 14:00:02 2026] --You have looted a {item} from a rat's corpse.--"));
+        }
+        lines.push("[Tue Jul 28 14:00:09 2026] --You have looted a Rat Ear from a rat's corpse.--".into());
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        feed(&mut e, &refs);
+        let names: Vec<String> = e.loot_tally().into_iter().map(|t| t.item).collect();
+        assert_eq!(
+            names,
+            ["Rat Ear", "Ale", "Bone Chips", "Cloth Cap", "Moss Snake Skin", "Rusty Dagger", "Silver Ring"]
+        );
     }
 
     #[test]
