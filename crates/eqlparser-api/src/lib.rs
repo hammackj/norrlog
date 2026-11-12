@@ -357,6 +357,9 @@ pub use eqlparser_core::encounter::{
     TimelineEvent, TimelineMark,
 };
 
+/// `GET /api/procs`: how often each proc fired, per minute of combat.
+pub use eqlparser_core::procs::{ProcKind, ProcReport, ProcRow};
+
 /// `GET /api/encounters/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncounterDetail {

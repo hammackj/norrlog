@@ -41,6 +41,7 @@ pub struct Shell {
     link: Link,
     rt: tokio::runtime::Handle,
     encounters: Entity<crate::encounters::EncountersView>,
+    procs: Entity<crate::procs::ProcsView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -68,7 +69,8 @@ impl Shell {
         let subs = vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
         let tab = TABS.iter().find(|t| t.0 == state.tab).map(|t| t.0).unwrap_or("dashboard");
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
-        Shell { link: Link::Attaching, rt, encounters, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
+        let procs = cx.new(|_| crate::procs::ProcsView::new());
+        Shell { link: Link::Attaching, rt, encounters, procs, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
     }
 
     fn on_msg(&mut self, msg: Msg, cx: &mut Context<Self>) {
@@ -83,9 +85,15 @@ impl Shell {
                 let api = crate::api::Api { rt: self.rt.clone(), client: *client };
                 let open = self.tab;
                 self.encounters.update(cx, |v, cx| {
-                    v.set_api(Some(api), cx);
+                    v.set_api(Some(api.clone()), cx);
                     if open == "encounters" {
                         v.load(false, cx);
+                    }
+                });
+                self.procs.update(cx, |v, cx| {
+                    v.set_api(Some(api), cx);
+                    if open == "procs" {
+                        v.load(cx);
                     }
                 });
             }
@@ -96,6 +104,8 @@ impl Shell {
                 let newest = s.get("recent").and_then(|r| r.get(0)).and_then(|e| e.get("id")).and_then(Value::as_u64);
                 let visible = self.tab == "encounters";
                 self.encounters.update(cx, |v, cx| v.newest_closed(newest, visible, cx));
+                let procs_open = self.tab == "procs";
+                self.procs.update(cx, |v, cx| v.on_snapshot(procs_open, cx));
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
@@ -103,6 +113,7 @@ impl Shell {
                 self.link = Link::Lost(why);
                 self.snapshot = None;
                 self.encounters.update(cx, |v, cx| v.set_api(None, cx));
+                self.procs.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -126,6 +137,9 @@ impl Shell {
         // As the renderer does: opening a tab fetches it afresh.
         if tab == "encounters" {
             self.encounters.update(cx, |v, cx| v.load(false, cx));
+        }
+        if tab == "procs" {
+            self.procs.update(cx, |v, cx| v.load(cx));
         }
         self.state.tab = tab.to_string();
         self.state.save();
@@ -220,6 +234,7 @@ impl Shell {
         match self.tab {
             "dashboard" => self.render_totals().into_any_element(),
             "encounters" => self.encounters.clone().into_any_element(),
+            "procs" => self.procs.clone().into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(

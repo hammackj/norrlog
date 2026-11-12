@@ -17,6 +17,7 @@ mod fight;
 // The shared toolkit the tab ports draw on; ahead of its users for now.
 #[allow(dead_code)]
 mod format;
+mod procs;
 mod state;
 mod table;
 #[allow(dead_code)]

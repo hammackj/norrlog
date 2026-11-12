@@ -112,6 +112,20 @@ impl ProcRegistry {
                 }
             }
         }
+        // A proc is counted from a cast line, and a cast line names only the
+        // spell, so what matters is whether *anything* by that name is
+        // castable, not just the proc's own ranks. Vampiric Embrace is a
+        // shadowknight buff whose proc carries the same name: every time the
+        // buff was cast it was counted as the proc firing (41 "procs" in the
+        // Mirela log, all of them casts).
+        for sp in db.all() {
+            let Some(e) = by_name.get_mut(&base_spell_name(&sp.name).to_lowercase()) else { continue };
+            for (slot, lv) in e.class_levels.iter_mut().zip(sp.class_levels) {
+                if lv != CLASS_CANNOT_CAST && (*slot == CLASS_CANNOT_CAST || lv < *slot) {
+                    *slot = lv;
+                }
+            }
+        }
         ProcRegistry { by_name }
     }
 
@@ -420,6 +434,29 @@ mod tests {
         assert!((r.per_minute - 2.0).abs() < 1e-9, "10 procs in 5 minutes");
         assert_eq!(r.combat_seconds, 300);
         assert_eq!(r.logged_seconds, 36000, "the log's span is still reported");
+    }
+
+    /// The buff that grants a proc can share the proc's name, and casting the
+    /// buff writes the same line a firing would. If you can cast the buff,
+    /// the name is ambiguous even though the proc spell itself is not
+    /// castable by anyone.
+    #[test]
+    fn a_castable_buff_named_like_its_proc_makes_the_proc_ambiguous() {
+        let mut buff = spell(1, "Vampiric Embrace");
+        buff.procs = vec![crate::spell::ProcGrant { spell: 2, on_melee: true }];
+        buff.class_levels[Class::ShadowKnight.index()] = 17;
+        let proc = spell(2, "Vampiric Embrace");
+        let mut m = HashMap::new();
+        m.insert(buff.id, buff);
+        m.insert(proc.id, proc);
+
+        let mut t = ProcTracker::new();
+        t.set_registry(ProcRegistry::from_spells(&SpellDb::from_spells(m)));
+        t.on_cast(100, "Vampiric Embrace");
+
+        let r = t.report(&[(Class::ShadowKnight, 26)], 60, 60);
+        assert!(r.rows.is_empty(), "a buff cast is not a proc firing");
+        assert_eq!(r.ambiguous.len(), 1);
     }
 
     /// A proc the character can cast itself is set aside rather than guessed
