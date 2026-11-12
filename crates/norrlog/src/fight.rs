@@ -3,7 +3,7 @@
 //! is the Layout and Formatting sections of `docs/parity/encounters-and-procs.md`.
 //!
 //! Fetched once when opened and never refreshed: a closed fight does not
-//! change. The DPS curve and the timeline are the second half of the port.
+//! change. The two charts are in `charts.rs`.
 
 use crate::encounters::EncountersView;
 use crate::format::{dur, num, when};
@@ -125,8 +125,10 @@ impl EncountersView {
                     ))
                     .child(stat("Damage taken", num(Some(s.your_damage_taken as f64)), None)),
             )
+            .children(crate::charts::dps_card(e, s))
             .child(split(meter_card, self.damage_panes(you, &s.outgoing_groups, cx)))
-            .child(split(healing, card("Damage taken").child(metric(&s.meter, Metric::Taken, "Nobody took damage"))));
+            .child(split(healing, card("Damage taken").child(metric(&s.meter, Metric::Taken, "Nobody took damage"))))
+            .child(crate::charts::timeline_card(e, s));
 
         if s.mobs.len() >= 2 {
             out = out.child(mobs_card(&s.mobs));
@@ -135,7 +137,6 @@ impl EncountersView {
             out = out.child(resists_card(&s.resists));
         }
         out.child(split(deaths_card(&e.deaths), loot_card(e)))
-            .child(muted("The DPS-over-time chart and the timeline are not ported yet; the Electron app has them."))
     }
 
     /// One row per actor that dealt damage. A row whose actor has abilities

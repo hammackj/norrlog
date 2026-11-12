@@ -352,7 +352,10 @@ pub struct MobRow {
 // snapshot. Moved here from the daemon's engine so the GPUI parser reads the
 // detail through the same structs the daemon writes it with.
 
-pub use eqlparser_core::encounter::{AbilityStats, ActorStats, DeathRecord, Encounter, LootRecord, MobBreakdown, ResistTally};
+pub use eqlparser_core::encounter::{
+    AbilityStats, ActorStats, DeathRecord, Encounter, LootRecord, MobBreakdown, Outcome, ResistTally, TimelineEffect,
+    TimelineEvent, TimelineMark,
+};
 
 /// `GET /api/encounters/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
