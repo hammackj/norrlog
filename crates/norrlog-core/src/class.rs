@@ -1174,7 +1174,7 @@ mod tests {
     /// switch class, and the client re-joins it to the new class channel.
     /// Each statement holds until the next, so a level-up between them goes
     /// to the class in force, not to whichever the log stated last. From the
-    /// Garrow log, a Warrior at 130 levelling a Shaman from 42.
+    /// Dorrak log, a Warrior at 130 levelling a Shaman from 42.
     #[test]
     fn a_class_switch_holds_until_the_next_statement() {
         let mut d = ClassDetector::with_slots(1);

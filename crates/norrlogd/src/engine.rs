@@ -475,7 +475,7 @@ pub struct Engine {
     /// every kill it credits to you, so that line is the game's own word on
     /// whose kill it was. Participation (your damage on it in the open
     /// fight) misses every kill your group, mercenary or pet finished on a
-    /// creature you never touched: Garrow, grouped with a mercenary, had 29
+    /// creature you never touched: Dorrak, grouped with a mercenary, had 29
     /// greater spurbones paid out and 16 counted. Each line credits one
     /// death and is spent on it.
     xp_unclaimed: Option<i64>,
@@ -1253,7 +1253,7 @@ impl Engine {
                 self.class_levels.on_achievement(entry.timestamp, name);
             }
             Event::Targeted { name, kind } => {
-                // "Targeted (Player): Garrow". The other kinds the client
+                // "Targeted (Player): Dorrak". The other kinds the client
                 // writes — NPC, Banker, Merchant — are not recorded as proof
                 // of the opposite: a name absent from this set is unproven,
                 // not proven to be a creature.
@@ -4616,13 +4616,13 @@ mod tests {
 
     /// Grouped with a mercenary, most kills are finished by somebody else on
     /// a creature you never touched, and participation alone missed 13 of
-    /// Garrow's 29 greater spurbones. The game pays experience on the line
+    /// Dorrak's 29 greater spurbones. The game pays experience on the line
     /// before the death of every kill it credits you with, so that counts;
     /// a death with no experience and no damage of yours still does not, and
     /// one experience line credits one death, not every death after it.
     #[test]
     fn a_kill_the_game_paid_you_for_counts_without_your_damage() {
-        let mut e = Engine::new("Garrow".to_string(), SpellDb::empty());
+        let mut e = Engine::new("Dorrak".to_string(), SpellDb::empty());
         feed(
             &mut e,
             &[

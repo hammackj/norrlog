@@ -881,7 +881,7 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::ConsiderArmy,
         r"^This creature would take an army to defeat!\s*$",
     ),
-    // "Targeted (Player): Garrow"  "Targeted (NPC): a greater skeleton"
+    // "Targeted (Player): Dorrak"  "Targeted (NPC): a greater skeleton"
     // "Targeted (Banker): Dogle Pitt"
     (
         RuleId::Targeted,
@@ -2447,9 +2447,9 @@ mod tests {
     /// is carried verbatim because the client writes more than two of them.
     #[test]
     fn targeting_says_what_kind_of_thing_it_is() {
-        match p().parse_body("Targeted (Player): Garrow") {
+        match p().parse_body("Targeted (Player): Dorrak") {
             Event::Targeted { name, kind } => {
-                assert_eq!(name, Actor::Named("Garrow".into()));
+                assert_eq!(name, Actor::Named("Dorrak".into()));
                 assert_eq!(kind, "Player");
             }
             other => panic!("expected a target, got {other:?}"),
