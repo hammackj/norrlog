@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     let mut by_kind: HashMap<&'static str, u64> = HashMap::new();
     let mut unknown_shapes: HashMap<String, (u64, String)> = HashMap::new();
     let mut buff_landings = 0u64;
+    let mut landings_on_others = 0u64;
     let mut buff_fades = 0u64;
     let mut low_confidence = 0u64;
     let mut low_conf_texts: HashMap<String, u64> = HashMap::new();
@@ -108,6 +109,9 @@ fn main() -> anyhow::Result<()> {
                 resolver.resolve_fade(body);
                 buff_fades += 1;
                 kind = "EffectFaded";
+            } else if resolver.db().split_landing_on_other(body).is_some() {
+                landings_on_others += 1;
+                kind = "EffectLandedOnTarget";
             } else {
                 let shape = normalise(body);
                 let e = unknown_shapes.entry(shape).or_insert((0, body.to_string()));
@@ -141,6 +145,7 @@ fn main() -> anyhow::Result<()> {
     if !resolver.db().is_empty() {
         println!("\n=== spell resolution ===");
         println!("buff landings    : {buff_landings}");
+        println!("landed on others : {landings_on_others}");
         println!("buff fades       : {buff_fades}");
         println!(
             "low confidence   : {low_confidence}  ({:.1}% of landings are guesses)",
@@ -223,6 +228,8 @@ fn kind_name(e: &Event) -> &'static str {
         Event::SpellSetLoaded { .. } => "SpellSetLoaded",
         Event::Consider { .. } => "Consider",
         Event::ConsiderArmy => "ConsiderArmy",
+        Event::CorpseDecayed { .. } => "CorpseDecayed",
+        Event::ResistedOther { .. } => "ResistedOther",
         Event::LootLeft { .. } => "LootLeft",
         Event::Targeted { .. } => "Targeted",
         Event::ServerVictory { .. } => "ServerVictory",

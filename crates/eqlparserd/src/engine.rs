@@ -1447,9 +1447,27 @@ impl Engine {
                 } else if self.resolver.db().is_fade_text(body) {
                     self.resolver.resolve_fade(body);
                 } else {
-                    // Something of yours landing on something else. A slow
-                    // deals no damage, so nothing about it ever reached the
-                    // timeline; this is where it gets there.
+                    // A spell landing on somebody else. Tried last, after
+                    // every reading that concerns you: the strings overlap,
+                    // and a buff of your own expiring must not be read as
+                    // something taking hold on a creature.
+                    //
+                    // A charm is told apart the way the typed `'s eyes glaze
+                    // over` case is: the text names no spell and several
+                    // share each string, so it is a charm only when a charm
+                    // of yours landed moments before. From the eqparser fork
+                    // (1a3e47c), which until then could only see that one text.
+                    let charmed = self
+                        .resolver
+                        .db()
+                        .split_landing_on_other(body)
+                        .filter(|(_, ids)| self.charm_among(entry.timestamp, ids))
+                        .map(|(target, _)| eqlparser_core::event::Actor::parse(target));
+                    if let Some(target) = charmed {
+                        self.tracker.set_charmed(entry.timestamp, &target, true);
+                    }
+                    // A slow deals no damage, so nothing about it ever reached
+                    // the timeline; this is where it gets there.
                     self.note_effect_on_target(entry.timestamp, body);
                 }
             }
@@ -2375,10 +2393,13 @@ impl Engine {
     /// that same spell within the resolver's association window — the pairing
     /// is what disambiguates a charm from a mez sharing the phrase.
     fn landed_effect_is_your_charm(&self, timestamp: i64, text: &str) -> bool {
-        self.resolver
-            .db()
-            .candidates_for_landing_on_other(text)
-            .iter()
+        self.charm_among(timestamp, self.resolver.db().candidates_for_landing_on_other(text))
+    }
+
+    /// Whether any of these spells is a charm you cast within the resolver's
+    /// association window.
+    fn charm_among(&self, timestamp: i64, ids: &[u32]) -> bool {
+        ids.iter()
             .filter_map(|id| self.resolver.db().get(*id))
             .any(|sp| sp.is_charm && self.resolver.cast_recently(timestamp, &sp.name))
     }

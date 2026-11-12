@@ -63,6 +63,7 @@ enum RuleId {
     FactionCapped,
     ChatChannel,
     ChatTellYou,
+    ChatToldYou,
     ChatTellByYou,
     ChatSays,
     GroupJoined,
@@ -83,6 +84,7 @@ enum RuleId {
     ResistedYours,
     ResistedGeneric,
     ResistedByYou,
+    ResistedOthers,
     SkillUp,
     Stunned,
     StunEnded,
@@ -124,6 +126,7 @@ enum RuleId {
     Consider,
     ConsiderArmy,
     Targeted,
+    CorpseDecayed,
     ServerVictory,
     Location,
     SystemAutoAttack,
@@ -272,6 +275,29 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::ResistedGeneric,
         r"^Your target resisted the (?P<spell>.+?) spell\.$",
+    ),
+    // "A forest giant greenwood resisted Tharn`s warder's Spirit of Inferno Strike!"
+    //
+    // The same happening as the rule above, but the caster is your pet or a
+    // group member rather than you. Only matched after the "your" form, which
+    // would otherwise never be reached — this pattern subsumes it.
+    //
+    // The caster is greedy, and has to be: a pet's own name carries a
+    // possessive ("Tharn`s warder"), so a lazy match stops at the first one
+    // and reports the caster as "Tharn" casting a spell called "warder's
+    // Spirit of Inferno Strike". Taking the last possessive instead gets both
+    // right.
+    //
+    // The cost is the mirror case, and it is accepted knowingly: a spell
+    // whose *own* name contains a possessive, cast by somebody else —
+    // "Gartik's Solon's Bewitching Bravura" — splits at the wrong one and
+    // reports the spell as "Bewitching Bravura". Nothing in the line can tell
+    // the two apart, both readings are wrong in one direction, and this one
+    // is wrong about a spell's name rather than about who cast it. Your own
+    // casts are unaffected: they take the "your" form above.
+    (
+        RuleId::ResistedOthers,
+        r"^(?P<tgt>.+?) resisted (?P<src>.+)[`\u{2019}']s (?P<spell>.+?)!$",
     ),
     // "You resist a goblin soothsayer's Root!"
     //
@@ -827,6 +853,18 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::EmoteGeneric,
         r"^(?P<actor>.+?) (?P<text>is bound by strands of solid music|begins to chant|begins to choke|staggers|looks sick|has been (?:diseased|poisoned)|is (?:enveloped|engulfed) .+)\.$",
     ),
+    // "a personal banker told you, 'Welcome to my bank!'"
+    //
+    // The catch-all for the "told you" shape, and therefore last of them.
+    // Three earlier rules read the same shape for the message inside it — a
+    // pet announcing its target, a pet naming its leader, and a merchant
+    // quoting a price — and every one of them would be swallowed if this
+    // came first. It sits here so that anything still unclaimed is what it
+    // looks like: an NPC saying something.
+    (
+        RuleId::ChatToldYou,
+        r"^(?P<src>.+?) told you, '(?P<msg>.*)'$",
+    ),
     // ---- Consider and position ---------------------------------------------
     // "A noxious spider - a rare creature - scowls at you, ready to attack
     //  -- looks kind of dangerous. (Lvl: 24)"
@@ -848,6 +886,18 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::Targeted,
         r"^Targeted \((?P<kind>[A-Za-z ]+)\): (?P<name>.+?)\s*$",
+    ),
+    // "A leaf drake's corpse collapses into a gory heap."
+    // "A grove snake's corpse sinks to the ground, its scales dripping with
+    //  rivulets of blood."
+    //
+    // A corpse rotting away, worded differently for every kind of creature —
+    // an open set, so it is matched on the shape rather than enumerated. It
+    // is not a death: the creature died earlier and this is the corpse going,
+    // which is also the moment anything still on it is gone for good.
+    (
+        RuleId::CorpseDecayed,
+        r"^(?P<npc>.+?)[`\u{2019}']s corpse [a-z].*\.$",
     ),
     // "Lord Yelinak has been defeated by a group of hardy adventurers! Please
     //  join us in congratulating Draken along with everyone else who
@@ -880,7 +930,7 @@ static RULES: &[(RuleId, &str)] = &[
     // quietly swallow the next line worth having.
     (
         RuleId::SystemMessage,
-        r"^(?:Taking a screenshot\.\.\.|Reading UI data from UIFiles\\[A-Za-z0-9_]+ directory\.\.\.|Outputfile Complete: .+|You are not currently assigned to an adventure|You no longer have a target|Right click on the NPC to consider it|Right click on yourself to bring up your own inspect window\..*|Logging to '[^']*' is now \*(?:ON|OFF)\*|Players in EverQuest(?: Legends)?:|-{5,}|There (?:is|are) \d+ players? in EverQuest(?: Legends)?|You are (?:now|no longer) roleplaying|You are (?:now|no longer) A\.F\.K\. \(Away From Keyboard\)|That is not a valid command\.  Please use /help|Attempting to auto-grant AAs\.\.\.|You have \d+ overflow items available\. Type /itemoverflow to view them|You cannot perform that action right now\. Please try again in a moment|You are encumbered|You are too far away from .+? to trade|You have enabled the spell auto-grant\..*|You already have scribed the Spell: .+? in your book|This item (?:is in your bank|does not have a stat buff))[.!]?$",
+        r"^(?:Taking a screenshot\.\.\.|Reading UI data from UIFiles\\[A-Za-z0-9_]+ directory\.\.\.|Outputfile Complete: .+|You are not currently assigned to an adventure|You no longer have a target|Right click on the NPC to consider it|Right click on yourself to bring up your own inspect window\..*|Logging to '[^']*' is now \*(?:ON|OFF)\*|Players in EverQuest(?: Legends)?:|-{5,}|There (?:is|are) \d+ players? in EverQuest(?: Legends)?|You are (?:now|no longer) roleplaying|You are (?:now|no longer) A\.F\.K\. \(Away From Keyboard\)|That is not a valid command\.  Please use /help|Attempting to auto-grant AAs\.\.\.|You have \d+ overflow items available\. Type /itemoverflow to view them|You cannot perform that action right now\. Please try again in a moment|You are encumbered|You are too far away from .+? to trade|You have enabled the spell auto-grant\..*|You already have scribed the Spell: .+? in your book|GUILD MOTD: .*|This land is saturated with unstable magic, .*|Channel .+? was too full to join|This item (?:is in your bank|does not have a stat buff))[.!]?$",
     ),
 ];
 
@@ -1293,6 +1343,9 @@ impl Parser {
                     difficulty: g("difficulty").unwrap_or_default().trim().to_string(),
                 },
                 RuleId::ConsiderArmy => Event::ConsiderArmy,
+                RuleId::CorpseDecayed => Event::CorpseDecayed {
+                    npc: self.actor(g("npc").unwrap_or_default()),
+                },
                 RuleId::Targeted => Event::Targeted {
                     name: self.actor(g("name").unwrap_or_default()),
                     kind: g("kind").unwrap_or_default().to_string(),
@@ -1322,6 +1375,17 @@ impl Parser {
                 RuleId::ChatTellYou => Event::Tell {
                     from: self.actor(g("src").unwrap_or_default()),
                     to: Actor::You,
+                    message: g("msg").unwrap_or_default().to_string(),
+                },
+                // "told you" is the client voicing an NPC or a pet; a
+                // player's tell is "tells you". Read as a tell, the lines no
+                // earlier rule claims put 5,274 NPC remarks into the Tells
+                // tab on one Legends log. Chat on a channel of its own, which
+                // quest and NPC tracking (say only) leave alone. The eqparser
+                // fork has it as a tell.
+                RuleId::ChatToldYou => Event::Chat {
+                    speaker: self.actor(g("src").unwrap_or_default()),
+                    channel: "told you".to_string(),
                     message: g("msg").unwrap_or_default().to_string(),
                 },
                 RuleId::ChatTellByYou => Event::Tell {
@@ -1433,6 +1497,11 @@ impl Parser {
                 },
                 RuleId::ResistedGeneric => Event::Resisted {
                     target: Actor::Named("your target".into()),
+                    spell: g("spell").unwrap_or_default().to_string(),
+                },
+                RuleId::ResistedOthers => Event::ResistedOther {
+                    target: self.actor(g("tgt").unwrap_or_default()),
+                    caster: self.actor(g("src").unwrap_or_default()),
                     spell: g("spell").unwrap_or_default().to_string(),
                 },
                 RuleId::ResistedByYou => Event::Resisted {
@@ -2408,6 +2477,85 @@ mod tests {
         }
     }
 
+    /// Four rules read "X told you, '...'". Precedence is the only thing
+    /// keeping them apart, and getting it wrong is silent: the pet rules feed
+    /// charm tracking and the quote rule feeds every price on file, so a
+    /// catch-all placed first would empty all three without failing anything.
+    #[test]
+    fn the_catch_all_tell_yields_to_every_specific_one() {
+        match p().parse_body("An imp protector told you, 'Attacking a fire beetle Master.'") {
+            Event::PetAttack { pet, .. } => {
+                assert_eq!(pet, Actor::Named("An imp protector".into()));
+            }
+            other => panic!("expected a pet announcement, got {other:?}"),
+        }
+        match p().parse_body("Blackeye told you, 'That'll be 7 copper per Muffin.'") {
+            Event::ItemQuoted { .. } => {}
+            other => panic!("expected a price quote, got {other:?}"),
+        }
+        // What is left over really is just an NPC talking: chat, not a tell.
+        match p().parse_body("a personal banker told you, 'Welcome to my bank!'") {
+            Event::Chat { speaker, channel, message } => {
+                assert_eq!(speaker, Actor::Named("a personal banker".into()));
+                assert_eq!(channel, "told you");
+                assert_eq!(message, "Welcome to my bank!");
+            }
+            other => panic!("expected NPC chat, got {other:?}"),
+        }
+    }
+
+    /// A pet's or a groupmate's spell resisting is its own event, with the
+    /// caster, so nothing that counts your resists counts theirs. The wider
+    /// pattern subsumes the "your" one, so the narrower has to come first.
+    #[test]
+    fn a_spell_your_pet_cast_can_be_resisted() {
+        match p().parse_body("A forest giant greenwood resisted Tharn`s warder's Spirit of Inferno Strike!") {
+            Event::ResistedOther { target, caster, spell } => {
+                assert_eq!(target, Actor::Named("A forest giant greenwood".into()));
+                assert_eq!(caster, Actor::Named("Tharn`s warder".into()), "greedy: the pet, not Tharn");
+                assert_eq!(spell, "Spirit of Inferno Strike");
+            }
+            other => panic!("expected another's resist, got {other:?}"),
+        }
+        // A spell whose own name carries a possessive splits at the last one,
+        // which is the documented trade for getting pet casters right.
+        match p().parse_body("Innoruuk resisted Gartik's Solon's Bewitching Bravura!") {
+            Event::ResistedOther { spell, .. } => assert_eq!(spell, "Bewitching Bravura"),
+            other => panic!("expected another's resist, got {other:?}"),
+        }
+        // Still yours when it is yours.
+        match p().parse_body("Innoruuk resisted your Solon's Bewitching Bravura!") {
+            Event::Resisted { target, spell } => {
+                assert_eq!(target, Actor::Named("Innoruuk".into()));
+                assert_eq!(spell, "Solon's Bewitching Bravura");
+            }
+            other => panic!("expected a resist, got {other:?}"),
+        }
+    }
+
+    /// A corpse rotting is not a death. Counting it as one would double every
+    /// kill in the log, and the wordings are per creature, so it is matched
+    /// on shape rather than enumerated.
+    #[test]
+    fn a_rotting_corpse_is_not_a_second_death() {
+        for line in [
+            "A leaf drake's corpse collapses into a gory heap.",
+            "A grove snake's corpse sinks to the ground, its scales dripping with rivulets of blood.",
+        ] {
+            match p().parse_body(line) {
+                Event::CorpseDecayed { .. } => {}
+                other => panic!("expected a decayed corpse for {line:?}, got {other:?}"),
+            }
+        }
+        // The loot line names a corpse too, and must not be caught by it.
+        match p()
+            .parse_body("--You have looted a Fire Beetle Eye from a fire beetle's corpse.--")
+        {
+            Event::Loot { .. } => {}
+            other => panic!("expected loot, got {other:?}"),
+        }
+    }
+
     #[test]
     fn heal_over_time_flagged() {
         let e =
@@ -3130,6 +3278,21 @@ mod who_tests {
         let (_, c, _, _) = who("[60 Shadow Knight LFG] Orrin (Dark Elf)");
         assert_eq!(c, "Shadow Knight", "LFG is not part of the class");
         assert_eq!(crate::class::parse_class_list(&c), [crate::class::Class::ShadowKnight]);
+    }
+
+    /// An NPC "told you" is not a tell: the Tells tab is for players.
+    #[test]
+    fn an_npc_told_you_is_chat_not_a_tell() {
+        match Parser::new("Tharn").parse_body("a personal banker told you, 'Welcome to my bank!'") {
+            Event::Chat { channel, message, .. } => {
+                assert_eq!((channel.as_str(), message.as_str()), ("told you", "Welcome to my bank!"))
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            Parser::new("Tharn").parse_body("Orrin tells you, 'inc'"),
+            Event::Tell { .. }
+        ));
     }
 
     #[test]

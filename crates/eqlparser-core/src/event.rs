@@ -528,8 +528,22 @@ pub enum Event {
         /// firing less often than it does.
         flags: Flags,
     },
-    /// A spell was resisted by its target.
+    /// A spell of yours was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// Somebody else's spell resisted: a pet's or a group member's.
+    ///
+    /// Not [`Event::Resisted`], whose readers (your resist counts, the charm
+    /// overlay, the resist alert) were written knowing the client only told
+    /// you about your own, and would otherwise count a groupmate's Root as
+    /// yours. Classified, and read by nothing yet.
+    ResistedOther { target: Actor, caster: Actor, spell: String },
+    /// A corpse rotted away.
+    ///
+    /// Not a death — the creature died earlier, and counting this as one
+    /// would double every kill. What it marks is the other end: the moment
+    /// anything still lying on that corpse is gone for good, which is the
+    /// only line in the log that closes a looting window.
+    CorpseDecayed { npc: Actor },
     /// You changed target, and the client said what kind of thing it is.
     ///
     /// The only line that states outright whether a name belongs to a player
