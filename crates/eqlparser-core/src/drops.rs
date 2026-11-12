@@ -410,6 +410,35 @@ impl DropTracker {
     }
 }
 
+
+/// The form two spellings of the same item are compared in.
+///
+/// Not a slug: the site's own slug for "Legionnaire's Bracer" is
+/// `legionnaires_bracer` while the daemon's `itemdb::slug` derives
+/// `legionnaire_s_bracer`, and
+/// both are accepted by `/api/item` because it normalises on the way in. A
+/// list to cross-reference against loot cannot rely on that, so names are
+/// matched as names — folded to lowercase, with the `+N` grade removed and
+/// runs of whitespace collapsed, which is every difference actually observed
+/// between what the client writes and what the site stores.
+pub fn match_key(name: &str) -> String {
+    let base = canonical_item(name);
+    let mut out = String::with_capacity(base.len());
+    let mut gap = false;
+    for c in base.trim().chars() {
+        if c.is_whitespace() {
+            gap = true;
+            continue;
+        }
+        if gap && !out.is_empty() {
+            out.push(' ');
+        }
+        gap = false;
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

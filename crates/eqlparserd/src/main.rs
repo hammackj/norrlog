@@ -56,6 +56,9 @@ struct Config {
     since: Option<i64>,
     /// Exit when the process that started this one goes away.
     exit_with_parent: bool,
+    /// Exit this many seconds after the last client has gone and nothing has
+    /// been asked of the daemon. `None` keeps running.
+    idle_exit: Option<u64>,
     /// The client's `Screenshots` folder, when it is not under `--game-dir`.
     shots: Option<PathBuf>,
     /// Do not read screenshots at all, even where everything for it is here.
@@ -197,6 +200,11 @@ OPTIONS:
                        watching for the parent pid to change. For the desktop
                        app, which owns the daemon and must not leave it running
                        when it is killed rather than asked to quit.
+    --idle-exit <secs> Exit once no client has held a socket open and nothing
+                       has been asked of the daemon for <secs> seconds. For a
+                       daemon shared by several apps: whichever starts it, it
+                       outlives any one of them and goes when all are done.
+                       The OBS overlay holds a socket, so a stream keeps it up.
     --eqdb <url>       Origin of the eqdb companion site, used for item
                        tooltips (default https://eqldb.hammackj.com, or
                        $EQLPARSER_EQDB). May be given more than once, or as a
@@ -205,8 +213,15 @@ OPTIONS:
                        reached the bundled item data is used, so this is never
                        required.
 
+EXIT STATUS:
+    3                  The port is already taken -- most likely by another
+                       eqlparserd. Nothing was started; attach to that one
+                       (GET /api/hello says who holds the port).
+
 ENDPOINTS:
     /                  Status page with overlay setup instructions
+    /api/hello         Who this daemon is, what it follows, and its API version
+    /api/events        Live typed events (WebSocket)
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
     /api/shots/recent  What the screenshot reader made of the last few pictures
@@ -313,6 +328,7 @@ fn parse_args() -> Config {
         // Off by default: run from a terminal, this daemon belongs to whoever
         // started it and should outlive nothing in particular.
         exit_with_parent: false,
+        idle_exit: None,
         shots: None,
         no_shots: false,
         no_archive: false,
@@ -404,6 +420,13 @@ fn parse_args() -> Config {
             "--send" => cfg.send = true,
             "--contributor" => cfg.contributor = args.next(),
             "--exit-with-parent" => cfg.exit_with_parent = true,
+            "--idle-exit" => match args.next().and_then(|v| v.parse().ok()) {
+                Some(secs) => cfg.idle_exit = Some(secs),
+                None => {
+                    eprintln!("--idle-exit takes a number of seconds");
+                    usage()
+                }
+            },
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument: {other}");
@@ -460,6 +483,26 @@ async fn main() -> anyhow::Result<()> {
     if cfg.bundle_out.is_some() || cfg.send {
         return bundle_once(&cfg).await;
     }
+
+    // The port, before anything slow. The initial parse takes the better part
+    // of a minute on a long log, and a second daemon started meanwhile used to
+    // parse all of it before finding the port taken. Bound here, the second
+    // one is refused at once, and a client probing the port meets a listener
+    // that answers when the parse is done rather than a refused connection
+    // that looks like nobody is there.
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "[eqlparserd] port {} is already in use, most likely by another eqlparserd; \
+                 not starting a second (GET http://{addr}/api/hello says who holds it)",
+                cfg.port
+            );
+            std::process::exit(3);
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     // The filename is the only place the character and server appear; history
     // is keyed on both so an alt or a second server keeps its own records.
@@ -672,7 +715,34 @@ async fn main() -> anyhow::Result<()> {
         (_, None) => eprintln!("[eqlparserd] other logs: no folder to look in"),
     }
 
+    let screenshots_dir = cfg
+        .shots
+        .clone()
+        .or_else(|| std::env::var_os("EQL_SHOTS_DIR").map(PathBuf::from))
+        .or_else(|| cfg.game_dir.as_ref().map(|g| g.join("Screenshots")))
+        .filter(|d| d.is_dir());
+    let life = Arc::new(crate::server::Life::new(eqlparser_api::Hello {
+        identity: eqlparser_api::IDENTITY.into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        api_version: eqlparser_api::API_VERSION,
+        pid: std::process::id(),
+        port: cfg.port,
+        started_at: crate::server::unix_now(),
+        game: game.slug().into(),
+        log: log_path.to_string_lossy().into_owned(),
+        character: if player == "You" { String::new() } else { player.clone() },
+        server: server.clone(),
+        game_dir: cfg.game_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
+        screenshots_dir: screenshots_dir.map(|d| d.to_string_lossy().into_owned()),
+        clients: 0,
+        idle_exit_secs: cfg.idle_exit,
+    }));
+    if let Some(secs) = cfg.idle_exit {
+        crate::server::spawn_idle_exit(Arc::clone(&life), secs);
+    }
+
     let state = AppState {
+        life,
         log_path: log_path.clone(),
         logs_dir: cfg.logs_dir.clone(),
         engine,
@@ -684,8 +754,6 @@ async fn main() -> anyhow::Result<()> {
         ids: ids.clone(),
     };
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!("[eqlparserd] listening on http://{addr}");
     eprintln!("[eqlparserd] overlay:  http://{addr}/overlay");
 
@@ -1414,6 +1482,7 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
+            idle_exit: None,
             shots: None,
             no_shots: false,
             no_archive: false,
@@ -1443,6 +1512,7 @@ mod tests {
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
             exit_with_parent: false,
+            idle_exit: None,
             shots: None,
             no_shots: false,
             no_archive: false,

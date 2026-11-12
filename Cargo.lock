@@ -317,6 +317,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eqlparser-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "eqlparser-core"
 version = "0.1.0"
 dependencies = [
@@ -376,6 +384,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "eqlparser-api",
  "eqlparser-core",
  "eqlparser-parse",
  "eqlparser-shot",
@@ -388,6 +397,7 @@ dependencies = [
  "sha2",
  "time",
  "tokio",
+ "tower",
 ]
 
 [[package]]

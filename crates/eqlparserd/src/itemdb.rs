@@ -77,32 +77,9 @@ pub fn slug(name: &str) -> String {
     out
 }
 
-/// The form two spellings of the same item are compared in.
-///
-/// Not [`slug`]: the site's own slug for "Legionnaire's Bracer" is
-/// `legionnaires_bracer` while this file derives `legionnaire_s_bracer`, and
-/// both are accepted by `/api/item` because it normalises on the way in. A
-/// list to cross-reference against loot cannot rely on that, so names are
-/// matched as names — folded to lowercase, with the `+N` grade removed and
-/// runs of whitespace collapsed, which is every difference actually observed
-/// between what the client writes and what the site stores.
-pub fn match_key(name: &str) -> String {
-    let base = eqlparser_core::drops::canonical_item(name);
-    let mut out = String::with_capacity(base.len());
-    let mut gap = false;
-    for c in base.trim().chars() {
-        if c.is_whitespace() {
-            gap = true;
-            continue;
-        }
-        if gap && !out.is_empty() {
-            out.push(' ');
-        }
-        gap = false;
-        out.extend(c.to_lowercase());
-    }
-    out
-}
+/// The form two spellings of the same item are compared in. Lives in core
+/// now, because the collector needs it as much as the daemon does.
+pub use eqlparser_core::drops::match_key;
 
 /// The zones an item's drop sources have been seen in, from one `/api/item`
 /// payload.

@@ -20,6 +20,8 @@ use tokio::sync::broadcast;
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
+    /// Who this daemon is, and who is using it: `/api/hello` and idle exit.
+    pub life: Arc<Life>,
     /// The log being followed, and the directory to look for others in.
     pub log_path: std::path::PathBuf,
     pub logs_dir: Option<std::path::PathBuf>,
@@ -111,7 +113,128 @@ pub fn router(state: AppState) -> Router {
         .route("/api/lines", get(lines))
         .route("/api/session", get(session))
         .route("/ws", get(ws_upgrade))
+        .route("/api/hello", get(hello))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state.life),
+            touch,
+        ))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: who this is, and whether anybody still needs it
+// ---------------------------------------------------------------------------
+
+/// The daemon's identity and its clients.
+///
+/// One daemon is shared by the parser app and the eqldb collector, and
+/// whichever starts first starts it. So nothing owns it, and it has to know
+/// for itself when it is no longer wanted: no socket open, and nothing asked
+/// of it for a while. Both halves count, because the OBS overlay holds a
+/// socket but a script polling `/api/snapshot` does not.
+pub struct Life {
+    hello: eqlparser_api::Hello,
+    clients: std::sync::atomic::AtomicUsize,
+    /// Unix seconds of the last request or socket close.
+    last_activity: std::sync::atomic::AtomicI64,
+}
+
+impl Life {
+    pub fn new(hello: eqlparser_api::Hello) -> Life {
+        Life {
+            hello,
+            clients: Default::default(),
+            last_activity: std::sync::atomic::AtomicI64::new(unix_now()),
+        }
+    }
+
+    pub fn hello(&self) -> eqlparser_api::Hello {
+        eqlparser_api::Hello {
+            clients: self.clients(),
+            ..self.hello.clone()
+        }
+    }
+
+    pub fn clients(&self) -> usize {
+        self.clients.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn touch(&self) {
+        self.last_activity
+            .store(unix_now(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Seconds since anybody needed this daemon, or `None` while a client is
+    /// connected.
+    pub fn idle_for(&self, now: i64) -> Option<i64> {
+        (self.clients() == 0)
+            .then(|| now - self.last_activity.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Count a socket for as long as the returned guard lives.
+    fn connect(self: &Arc<Self>) -> ClientGuard {
+        self.clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.touch();
+        ClientGuard(Arc::clone(self))
+    }
+}
+
+/// Uncounts a client when its socket task ends, however it ends.
+struct ClientGuard(Arc<Life>);
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        self.0.clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        // From the close, not from the open: the idle wait starts when the
+        // last client *leaves*.
+        self.0.touch();
+    }
+}
+
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Every request is a sign of life.
+async fn touch(
+    State(life): State<Arc<Life>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    life.touch();
+    next.run(req).await
+}
+
+/// Exit once nobody has needed this daemon for `secs` seconds.
+///
+/// Checked on a timer rather than at the moment the last client leaves, so a
+/// client that reconnects — an app reloading its window, OBS switching scenes
+/// — is not a reason to exit. The exit is the same one `--exit-with-parent`
+/// makes: history is flushed on its own timer, and whatever the last flush
+/// wrote is what a kill would have left.
+pub fn spawn_idle_exit(life: Arc<Life>, secs: u64) {
+    tokio::spawn(async move {
+        let tick = std::time::Duration::from_secs(secs.clamp(1, 5));
+        loop {
+            tokio::time::sleep(tick).await;
+            if life.idle_for(unix_now()).is_some_and(|idle| idle >= secs as i64) {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[eqlparserd] no client for {secs}s; exiting"
+                );
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
+/// `GET /api/hello`.
+async fn hello(State(s): State<AppState>) -> Json<eqlparser_api::Hello> {
+    Json(s.life.hello())
 }
 
 // ---------------------------------------------------------------------------
@@ -3167,6 +3290,7 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> Response
 /// Clients get the current state immediately on connect so the overlay renders
 /// without waiting for the next combat line.
 async fn ws_loop(mut socket: WebSocket, state: AppState) {
+    let _client = state.life.connect();
     let mut rx = state.updates.subscribe();
 
     let initial = { state.snapshot.reading("snapshot").clone() };
@@ -3450,6 +3574,67 @@ mod tests {
         assert_eq!(names, ["Beta", "Gamma", "Alpha"]);
     }
 
+    fn test_hello() -> eqlparser_api::Hello {
+        eqlparser_api::Hello {
+            identity: eqlparser_api::IDENTITY.into(),
+            version: "test".into(),
+            api_version: eqlparser_api::API_VERSION,
+            pid: 1,
+            port: 8777,
+            started_at: 0,
+            game: "everquest-legends".into(),
+            log: "eqlog_Test_freeport.txt".into(),
+            character: "Test".into(),
+            server: "freeport".into(),
+            game_dir: None,
+            screenshots_dir: None,
+            clients: 0,
+            idle_exit_secs: Some(60),
+        }
+    }
+
+    /// A connected client holds the daemon up; its leaving starts the clock.
+    #[test]
+    fn idle_counts_from_the_last_client_leaving() {
+        let life = Arc::new(Life::new(test_hello()));
+        let now = unix_now();
+        assert!(life.idle_for(now).is_some(), "nobody connected yet");
+        let a = life.connect();
+        let b = life.connect();
+        assert_eq!(life.clients(), 2);
+        assert_eq!(life.hello().clients, 2);
+        assert_eq!(life.idle_for(now + 1000), None, "a client is connected");
+        drop(a);
+        assert_eq!(life.idle_for(now + 1000), None, "one is still connected");
+        drop(b);
+        assert_eq!(life.clients(), 0);
+        // The clock starts at the close, not at the open.
+        let idle = life.idle_for(unix_now() + 30).unwrap();
+        assert!((29..=31).contains(&idle), "idle {idle}");
+    }
+
+    /// `/api/hello` names the daemon and its API version, and every request
+    /// counts as activity.
+    #[tokio::test]
+    async fn hello_says_who_this_is() {
+        let st = state_with(&[]);
+        let life = Arc::clone(&st.life);
+        life.last_activity.store(0, std::sync::atomic::Ordering::SeqCst);
+        let app = router(st);
+        let resp = tower::ServiceExt::oneshot(
+            app,
+            axum::http::Request::get("/api/hello").body(axum::body::Body::empty()).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let h: eqlparser_api::Hello = serde_json::from_slice(&body).unwrap();
+        assert_eq!(h.identity, "eqlparserd");
+        assert_eq!(h.api_version, eqlparser_api::API_VERSION);
+        assert!(life.last_activity.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    }
+
     fn state_with(lines: &[&str]) -> AppState {
         let mut engine = Engine::new("Tharn".to_string(), SpellDb::empty());
         for l in lines {
@@ -3458,6 +3643,7 @@ mod tests {
         let snap = engine.snapshot(50);
         let (tx, _) = broadcast::channel(4);
         AppState {
+            life: Arc::new(Life::new(test_hello())),
             store: None,
             log_path: std::path::PathBuf::from("eqlog_Test_freeport.txt"),
             logs_dir: None,

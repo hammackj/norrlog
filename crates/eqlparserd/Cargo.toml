@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 flate2 = { workspace = true }
 eqlparser-core = { path = "../eqlparser-core" }
+eqlparser-api = { path = "../eqlparser-api" }
 eqlparser-vision = { path = "../eqlparser-vision" }
 eqlparser-shot = { path = "../eqlparser-shot" }
 serde = { workspace = true }
@@ -25,3 +26,5 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 # Not a runtime dependency: the daemon reaches `held_reason` through
 # eqlparser-shot, which is the only thing that should be calling it.
 eqlparser-parse = { path = "../eqlparser-parse" }
+# To drive the whole router, middleware included, in tests.
+tower = { version = "0.5", features = ["util"] }
