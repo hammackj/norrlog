@@ -9,7 +9,7 @@ set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 GUI="$REPO/gui"
-DAEMON="$REPO/target/release/eqlparserd"
+DAEMON="$REPO/target/release/norrlogd"
 
 # Whatever the desktop offers. Falls back to stderr when run from a terminal.
 fail() {

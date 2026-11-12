@@ -12,7 +12,7 @@ use crate::format::{dur, num, when};
 use crate::table::{self, Col, col, muted, tag};
 use crate::theme::*;
 use crate::fight::FightUi;
-use eqlparser_api::{EncounterBrief, EncounterDetail, EncounterPage, MobPage, MobRow};
+use norrlog_api::{EncounterBrief, EncounterDetail, EncounterPage, MobPage, MobRow};
 use gpui::*;
 use crate::theme::px;
 use gpui_component::button::{Button, ButtonVariants};

@@ -1,4 +1,4 @@
-//! The daemon thread: attach to the shared eqlparserd (starting it if nobody
+//! The daemon thread: attach to the shared norrlogd (starting it if nobody
 //! has), hold its snapshot stream, and say what happens to the window.
 //!
 //! Reconnects as the Electron renderer does: after `min(500 ms × n, 5 s)`,
@@ -9,8 +9,8 @@
 //! old port is stopped, whoever started it, as `restartDaemon` in
 //! `gui/main.js` does, and the new one is attached to or started.
 
-use eqlparser_api::Hello;
-use eqlparser_client::{Client, Error, Spawn};
+use norrlog_api::Hello;
+use norrlog_client::{Client, Error, Spawn};
 use futures_util::StreamExt;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -172,11 +172,11 @@ fn describe(e: &Error, setup: &Setup) -> String {
     }
 }
 
-/// Where `eqlparserd` is: `--daemon`, `$EQLPARSER_DAEMON`, beside this
+/// Where `norrlogd` is: `--daemon`, `$NORRLOG_DAEMON`, beside this
 /// executable, this checkout's `target/`, then whatever is on `PATH`.
 pub fn find_daemon(given: Option<PathBuf>) -> PathBuf {
-    let exe = if cfg!(windows) { "eqlparserd.exe" } else { "eqlparserd" };
-    if let Some(p) = given.or_else(|| std::env::var_os("EQLPARSER_DAEMON").map(PathBuf::from)) {
+    let exe = if cfg!(windows) { "norrlogd.exe" } else { "norrlogd" };
+    if let Some(p) = given.or_else(|| std::env::var_os("NORRLOG_DAEMON").or_else(|| std::env::var_os("EQLPARSER_DAEMON")).map(PathBuf::from)) {
         return p;
     }
     let mut candidates = Vec::new();

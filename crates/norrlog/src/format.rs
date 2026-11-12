@@ -1,6 +1,6 @@
 //! Numbers and times, written exactly as the Electron renderer writes them
 //! (`gui/renderer/core.js`), so a port reads the same as what it replaces.
-//! The overlay (`crates/eqlparserd/assets/overlay.js`) has its own copies of
+//! The overlay (`crates/norrlogd/assets/overlay.js`) has its own copies of
 //! `num` and `dur`; all three agree.
 
 /// `—` for nothing; `1.23B`, `1.23M`, `12.3k` from ten thousand up;

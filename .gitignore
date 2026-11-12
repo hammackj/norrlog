@@ -5,7 +5,8 @@
 # tracked so builds are pinned.
 node_modules/
 
-# Runtime state lives in ~/.config/eqlparser and ~/.config/eqlparser-gui —
+# Runtime state lives in ~/.config/norrlog (and ~/.local/share/norrlog), and
+# the Electron app's in ~/.config/eqlparser-gui —
 # buff marks, seeded task definitions, the Sky quest catalogue, window
 # geometry. Never inside the repo, but ignore stray copies just in case.
 *.local.json

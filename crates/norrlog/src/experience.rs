@@ -13,7 +13,7 @@ use crate::format::{dur, when};
 use crate::parts::{ROW, ROW_ENEMY, ROW_PET, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note, split};
 use crate::table::{self, Col, col, muted, tag};
 use crate::theme::*;
-use eqlparser_api::{AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare};
+use norrlog_api::{AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -698,7 +698,7 @@ fn stat_card(label: &str, value: impl IntoElement, note: Option<String>) -> Div 
 #[cfg(test)]
 mod tests {
     use super::{aa_summary, rate_text, zone_cell};
-    use eqlparser_api::{AaReport, ZoneShare};
+    use norrlog_api::{AaReport, ZoneShare};
 
     #[test]
     fn a_level_names_its_top_two_zones_and_counts_the_rest() {

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>norrlogd</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; padding: 32px;
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        background: #0d1117; color: #e6edf3; line-height: 1.6;
+      }
+      main { max-width: 760px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      h2 { font-size: 15px; margin: 28px 0 8px; color: #ffc857; }
+      p.lead { color: #9aa5b8; margin: 0 0 24px; }
+      code, pre {
+        background: #161b22; border: 1px solid #30363d;
+        border-radius: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+      }
+      code { padding: 1px 6px; }
+      pre { padding: 10px 12px; overflow-x: auto; }
+      a { color: #4fc3f7; }
+      ul { padding-left: 20px; }
+      li { margin: 4px 0; }
+      table { border-collapse: collapse; width: 100%; font-size: 13px; }
+      td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+      th { color: #9aa5b8; font-weight: 550; }
+      #live { color: #7ee787; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>norrlogd</h1>
+      <p class="lead">EverQuest Legends log parser — <span id="live">checking…</span></p>
+
+      <h2>Overlay</h2>
+      <p>Add this as an <strong>OBS Browser Source</strong>, or open it in the desktop app:</p>
+      <pre><code id="overlay-url">http://127.0.0.1:8777/overlay</code></pre>
+      <p>
+        Set the source to about <strong>360&times;420</strong>, tick
+        <em>Shutdown source when not visible</em> off, and leave the background
+        transparent — the page paints no background of its own.
+      </p>
+
+      <h2>Overlay options</h2>
+      <table>
+        <tr><th>Parameter</th><th>Effect</th></tr>
+        <tr><td><code>?panels=meter,buffs</code></td><td>Which panels to show</td></tr>
+        <tr><td><code>?rows=6</code></td><td>Max damage meter rows</td></tr>
+        <tr><td><code>?scale=1.25</code></td><td>Zoom, for 4K captures</td></tr>
+        <tr><td><code>?width=340</code></td><td>Overlay width in pixels</td></tr>
+        <tr><td><code>?self=1</code></td><td>Show only your own row</td></tr>
+        <tr><td><code>?enemies=0</code></td><td>Hide enemy rows</td></tr>
+        <tr><td><code>?idle=1</code></td><td>Keep the last fight on screen between pulls</td></tr>
+      </table>
+
+      <h2>API</h2>
+      <ul>
+        <li><a href="/api/snapshot">/api/snapshot</a> — current state</li>
+        <li><a href="/api/encounters">/api/encounters</a> — history (<code>?search=</code>, <code>?zone=</code>, <code>?limit=</code>, <code>?offset=</code>, <code>?min_duration=</code>)</li>
+        <li><a href="/api/loot">/api/loot</a> — aggregated loot</li>
+        <li><a href="/api/classes">/api/classes</a> — detected classes</li>
+        <li><code>/ws</code> — live snapshot stream</li>
+      </ul>
+
+      <h2>Status</h2>
+      <pre id="status">loading…</pre>
+    </main>
+
+    <script>
+      document.getElementById("overlay-url").textContent =
+        location.origin + "/overlay";
+
+      async function refresh() {
+        try {
+          const r = await fetch("/api/snapshot");
+          const s = await r.json();
+          document.getElementById("live").textContent = s.live
+            ? `following ${s.player} live`
+            : `parsing ${s.player}…`;
+          const cls = (s.classes || []).map((c) => c.abbrev).join("/") || "unknown";
+          document.getElementById("status").textContent = [
+            `character   : ${s.player} (level ${s.level})`,
+            `classes     : ${cls}`,
+            `zone        : ${s.zone || "unknown"}`,
+            `encounters  : ${s.totals.encounters}`,
+            `your damage : ${s.totals.your_damage.toLocaleString()}`,
+            `kills       : ${s.totals.kills}`,
+            `deaths      : ${s.totals.deaths}`,
+            `items looted: ${s.totals.items_looted}`,
+            `platinum    : ${(s.totals.coin_copper / 1000).toFixed(2)}`,
+            `active buffs: ${(s.buffs || []).length}`,
+          ].join("\n");
+        } catch (e) {
+          document.getElementById("live").textContent = "daemon unreachable";
+        }
+      }
+
+      refresh();
+      setInterval(refresh, 2000);
+    </script>
+  </body>
+</html>

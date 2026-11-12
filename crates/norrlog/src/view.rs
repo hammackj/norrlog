@@ -6,7 +6,7 @@
 use crate::daemon::Msg;
 use crate::state::{Rect, State};
 use crate::theme::*;
-use eqlparser_api::Hello;
+use norrlog_api::Hello;
 use gpui::*;
 use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
@@ -355,7 +355,7 @@ impl Shell {
                     .child(div().font_weight(FontWeight::BOLD).child("Norrlog"))
                     .child(div().text_xs().text_color(hex(MUTED)).child(match &self.link {
                         Link::Attached { hello, started } => format!(
-                            "eqlparserd {} · port {}{}",
+                            "norrlogd {} · port {}{}",
                             hello.version,
                             hello.port,
                             if *started { " · started here" } else { "" }

@@ -21,7 +21,7 @@ use crate::config::{self, ParserConfig};
 use crate::daemon::Setup;
 use crate::parts::{card, hint, split};
 use crate::theme::*;
-use eqlparser_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
+use norrlog_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::{self, px};
@@ -123,9 +123,9 @@ fn eqdb_mode_of(eqdb: &str) -> &'static str {
 impl SettingsView {
     pub fn new(restart: Restart, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cfg = ParserConfig::load();
-        let port = cfg.port.unwrap_or(eqlparser_client::DEFAULT_PORT).to_string();
+        let port = cfg.port.unwrap_or(norrlog_client::DEFAULT_PORT).to_string();
         // An empty field means "guessed": say what the guess is.
-        let guess = eqlparser_client::install::guess_game_dir();
+        let guess = norrlog_client::install::guess_game_dir();
         let logs_guess = guess.as_ref().map(|g| g.join("Logs").display().to_string());
         let inputs = Inputs {
             log_file: input(window, cx, "…/Logs/eqlog_Tharn_freeport.txt", &cfg.log_file),
@@ -171,7 +171,7 @@ impl SettingsView {
         if let Some(a) = &api {
             let h = a.client.hello();
             let what = if a.client.started_daemon() { "started" } else { "attached to" };
-            self.append_log(&format!("[norrlog] {what} eqlparserd {} (pid {}), following {}\n", h.version, h.pid, h.log));
+            self.append_log(&format!("[norrlog] {what} norrlogd {} (pid {}), following {}\n", h.version, h.pid, h.log));
             // A different daemon numbers its lines from zero again.
             if self.log_pid != Some(h.pid) {
                 self.log_pid = Some(h.pid);
@@ -346,7 +346,7 @@ impl SettingsView {
         if restart {
             let cfg = ParserConfig::load();
             let setup = Setup {
-                port: cfg.port.unwrap_or(eqlparser_client::DEFAULT_PORT),
+                port: cfg.port.unwrap_or(norrlog_client::DEFAULT_PORT),
                 daemon: self.restart.daemon.clone(),
                 args: cfg.daemon_args(),
             };
@@ -362,7 +362,7 @@ impl SettingsView {
             Ok(p) if p >= 1024 => p,
             Ok(_) => return self.say("The port must be between 1024 and 65535.", 4, cx),
             // `parseInt(…) || 8777`.
-            Err(_) => eqlparser_client::DEFAULT_PORT,
+            Err(_) => norrlog_client::DEFAULT_PORT,
         };
         // "" is the default site, "off" none, anything else a site of your own.
         let eqdb = match self.eqdb_mode {
@@ -939,9 +939,9 @@ mod tests {
         let h = HistoryBrief {
             available: true,
             kills: vec![
-                eqlparser_api::KillBuild { build: Some("SHD/BRD".into()) },
-                eqlparser_api::KillBuild { build: None },
-                eqlparser_api::KillBuild { build: Some("SHD/BRD".into()) },
+                norrlog_api::KillBuild { build: Some("SHD/BRD".into()) },
+                norrlog_api::KillBuild { build: None },
+                norrlog_api::KillBuild { build: Some("SHD/BRD".into()) },
             ],
             ..Default::default()
         };

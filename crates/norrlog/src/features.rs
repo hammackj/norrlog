@@ -1,7 +1,7 @@
 //! Which game-specific parts the followed game has.
 //!
 //! The daemon says, in its hello, from the game's profile
-//! (`eqlparser_core::profile`): Legends has the Plane of Sky, weekly
+//! (`norrlog_core::profile`): Legends has the Plane of Sky, weekly
 //! lockouts and motes; live EverQuest has none of them. Views ask here
 //! rather than each holding the hello, and hide what the game does not have.
 

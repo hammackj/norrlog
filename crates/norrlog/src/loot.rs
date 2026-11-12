@@ -14,7 +14,7 @@ use crate::item_tip::{ItemCards, item_tip};
 use crate::table::{self, Col, col, muted};
 use crate::parts::{card, hint, note, stat};
 use crate::theme::*;
-use eqlparser_api::{LootDetail, LootList, LootTally};
+use norrlog_api::{LootDetail, LootList, LootTally};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -692,7 +692,7 @@ fn table_card(cols: &[Col], rows: Vec<AnyElement>) -> Div {
 #[cfg(test)]
 mod tests {
     use super::{fates, first, is_mote, left_badge, matches, mote_ladder, mote_tier, motes_first, motes_summary, seen_line, worth};
-    use eqlparser_api::{LootDetail, LootTally};
+    use norrlog_api::{LootDetail, LootTally};
 
     fn t(item: &str, count: u64) -> LootTally {
         LootTally {
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(left_badge(&both).as_deref(), Some("left on corpse ×1"));
         assert_eq!(left_badge(&t("Bone Chips", 4)), None);
 
-        let mut d = eqlparser_api::LootDetail {
+        let mut d = norrlog_api::LootDetail {
             item: "Tiny Glowing Skull".into(), total: 0, drops: 0, left: 2, first_seen: 0, last_seen: 0,
             sources: vec![], zones: vec![], kept: 0, sold: 0, stored: 0, transmuted: 0,
             sold_total_copper: 0, sales: 0, best_sale_copper: 0, buy_price_copper: None, stacks: vec![],

@@ -3,7 +3,7 @@
 //! section of `docs/parity/experience-character-classes.md`.
 
 use crate::parts::{ROW, bar_row, card, dim, empty, figure, fill, note};
-use eqlparser_api::ClassInfo;
+use norrlog_api::ClassInfo;
 use gpui::*;
 use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
@@ -92,7 +92,7 @@ fn pct(share: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{pct, reasons};
-    use eqlparser_api::ClassInfo;
+    use norrlog_api::ClassInfo;
 
     #[test]
     fn a_row_shows_four_reasons_at_most_and_a_rounded_share() {

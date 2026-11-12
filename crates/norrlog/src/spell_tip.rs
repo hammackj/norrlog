@@ -9,7 +9,7 @@
 
 use crate::api::{Api, query};
 use crate::theme::*;
-use eqlparser_api::{CLASS_CANNOT_CAST, Class, SpellLookup};
+use norrlog_api::{CLASS_CANNOT_CAST, Class, SpellLookup};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -206,7 +206,7 @@ fn card(d: &SpellLookup) -> Option<Card> {
 #[cfg(test)]
 mod tests {
     use super::card;
-    use eqlparser_api::SpellLookup;
+    use norrlog_api::SpellLookup;
 
     /// The daemon's reply for a rank the site files under its base name,
     /// trimmed from a real one.

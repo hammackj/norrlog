@@ -10,7 +10,7 @@ use crate::format::when_short;
 use crate::parts::{ROW_YOU, bar_row, card_suffixed, dim, empty, figure, fill, note, split};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{Conversation, TellReport};
+use norrlog_api::{Conversation, TellReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;

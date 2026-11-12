@@ -1607,105 +1607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eqlparser-api"
-version = "0.1.0"
-dependencies = [
- "eqlparser-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "eqlparser-client"
-version = "0.1.0"
-dependencies = [
- "eqlparser-api",
- "eqlparser-core",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
-]
-
-[[package]]
-name = "eqlparser-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flate2",
- "regex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "eqlparser-parse"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "eqlparser-read",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "eqlparser-read"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "eqlparser-shot"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "eqlparser-parse",
- "eqlparser-read",
- "eqlparser-vision",
- "serde",
- "serde_json",
- "sha1",
-]
-
-[[package]]
-name = "eqlparser-vision"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image",
- "rustfft",
-]
-
-[[package]]
-name = "eqlparserd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "eqlparser-api",
- "eqlparser-client",
- "eqlparser-core",
- "futures-util",
- "ksni",
- "libc",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "time",
- "tokio",
- "tower",
-]
-
-[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4236,17 +4137,116 @@ dependencies = [
  "async-channel",
  "base64",
  "chrono",
- "eqlparser-api",
- "eqlparser-client",
  "futures-util",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "norrlog-api",
+ "norrlog-client",
  "rodio",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "norrlog-api"
+version = "0.1.0"
+dependencies = [
+ "norrlog-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "norrlog-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "norrlog-api",
+ "norrlog-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
+name = "norrlog-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "norrlog-parse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "norrlog-read",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "norrlog-read"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "norrlog-shot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "norrlog-parse",
+ "norrlog-read",
+ "norrlog-vision",
+ "serde",
+ "serde_json",
+ "sha1",
+]
+
+[[package]]
+name = "norrlog-vision"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "rustfft",
+]
+
+[[package]]
+name = "norrlogd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures-util",
+ "ksni",
+ "libc",
+ "norrlog-api",
+ "norrlog-client",
+ "norrlog-core",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "time",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@
 use crate::api::Api;
 use crate::parts::{card, hint, note, split};
 use crate::theme::*;
-use eqlparser_api::{ForageReport, ForageZoneRow};
+use norrlog_api::{ForageReport, ForageZoneRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -254,7 +254,7 @@ fn summary(r: &ForageReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::{pool, rate, summary};
-    use eqlparser_api::{ForageReport, ForageZoneRow, ForagedItem};
+    use norrlog_api::{ForageReport, ForageZoneRow, ForagedItem};
 
     fn zone(name: &str, attempts: u64, items: &[(&str, u64)]) -> ForageZoneRow {
         let hits = items.iter().map(|i| i.1).sum();

@@ -13,7 +13,7 @@ use crate::item_tip::{ItemCards, item_tip};
 use crate::parts::{ROW, ROW_YOU, bar_row, card, card_suffixed, dim, empty, figure, fill, note};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{IslandProgress, SiteQuest, SkyItemProgress, SkyQuestProgress, SkyReply, SkySite};
+use norrlog_api::{IslandProgress, SiteQuest, SkyItemProgress, SkyQuestProgress, SkyReply, SkySite};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -51,7 +51,7 @@ const STATUSES: &[(Status, &str)] = &[
 ];
 
 /// A fresh `/api/sky`, for the dashboard.
-pub struct SkyLoaded(pub eqlparser_api::SkyReport);
+pub struct SkyLoaded(pub norrlog_api::SkyReport);
 
 impl EventEmitter<SkyLoaded> for SkyView {}
 

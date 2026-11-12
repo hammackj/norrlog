@@ -361,7 +361,7 @@ def send(args):
         raise SystemExit(
             f"import-tasks: could not reach the daemon at {args.daemon} ({e}).\n"
             f"  It is what holds the definitions; they are written to\n"
-            f"  ~/.config/eqlparser/tasks.json when it takes one."
+            f"  ~/.config/norrlog/tasks.json when it takes one."
         )
     named = sum(1 for s in steps if s["kill_target"])
     print(f"sent {len(steps)} objective(s) for {name!r}")

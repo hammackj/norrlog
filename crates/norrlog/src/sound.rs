@@ -8,7 +8,7 @@
 //! Speech goes to the system's own speaker: speech-dispatcher's `spd-say` on
 //! Linux, `say` on macOS. Neither ships with the app.
 
-use eqlparser_api::Sound;
+use norrlog_api::Sound;
 use std::num::NonZero;
 use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
@@ -155,7 +155,7 @@ pub fn voices_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{RATE, synth};
-    use eqlparser_api::Sound;
+    use norrlog_api::Sound;
 
     #[test]
     fn a_tone_lasts_its_recipe_and_ends_near_silence() {

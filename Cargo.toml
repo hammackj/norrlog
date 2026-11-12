@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/eqlparser-core", "crates/eqlparser-api", "crates/eqlparser-client", "crates/eqlparser-vision", "crates/eqlparser-read", "crates/eqlparser-parse", "crates/eqlparser-shot", "crates/eqlparserd", "crates/norrlog"]
+members = ["crates/norrlog-core", "crates/norrlog-api", "crates/norrlog-client", "crates/norrlog-vision", "crates/norrlog-read", "crates/norrlog-parse", "crates/norrlog-shot", "crates/norrlogd", "crates/norrlog"]
 
 [workspace.package]
 version = "0.1.0"

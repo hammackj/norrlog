@@ -8,7 +8,7 @@
 use crate::api::Api;
 use crate::format::{dur, num};
 use crate::theme::*;
-use eqlparser_api::{ProcKind, ProcReport, ProcRow};
+use norrlog_api::{ProcKind, ProcReport, ProcRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -265,7 +265,7 @@ fn hint(text: impl Into<SharedString>) -> Div {
 #[cfg(test)]
 mod tests {
     use super::{ProcRow, counts, rate, subtotal};
-    use eqlparser_api::ProcKind;
+    use norrlog_api::ProcKind;
 
     fn row(count: u64, hits: u64, damage: u64, per_minute: f64) -> ProcRow {
         ProcRow { name: "x".into(), kind: ProcKind::Melee, sources: vec![], count, per_minute, damage, hits, first: 0, last: 0 }

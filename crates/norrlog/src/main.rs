@@ -1,6 +1,6 @@
 //! Norrlog: an EverQuest log parser.
 //!
-//! A window onto the shared `eqlparserd`, which does the parsing: this
+//! A window onto the shared `norrlogd`, which does the parsing: this
 //! attaches to it (starting it if nobody has) and draws what it reports.
 //!
 //!     norrlog [--port N] [--daemon PATH]
@@ -47,7 +47,7 @@ use std::path::PathBuf;
 
 fn main() {
     let cfg = config::ParserConfig::load();
-    let mut port = cfg.port.unwrap_or(eqlparser_client::DEFAULT_PORT);
+    let mut port = cfg.port.unwrap_or(norrlog_client::DEFAULT_PORT);
     let mut daemon_bin: Option<PathBuf> = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {

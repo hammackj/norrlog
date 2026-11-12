@@ -1,0 +1,20 @@
+[package]
+name = "norrlog-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Attach to the shared norrlogd, starting it if nobody has"
+
+[dependencies]
+norrlog-api = { path = "../norrlog-api" }
+norrlog-core = { path = "../norrlog-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "time", "process"] }
+tokio-tungstenite = "0.29.0"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "process"] }

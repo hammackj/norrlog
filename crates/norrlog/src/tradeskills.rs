@@ -15,7 +15,7 @@ use crate::api::Api;
 use crate::parts::{ROW, ROW_PET, ROW_YOU, bar_row, card_suffixed, dim, empty, figure, fill, hint, note, rich, split};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
+use norrlog_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -379,7 +379,7 @@ impl TradeskillsView {
     fn vendor_line(&self, i: usize, item: &str) -> Option<Stateful<Div>> {
         let v = &self.prices.get(&item.to_lowercase())?.vendors;
         let cheapest = v.iter().min_by_key(|x| x.unit_copper)?;
-        let one = |x: &eqlparser_api::VendorPrice| match &x.zone {
+        let one = |x: &norrlog_api::VendorPrice| match &x.zone {
             Some(z) => format!("{} ({z})", x.merchant),
             None => x.merchant.clone(),
         };

@@ -12,7 +12,7 @@ use crate::format::{num, pp, when_short};
 use crate::parts::{ROW, ROW_YOU, band, bar_row, card, dim, empty, figure, fill, hint, note};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{TaskRecord, TaskReport, Totals};
+use norrlog_api::{TaskRecord, TaskReport, Totals};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;

@@ -16,7 +16,7 @@ use crate::format::when_short;
 use crate::parts::{ROW, ROW_YOU, bar_row, card_suffixed, dim, empty, fill, hint, note, split};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger};
+use norrlog_api::{AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -847,7 +847,7 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{line_name, new_id, parse_int, summary};
-    use eqlparser_api::{SignalKind, Trigger};
+    use norrlog_api::{SignalKind, Trigger};
 
     #[test]
     fn summaries_names_and_numbers_read_as_the_renderer_writes_them() {

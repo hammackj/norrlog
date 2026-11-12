@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2024"
 license.workspace = true
 authors.workspace = true
-description = "An EverQuest log parser: the window onto the shared eqlparserd"
+description = "An EverQuest log parser: the window onto the shared norrlogd"
 publish = false
 
 [[bin]]
@@ -12,8 +12,8 @@ name = "norrlog"
 path = "src/main.rs"
 
 [dependencies]
-eqlparser-api = { path = "../eqlparser-api" }
-eqlparser-client = { path = "../eqlparser-client" }
+norrlog-api = { path = "../norrlog-api" }
+norrlog-client = { path = "../norrlog-client" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -17,7 +17,7 @@ use crate::item_tip::ItemCards;
 use crate::parts::{band, fill, hint, note, BarAnim, ROW, ROW_YOU};
 use crate::table::tag;
 use crate::theme::*;
-use eqlparser_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
+use norrlog_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -165,7 +165,7 @@ impl DashboardView {
         let Some(api) = self.api.clone() else { return };
         self.last_sky = Some(Instant::now());
         self.track(cx.spawn(async move |this, cx| {
-            let Ok(r) = api.get::<eqlparser_api::SkyReply>("/api/sky".into()).await else { return };
+            let Ok(r) = api.get::<norrlog_api::SkyReply>("/api/sky".into()).await else { return };
             let _ = this.update(cx, |v, cx| v.set_sky(r.report, cx));
         }));
     }
@@ -349,7 +349,7 @@ impl DashboardView {
             return lead().child(lock_title(None)).child(empty("No boss kills recorded yet")).child(notes);
         };
         let v = &d.void_currency;
-        let cells: HashMap<(&str, u8), &eqlparser_api::LockoutCell> =
+        let cells: HashMap<(&str, u8), &norrlog_api::LockoutCell> =
             d.cells.iter().map(|c| ((c.boss.as_str(), c.difficulty), c)).collect();
         let diffs = 0..=d.max_difficulty;
         const BOSS_W: f32 = 210.;

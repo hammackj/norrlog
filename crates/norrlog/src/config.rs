@@ -90,7 +90,7 @@ impl ParserConfig {
         let mut a: Vec<OsString> = Vec::new();
         let game_dir = (!self.game_dir.is_empty())
             .then(|| PathBuf::from(&self.game_dir))
-            .or_else(eqlparser_client::install::guess_game_dir);
+            .or_else(norrlog_client::install::guess_game_dir);
         if !self.log_file.is_empty() {
             a.extend(["--log".into(), (&self.log_file).into()]);
         } else if !self.logs_dir.is_empty() {

@@ -1,7 +1,7 @@
-# eqlparser
+# Norrlog
 
 A log parser, DPS meter, and stream overlay for **EverQuest Legends** and
-**live EverQuest**.
+**live EverQuest**. It was called eqlparser until November 2026.
 
 Rust does the parsing and analysis; Electron provides the desktop GUI; the
 overlay is a plain web page served over localhost so OBS and the desktop can
@@ -16,7 +16,7 @@ it follows the file live, picking up new lines within **~250 ms** (measured:
 ## Two games
 
 The two games share a client and a log format, and nearly everything reads
-both the same way. What differs is in one place, `eqlparser_core::profile`,
+both the same way. What differs is in one place, `norrlog_core::profile`,
 chosen per log from the install path (or `--game eq|eql`):
 
 | | Legends | live EverQuest |
@@ -138,7 +138,7 @@ directory is what enables buff timers and class detection — it needs
 To run the daemon alone:
 
 ```sh
-./target/release/eqlparserd \
+./target/release/norrlogd \
   --log  "…/EverQuest Legends/Logs/eqlog_<Character>_<server>.txt" \
   --game-dir "…/EverQuest Legends"
 ```
@@ -221,14 +221,14 @@ which faction a kill moved, how high a skill has climbed, where a marker was
 written down, where a corpse fell.
 
 Both come out of the same parse. The record's six collectors live in
-`eqlparser-core::collect` and are driven from `Engine::push_entry`, so a rule
+`norrlog-core::collect` and are driven from `Engine::push_entry`, so a rule
 about how to read a line exists once. They were previously read by a second
 program (`eqldb-logscan`) opening the same 161 MB file again.
 
 ```sh
 # Parse one log and write the record as JSON — the file names and shapes
 # eqldb's rebuild has always written, so the two readings can be diffed.
-eqlparserd --log <log> --game-dir <dir> --record-out <dir>
+norrlogd --log <log> --game-dir <dir> --record-out <dir>
 ```
 
 `GET /api/bundle` is the contribution bundle built from that record, which
@@ -240,11 +240,11 @@ See `crate::bundle` for why that is a set of verdicts rather than row counts.
 
 ```sh
 # Encounter report: top fights, ability breakdowns, charm contribution, totals
-./target/release/eqlreport <logfile> [game-dir]
+./target/release/norrlog-report <logfile> [game-dir]
 
 # Parser coverage: what fraction of lines are understood, and what is not.
 # The unmatched histogram is the tool for growing the rule table.
-./target/release/eqlcoverage <logfile> [top-n] [game-dir]
+./target/release/norrlog-coverage <logfile> [top-n] [game-dir]
 
 # Recipe book: grow it by pasting an EQTraders "Full Recipe List" into a file.
 # Merging is additive and deduplicated, so re-importing changes nothing.
@@ -286,7 +286,7 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 ## Layout
 
 ```
-crates/eqlparser-core/    parsing, encounters, spells, class inference
+crates/norrlog-core/    parsing, encounters, spells, class inference
   src/event.rs              typed event model
   src/parser.rs             regex rule table (RegexSet dispatch)
   src/encounter.rs          segmentation + combat aggregation
@@ -295,7 +295,7 @@ crates/eqlparser-core/    parsing, encounters, spells, class inference
   src/tradeskill.rs         combines, skill-ups, component use, recipe costs
   src/recipe.rs             recipe book: what a combine makes, and from what
   assets/recipes.json       the book itself (tools/import-recipes.py)
-crates/eqlparserd/        daemon: follower, HTTP/WebSocket API, overlay assets
+crates/norrlogd/        daemon: follower, HTTP/WebSocket API, overlay assets
 gui/                      Electron desktop app
   main.js                   window and overlay lifecycle, config, IPC
   preload.js                the only privileged surface the renderer sees
@@ -322,7 +322,7 @@ Most of the old tail was spell flavour text landing on somebody else —
 "Zibekab looks valorous." No regular expression can find where the creature's
 name ends and the text begins, so the spell database is asked. What remains is
 mostly creature emotes, per-creature strings with no list to check against.
-Run `eqlcoverage <log> 40 <game dir>` to see exactly what is unhandled on your
+Run `norrlog-coverage <log> 40 <game dir>` to see exactly what is unhandled on your
 own log.
 
 **Buff identification is ambiguous by nature.** The client never names the spell
@@ -420,7 +420,7 @@ Dodge, 1H Slashing) because they carry no signal.
 
 ## Built with Claude
 
-eqlparser was written with a lot of help from
+Norrlog was written with a lot of help from
 [Claude Code](https://claude.com/claude-code), Anthropic's coding agent. That
 covers the log parser and daemon, the Electron app, the Norrlog port to Rust
 and GPUI, and most of the bug fixes since. The maintainer sets the design and

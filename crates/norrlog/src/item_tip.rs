@@ -14,7 +14,7 @@
 use crate::api::{Api, query};
 use crate::theme::*;
 use base64::Engine as _;
-use eqlparser_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
+use norrlog_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -397,7 +397,7 @@ fn card(d: &ItemLookup) -> Option<Card> {
 #[cfg(test)]
 mod tests {
     use super::{Badge, Stats, card, cut, data_uri_png};
-    use eqlparser_api::{ItemLookup, SpriteIcon};
+    use norrlog_api::{ItemLookup, SpriteIcon};
 
     #[test]
     fn an_eqdb_card_takes_its_stats_and_names_each_list_by_what_it_holds() {

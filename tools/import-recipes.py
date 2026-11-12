@@ -42,10 +42,10 @@ import sys
 from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / (
-    "crates/eqlparser-core/assets/recipes.json"
+    "crates/norrlog-core/assets/recipes.json"
 )
 
-# Slugs shared with crates/eqlparser-core/src/game.rs.
+# Slugs shared with crates/norrlog-core/src/game.rs.
 GAMES = {
     "eq": "everquest",
     "everquest": "everquest",

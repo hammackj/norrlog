@@ -67,7 +67,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_OUT = HERE.parent / "crates/eqlparser-core/assets/recipes.json"
+DEFAULT_OUT = HERE.parent / "crates/norrlog-core/assets/recipes.json"
 DEFAULT_CACHE = HERE.parent / ".eqtraders-cache"
 
 BASE = "https://www.eqtraders.com"
@@ -77,7 +77,7 @@ ITEM_URL = BASE + "/items/show_item.php?item={id}"
 # Identify the tool honestly, and leave a way to be told to stop.
 UA = (
     "eqlparser-archive/1.0 (personal archival import of factual recipe data; "
-    "one request at a time, 5s apart; +https://github.com/hammackj/eqlparser)"
+    "one request at a time, 5s apart; +https://github.com/hammackj/norrlog)"
 )
 
 

@@ -10,7 +10,7 @@ use crate::encounters::EncountersView;
 use crate::format::{dur, num, when};
 use crate::table::{self, Col, col, muted, tag};
 use crate::theme::*;
-use eqlparser_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
+use norrlog_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -741,7 +741,7 @@ fn heal_spells(you: &ActorStats) -> Option<Div> {
     Some(table_box(HEAL_COLS, rows))
 }
 
-fn mobs_card(mobs: &[eqlparser_api::MobBreakdown]) -> Div {
+fn mobs_card(mobs: &[norrlog_api::MobBreakdown]) -> Div {
     let rows = mobs
         .iter()
         .map(|m| {
@@ -766,7 +766,7 @@ fn mobs_card(mobs: &[eqlparser_api::MobBreakdown]) -> Div {
     ))
 }
 
-fn resists_card(resists: &[eqlparser_api::ResistTally]) -> Div {
+fn resists_card(resists: &[norrlog_api::ResistTally]) -> Div {
     let rows = resists
         .iter()
         .map(|r| {
@@ -795,7 +795,7 @@ fn resists_card(resists: &[eqlparser_api::ResistTally]) -> Div {
     ))
 }
 
-fn deaths_card(deaths: &[eqlparser_api::DeathRecord]) -> Div {
+fn deaths_card(deaths: &[norrlog_api::DeathRecord]) -> Div {
     let c = card("Deaths");
     if deaths.is_empty() {
         return c.child(empty("Nothing died"));
@@ -817,7 +817,7 @@ fn deaths_card(deaths: &[eqlparser_api::DeathRecord]) -> Div {
 
 /// With the item card on each name, which the renderer's table lacks
 /// (a3bphvj).
-fn loot_card(e: &eqlparser_api::Encounter, items: &Entity<crate::item_tip::ItemCards>) -> Div {
+fn loot_card(e: &norrlog_api::Encounter, items: &Entity<crate::item_tip::ItemCards>) -> Div {
     let c = card("Loot & coin");
     if e.loot.is_empty() && e.coin_copper == 0 {
         return c.child(empty("No loot"));
@@ -1093,7 +1093,7 @@ fn plural(n: u64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{bold_runs, pet_sentence, MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
-    use eqlparser_api::AbilityStats;
+    use norrlog_api::AbilityStats;
 
     fn row(name: &str, damage: u64) -> MeterRow {
         serde_json::from_value(serde_json::json!({

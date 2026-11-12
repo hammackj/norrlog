@@ -9,7 +9,7 @@
 
 use crate::format::{dur, num};
 use crate::theme::*;
-use eqlparser_api::{Encounter, EncounterSummary, Outcome, TickSeries, TimelineEvent, TimelineMark};
+use norrlog_api::{Encounter, EncounterSummary, Outcome, TickSeries, TimelineEvent, TimelineMark};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
@@ -576,7 +576,7 @@ fn hatch(window: &mut Window, r: Bounds<Pixels>, c: u32) {
 #[cfg(test)]
 mod tests {
     use super::{TickSeries, dot_spans, dps_lines, rolling, tl_width};
-    use eqlparser_api::{Outcome, TimelineEvent};
+    use norrlog_api::{Outcome, TimelineEvent};
 
     #[test]
     fn the_rolling_mean_is_centred_and_shortens_at_the_ends() {

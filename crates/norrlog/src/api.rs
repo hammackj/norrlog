@@ -1,7 +1,7 @@
 //! Requests from a view: `Client::get`, run on the daemon thread's tokio
 //! runtime (reqwest needs one) and awaited from GPUI's executor.
 
-use eqlparser_client::Client;
+use norrlog_client::Client;
 use serde::de::DeserializeOwned;
 use std::future::Future;
 
@@ -32,7 +32,7 @@ impl Api {
         // the response body.
         let task = self.rt.spawn(async move {
             client.post_json(&path, &body).await.map_err(|e| match e {
-                eqlparser_client::Error::Api { error, .. } => error,
+                norrlog_client::Error::Api { error, .. } => error,
                 e => e.to_string(),
             })
         });
