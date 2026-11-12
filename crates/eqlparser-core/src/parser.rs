@@ -871,7 +871,15 @@ static COMPILED: LazyLock<Compiled> = LazyLock::new(|| {
         .map(|(_, p)| p.replace("{VERB}", &verbs).replace("{ATTITUDE}", ATTITUDES))
         .collect();
     Compiled {
-        set: RegexSet::new(&pats).expect("rule patterns must compile"),
+        // The set's lazy DFA outgrows regex's default 2 MiB cache: with the
+        // rule table as it stands it is rebuilt over and over, and parsing
+        // the 4.7M-line Legends test log took 22.7 s. At 8 MiB it takes 7.7 s
+        // for 7 MiB more peak memory; 16 MiB buys only another 0.4 s.
+        // Measured 2026-11-12 with eqlcoverage.
+        set: regex::RegexSetBuilder::new(&pats)
+            .dfa_size_limit(8 << 20)
+            .build()
+            .expect("rule patterns must compile"),
         regexes: pats
             .iter()
             .map(|p| Regex::new(p).expect("rule patterns must compile"))
