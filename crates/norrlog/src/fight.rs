@@ -251,8 +251,34 @@ fn empty(text: &'static str) -> Div {
     div().py_2().text_color(hex(MUTED)).child(text)
 }
 
+/// A muted note. `**x**` marks a figure the renderer sets in bold.
 fn hint(text: impl Into<SharedString>) -> Div {
-    div().text_sm().text_color(hex(MUTED)).child(text.into())
+    let text: SharedString = text.into();
+    let (plain, bold) = bold_runs(&text);
+    let d = div().text_sm().text_color(hex(MUTED));
+    if bold.is_empty() {
+        return d.child(text);
+    }
+    let style = HighlightStyle { font_weight: Some(FontWeight::BOLD), color: Some(hex(TEXT).into()), ..Default::default() };
+    d.child(StyledText::new(plain).with_highlights(bold.into_iter().map(|r| (r, style))))
+}
+
+/// `**`-delimited runs: the text without the markers, and where each run
+/// landed in it. An unpaired marker is left as it was.
+fn bold_runs(s: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let mut out = String::with_capacity(s.len());
+    let mut runs = Vec::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("**") {
+        let Some(j) = rest[i + 2..].find("**") else { break };
+        out.push_str(&rest[..i]);
+        let start = out.len();
+        out.push_str(&rest[i + 2..i + 2 + j]);
+        runs.push(start..out.len());
+        rest = &rest[i + 2 + j + 2..];
+    }
+    out.push_str(rest);
+    (out, runs)
 }
 
 /// Two cards side by side, wrapping to one column when the window is narrow.
@@ -815,13 +841,13 @@ fn pet_sentence(pets: usize, charmed: usize, own: u64, with: u64, duration: i64,
         (false, _, false) => "Your pets",
     };
     let mut line = format!(
-        "{word} contributed {} damage — your total including pets is {} ({} dps).",
+        "{word} contributed **{}** damage — your total including pets is **{}** ({} dps).",
         num(Some(with.saturating_sub(own) as f64)),
         num(Some(with as f64)),
         num(Some(if duration > 0 { with as f64 / duration as f64 } else { 0. })),
     );
     if charmed > 0 {
-        line.push_str(&format!(" Charm held {} of the fight", charm_pct(uptime, breaks)));
+        line.push_str(&format!(" Charm held **{}** of the fight", charm_pct(uptime, breaks)));
         if breaks > 0 {
             line.push_str(&format!(", breaking {} time{}.", breaks, plural(breaks as u64)));
         } else {
@@ -853,7 +879,7 @@ fn crit_hints(you: &MeterRow, duration: i64) -> Vec<String> {
         out.push(format!(
             "From {}. A slay is a critical against undead and only fires there, so it moves the melee rate on an \
              undead pull and not elsewhere.",
-            causes.iter().map(|(f, n)| format!("{f} {}×", int(*n))).collect::<Vec<_>>().join(" · ")
+            causes.iter().map(|(f, n)| format!("**{f}** {}×", int(*n))).collect::<Vec<_>>().join(" · ")
         ));
     }
     let extras: Vec<_> = you.swings_by_flag.iter().filter(|c| c.1 > 0).collect();
@@ -866,7 +892,7 @@ fn crit_hints(you: &MeterRow, duration: i64) -> Vec<String> {
                 .map(|(f, n)| {
                     let rate =
                         if swings > 0 { format!(" ({:.1}% of swings)", *n as f64 / swings as f64 * 100.) } else { String::new() };
-                    format!("{f} {}×{rate}", int(*n))
+                    format!("**{f}** {}×{rate}", int(*n))
                 })
                 .collect::<Vec<_>>()
                 .join(" · ")
@@ -884,7 +910,7 @@ fn crit_hints(you: &MeterRow, duration: i64) -> Vec<String> {
         };
         let more = if you.stuns_avoided > 0 { format!(", shrugging off {} more", you.stuns_avoided) } else { String::new() };
         out.push(format!(
-            "Stunned for {}{of}, across {} stun{}{more}.",
+            "Stunned for **{}**{of}, across {} stun{}{more}.",
             dur(you.stunned_seconds as f64),
             you.stuns,
             plural(you.stuns as u64)
@@ -899,7 +925,7 @@ fn overheal_line(you: &MeterRow) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Overhealed {} of {} attempted ({:.0}%), measured on {} of {} heals — the client states the pre-cap figure \
+        "Overhealed **{}** of {} attempted ({:.0}%), measured on {} of {} heals — the client states the pre-cap figure \
          on some lines and not others, so the real waste is at least this much.",
         num(Some(you.over_healing as f64)),
         num(Some(you.healing_attempted as f64)),
@@ -947,7 +973,7 @@ fn plural(n: u64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{pet_sentence, MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
+    use super::{bold_runs, pet_sentence, MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
     use eqlparser_api::AbilityStats;
 
     fn row(name: &str, damage: u64) -> MeterRow {
@@ -989,15 +1015,23 @@ mod tests {
         // Lord Nagafen in the Tharn log, as the renderer wrote it.
         assert_eq!(
             pet_sentence(1, 1, 56_735, 73_964, 244, 0.877, 1),
-            "Your charmed pet contributed 17.2k damage — your total including pets is 74.0k (303 dps). \
-             Charm held 88% of the fight, breaking 1 time."
+            "Your charmed pet contributed **17.2k** damage — your total including pets is **74.0k** (303 dps). \
+             Charm held **88%** of the fight, breaking 1 time."
         );
         assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).starts_with("Charmed pets contributed"));
-        assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).ends_with("Charm held 100% of the fight without breaking."));
+        assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).ends_with("Charm held **100%** of the fight without breaking."));
         assert!(pet_sentence(2, 2, 0, 10, 10, 0.5, 5).ends_with("breaking 5 times."));
         let summoned = pet_sentence(1, 0, 0, 10, 10, 0.0, 0);
         assert!(summoned.starts_with("Your pet contributed") && !summoned.contains("Charm"));
         assert!(pet_sentence(2, 1, 0, 10, 10, 0.5, 0).starts_with("Your pets contributed"));
+    }
+
+    #[test]
+    fn bold_runs_drop_their_markers_and_keep_their_place() {
+        assert_eq!(bold_runs("From **Critical** 39× · **Slay** 2×"), ("From Critical 39× · Slay 2×".into(), vec![5..13, 22..26]));
+        assert_eq!(bold_runs("no marks"), ("no marks".into(), vec![]));
+        assert_eq!(bold_runs("odd ** one"), ("odd ** one".into(), vec![]));
+        assert_eq!(bold_runs("**×**"), ("×".into(), vec![0..2]));
     }
 
     #[test]
