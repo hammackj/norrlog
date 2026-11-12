@@ -1102,6 +1102,11 @@ impl Engine {
         self.clock_offset
     }
 
+    /// The current zone as a place name; see `Snapshot::zone_place`.
+    pub fn zone_place(&self) -> Option<String> {
+        self.tracker.current_zone().map(|z| eqlparser_core::zone::Zone::parse(z).name).filter(|z| !z.is_empty())
+    }
+
     /// Current time in the log's clock domain.
     ///
     /// While following live this advances with the wall clock, so buff timers

@@ -240,8 +240,11 @@ pub fn spawn_idle_exit(life: Arc<Life>, secs: u64) {
 
 /// `GET /api/hello`.
 async fn hello(State(s): State<AppState>) -> Json<eqlparser_api::Hello> {
-    let clock_offset = s.engine.locked("engine").clock_offset();
-    Json(eqlparser_api::Hello { clock_offset, ..s.life.hello() })
+    let (clock_offset, zone) = {
+        let e = s.engine.locked("engine");
+        (e.clock_offset(), e.zone_place())
+    };
+    Json(eqlparser_api::Hello { clock_offset, zone, ..s.life.hello() })
 }
 
 // ---------------------------------------------------------------------------
@@ -3733,6 +3736,7 @@ mod tests {
             clients: 0,
             idle_exit_secs: Some(60),
             clock_offset: None,
+            zone: None,
         }
     }
 

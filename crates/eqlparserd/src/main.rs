@@ -743,6 +743,7 @@ async fn main() -> anyhow::Result<()> {
         idle_exit_secs: cfg.idle_exit,
         // Filled per request by the handler: it changes with every live line.
         clock_offset: None,
+        zone: None,
     }));
     if let Some(secs) = cfg.idle_exit {
         crate::server::spawn_idle_exit(Arc::clone(&life), secs);

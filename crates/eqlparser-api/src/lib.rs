@@ -64,6 +64,11 @@ pub struct Hello {
     /// predates it and a daemon that predates it both still read the other.
     #[serde(default)]
     pub clock_offset: Option<i64>,
+    /// Where the followed character is, as a place name: the zone with any
+    /// instance mode or tier parsed off, which is how eqldb names zones.
+    /// `None` before the log has said, and from daemons older than the field.
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 /// One thing that happened, pushed on `/api/events` as it happens.
@@ -180,6 +185,7 @@ mod tests {
             "started_at":0,"game":"g","log":"l","character":"","server":"","game_dir":null,
             "screenshots_dir":null,"clients":0,"idle_exit_secs":null}"#;
         assert_eq!(serde_json::from_str::<Hello>(old).unwrap().clock_offset, None);
+        assert_eq!(serde_json::from_str::<Hello>(old).unwrap().zone, None);
         for e in [e, p, Event::BagsChanged] {
             let back: Event = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
             assert_eq!(back, e);

@@ -355,6 +355,7 @@ mod tests {
             clients: 0,
             idle_exit_secs: None,
             clock_offset: None,
+            zone: None,
         }
     }
 
