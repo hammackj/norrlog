@@ -131,6 +131,12 @@ impl Shell {
                 }
             }
             Msg::Attached { hello, started, client } => {
+                crate::features::set(hello.features.clone());
+                // A tab this game does not have (Sky, for live EverQuest)
+                // gives way to the Dashboard.
+                if crate::features::of_tab(self.tab).is_some_and(|f| !crate::features::has(f)) {
+                    self.tab = "dashboard";
+                }
                 self.link = Link::Attached { hello, started };
                 let api = crate::api::Api { rt: self.rt.clone(), client: *client };
                 let open = self.tab;
@@ -363,6 +369,9 @@ impl Shell {
     fn render_nav(&self, cx: &mut Context<Self>) -> Div {
         let mut nav = div().flex().flex_row().flex_wrap().px_3().bg(hex(PANEL)).border_b_1().border_color(hex(BORDER));
         for &(id, label, _) in TABS {
+            if crate::features::of_tab(id).is_some_and(|f| !crate::features::has(f)) {
+                continue;
+            }
             let on = self.tab == id;
             nav = nav.child(
                 div()

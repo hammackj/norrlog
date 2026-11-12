@@ -978,7 +978,8 @@ async fn set_class_level(
     else {
         return Json(serde_json::json!({"ok": false, "error": "unknown class"}));
     };
-    if body.level == 0 || body.level > eqlparser_core::classlevel::LEVEL_CAP {
+    let cap = s.engine.locked("engine").level_cap();
+    if body.level == 0 || body.level > cap {
         return Json(serde_json::json!({"ok": false, "error": "level out of range"}));
     }
     let at = {
@@ -2749,6 +2750,7 @@ mod tests {
             idle_exit_secs: Some(60),
             clock_offset: None,
             zone: None,
+            features: None,
         }
     }
 

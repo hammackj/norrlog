@@ -451,6 +451,7 @@ mod tests {
             idle_exit_secs: None,
             clock_offset: None,
             zone: None,
+            features: None,
         }
     }
 

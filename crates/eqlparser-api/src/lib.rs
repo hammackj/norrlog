@@ -69,6 +69,20 @@ pub struct Hello {
     /// `None` before the log has said, and from daemons older than the field.
     #[serde(default)]
     pub zone: Option<String>,
+    /// The game-specific parts this game has (`sky`, `lockouts`, `motes`),
+    /// from [`eqlparser_core::profile`]; an app hides the rest. `None` from a
+    /// daemon older than the field, which an app reads as all of them, as
+    /// every log was read as Legends then.
+    #[serde(default)]
+    pub features: Option<Vec<String>>,
+}
+
+impl Hello {
+    /// Whether this game has `feature`. All of them, when the daemon is too
+    /// old to say.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.as_ref().is_none_or(|f| f.iter().any(|x| x == feature))
+    }
 }
 
 /// One thing that happened, pushed on `/api/events` as it happens.

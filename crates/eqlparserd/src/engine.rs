@@ -542,7 +542,9 @@ impl Engine {
             tracker: EncounterTracker::new(&player),
             resolver: SpellResolver::new(spell_db, 1),
             classes: ClassDetector::new(),
-            class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
+            class_levels: eqlparser_core::classlevel::ClassLevelTracker::with_cap(
+                eqlparser_core::profile::profile(game).level_cap,
+            ),
             exp: ExpTracker::new(),
             procs: ProcTracker::new(),
             grants: Vec::new(),
@@ -1892,6 +1894,11 @@ impl Engine {
     }
 
     /// Per-class levels, and whether a `/who` would settle anything.
+    /// This game's level cap.
+    pub fn level_cap(&self) -> u32 {
+        self.class_levels.cap()
+    }
+
     pub fn class_level_report(&self) -> eqlparser_core::classlevel::ClassLevelReport {
         self.class_levels.report(
             &self.current_loadout(self.now()),

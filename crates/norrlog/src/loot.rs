@@ -169,6 +169,9 @@ impl LootView {
     /// returning to Loot with This session showing refreshes that rather
     /// than All, which the renderer reloads whatever is open (a3bphvj).
     pub fn load_open(&mut self, cx: &mut Context<Self>) {
+        if self.sub == Sub::Motes && !crate::features::has("motes") {
+            self.sub = Sub::All;
+        }
         match self.sub {
             Sub::All => self.load_all(cx),
             Sub::Session => self.load_session(cx),
@@ -223,7 +226,7 @@ impl LootView {
             .gap_2()
             .child(tab("loot-all", "All loot", Sub::All))
             .child(tab("loot-session", "This session", Sub::Session))
-            .child(tab("loot-motes", "Motes", Sub::Motes))
+            .when(crate::features::has("motes"), |d| d.child(tab("loot-motes", "Motes", Sub::Motes)))
             .when(sub == Sub::All, |d| d.child(div().w(px(220.)).child(Input::new(&self.search).small())))
             .child(muted(count))
     }

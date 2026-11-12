@@ -117,10 +117,10 @@ impl DashboardView {
         if self.scope != Scope::Fight && self.last_session.is_none_or(|t| t.elapsed() >= SESSION_POLL) {
             self.load_session(cx);
         }
-        if self.last_lockouts.is_none_or(|t| t.elapsed() >= SLOW_POLL) {
+        if crate::features::has("lockouts") && self.last_lockouts.is_none_or(|t| t.elapsed() >= SLOW_POLL) {
             self.load_lockouts(cx);
         }
-        if self.last_sky.is_none_or(|t| t.elapsed() >= SLOW_POLL) {
+        if crate::features::has("sky") && self.last_sky.is_none_or(|t| t.elapsed() >= SLOW_POLL) {
             self.load_sky(cx);
         }
         cx.notify();
@@ -191,11 +191,15 @@ impl Render for DashboardView {
                 .gap_3()
                 .child(band("Combat", "what the parser makes of the fighting"))
                 .child(self.render_combat(cx))
-                .child(band("This week", "resets Tuesday 10:00"))
-                .child(self.render_lockouts(cx))
+                // Legends' alone: live EverQuest has neither (see `features`).
+                .when(crate::features::has("lockouts"), |d| {
+                    d.child(band("This week", "resets Tuesday 10:00")).child(self.render_lockouts(cx))
+                })
                 // The meta replaces the placeholder note, as `#sky-prog-meta` does.
-                .child(band("Plane of Sky", if sky_meta.is_empty() { "progress by class" } else { &sky_meta }))
-                .child(self.render_sky(cx)),
+                .when(crate::features::has("sky"), |d| {
+                    d.child(band("Plane of Sky", if sky_meta.is_empty() { "progress by class" } else { &sky_meta }))
+                        .child(self.render_sky(cx))
+                }),
         )
     }
 }

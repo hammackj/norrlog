@@ -749,6 +749,9 @@ async fn run() -> anyhow::Result<()> {
         // Filled per request by the handler: it changes with every live line.
         clock_offset: None,
         zone: None,
+        features: Some(
+            eqlparser_core::profile::profile(game).features().into_iter().map(String::from).collect(),
+        ),
     }));
     if let Some(secs) = cfg.idle_exit {
         crate::server::spawn_idle_exit(Arc::clone(&life), secs);

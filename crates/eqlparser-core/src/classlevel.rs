@@ -55,7 +55,9 @@ use crate::class::Class;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// The level cap. A class here stops emitting level-up messages entirely.
+/// Legends' level cap, the default. A class here stops emitting level-up
+/// messages entirely. The tracker holds its own cap, from the game's
+/// [`crate::profile::Profile`]; see [`ClassLevelTracker::with_cap`].
 pub const LEVEL_CAP: u32 = 50;
 
 /// Level every class sits at until it is played.
@@ -161,11 +163,23 @@ pub struct ClassLevelTracker {
     /// When the loadout was last observed to change.
     loadout_changed_at: i64,
     last_loadout: Vec<Class>,
+    /// The game's level cap.
+    cap: u32,
 }
 
 impl ClassLevelTracker {
     pub fn new() -> Self {
-        let mut t = Self::default();
+        Self::with_cap(LEVEL_CAP)
+    }
+
+    /// The level a class stops at in this tracker's game.
+    pub fn cap(&self) -> u32 {
+        self.cap
+    }
+
+    /// A tracker for a game whose classes stop at `cap`.
+    pub fn with_cap(cap: u32) -> Self {
+        let mut t = Self { cap, ..Self::default() };
         // Every class starts known, not unknown: an unplayed class is level 10,
         // which is a fact rather than a guess. It also sharpens attribution —
         // a gain to 11 belongs to whichever class is sitting at 10.
@@ -317,7 +331,7 @@ impl ClassLevelTracker {
                 None | Some(LevelSource::Baseline) => true,
                 Some(_) => self
                     .level_of(*c)
-                    .is_some_and(|l| l < LEVEL_CAP && l < level),
+                    .is_some_and(|l| l < self.cap && l < level),
             })
             .collect();
         (loose.len() == 1).then(|| loose[0])
@@ -403,7 +417,7 @@ impl ClassLevelTracker {
     }
 
     pub fn is_capped(&self, class: Class) -> bool {
-        self.level_of(class).is_some_and(|l| l >= LEVEL_CAP)
+        self.level_of(class).is_some_and(|l| l >= self.cap)
     }
 
     /// The class currently earning experience: the sole uncapped one.
@@ -440,7 +454,7 @@ impl ClassLevelTracker {
                 source: *source,
                 source_label: source.label().to_string(),
                 at: *at,
-                capped: *level >= LEVEL_CAP,
+                capped: *level >= self.cap,
             })
             .collect();
         classes.sort_by(|a, b| b.level.cmp(&a.level).then(a.abbrev.cmp(&b.abbrev)));

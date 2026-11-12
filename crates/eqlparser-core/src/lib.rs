@@ -26,6 +26,7 @@ pub mod lockout;
 pub mod npc;
 pub mod parser;
 pub mod preview;
+pub mod profile;
 pub mod procs;
 pub mod recipe;
 pub mod skyquest;
