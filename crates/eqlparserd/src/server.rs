@@ -3273,6 +3273,13 @@ mod tests {
         let s = state_with(SAMPLE);
         let resp = encounter_detail(State(s.clone()), AxPath(1)).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        // The GPUI parser reads this through the API crate's type; a field
+        // the daemon renames or drops has to fail here, not in a window.
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+        let d: eqlparser_api::EncounterDetail = serde_json::from_slice(&body).expect("detail matches the API type");
+        assert_eq!(d.summary.id, 1);
+        assert!(d.encounter.actors.contains_key("you"));
+        assert!(!d.summary.meter.is_empty(), "the detail carries the meter");
     }
 
     #[tokio::test]

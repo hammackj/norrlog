@@ -1532,6 +1532,7 @@ dependencies = [
 name = "eqlparser-api"
 version = "0.1.0"
 dependencies = [
+ "eqlparser-core",
  "serde",
  "serde_json",
 ]
