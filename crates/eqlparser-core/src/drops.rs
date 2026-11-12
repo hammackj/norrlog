@@ -401,6 +401,20 @@ impl DropTracker {
         e.1 += 1;
     }
 
+    /// How often one creature has been seen to die.
+    ///
+    /// The denominator behind every drop rate. Exposed so callers use *this*
+    /// count rather than recomputing one from encounter records: the two do
+    /// not agree — a kill outside an open encounter never lands in one — and
+    /// two views of the same log quoting different denominators is worse than
+    /// either number alone.
+    pub fn kills_of(&self, npc: &str) -> u64 {
+        self.kills
+            .get(&canonical_npc(npc).to_lowercase())
+            .map(|(_, n)| *n)
+            .unwrap_or(0)
+    }
+
     pub fn report(&self) -> DropReport {
         let mut items: Vec<ItemDrops> = self
             .items

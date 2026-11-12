@@ -105,6 +105,20 @@ pub struct BuffInfo {
 
 pub use eqlparser_api::{ClassInfo, ExperienceReport, LootDetail, LootSource, LootTally, Totals};
 
+/// An item seen on a corpse and deliberately not taken.
+///
+/// No quantity: the client does not say how many were lying there, only that
+/// the item was. Counting one would be inventing a number, and a stack left
+/// behind is one sighting either way.
+#[derive(Debug, Clone, Serialize)]
+pub struct LeftRecord {
+    pub timestamp: i64,
+    pub item: String,
+    /// The corpse it was left on. Always named — the line has nowhere else to
+    /// put it — but kept optional to match [`LootRecord`].
+    pub source: Option<String>,
+}
+
 /// An item you picked up recently and probably still have.
 ///
 /// Built by [`Engine::recent_pickups`], which documents why "probably" is the
@@ -472,6 +486,19 @@ pub struct Engine {
     /// Typed events for `/api/events`, drained after each batch. Only live
     /// lines add to it: see [`Engine::emit`].
     events: VecDeque<eqlparser_api::Event>,
+    /// Items seen on a corpse and left there.
+    ///
+    /// The counterpart to `all_loot`, and in EverQuest not a small one. The
+    /// client has no auto-sell, so junk is simply not picked up: across the
+    /// sample logs 36 items were left against 42 taken, and on a real evening
+    /// the ratio runs further that way. A tally built only from `all_loot`
+    /// therefore describes what the player fancied carrying, not what the
+    /// creatures dropped.
+    ///
+    /// Kept per event rather than only as a count in the drop tracker so it
+    /// can be scoped to a session and attributed to a zone, exactly as loot
+    /// is.
+    all_left: Vec<LeftRecord>,
     player: String,
     last_timestamp: i64,
     /// When the current play session began.
@@ -583,6 +610,7 @@ impl Engine {
             all_loot: Vec::new(),
             zone_log: Vec::new(),
             events: VecDeque::new(),
+            all_left: Vec::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
             // rebuildable database. See `crate::paths`.
@@ -1256,6 +1284,11 @@ impl Engine {
                             npc,
                             self.tracker.current_zone(),
                         );
+                        self.all_left.push(LeftRecord {
+                            timestamp: entry.timestamp,
+                            item: item.clone(),
+                            source: Some(npc.clone()),
+                        });
                     }
                 }
             }
@@ -2926,58 +2959,58 @@ impl Engine {
             .iter()
             .filter(|l| l.item.to_lowercase() == wanted)
             .collect();
-        if drops.is_empty() {
+        let left: Vec<_> = self
+            .all_left
+            .iter()
+            .filter(|l| l.item.to_lowercase() == wanted)
+            .collect();
+        // An item never picked up still has a page. It is a normal outcome
+        // here — the client has no auto-sell, so most of what drops is left
+        // where it fell — and refusing to open it made every such row in the
+        // list a dead end.
+        if drops.is_empty() && left.is_empty() {
             return None;
         }
 
-        // Deaths per creature across every fight, built once rather than
-        // rescanned for each source.
-        //
-        // Keyed with the client's article stripped, because the same creature
-        // is written both ways across a log — "a scaled wolf tracker" in a
-        // death line, "scaled wolf tracker" everywhere the drop tracker
-        // touched it. Keyed as written, the two never meet and a creature
-        // ends up with a drop and no denominator to divide it by.
-        let mut kills: HashMap<String, u64> = HashMap::new();
+        // Deaths per creature in your fights, keyed with the article stripped
+        // so "a scaled wolf tracker" from a death line meets the drop
+        // tracker's "scaled wolf tracker". Built once, not per source.
+        let mut deaths: HashMap<String, u64> = HashMap::new();
         for enc in self.encounters.iter().chain(self.tracker.current()) {
             for d in &enc.deaths {
                 if !d.victim.eq_ignore_ascii_case(&self.player) {
-                    *kills
+                    *deaths
                         .entry(eqlparser_core::drops::canonical_npc(&d.victim).to_lowercase())
                         .or_default() += 1;
                 }
             }
         }
 
-        // Times this item was seen on a corpse and left there, per creature.
-        // The loot log cannot answer this — it only ever records what you
-        // took — so it comes from the drop tracker, which keys on the name
-        // with the client's article stripped and on the ungraded item.
-        let left_behind: HashMap<String, (String, u64, Vec<String>)> = {
-            use eqlparser_core::drops::{canonical_item, canonical_npc};
-            let base = canonical_item(item).to_lowercase();
-            self.drops
-                .report()
-                .items
-                .into_iter()
-                .find(|i| i.item.to_lowercase() == base)
-                .map(|i| {
-                    i.sources
-                        .into_iter()
-                        .filter(|s| s.left > 0)
-                        .map(|s| {
-                            (
-                                canonical_npc(&s.npc).to_lowercase(),
-                                (s.npc, s.left, s.zones),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        // Times this item was seen on a corpse and left there, per creature,
+        // and where. Keyed with the client's article stripped so it meets the
+        // loot rows; the zone is the one the sighting happened in, found the
+        // way a pickup's is.
+        // Per zone, sightings either way: an item only ever left still
+        // dropped somewhere, and a zone count of 0 beside a creature row
+        // naming the zone contradicted itself.
+        let mut zones: HashMap<String, u64> = HashMap::new();
+        let mut left_behind: HashMap<String, (String, u64, Vec<String>)> = HashMap::new();
+        for l in &left {
+            if let Some(src) = &l.source {
+                let e = left_behind
+                    .entry(eqlparser_core::drops::canonical_npc(src).to_lowercase())
+                    .or_insert_with(|| (src.clone(), 0, Vec::new()));
+                e.1 += 1;
+                if let Some(z) = self.encounter_containing(l.timestamp).and_then(|e| e.zone.clone()) {
+                    *zones.entry(z.clone()).or_default() += 1;
+                    if !e.2.contains(&z) {
+                        e.2.push(z);
+                    }
+                }
+            }
+        }
 
         let mut by_mob: HashMap<String, LootSource> = HashMap::new();
-        let mut zones: HashMap<String, u64> = HashMap::new();
         let mut stacks: HashMap<u64, u64> = HashMap::new();
         let (mut kept, mut sold, mut stored, mut transmuted) = (0u64, 0u64, 0u64, 0u64);
         let (mut sold_total, mut sales, mut best_sale) = (0u64, 0u64, 0u64);
@@ -3055,10 +3088,16 @@ impl Engine {
         let mut sources: Vec<LootSource> = by_mob
             .into_iter()
             .map(|(key, mut s)| {
-                s.kills = kills
-                    .get(eqlparser_core::drops::canonical_npc(&key))
-                    .copied()
-                    .unwrap_or(0);
+                // The larger of two counts that see different kills. Deaths
+                // in your fights include a groupmate's kill you never hit,
+                // whose corpse you could still loot; the drop tracker counts
+                // only kills you took part in, but also one made outside any
+                // open encounter, which the fights never see (the eqparser
+                // fork's case, fc4e21b). On the Legends reference log the
+                // first runs larger (108 against 75 for one skeleton), so
+                // taking the tracker's alone would shrink the denominator and
+                // inflate the figure. The larger keeps it a floor.
+                s.kills = deaths.get(key.as_str()).copied().unwrap_or(0).max(self.drops.kills_of(&key));
                 // The times you walked away from it are in the drop tracker,
                 // not in the loot log — the loot log only ever records what
                 // you actually took.
@@ -3083,11 +3122,30 @@ impl Engine {
         stacks.sort_by_key(|s| s.0);
 
         Some(LootDetail {
-            item: drops[0].item.clone(),
+            // Whichever list has it. An item only ever left behind has no
+            // loot row to take the spelling from.
+            item: drops
+                .first()
+                .map(|l| l.item.clone())
+                .unwrap_or_else(|| left[0].item.clone()),
             total: drops.iter().map(|l| l.quantity).sum(),
             drops: drops.len() as u64,
-            first_seen: drops.iter().map(|l| l.timestamp).min().unwrap_or(0),
-            last_seen: drops.iter().map(|l| l.timestamp).max().unwrap_or(0),
+            left: left.len() as u64,
+            // Both lists bound the span. An item picked up once and walked
+            // past ten times was seen over the whole of that stretch, and
+            // dating it only by the pickup would say it was seen once.
+            first_seen: drops
+                .iter()
+                .map(|l| l.timestamp)
+                .chain(left.iter().map(|l| l.timestamp))
+                .min()
+                .unwrap_or(0),
+            last_seen: drops
+                .iter()
+                .map(|l| l.timestamp)
+                .chain(left.iter().map(|l| l.timestamp))
+                .max()
+                .unwrap_or(0),
             sources,
             zones,
             kept,
@@ -3120,6 +3178,7 @@ impl Engine {
                 let t = map.entry(l.item.clone()).or_insert_with(|| LootTally {
                     item: l.item.clone(),
                     count: 0,
+                    left: 0,
                     sources: Vec::new(),
                     last_seen: 0,
                     sold_total_copper: 0,
@@ -3156,6 +3215,38 @@ impl Engine {
                 }
             }
         }
+        // Items left on a corpse, folded in on the same key. An item never
+        // picked up gets a row of its own: it is something the log saw drop,
+        // and leaving it out is what made this list describe the player's
+        // taste rather than the creatures' loot.
+        for l in self
+            .all_left
+            .iter()
+            .filter(|l| since.is_none_or(|s| l.timestamp >= s))
+        {
+            let t = map.entry(l.item.clone()).or_insert_with(|| LootTally {
+                item: l.item.clone(),
+                count: 0,
+                left: 0,
+                sources: Vec::new(),
+                last_seen: 0,
+                sold_total_copper: 0,
+                kept: 0,
+                sold: 0,
+                stored: 0,
+                transmuted: 0,
+                stored_in: Vec::new(),
+                transmuted_into: Vec::new(),
+            });
+            t.left += 1;
+            t.last_seen = t.last_seen.max(l.timestamp);
+            if let Some(src) = &l.source {
+                if !t.sources.contains(src) {
+                    t.sources.push(src.clone());
+                }
+            }
+        }
+
         let mut v: Vec<LootTally> = map.into_values().collect();
         // Newest first; a chest's items all land in the same second, so the
         // name breaks the tie, or the order is the HashMap's and changes on
@@ -4459,6 +4550,69 @@ mod tests {
             d.sources.iter().map(|s| (s.mob.as_str(), s.drops, s.left, s.kills)).collect();
         assert_eq!(rows, [("a black wolf", 1, 1, 2)]);
         assert_eq!(d.sources[0].rate, Some(1.0), "two sightings over two kills");
+    }
+
+    /// EverQuest has no auto-sell, so most of what a corpse holds is walked
+    /// past. A loot list built only from pickups therefore describes what the
+    /// player fancied carrying, not what the creatures dropped — and an item
+    /// never picked up was missing from it altogether. From the eqparser fork
+    /// (fc4e21b).
+    #[test]
+    fn an_item_never_picked_up_is_still_in_the_loot_list() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered The Field of Bone.",
+                "[Tue Jul 28 14:00:01 2026] You slash a goblin bloodtracer for 100 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You have slain a goblin bloodtracer!",
+                "[Tue Jul 28 14:00:03 2026] --You have looted a Bone Chips from a goblin bloodtracer's corpse.--",
+                "[Tue Jul 28 14:00:04 2026] --You left a Tiny Glowing Skull on a goblin bloodtracer.--",
+            ],
+        );
+        let tally = e.loot_tally_since(None);
+        let skull = tally
+            .iter()
+            .find(|t| t.item == "Tiny Glowing Skull")
+            .expect("an item never taken is still something the log saw drop");
+        assert_eq!(skull.count, 0, "nothing was carried away");
+        assert_eq!(skull.left, 1);
+        assert_eq!(skull.sources, vec!["a goblin bloodtracer".to_string()]);
+
+        // And it opens, rather than being a dead row in the list.
+        let d = e.loot_detail("Tiny Glowing Skull").expect("it has a page");
+        assert_eq!(d.drops, 0);
+        assert_eq!(d.left, 1);
+        assert!(d.first_seen > 0, "dated from the sighting, not from a pickup");
+
+        // The item you did take is unaffected.
+        let chips = tally.iter().find(|t| t.item == "Bone Chips").unwrap();
+        assert_eq!(chips.count, 1);
+        assert_eq!(chips.left, 0);
+    }
+
+    /// The client writes one line per slot on the corpse, so a creature that
+    /// drops two of something says so twice. One kill then yields two
+    /// sightings, and the per-kill figure is 2.00 — which is what happened,
+    /// and the reason it is not presented as a probability.
+    #[test]
+    fn two_of_one_item_on_a_corpse_is_two_sightings() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered The Warsliks Woods.",
+                "[Tue Jul 28 14:00:01 2026] You slash a goblin bloodtracer for 100 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You have slain a goblin bloodtracer!",
+                "[Tue Jul 28 14:00:03 2026] --You left a Tiny Glowing Skull on a goblin bloodtracer.--",
+                "[Tue Jul 28 14:00:04 2026] --You left a Tiny Glowing Skull on a goblin bloodtracer.--",
+            ],
+        );
+        let d = e.loot_detail("Tiny Glowing Skull").unwrap();
+        assert_eq!(d.left, 2);
+        let src = &d.sources[0];
+        assert_eq!(src.kills, 1);
+        assert_eq!(src.rate, Some(2.0), "two per kill, not a 200% chance");
     }
 
     /// A resist that is not a charm must never reach the charm overlay, and a

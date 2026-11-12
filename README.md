@@ -54,9 +54,13 @@ shown when an effect lands and expires), so the parser works backwards from
 "Your feet move faster." to the actual spell and computes its duration for your
 current level.
 
-**Loot and drops.** Every looted item with its source mob, zone, quantity, and
-sale value, aggregated into drop tallies. All four loot line forms are handled,
-plus coin from corpses.
+**Loot and drops.** Every item seen on a corpse — taken *or* left — with its
+source mob, zone and quantity, aggregated into drop tallies, plus coin from
+corpses. In live EverQuest the left ones matter in a way they do not in
+Legends: there is no auto-sell, so most of what drops is simply walked past.
+Across the live sample logs 36 items were left against 42 taken, and building
+the tables on pickups alone described what the player fancied carrying rather
+than what the creatures dropped.
 
 **Class detection.** EverQuest Legends characters hold three classes at once,
 and the combination changes over a character's life. Classes are inferred from
@@ -330,8 +334,17 @@ happens to contain.
 **A drop count is not a drop rate.** A loot line names the corpse, which is
 solid evidence a creature dropped something; the denominator is not. Kills are
 counted whether or not the corpse was looted, so sightings over kills is a
-floor on the rate. Both numbers are stored and no rate is published — a
-consumer that wants one has to say what it is dividing.
+floor. Both numbers are stored and no rate is published — a consumer that
+wants one has to say what it is dividing.
+
+Where the app does divide, it shows **sightings per kill**, not a percentage,
+and the figure can exceed 1. The client writes one line per slot on a corpse,
+so a creature that drops two of an item states it twice and one kill yields
+two sightings — a real goblin bloodtracer left two Tiny Glowing Skulls three
+seconds apart. That is not a fault to correct: two per kill is what happened,
+and it is the more useful number. It would be a probability only for items
+that never occupy two slots at once, and nothing in the log says which those
+are.
 
 **Recipe costs are a floor, never a total.** Only components drawn from the
 depot are announced; anything taken from inventory is consumed silently, and
@@ -347,6 +360,12 @@ recipe**: complete as to what a combine takes, but resting on the assumption
 that this is the recipe you used. Where the book lists several ways (twenty-one,
 for a brick of ore) no price is claimed, because picking one would be inventing
 evidence rather than recovering it.
+
+**Live EverQuest auto-sells nothing.** Legends sells junk for you as you loot it
+and says so in the loot line; EverQuest does not, and across every live sample
+log that wording never appears. On a live log the "what happened to it" column
+is mostly empty, and the interesting fact about an item is whether it was
+picked up at all.
 
 **What a tradeskill cost to raise counts attempts, not successes.** A failed
 combine eats its components exactly like one that worked, and on a skill being

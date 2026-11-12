@@ -620,13 +620,18 @@ pub struct LootDetail {
     pub item: String,
     /// Items received. A stack of five counts as five.
     pub total: u64,
-    /// Times it dropped. A stack of five counts as one.
+    /// Times it dropped and you took it. A stack of five counts as one.
     pub drops: u64,
+    /// Times it dropped and you left it on the corpse. `drops + left` is how
+    /// often it was seen at all. In live EverQuest, with no auto-sell, it is
+    /// usually the larger of the two. 0 from older daemons.
+    #[serde(default)]
+    pub left: u64,
     pub first_seen: i64,
     pub last_seen: i64,
     /// Who dropped it, most drops first.
     pub sources: Vec<LootSource>,
-    /// Where it dropped: (zone, drops).
+    /// Where it was seen dropping: (zone, sightings, taken and left).
     pub zones: Vec<(String, u64)>,
     pub kept: u64,
     pub sold: u64,
@@ -658,11 +663,16 @@ pub struct LootSource {
     pub quantity: u64,
     /// Times this creature died in a fight of yours — the denominator.
     pub kills: u64,
-    /// `(drops + left) / kills`. Both go on top, because the question is how
-    /// often the creature drops the item, not how often you fancied picking
-    /// it up. Only meaningful with a denominator to divide by, so it is
-    /// `None` when no kill of this creature was observed, rather than a
-    /// fabricated 100%.
+    /// `(drops + left) / kills`: sightings per kill. Both go on top, because
+    /// the question is how often the creature drops the item, not how often
+    /// you fancied picking it up.
+    ///
+    /// Not a probability, and it can exceed 1: the client writes one line per
+    /// slot on the corpse, so a creature that drops two of an item yields two
+    /// sightings from one kill. Two per kill is what happened, so the apps
+    /// show it as "per kill", not a percentage. A floor the other way: a
+    /// corpse you never opened still counts as a kill. `None` when no kill of
+    /// this creature was observed, rather than a fabricated certainty.
     pub rate: Option<f64>,
     pub zones: Vec<String>,
     pub last: i64,
@@ -672,7 +682,14 @@ pub struct LootSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LootTally {
     pub item: String,
+    /// Quantity actually taken. Zero for an item only ever left behind.
     pub count: u64,
+    /// Times it was seen on a corpse and left there. In live EverQuest most
+    /// of what drops is not picked up, so a list built on `count` alone is
+    /// what you fancied carrying, not what the creatures dropped. 0 from
+    /// older daemons.
+    #[serde(default)]
+    pub left: u64,
     pub sources: Vec<String>,
     pub last_seen: i64,
     pub sold_total_copper: u64,

@@ -27,7 +27,8 @@ const REFRESH: Duration = Duration::from_secs(10);
 
 const COLS: &[Col] = &[
     col("Item", None, false),
-    col("Count", Some(64.), true),
+    col("Taken", Some(64.), true),
+    col("Left", Some(52.), true),
     col("Dropped by", None, false),
     col("What happened to it", None, false),
     col("Sold for (pp)", Some(104.), true),
@@ -35,13 +36,13 @@ const COLS: &[Col] = &[
 
 const SOURCE_COLS: &[Col] = &[
     col("Creature", None, false),
-    col("Drops", Some(64.), true),
+    col("Seen", Some(96.), true),
     col("Items", Some(64.), true),
     col("Kills seen", Some(84.), true),
-    col("Rate", Some(96.), true),
+    col("Per kill", Some(96.), true),
 ];
 
-const ZONE_COLS: &[Col] = &[col("Zone", None, false), col("Drops", Some(64.), true)];
+const ZONE_COLS: &[Col] = &[col("Zone", None, false), col("Seen", Some(64.), true)];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Sub {
@@ -247,7 +248,8 @@ impl LootView {
     fn render_all(&self, cx: &mut Context<Self>) -> (String, Div) {
         let q = self.search.read(cx).value().trim().to_lowercase();
         let shown: Vec<usize> = (0..self.all.len()).filter(|&n| matches(&self.all[n], &q)).collect();
-        let count = format!("{} of {} items", shown.len(), self.all.len());
+        // "seen", not "looted": an item left on the corpse is in the list too.
+        let count = format!("{} of {} items seen", shown.len(), self.all.len());
         let card = v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(COLS));
         let card = if let Some(e) = &self.all_error {
             card.child(table::empty_row(e.clone()))
@@ -281,7 +283,7 @@ impl LootView {
             "no session yet".into()
         };
         let body: Vec<AnyElement> = if rows.is_empty() {
-            vec![table::empty_row("Nothing looted this session yet").into_any_element()]
+            vec![table::empty_row("Nothing seen dropping this session yet").into_any_element()]
         } else {
             rows.iter().map(|i| self.row("ls", i, true, cx)).collect()
         };
@@ -445,7 +447,10 @@ impl LootView {
                         muted(if s.quantity != s.drops { s.quantity.to_string() } else { String::new() }).into_any_element(),
                         muted(if s.kills > 0 { s.kills.to_string() } else { "—".into() }).into_any_element(),
                         match s.rate {
-                            Some(r) => div().child(format!("{:.0}%", r * 100.)).into_any_element(),
+                            // Sightings per kill, not a percentage: two of an
+                            // item on one corpse is two lines, and 2.00 is
+                            // what happened.
+                            Some(r) => div().child(format!("{r:.2}")).into_any_element(),
                             None => muted("no kills seen").into_any_element(),
                         },
                     ],
@@ -475,12 +480,7 @@ impl LootView {
                 v_flex()
                     .gap_1()
                     .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(d.item.clone()))
-                    .child(muted(format!(
-                        "{} received over {} drop{} · {span}",
-                        d.total,
-                        d.drops,
-                        if d.drops == 1 { "" } else { "s" }
-                    ))),
+                    .child(muted(format!("{} · {span}", seen_line(d)))),
             )
             .child(
                 div()
@@ -488,7 +488,8 @@ impl LootView {
                     .flex_row()
                     .flex_wrap()
                     .gap_3()
-                    .child(stat("Received", d.total.to_string(), Some(format!("{} drops", d.drops))))
+                    .child(stat("Seen", (d.drops + d.left).to_string(), Some(format!("{} taken, {} left", d.drops, d.left))))
+                    .child(stat("Received", d.total.to_string(), Some(if d.total == 1 { "item".into() } else { "items".into() })))
                     .child(stat(
                         "Dropped by",
                         creatures.to_string(),
@@ -499,11 +500,11 @@ impl LootView {
             )
             .child(
                 card("Dropped by").child(table_card(SOURCE_COLS, sources)).child(hint(
-                    "Rate is every time the creature was seen dropping it — taken and left — divided by deaths of that \
-                     creature in your own fights. Both go on top because the question is how often it drops, not how \
-                     often you fancied picking it up. It counts corpses you were there for, not the game's loot table: \
-                     a corpse you never opened still counts as a kill, so a rate reads low rather than wrong. A \
-                     creature you have no recorded kill for shows no rate at all.",
+                    "Per kill is every time the creature was seen dropping it — taken and left — divided by deaths of \
+                     that creature in your own fights. It is not a percentage and can exceed 1: the client writes one \
+                     line per slot on the corpse, so 2.00 means two per kill, which is what happened. It counts corpses \
+                     you were there for, not the game's loot table, and a corpse you never opened still counts as a \
+                     kill, so it runs low rather than wrong. A creature with no recorded kill shows nothing.",
                 )),
             )
             .child(card("Where and what it was worth").child(table_card(ZONE_COLS, zones)).child(hint(worth(d))))
@@ -607,10 +608,36 @@ fn fates(i: &LootTally) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// "left on corpse", with a count only beside something also taken.
+fn left_badge(i: &LootTally) -> Option<String> {
+    (i.left > 0).then(|| if i.count > 0 { format!("left on corpse ×{}", i.left) } else { "left on corpse".into() })
+}
+
+/// The headline for an item's page, written around what was seen rather than
+/// what was kept: an item never picked up is an ordinary outcome in live
+/// EverQuest, and "0 received over 0 drops" read as though the page had
+/// loaded wrong. From the eqparser fork (fc4e21b).
+fn seen_line(d: &LootDetail) -> String {
+    let plural = |n: u64| if n == 1 { "" } else { "s" };
+    if d.drops == 0 {
+        return format!("never taken · left on {} corpse{}", d.left, plural(d.left));
+    }
+    let taken = format!("{} received over {} pickup{}", d.total, d.drops, plural(d.drops));
+    if d.left > 0 { format!("{taken} · left {} more", d.left) } else { taken }
+}
+
 fn fate_cell(i: &LootTally) -> AnyElement {
     let mut d = h_flex().gap_1().min_w_0().overflow_hidden();
     for (label, c) in fates(i) {
         d = d.child(div().flex_none().px(px(5.)).rounded(px(4.)).text_xs().bg(wash(c, 0.18)).text_color(hex(c)).child(label));
+    }
+    // Not a fate the item met in your hands, but in live EverQuest (no
+    // auto-sell) the commonest outcome. The quietest badge for that reason:
+    // coloured loudly it would drown the fates that are actually notable.
+    if let Some(label) = left_badge(i) {
+        d = d.child(
+            div().flex_none().px(px(5.)).rounded(px(4.)).text_xs().border_1().border_color(hex(BORDER)).text_color(hex(MUTED)).child(label),
+        );
     }
     if !i.stored_in.is_empty() {
         d = d.child(muted(format!("in {}", first(&i.stored_in, 2))).whitespace_nowrap());
@@ -624,7 +651,8 @@ fn fate_cell(i: &LootTally) -> AnyElement {
 fn cells(i: &LootTally) -> Vec<AnyElement> {
     vec![
         div().child(i.item.clone()).into_any_element(),
-        div().child(i.count.to_string()).into_any_element(),
+        if i.count > 0 { div().child(i.count.to_string()).into_any_element() } else { muted("—").into_any_element() },
+        muted(if i.left > 0 { i.left.to_string() } else { String::new() }).into_any_element(),
         muted(first(&i.sources, 3)).into_any_element(),
         fate_cell(i),
         muted(if i.sold_total_copper > 0 { format!("{:.2}", i.sold_total_copper as f64 / 1000.) } else { String::new() })
@@ -668,13 +696,14 @@ fn table_card(cols: &[Col], rows: Vec<AnyElement>) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{fates, first, is_mote, matches, mote_ladder, mote_tier, motes_first, motes_summary, worth};
+    use super::{fates, first, is_mote, left_badge, matches, mote_ladder, mote_tier, motes_first, motes_summary, seen_line, worth};
     use eqlparser_api::{LootDetail, LootTally};
 
     fn t(item: &str, count: u64) -> LootTally {
         LootTally {
             item: item.into(),
             count,
+            left: 0,
             sources: vec![],
             last_seen: 0,
             sold_total_copper: 0,
@@ -738,6 +767,28 @@ mod tests {
         assert_eq!(fates(&j)[0].0, "sold");
     }
 
+    /// Left behind is a badge of its own, counted only beside something
+    /// taken; a page for an item never taken says so instead of "0 over 0".
+    #[test]
+    fn what_was_left_reads_as_seen_not_as_nothing() {
+        let mut never = t("Tiny Glowing Skull", 0);
+        never.left = 2;
+        assert_eq!(left_badge(&never).as_deref(), Some("left on corpse"));
+        let mut both = t("Loose Scale", 3);
+        both.left = 1;
+        assert_eq!(left_badge(&both).as_deref(), Some("left on corpse ×1"));
+        assert_eq!(left_badge(&t("Bone Chips", 4)), None);
+
+        let mut d = eqlparser_api::LootDetail {
+            item: "Tiny Glowing Skull".into(), total: 0, drops: 0, left: 2, first_seen: 0, last_seen: 0,
+            sources: vec![], zones: vec![], kept: 0, sold: 0, stored: 0, transmuted: 0,
+            sold_total_copper: 0, sales: 0, best_sale_copper: 0, buy_price_copper: None, stacks: vec![],
+        };
+        assert_eq!(seen_line(&d), "never taken · left on 2 corpses");
+        (d.total, d.drops, d.left) = (3, 1, 1);
+        assert_eq!(seen_line(&d), "3 received over 1 pickup · left 1 more");
+    }
+
     #[test]
     fn lists_stop_at_n_and_say_how_many_more() {
         let v: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|s| s.to_string()).collect();
@@ -773,6 +824,7 @@ mod tests {
             item: "x".into(),
             total: 1,
             drops: 1,
+            left: 0,
             first_seen: 0,
             last_seen: 0,
             sources: vec![],
