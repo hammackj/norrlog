@@ -16,6 +16,22 @@
 //!   is therefore a floor on the drop rate, never the rate itself.
 //! * Only kills you were part of are counted at all.
 //!
+//! # Left behind
+//!
+//! The client also names what you *declined* to take:
+//!
+//! ```text
+//! --You left a Rusty Two Handed Sword on a snow orc trooper.--
+//! ```
+//!
+//! For the question this module answers that is the same evidence: the
+//! creature dropped it. So it is counted, and counted separately, because the
+//! two are not interchangeable — `looted` is what you own and `left` is what
+//! you saw. Their sum is the honest numerator for a drop rate, and it is
+//! strictly better than `looted` alone, which undercounts exactly the items a
+//! player never bothers to pick up. Junk weapons off humanoids are invisible
+//! to a looted-only count and perfectly visible here.
+//!
 //! # Grades
 //!
 //! Drops arrive graded — `Woven Skull Cap +1`, `Silvery Ring +2` — and the
@@ -71,7 +87,15 @@ pub struct DropSighting {
     pub places: Vec<DropPlace>,
     /// Times the item was looted from this creature.
     pub looted: u64,
+    /// Times it was seen on the corpse and deliberately left there.
+    ///
+    /// Kept apart from `looted` rather than summed into it: one is what you
+    /// have and one is what you saw. `looted + left` is the number of times
+    /// this creature was seen dropping the item at all.
+    #[serde(default)]
+    pub left: u64,
     /// Total quantity looted, which exceeds `looted` for stacked drops.
+    /// Counts nothing left behind — you did not take it.
     pub quantity: u64,
     /// Kills of this creature seen in the same logs.
     ///
@@ -96,6 +120,9 @@ pub struct ItemDrops {
     pub sources: Vec<DropSighting>,
     /// Times looted, across every source.
     pub looted: u64,
+    /// Times seen and left, across every source.
+    #[serde(default)]
+    pub left: u64,
     pub quantity: u64,
     /// Grades seen across every source, as (grade, times), lowest first.
     pub grades: Vec<(u32, u64)>,
@@ -139,6 +166,7 @@ struct Sighting {
     /// `looted` and `quantity` rather than sitting beside them.
     places: std::collections::BTreeMap<PlaceKey, (u64, u64)>,
     looted: u64,
+    left: u64,
     quantity: u64,
     grades: std::collections::BTreeMap<u32, u64>,
     first_seen: i64,
@@ -261,14 +289,49 @@ impl DropTracker {
         npc: &str,
         zone: Option<&str>,
     ) {
+        let Some((e, grade)) = self.sighting(timestamp, item, npc, zone, Some(quantity)) else {
+            return;
+        };
+        e.looted += 1;
+        *e.grades.entry(grade).or_insert(0) += 1;
+        // A stacked drop is one sighting of several items, and both numbers
+        // matter: how often it drops, and how much of it.
+        e.quantity += quantity.max(1);
+    }
+
+    /// Record an item seen on a corpse and left there.
+    ///
+    /// Same evidence about the creature, and deliberately not the same
+    /// number: no quantity is added, because nothing was taken. The grade is
+    /// still recorded — which grades a creature rolls is worth knowing
+    /// whether or not you wanted this one. From the eqparser fork (a26098a).
+    pub fn on_left_behind(&mut self, timestamp: i64, item: &str, npc: &str, zone: Option<&str>) {
+        let Some((e, grade)) = self.sighting(timestamp, item, npc, zone, None) else {
+            return;
+        };
+        e.left += 1;
+        *e.grades.entry(grade).or_insert(0) += 1;
+    }
+
+    /// The row for one item on one creature, created if new, with the grade
+    /// split off the item name. `None` when either name is empty.
+    ///
+    /// `taken` is the quantity looted, or `None` for an item left behind:
+    /// the per-place tally counts loots, and accounts for every one of them,
+    /// so a sighting that took nothing names the zone but adds no place.
+    fn sighting(
+        &mut self,
+        timestamp: i64,
+        item: &str,
+        npc: &str,
+        zone: Option<&str>,
+        taken: Option<u64>,
+    ) -> Option<(&mut Sighting, u32)> {
         let said = spoken_npc(npc);
         let npc = canonical_npc(npc);
         if item.is_empty() || npc.is_empty() {
-            return;
+            return None;
         }
-        // Keyed on the ungraded name so every grade of an item is one row,
-        // and the display name follows suit — a table headed "Woven Skull Cap
-        // +1" would name one roll as though it were the item.
         let (base, grade) = split_grade(item);
         let item_key = base.to_lowercase();
         self.names.insert(item_key.clone(), base.to_string());
@@ -288,11 +351,6 @@ impl DropTracker {
         if said.len() > e.npc.len() {
             e.npc = said.clone();
         }
-        e.looted += 1;
-        *e.grades.entry(grade.unwrap_or(0)).or_insert(0) += 1;
-        // A stacked drop is one sighting of several items, and both numbers
-        // matter: how often it drops, and how much of it.
-        e.quantity += quantity.max(1);
         e.last_seen = timestamp;
         if let Some(z) = zone {
             if !z.is_empty() {
@@ -308,11 +366,14 @@ impl DropTracker {
                     mode: parsed.mode.as_str(),
                     difficulty: parsed.difficulty,
                 };
-                let slot = e.places.entry(k).or_insert((0, 0));
-                slot.0 += 1;
-                slot.1 += quantity.max(1);
+                if let Some(quantity) = taken {
+                    let slot = e.places.entry(k).or_insert((0, 0));
+                    slot.0 += 1;
+                    slot.1 += quantity.max(1);
+                }
             }
         }
+        Some((e, grade.unwrap_or(0)))
     }
 
     /// Record a creature killed, whether or not anything was looted from it.
@@ -362,6 +423,7 @@ impl DropTracker {
                             })
                             .collect(),
                         looted: s.looted,
+                        left: s.left,
                         quantity: s.quantity,
                         kills: self.kills.get(npc_key).map(|(_, n)| *n).unwrap_or(0),
                         grades: s.grades.iter().map(|(g, n)| (*g, *n)).collect(),
@@ -369,11 +431,19 @@ impl DropTracker {
                         last_seen: s.last_seen,
                     })
                     .collect();
-                sources.sort_by(|a, b| b.looted.cmp(&a.looted).then(a.npc.cmp(&b.npc)));
+                // Ordered by how often the creature was seen dropping it at
+                // all, so a source you never loot from does not sink to the
+                // bottom of its own item's list.
+                sources.sort_by(|a, b| {
+                    (b.looted + b.left)
+                        .cmp(&(a.looted + a.left))
+                        .then(a.npc.cmp(&b.npc))
+                });
                 ItemDrops {
                     item: self.names.get(key).cloned().unwrap_or_else(|| key.clone()),
                     game: self.game,
                     looted: sources.iter().map(|s| s.looted).sum(),
+                    left: sources.iter().map(|s| s.left).sum(),
                     quantity: sources.iter().map(|s| s.quantity).sum(),
                     grades: {
                         let mut all: std::collections::BTreeMap<u32, u64> =
@@ -387,7 +457,11 @@ impl DropTracker {
                 }
             })
             .collect();
-        items.sort_by(|a, b| b.looted.cmp(&a.looted).then(a.item.cmp(&b.item)));
+        items.sort_by(|a, b| {
+            (b.looted + b.left)
+                .cmp(&(a.looted + a.left))
+                .then(a.item.cmp(&b.item))
+        });
 
         let mut kills: Vec<(String, u64)> = self.kills.values().cloned().collect();
         kills.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -442,6 +516,56 @@ pub fn match_key(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An item left on a corpse proves the creature dropped it just as well
+    /// as one taken, and it is exactly the evidence a looted-only count is
+    /// blind to: nobody picks up rusty weapons, so on that count they look
+    /// like items that never drop.
+    #[test]
+    fn an_item_left_behind_still_counts_as_a_drop() {
+        let mut d = DropTracker::new(Game::EverQuest);
+        d.on_kill("a snow orc trooper");
+        d.on_kill("a snow orc trooper");
+        d.on_left_behind(100, "Rusty Two Handed Sword", "a snow orc trooper", Some("Icefall"));
+        d.on_left_behind(200, "Rusty Two Handed Sword", "a snow orc trooper", Some("Icefall"));
+
+        let r = d.report();
+        let item = &r.items[0];
+        assert_eq!(item.item, "Rusty Two Handed Sword");
+        assert_eq!(item.left, 2);
+        assert_eq!(item.looted, 0, "nothing was taken");
+        assert_eq!(item.quantity, 0, "and so nothing was carried away");
+        assert_eq!(item.sources[0].kills, 2, "the denominator is unaffected");
+        assert_eq!(item.sources[0].zones, vec!["Icefall".to_string()]);
+    }
+
+    /// The two counts sit side by side and are never summed into one, because
+    /// they answer different questions: what you have, and what you saw.
+    #[test]
+    fn taken_and_left_are_counted_apart() {
+        let mut d = DropTracker::new(Game::EverQuest);
+        d.on_drop(100, "Bone Chips", 3, "a greater skeleton", None);
+        d.on_left_behind(200, "Bone Chips", "a greater skeleton", None);
+
+        let item = &d.report().items[0];
+        assert_eq!(item.looted, 1);
+        assert_eq!(item.left, 1);
+        assert_eq!(item.quantity, 3, "only what was actually taken");
+        assert_eq!(item.sources.len(), 1, "one creature, one row");
+    }
+
+    /// A grade is worth recording whichever way the item went — which grades
+    /// a creature rolls does not depend on whether you wanted this one.
+    #[test]
+    fn a_grade_is_recorded_on_an_item_left_behind() {
+        let mut d = DropTracker::new(Game::EverQuest);
+        d.on_left_behind(100, "Woven Skull Cap +2", "a bonebinder", None);
+        d.on_drop(200, "Woven Skull Cap", 1, "a bonebinder", None);
+
+        let item = &d.report().items[0];
+        assert_eq!(item.item, "Woven Skull Cap", "one row, keyed ungraded");
+        assert_eq!(item.grades, vec![(0, 1), (2, 1)]);
+    }
 
     /// The article is the client's, not the creature's: filing "a fire
     /// goblin" apart from "fire goblin" would split one creature in two.

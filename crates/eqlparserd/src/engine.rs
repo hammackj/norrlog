@@ -428,6 +428,18 @@ pub struct Engine {
     drops: DropTracker,
     /// Creature profiles, keyed by zone, mode and difficulty.
     bestiary: Bestiary,
+    /// Names the client has positively called people, lowercased.
+    ///
+    /// A melee line does not know what it is looking at: somebody swinging a
+    /// sword beside you produces exactly the shape a monster does, and a
+    /// groupmate caught in your own area effect produces exactly the shape a
+    /// creature you are killing does. Two lines settle it outright — a `/who`
+    /// row, and `Targeted (Player):` — and nothing else in the log does.
+    ///
+    /// Used to keep people out of the bestiary and out of the drop tables. It
+    /// only ever grows: a name proved to be a person does not stop being one,
+    /// and no line ever says the opposite.
+    players: std::collections::BTreeSet<String>,
     tasks: TaskTracker,
     encounters: Vec<Encounter>,
     /// Coin taken from corpses, and coin from items auto-sold on pickup.
@@ -553,6 +565,7 @@ impl Engine {
             grants: Vec::new(),
             pending_grants: Vec::new(),
             lockouts: LockoutTracker::new(),
+            players: Default::default(),
             sky: SkyTracker::new(),
             aa: AaCatalog::new(),
             tells: TellTracker::new(),
@@ -1082,16 +1095,23 @@ impl Engine {
                 ability,
                 ..
             } => {
+                // A person is not a creature, however much a melee line
+                // looks the same either way — a groupmate caught in your own
+                // area effect would otherwise be filed as something you are
+                // killing, with a health estimate built out of it.
                 if let eqlparser_core::event::Actor::Named(npc) = target {
-                    self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
+                    if !self.is_a_player(npc) {
+                        self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
                     // A damage line names both the spell and who it hit, so a
                     // spell the game will only cast at one body type settles
                     // what that creature is. Whose spell it was does not
                     // matter — the restriction is the game's, so a group
                     // member's cast proves it just as well as your own.
-                    if let Some(kind) = ability.as_deref().and_then(|a| self.spell_restricts_to(a))
-                    {
-                        self.bestiary.on_kind_evidence(entry.timestamp, npc, kind);
+                        if let Some(kind) =
+                            ability.as_deref().and_then(|a| self.spell_restricts_to(a))
+                        {
+                            self.bestiary.on_kind_evidence(entry.timestamp, npc, kind);
+                        }
                     }
                 }
                 if target.is_you() {
@@ -1156,6 +1176,17 @@ impl Engine {
                 // level of a class that capped before this log began.
                 self.class_levels.on_achievement(entry.timestamp, name);
             }
+            Event::Targeted { name, kind } => {
+                // "Targeted (Player): Garrow". The other kinds the client
+                // writes — NPC, Banker, Merchant — are not recorded as proof
+                // of the opposite: a name absent from this set is unproven,
+                // not proven to be a creature.
+                if kind.eq_ignore_ascii_case("player") {
+                    if let eqlparser_core::event::Actor::Named(n) = name {
+                        self.players.insert(n.to_lowercase());
+                    }
+                }
+            }
             Event::ChannelRoster { channels } => {
                 // EverQuest joins you to your class's channel; Legends
                 // characters swap classes, so there a channel may name one
@@ -1170,6 +1201,13 @@ impl Engine {
                 name,
                 ..
             } => {
+                // Every row, including anonymous ones and other people's: the
+                // fact that matters here is personhood, and somebody hiding
+                // their level is exactly as much a person as somebody who is
+                // not.
+                if !name.is_empty() {
+                    self.players.insert(name.to_lowercase());
+                }
                 if name.eq_ignore_ascii_case(&self.player) {
                     let trio = eqlparser_core::class::parse_class_list(classes);
                     if !trio.is_empty() {
@@ -1206,6 +1244,21 @@ impl Engine {
             Event::CoinLoot { coin } => self.coin_from_corpses += coin.as_copper(),
             // Selling to a vendor is income just like an auto-sale.
             Event::MerchantSale { coin, .. } => self.coin_from_sales += coin.as_copper(),
+            // An item you saw and did not take. It says as much about the
+            // creature as one you did, and nothing at all about your
+            // inventory, so it reaches the drop tables and stops there.
+            Event::LootLeft { item, source, .. } => {
+                if let Some(eqlparser_core::event::Actor::Named(npc)) = source {
+                    if !npc.eq_ignore_ascii_case(&self.player) && !self.is_a_player(npc) {
+                        self.drops.on_left_behind(
+                            entry.timestamp,
+                            item,
+                            npc,
+                            self.tracker.current_zone(),
+                        );
+                    }
+                }
+            }
             Event::Loot {
                 item,
                 quantity,
@@ -1223,7 +1276,7 @@ impl Engine {
                 // came off it is a drop. Your own corpse is items going back
                 // where they came from, which says nothing about any creature.
                 if let Some(eqlparser_core::event::Actor::Named(npc)) = source {
-                    if !npc.eq_ignore_ascii_case(&self.player) {
+                    if !npc.eq_ignore_ascii_case(&self.player) && !self.is_a_player(npc) {
                         self.drops.on_drop(
                             entry.timestamp,
                             item,
@@ -2178,6 +2231,15 @@ impl Engine {
     /// Whether a display name refers to the logging character.
     fn is_player(&self, name: &str) -> bool {
         name.eq_ignore_ascii_case(&self.player) || name.eq_ignore_ascii_case("you")
+    }
+
+    /// Whether the client has positively said this name belongs to a person.
+    ///
+    /// False for a name nobody ever ran `/who` on or targeted, which is the
+    /// common case — so this keeps proven people out, and claims nothing
+    /// about anyone else.
+    fn is_a_player(&self, name: &str) -> bool {
+        self.is_player(name) || self.players.contains(&name.to_lowercase())
     }
 
     /// Charm state and recent failures.
@@ -4158,6 +4220,76 @@ mod tests {
             .expect("row exists");
         assert!(!mobs.is_pet, "a mez must not be read as a charm");
         assert_eq!(mobs.pet_damage, 0);
+    }
+
+    /// A melee line does not know what it is looking at. A groupmate caught
+    /// in your own area effect produces the same shape as something you are
+    /// killing, and the bestiary would file them as a creature and build a
+    /// health estimate out of them.
+    ///
+    /// Two lines settle it, and nothing else in the log does: `/who`, and the
+    /// client naming what you targeted.
+    #[test]
+    fn a_person_does_not_become_a_creature() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                // The bestiary is keyed by zone, so it needs one.
+                "[Tue Jul 28 13:59:59 2026] You have entered Befallen.",
+                "[Tue Jul 28 14:00:00 2026] Targeted (Player): Gartik",
+                "[Tue Jul 28 14:00:01 2026] [45 Cleric] Sinja (Human) ZONE: Befallen (befallen)",
+                // All three take damage from you; only one is a creature.
+                "[Tue Jul 28 14:00:02 2026] You hit Gartik for 40 points of fire damage by Rain.",
+                "[Tue Jul 28 14:00:03 2026] You hit Sinja for 40 points of fire damage by Rain.",
+                "[Tue Jul 28 14:00:04 2026] You hit a goblin for 40 points of fire damage by Rain.",
+            ],
+        );
+        let names: Vec<String> = e
+            .bestiary_report()
+            .npcs
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        // Displayed the way the client says it, article and all.
+        assert!(
+            names.iter().any(|n| n.eq_ignore_ascii_case("a goblin")),
+            "the creature must still be filed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.eq_ignore_ascii_case("Gartik")),
+            "a targeted player is a person: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.eq_ignore_ascii_case("Sinja")),
+            "a /who row names a person: {names:?}"
+        );
+    }
+
+    /// The client says what you left as plainly as what you took. For a drop
+    /// table it is the same evidence, and it is the evidence a looted-only
+    /// count is blind to: nobody picks up rusty weapons.
+    #[test]
+    fn an_item_left_on_a_corpse_reaches_the_drop_table() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a snow orc trooper for 100 points of damage.",
+                "[Tue Jul 28 14:00:01 2026] You have slain a snow orc trooper!",
+                "[Tue Jul 28 14:00:02 2026] --You left a Rusty Two Handed Sword on a snow orc trooper.--",
+            ],
+        );
+        let report = e.drop_report();
+        let item = report
+            .items
+            .iter()
+            .find(|i| i.item == "Rusty Two Handed Sword")
+            .expect("the sword was seen");
+        assert_eq!(item.left, 1);
+        assert_eq!(item.looted, 0);
+        assert_eq!(item.sources[0].npc, "a snow orc trooper", "named as the client names it");
+        assert_eq!(item.sources[0].kills, 1, "the kill is the denominator");
     }
 
     /// A resist that is not a charm must never reach the charm overlay, and a

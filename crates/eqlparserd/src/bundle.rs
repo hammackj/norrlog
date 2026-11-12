@@ -280,9 +280,11 @@ pub fn build(
     b.drops = store
         .all_drops()?
         .into_iter()
-        .filter(|(game, ..)| game == Game::EverQuestLegends.slug())
+        .filter(|row| row.game == Game::EverQuestLegends.slug())
         .map(
-            |(game, item, npc, zones, looted, quantity, first_seen, last_seen)| {
+            // `left` is not sent: eqldb's import has no column for it yet,
+            // and this is that site's wire format, not ours to widen alone.
+            |crate::store::StoredDrop { game, item, npc, zones, looted, quantity, first_seen, last_seen, .. }| {
                 let key = (game, item.to_lowercase(), npc.to_lowercase());
                 let places = places
                     .remove(&key)

@@ -1036,16 +1036,18 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                 .map(|(_, npc, n)| (npc.to_lowercase(), n))
                 .collect();
             if let Ok(rows) = st.all_drops() {
-                for (game, item, npc, zones, looted, quantity, first_seen, last_seen) in rows {
-                    if game != db.game.slug() {
+                for row in rows {
+                    if row.game != db.game.slug() {
                         continue;
                     }
+                    let item = row.item;
                     let sighting = eqlparser_core::drops::DropSighting {
-                        kills: kills.get(&npc.to_lowercase()).copied().unwrap_or(0),
-                        npc,
-                        zones,
-                        looted,
-                        quantity,
+                        kills: kills.get(&row.npc.to_lowercase()).copied().unwrap_or(0),
+                        npc: row.npc,
+                        zones: row.zones,
+                        looted: row.looted,
+                        left: row.left,
+                        quantity: row.quantity,
                         // The stored table never recorded which grades were
                         // seen, only the counts, so history cannot supply a
                         // breakdown. Empty says that; a fabricated all-grade-0
@@ -1057,8 +1059,8 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                         // Empty is "not recorded", which is true of every
                         // row written before drops carried a place.
                         places: Vec::new(),
-                        first_seen,
-                        last_seen,
+                        first_seen: row.first_seen,
+                        last_seen: row.last_seen,
                     };
                     match db
                         .items
@@ -1074,7 +1076,7 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                                 .iter_mut()
                                 .find(|d| d.npc.eq_ignore_ascii_case(&sighting.npc))
                             {
-                                Some(d) if d.looted >= sighting.looted => {}
+                                Some(d) if d.looted + d.left >= sighting.looted + sighting.left => {}
                                 Some(d) => *d = sighting,
                                 None => e.dropped_by.push(sighting),
                             }

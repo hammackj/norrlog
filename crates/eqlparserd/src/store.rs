@@ -131,6 +131,29 @@ pub struct StoredLevel {
 /// following spell: Gate." — which is a fact about the game worth keeping:
 /// it says a spell is real, reachable, and costs nothing to get, none of
 /// which the client's own spell file says.
+/// One item-from-creature observation, summed over every log on file.
+///
+/// A struct rather than the tuple this used to be: nine positional fields,
+/// two of which are counts of similar-sounding things, is a call site nobody
+/// can read and a swap nothing would catch.
+#[derive(Debug, Clone)]
+pub struct StoredDrop {
+    pub game: String,
+    /// Ungraded item name — see [`eqlparser_core::drops::canonical_item`].
+    pub item: String,
+    pub npc: String,
+    pub zones: Vec<String>,
+    /// Times looted from this creature.
+    pub looted: u64,
+    /// Times seen on its corpse and left there. Rows written before the
+    /// parser read that line are 0, which is true of them rather than a
+    /// stand-in for unknown.
+    pub left: u64,
+    pub quantity: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredGrant {
     pub spell: String,
@@ -272,6 +295,7 @@ impl Store {
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
+        s.add_drops_left_behind()?;
         Ok(s)
     }
 
@@ -290,6 +314,7 @@ impl Store {
         s.add_encounter_difficulty()?;
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
+        s.add_drops_left_behind()?;
         Ok(s)
     }
 
@@ -415,6 +440,28 @@ impl Store {
         if !present {
             self.conn.execute_batch(
                 "ALTER TABLE item_vendors ADD COLUMN quoted INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Add the left-behind counter to drop sightings, once.
+    ///
+    /// Existing rows predate the parser reading "--You left ... on ...--" at
+    /// all, so nothing was ever counted for them and a default of 0 is the
+    /// truth about those rows rather than a placeholder. They fill in as logs
+    /// are re-read.
+    fn add_drops_left_behind(&mut self) -> Result<()> {
+        let present: bool = self
+            .conn
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('item_drops') WHERE name='left_behind'",
+            )?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if !present {
+            self.conn.execute_batch(
+                "ALTER TABLE item_drops ADD COLUMN left_behind INTEGER NOT NULL DEFAULT 0",
             )?;
         }
         Ok(())
@@ -702,6 +749,10 @@ impl Store {
                 npc       TEXT NOT NULL,
                 zones     TEXT NOT NULL DEFAULT '',
                 looted    INTEGER NOT NULL,
+                -- Times seen on the corpse and left there. Same evidence
+                -- about the creature, a different fact about you, so it is
+                -- its own column rather than folded into `looted`.
+                left_behind INTEGER NOT NULL DEFAULT 0,
                 quantity  INTEGER NOT NULL,
                 first_seen INTEGER NOT NULL,
                 last_seen  INTEGER NOT NULL,
@@ -1413,9 +1464,9 @@ impl Store {
         {
             let mut drop_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO item_drops
-                 (game, character, server, source, item, npc, zones, looted, quantity,
-                  first_seen, last_seen)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 (game, character, server, source, item, npc, zones, looted, left_behind,
+                  quantity, first_seen, last_seen)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             )?;
             for item in &report.items {
                 for s in &item.sources {
@@ -1428,6 +1479,7 @@ impl Store {
                         s.npc,
                         s.zones.join("|"),
                         s.looted as i64,
+                        s.left as i64,
                         s.quantity as i64,
                         s.first_seen,
                         s.last_seen,
@@ -2100,20 +2152,17 @@ impl Store {
 
     /// Every drop observation on file, summed across logs and characters.
     ///
-    /// Returns `(game, item, npc, zones, looted, quantity, first_seen,
-    /// last_seen)`. The game stays in the key: totals are per game, never
-    /// pooled across the two.
-    #[allow(clippy::type_complexity)]
-    pub fn all_drops(
-        &self,
-    ) -> Result<Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)>> {
+    /// The game stays in the key: totals are per game, never pooled across
+    /// the two.
+    pub fn all_drops(&self) -> Result<Vec<StoredDrop>> {
         let mut stmt = self.conn.prepare(
             "SELECT game, item, npc, group_concat(zones, '|'),
-                    SUM(looted), SUM(quantity), MIN(first_seen), MAX(last_seen)
+                    SUM(looted), SUM(left_behind), SUM(quantity),
+                    MIN(first_seen), MAX(last_seen)
              FROM item_drops GROUP BY game, lower(item), lower(npc)
-             ORDER BY SUM(looted) DESC",
+             ORDER BY SUM(looted) + SUM(left_behind) DESC",
         )?;
-        let rows: Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)> = stmt
+        let rows: Vec<StoredDrop> = stmt
             .query_map([], |r| {
                 let zones: Option<String> = r.get(3)?;
                 let mut zones: Vec<String> = zones
@@ -2124,16 +2173,17 @@ impl Store {
                     .collect();
                 zones.sort();
                 zones.dedup();
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
+                Ok(StoredDrop {
+                    game: r.get(0)?,
+                    item: r.get(1)?,
+                    npc: r.get(2)?,
                     zones,
-                    r.get::<_, i64>(4)? as u64,
-                    r.get::<_, i64>(5)? as u64,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
+                    looted: r.get::<_, i64>(4)? as u64,
+                    left: r.get::<_, i64>(5)? as u64,
+                    quantity: r.get::<_, i64>(6)? as u64,
+                    first_seen: r.get(7)?,
+                    last_seen: r.get(8)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -2144,28 +2194,34 @@ impl Store {
         // observation stays exactly as it was recorded.
         let mut folded: std::collections::HashMap<(String, String, String), usize> =
             std::collections::HashMap::new();
-        let mut out: Vec<(String, String, String, Vec<String>, u64, u64, i64, i64)> = Vec::new();
-        for (game, item, npc, zones, looted, quantity, first, last) in rows {
-            let base = eqlparser_core::drops::canonical_item(&item).to_string();
-            let key = (game.clone(), base.to_lowercase(), npc.to_lowercase());
+        let mut out: Vec<StoredDrop> = Vec::new();
+        for row in rows {
+            let base = eqlparser_core::drops::canonical_item(&row.item).to_string();
+            let key = (row.game.clone(), base.to_lowercase(), row.npc.to_lowercase());
             match folded.get(&key) {
                 Some(&idx) => {
                     let e = &mut out[idx];
-                    e.3.extend(zones);
-                    e.3.sort();
-                    e.3.dedup();
-                    e.4 += looted;
-                    e.5 += quantity;
-                    e.6 = e.6.min(first);
-                    e.7 = e.7.max(last);
+                    e.zones.extend(row.zones);
+                    e.zones.sort();
+                    e.zones.dedup();
+                    e.looted += row.looted;
+                    e.left += row.left;
+                    e.quantity += row.quantity;
+                    e.first_seen = e.first_seen.min(row.first_seen);
+                    e.last_seen = e.last_seen.max(row.last_seen);
                 }
                 None => {
                     folded.insert(key, out.len());
-                    out.push((game, base, npc, zones, looted, quantity, first, last));
+                    out.push(StoredDrop { item: base, ..row });
                 }
             }
         }
-        out.sort_by(|a, b| b.4.cmp(&a.4).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        out.sort_by(|a, b| {
+            (b.looted + b.left)
+                .cmp(&(a.looted + a.left))
+                .then(a.item.cmp(&b.item))
+                .then(a.npc.cmp(&b.npc))
+        });
         Ok(out)
     }
 
@@ -3042,7 +3098,7 @@ mod tests {
         assert_eq!(logs, ["/mnt/Logs/eqlog_Tharn_freeport.txt"]);
 
         // Gone with the guard: the daemon's own pages still see every log.
-        let all: u64 = s.all_drops().unwrap().iter().map(|d| d.4).sum();
+        let all: u64 = s.all_drops().unwrap().iter().map(|d| d.looted).sum();
         assert_eq!(all, 15);
         assert_eq!(s.sources().unwrap().len(), 3);
     }
@@ -3169,6 +3225,7 @@ mod tests {
                 quantity: looted,
             }],
             looted,
+            left: 0,
             quantity: looted,
             kills: looted,
             grades: Vec::new(),
@@ -3184,6 +3241,7 @@ mod tests {
                     game: Game::EverQuestLegends,
                     sources: vec![sighting("rivervale", "open", 0, 5)],
                     looted: 5,
+                    left: 0,
                     quantity: 5,
                     grades: Vec::new(),
                 },
@@ -3194,6 +3252,7 @@ mod tests {
                     game: Game::EverQuestLegends,
                     sources: vec![sighting("misty thicket", "instance", 1, 3)],
                     looted: 3,
+                    left: 0,
                     quantity: 3,
                     grades: Vec::new(),
                 },
@@ -3250,6 +3309,7 @@ mod tests {
                         quantity: 1,
                     }],
                     looted: 1,
+                    left: 0,
                     quantity: 1,
                     kills: 1,
                     grades: Vec::new(),
@@ -3257,6 +3317,7 @@ mod tests {
                     last_seen: 2,
                 }],
                 looted: 1,
+                left: 0,
                 quantity: 1,
                 grades: Vec::new(),
             }],
