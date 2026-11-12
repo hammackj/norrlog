@@ -211,6 +211,8 @@ pub struct Snapshot {
     /// it names no class, so after a swap it keeps reporting the level of the
     /// class that left.
     pub level: u32,
+    /// The game's level cap, for the overlay's capped readout.
+    pub level_cap: u32,
     /// The class earning experience, when it can be pinned down.
     pub levelling: Option<String>,
     pub zone: Option<String>,
@@ -3715,6 +3717,7 @@ impl Engine {
                 let r = self.class_level_report();
                 r.effective.unwrap_or_else(|| self.resolver.level())
             },
+            level_cap: self.class_levels.cap(),
             levelling: self.class_level_report().levelling,
             zone: self.tracker.current_zone().map(str::to_string),
             zone_place: self

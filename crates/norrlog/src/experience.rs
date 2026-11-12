@@ -26,8 +26,6 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(10);
-/// The class level inputs' bounds: Legends' cap of 50, as the renderer has it.
-const LEVEL_MAX: u32 = 50;
 
 pub struct ExperienceView {
     api: Option<Api>,
@@ -164,10 +162,12 @@ impl ExperienceView {
         }
     }
 
-    /// POST a typed level from 1 to 50, then reload. Anything else is
-    /// ignored, as the renderer ignores it.
+    /// POST a typed level from 1 to the game's cap (50 Legends, 130 live
+    /// EverQuest, from the report), then reload. Anything else is ignored,
+    /// as the renderer ignores it.
     fn commit_level(&mut self, abbrev: &str, typed: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(level) = typed.filter(|l| (1..=LEVEL_MAX).contains(l)) else { return };
+        let cap = self.levels.as_ref().map_or(50, |r| r.cap);
+        let Some(level) = typed.filter(|l| (1..=cap).contains(l)) else { return };
         let held = self.levels.as_ref().and_then(|r| r.classes.iter().find(|c| c.abbrev == abbrev)).map(|c| c.level);
         if held == Some(level) {
             return;

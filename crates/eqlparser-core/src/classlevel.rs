@@ -128,6 +128,10 @@ pub struct ClassLevel {
     pub capped: bool,
 }
 
+fn legends_cap() -> u32 {
+    LEVEL_CAP
+}
+
 /// Everything the levels view shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassLevelReport {
@@ -145,6 +149,11 @@ pub struct ClassLevelReport {
     pub effective: Option<u32>,
     /// Level-ups seen but not attributable to a class.
     pub unattributed: usize,
+    /// The game's level cap (50 Legends, 130 live EverQuest), so a client
+    /// bounds its level inputs and capped readouts by the game it is
+    /// showing. Reports from older daemons lack it and read as Legends'.
+    #[serde(default = "legends_cap")]
+    pub cap: u32,
 }
 
 /// Tracks each class's level independently.
@@ -512,6 +521,7 @@ impl ClassLevelTracker {
             needs_who,
             effective: loadout.iter().filter_map(|c| self.level_of(*c)).min(),
             unattributed: self.pending.len(),
+            cap: self.cap,
         }
     }
 }

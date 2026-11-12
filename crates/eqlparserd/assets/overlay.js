@@ -809,9 +809,6 @@
     el.sub.innerHTML = bits.join("");
   }
 
-  /** Where a class stops levelling. Mirrors `classlevel::LEVEL_CAP`. */
-  const LEVEL_CAP = 50;
-
   /* Progress through the current level, with the rate and a projected time to
      level. The bar is the headline; the numbers are secondary.
 
@@ -852,7 +849,9 @@
     // %/hr rate all describe something that cannot happen. `snap.level` is the
     // *lowest* class in the loadout, so this only fires once every class is
     // capped — while anything can still gain a level, the bar stays.
-    const capped = lvl >= LEVEL_CAP;
+    // The game's cap, from the daemon: 50 in Legends, 130 in live EverQuest.
+    // An older daemon does not send it, and only ever read Legends.
+    const capped = lvl >= (snap.level_cap || 50);
     const bits = [];
     if (!capped && x.rate_per_hour > 0)
       bits.push(`<b>${x.rate_per_hour.toFixed(1)}</b> %/hr`);
