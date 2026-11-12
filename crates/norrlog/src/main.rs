@@ -19,6 +19,7 @@ mod experience;
 mod fight;
 // The shared toolkit the tab ports draw on; ahead of its users for now.
 #[allow(dead_code)]
+mod forage;
 mod format;
 mod item_tip;
 mod loot;
@@ -29,6 +30,7 @@ mod state;
 mod table;
 #[allow(dead_code)]
 mod theme;
+mod tradeskills;
 mod view;
 
 use gpui::*;

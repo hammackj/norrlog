@@ -1776,7 +1776,7 @@ impl Store {
                     _ => {
                         forage_zones.push(ForageZoneRow {
                             zone: zone.clone(),
-                            game: GAME_TAG,
+                            game: GAME_TAG.into(),
                             attempts: 0,
                             hits: 0,
                             empty: 0,
@@ -2079,7 +2079,7 @@ impl Store {
                 players,
             },
             forage: ForageReport {
-                note: FORAGE_NOTE,
+                note: FORAGE_NOTE.into(),
                 source: SOURCE.to_string(),
                 zones: forage_zones,
                 // The history has no record of an attempt it could not place,

@@ -276,7 +276,7 @@ impl Settled {
     /// the failure count is collected at all.
     pub fn forage(&self, source: &str) -> ForageReport {
         ForageReport {
-            note: FORAGE_NOTE,
+            note: FORAGE_NOTE.into(),
             source: source.to_string(),
             zones: self
                 .forage
@@ -284,7 +284,7 @@ impl Settled {
                 .iter()
                 .map(|(zone, z)| ForageZoneRow {
                     zone: zone.clone(),
-                    game: GAME_TAG,
+                    game: GAME_TAG.into(),
                     attempts: z.attempts(),
                     hits: z.hits(),
                     empty: z.empty,
@@ -473,32 +473,7 @@ pub struct ConsiderReport {
     pub considers: Vec<ConsiderRow>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ForageReport {
-    pub note: &'static str,
-    pub source: String,
-    pub zones: Vec<ForageZoneRow>,
-    /// Attempts made before the log announced any zone.
-    pub unplaced: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ForageZoneRow {
-    pub zone: String,
-    pub game: &'static str,
-    pub attempts: u64,
-    pub hits: u64,
-    pub empty: u64,
-    pub first_seen: i64,
-    pub last_seen: i64,
-    pub items: Vec<ForagedItem>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ForagedItem {
-    pub item: String,
-    pub times: u64,
-}
+pub use eqlparser_api::{ForageReport, ForageZoneRow, ForagedItem};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConsiderRow {

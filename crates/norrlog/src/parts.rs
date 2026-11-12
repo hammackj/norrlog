@@ -18,6 +18,45 @@ pub fn card(title: &str) -> Div {
         .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
 }
 
+/// A card whose title carries a suffix in plain case, as the tradeskill
+/// cards' ` — Alchemy` while filtered.
+pub fn card_suffixed(title: &str, suffix: Option<String>) -> Div {
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(hex(BORDER))
+        .bg(hex(PANEL))
+        .child(
+            h_flex()
+                .gap_1()
+                .items_baseline()
+                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
+                .when_some(suffix, |d, s| d.child(div().text_sm().text_color(hex(MUTED)).child(s))),
+        )
+}
+
+/// Wrapping text with some runs in bold: the renderer's `<b>` inside a
+/// sentence. Each part is (text, bold).
+pub fn rich(parts: &[(&str, bool)]) -> StyledText {
+    let mut text = String::new();
+    let mut bold = Vec::new();
+    for (t, b) in parts {
+        let start = text.len();
+        text.push_str(t);
+        if *b {
+            bold.push((start..text.len(), HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
+        }
+    }
+    StyledText::new(text).with_highlights(bold)
+}
+
+/// Two cards side by side, sharing the width: app.css' `.split`.
+pub fn split(a: Div, b: Div) -> Div {
+    h_flex().items_start().gap_3().child(a.flex_1().min_w_0()).child(b.flex_1().min_w_0())
+}
+
 /// A stat card: label, big value, optional small line under it.
 pub fn stat(label: &str, value: impl Into<SharedString>, note: Option<String>) -> Div {
     v_flex()

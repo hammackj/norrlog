@@ -9,7 +9,7 @@
 
 use crate::api::Api;
 use crate::format::{dur, when};
-use crate::parts::{ROW, ROW_ENEMY, ROW_PET, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note};
+use crate::parts::{ROW, ROW_ENEMY, ROW_PET, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note, split};
 use crate::table::{self, Col, col, muted, tag};
 use crate::theme::*;
 use eqlparser_api::{AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare};
@@ -678,10 +678,6 @@ fn per(value: String, unit: &'static str) -> Div {
 
 fn list_or<I: IntoIterator<Item = Div>>(is_empty: bool, empty_text: &'static str, rows: impl FnOnce() -> I) -> Div {
     if is_empty { empty(empty_text) } else { v_flex().gap_1().children(rows()) }
-}
-
-fn split(a: Div, b: Div) -> Div {
-    h_flex().items_start().gap_3().child(a.flex_1().min_w_0()).child(b.flex_1().min_w_0())
 }
 
 fn stat_card(label: &str, value: impl IntoElement, note: Option<String>) -> Div {

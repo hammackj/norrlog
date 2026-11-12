@@ -978,3 +978,42 @@ pub struct GroupedAbility {
     /// about the spell rather than about this pull.
     pub dps: f64,
 }
+// ---------------------------------------------------------------------------
+// Tradeskills: `GET /api/tradeskills` is core's report; `GET /api/drops`
+// supplies where a component drops. Forage: `GET /api/forage`, moved here
+// from the daemon's record.
+
+pub use eqlparser_core::drops::{DropReport, DropSighting, ItemDrops};
+pub use eqlparser_core::game::Game;
+pub use eqlparser_core::tradeskill::{
+    ComponentUse, CostBasis, CostComponent, CraftRecord, ItemPrice, LearnedRecipe, RecipeCost, RecipeSpend, SkillCost,
+    SkillProgress, SkillSegment, TradeskillReport, VendorPrice,
+};
+
+/// What forage has yielded, per zone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForageReport {
+    pub note: String,
+    pub source: String,
+    pub zones: Vec<ForageZoneRow>,
+    /// Attempts made before the log announced any zone.
+    pub unplaced: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForageZoneRow {
+    pub zone: String,
+    pub game: String,
+    pub attempts: u64,
+    pub hits: u64,
+    pub empty: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub items: Vec<ForagedItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForagedItem {
+    pub item: String,
+    pub times: u64,
+}
