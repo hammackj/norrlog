@@ -18,6 +18,9 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-channel = "2.5.0"
+base64 = "0.22"
+# Cutting an item icon out of its sheet. Already in the tree through GPUI.
+image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "sync"] }

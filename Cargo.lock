@@ -4112,6 +4112,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "base64",
  "chrono",
  "eqlparser-api",
  "eqlparser-client",
@@ -4119,6 +4120,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "serde",
  "serde_json",
  "tokio",

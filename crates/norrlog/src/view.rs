@@ -42,6 +42,7 @@ pub struct Shell {
     rt: tokio::runtime::Handle,
     encounters: Entity<crate::encounters::EncountersView>,
     procs: Entity<crate::procs::ProcsView>,
+    loot: Entity<crate::loot::LootView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -70,7 +71,8 @@ impl Shell {
         let tab = TABS.iter().find(|t| t.0 == state.tab).map(|t| t.0).unwrap_or("dashboard");
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
         let procs = cx.new(|_| crate::procs::ProcsView::new());
-        Shell { link: Link::Attaching, rt, encounters, procs, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
+        let loot = cx.new(|cx| crate::loot::LootView::new(window, cx));
+        Shell { link: Link::Attaching, rt, encounters, procs, loot, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
     }
 
     fn on_msg(&mut self, msg: Msg, cx: &mut Context<Self>) {
@@ -91,9 +93,15 @@ impl Shell {
                     }
                 });
                 self.procs.update(cx, |v, cx| {
-                    v.set_api(Some(api), cx);
+                    v.set_api(Some(api.clone()), cx);
                     if open == "procs" {
                         v.load(cx);
+                    }
+                });
+                self.loot.update(cx, |v, cx| {
+                    v.set_api(Some(api), cx);
+                    if open == "loot" {
+                        v.load_all(cx);
                     }
                 });
             }
@@ -106,6 +114,11 @@ impl Shell {
                 self.encounters.update(cx, |v, cx| v.newest_closed(newest, visible, cx));
                 let procs_open = self.tab == "procs";
                 self.procs.update(cx, |v, cx| v.on_snapshot(procs_open, cx));
+                let totals = s.get("totals");
+                let played = totals.and_then(|t| t.get("played_seconds")).and_then(Value::as_i64).unwrap_or(0);
+                let sessions = totals.and_then(|t| t.get("sessions")).and_then(Value::as_u64).unwrap_or(0);
+                let loot_open = self.tab == "loot";
+                self.loot.update(cx, |v, cx| v.on_snapshot(loot_open, played, sessions, cx));
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
@@ -114,6 +127,7 @@ impl Shell {
                 self.snapshot = None;
                 self.encounters.update(cx, |v, cx| v.set_api(None, cx));
                 self.procs.update(cx, |v, cx| v.set_api(None, cx));
+                self.loot.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -140,6 +154,10 @@ impl Shell {
         }
         if tab == "procs" {
             self.procs.update(cx, |v, cx| v.load(cx));
+        }
+        // All, whichever subtab is showing (app.js:48).
+        if tab == "loot" {
+            self.loot.update(cx, |v, cx| v.load_all(cx));
         }
         self.state.tab = tab.to_string();
         self.state.save();
@@ -233,8 +251,9 @@ impl Shell {
         }
         match self.tab {
             "dashboard" => self.render_totals().into_any_element(),
-            "encounters" => self.encounters.clone().into_any_element(),
-            "procs" => self.procs.clone().into_any_element(),
+            "encounters" => self.encounters.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "procs" => self.procs.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "loot" => self.loot.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
@@ -299,8 +318,9 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if self.tab == "encounters" && !matches!(self.link, Link::Lost(_)) {
-                // Scrolls its own table, so its toolbar stays put.
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot") && !matches!(self.link, Link::Lost(_)) {
+                // These scroll themselves, and are drawn cached: each redraws
+                // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())
             } else {
                 div().id("main").flex_1().min_h_0().overflow_y_scroll().own_axis().p_4().child(self.render_body())

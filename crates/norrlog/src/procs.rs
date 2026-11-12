@@ -116,7 +116,7 @@ impl Render for ProcsView {
             )));
         }
         let open = self.note_open;
-        out.child(
+        let out = out.child(
             panel()
                 .child(
                     h_flex()
@@ -146,7 +146,8 @@ impl Render for ProcsView {
                          running and buffing, and a proc rate charged for that time describes nothing.",
                     ))
                 }),
-        )
+        );
+        div().id("procs-scroll").size_full().overflow_y_scroll().own_axis().child(out)
     }
 }
 

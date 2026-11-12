@@ -18,6 +18,13 @@ impl Api {
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
+    /// A GET's raw body, for an image.
+    pub fn get_bytes(&self, path: String) -> impl Future<Output = Result<Vec<u8>, String>> + use<> {
+        let client = self.client.clone();
+        let task = self.rt.spawn(async move { client.get_bytes(&path).await.map_err(|e| e.to_string()) });
+        async move { task.await.map_err(|e| e.to_string())? }
+    }
+
     /// The daemon's origin, for a URL handed to the browser.
     pub fn base(&self) -> String {
         format!("http://127.0.0.1:{}", self.client.port())
