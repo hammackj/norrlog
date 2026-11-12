@@ -850,45 +850,9 @@ pub struct Engine {
     /// The parsed place name, not the client's label, so it can be compared
     /// with a list of zones from anywhere else. See [`Snapshot::zone_place`].
     zone_log: Vec<(i64, String)>,
-    /// Items a screenshot has already been taken of, keyed by
-    /// [`crate::itemdb::match_key`] and holding the display name.
-    ///
-    /// A hand-made list, like the buff marks: nothing in the log can tell you
-    /// whether you pointed a camera at something.
-    screenshot_marks: std::collections::BTreeMap<String, String>,
-    /// Items whose reading the site actually took, keyed the same way.
-    ///
-    /// Deliberately *not* the same set as `screenshot_marks`, which is set
-    /// the moment a window is read and means "somebody pointed a camera at
-    /// this". This means "a reading of it reached the queue", which is the
-    /// stronger and later fact: a window can be read and then held back as a
-    /// graded copy, or refused as covered, or fail to send at all. Keeping
-    /// one set would make the tick a person made by hand and the picture the
-    /// site accepted indistinguishable, and the whole point of showing this
-    /// is that they are different things.
-    sent_marks: std::collections::BTreeMap<String, String>,
-    /// Screenshots the client said it took, as log timestamps, oldest first.
-    ///
-    /// The client writes `Taking a screenshot...` to the character log at the
-    /// same second it writes the file, so the log we are already following is
-    /// the cheapest possible notification that a picture exists — no directory
-    /// to poll, no inotify watch on a network mount, and no question about
-    /// whether a file that appeared was written by the game or copied in by
-    /// somebody. Something else drains this; see [`Engine::shots_taken`].
-    shots_taken: VecDeque<i64>,
     /// Typed events for `/api/events`, drained after each batch. Only live
     /// lines add to it: see [`Engine::emit`].
     events: VecDeque<eqlparser_api::Event>,
-    /// Where those marks are written. Held rather than derived on each call so
-    /// a test can be pointed somewhere harmless — see
-    /// [`Engine::use_screenshot_store`].
-    screenshot_store: Option<std::path::PathBuf>,
-    /// Where the sent list is written. A second file rather than a richer
-    /// `screenshots.json`, because that one is documented as a plain array of
-    /// names -- a list a person may want to read, edit or paste somewhere --
-    /// and turning its entries into objects to carry a flag would take that
-    /// away from both.
-    sent_store: Option<std::path::PathBuf>,
     player: String,
     last_timestamp: i64,
     /// When the current play session began.
@@ -1004,15 +968,10 @@ impl Engine {
             coin_from_sales: 0,
             all_loot: Vec::new(),
             zone_log: Vec::new(),
-            screenshot_marks: std::collections::BTreeMap::new(),
-            sent_marks: std::collections::BTreeMap::new(),
-            shots_taken: VecDeque::new(),
             events: VecDeque::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
             // rebuildable database. See `crate::paths`.
-            screenshot_store: crate::paths::config_file("screenshots.json"),
-            sent_store: crate::paths::config_file("sent.json"),
             player,
             last_timestamp: 0,
             session_start: 0,
@@ -1034,8 +993,6 @@ impl Engine {
         let registry = ProcRegistry::from_spells(e.resolver.db());
         e.procs.set_registry(registry);
         e.load_marks();
-        e.load_screenshot_marks();
-        e.load_sent_marks();
         e.load_task_defs();
         e.load_sky_quests();
         e
@@ -2051,48 +2008,14 @@ impl Engine {
 
     // -- Screenshot marks ---------------------------------------------------
 
-    /// Record that a screenshot of `item` has been taken, or take that back.
-    ///
-    /// Held by the daemon rather than the GUI for the same reason the buff
-    /// marks are: the overlay has no access to GUI config, and an item ticked
-    /// off in the window must stop being shouted about on screen a second
-    /// later.
-    pub fn set_screenshot_mark(&mut self, item: &str, have: bool) {
-        let key = crate::itemdb::match_key(item);
-        if key.is_empty() {
-            return;
-        }
-        if have {
-            // First spelling wins. Both callers hand over a properly cased
-            // name — the site's in the window, the client's in the overlay —
-            // but re-ticking something already ticked must not be able to
-            // rewrite the stored name into whatever was typed the second time.
-            self.screenshot_marks.entry(key).or_insert_with(|| {
-                eqlparser_core::drops::canonical_item(item).trim().to_string()
-            });
-        } else {
-            self.screenshot_marks.remove(&key);
-        }
-        self.save_screenshot_marks();
-    }
-
     /// The line the client writes when it takes a picture.
     ///
     /// Matched on the text rather than given an `Event` variant because it is
     /// not an event about the game — nothing in the world happened, and every
     /// consumer of `Event` would have to learn to ignore it. It is a fact
-    /// about the *client*, and the only thing that wants it is the screenshot
-    /// reader.
+    /// about the *client*. It goes out as `Event::ScreenshotTaken`, which is
+    /// how the eqldb collector learns there is a picture to read.
     const TOOK_A_SHOT: &'static str = "Taking a screenshot...";
-
-    /// How many un-drained shot notices to keep.
-    ///
-    /// Small on purpose. If nothing is draining these — the reader is off, or
-    /// the OCR tree is not installed — they are of no use to anybody, and an
-    /// unbounded queue would grow for as long as the daemon runs. Dropping the
-    /// oldest is right rather than refusing the newest: the interesting
-    /// picture is always the one just taken.
-    const MOST_PENDING_SHOTS: usize = 64;
 
     fn note_screenshot(&mut self, entry: &LogEntry) {
         // The whole line after the timestamp, not a suffix of it. A player
@@ -2101,15 +2024,11 @@ impl Engine {
         if eqlparser_core::alert::strip_timestamp(&entry.raw).trim() != Self::TOOK_A_SHOT {
             return;
         }
-        self.shots_taken.push_back(entry.timestamp);
         if let Some(off) = self.clock_offset {
             self.emit(eqlparser_api::Event::ScreenshotTaken {
                 log_ts: entry.timestamp,
                 local_ts: entry.timestamp - off,
             });
-        }
-        while self.shots_taken.len() > Self::MOST_PENDING_SHOTS {
-            self.shots_taken.pop_front();
         }
     }
 
@@ -2137,152 +2056,6 @@ impl Engine {
     /// Take every event queued since this was last called.
     pub fn take_events(&mut self) -> Vec<eqlparser_api::Event> {
         self.events.drain(..).collect()
-    }
-
-    /// Take every screenshot notice seen since this was last called.
-    ///
-    /// Draining rather than reading: two callers would each believe they had
-    /// to handle every shot, and the second would re-read pictures the first
-    /// already sent. There is one reader, and this is how it is fed.
-    pub fn shots_taken(&mut self) -> Vec<i64> {
-        self.shots_taken.drain(..).collect()
-    }
-
-    /// Whether `item` has already been captured. Grade-insensitive, because a
-    /// `+1` and its base share nothing but a name — see [`has_screenshot`]'s
-    /// caller, which never offers a graded drop in the first place.
-    ///
-    /// [`has_screenshot`]: Engine::has_screenshot
-    pub fn has_screenshot(&self, item: &str) -> bool {
-        self.screenshot_marks
-            .contains_key(&crate::itemdb::match_key(item))
-    }
-
-    /// Every item marked captured, by display name, in name order.
-    pub fn screenshot_marks(&self) -> Vec<String> {
-        self.screenshot_marks.values().cloned().collect()
-    }
-
-    /// Record that a reading of `item` reached the site's queue.
-    ///
-    /// Only ever set, never cleared. It is a record of something that
-    /// happened rather than a preference: the picture is in the queue whether
-    /// or not anybody later unticks the box beside it, and a reviewer
-    /// rejecting the reading does not un-take the photograph. Un-marking is
-    /// what the tick is for.
-    pub fn set_sent(&mut self, item: &str) {
-        let key = crate::itemdb::match_key(item);
-        if key.is_empty() {
-            return;
-        }
-        // First spelling wins, as with the marks next door.
-        let before = self.sent_marks.len();
-        self.sent_marks
-            .entry(key)
-            .or_insert_with(|| eqlparser_core::drops::canonical_item(item).trim().to_string());
-        if self.sent_marks.len() != before {
-            self.save_sent_marks();
-        }
-    }
-
-    /// Whether a reading of `item` has reached the queue. Grade-insensitive,
-    /// for the reason [`Engine::has_screenshot`] gives.
-    pub fn has_sent(&self, item: &str) -> bool {
-        self.sent_marks
-            .contains_key(&crate::itemdb::match_key(item))
-    }
-
-    /// Every item a reading has been sent for, by display name, in name order.
-    pub fn sent_marks(&self) -> Vec<String> {
-        self.sent_marks.values().cloned().collect()
-    }
-
-    /// See [`Engine::use_screenshot_store`].
-    #[cfg(test)]
-    pub fn use_sent_store(&mut self, path: Option<std::path::PathBuf>) {
-        self.sent_marks.clear();
-        self.sent_store = path;
-        self.load_sent_marks();
-    }
-
-    fn save_sent_marks(&self) {
-        let Some(path) = self.sent_store.clone() else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let names: Vec<&String> = self.sent_marks.values().collect();
-        if let Ok(json) = serde_json::to_string_pretty(&names) {
-            let _ = std::fs::write(&path, json);
-        }
-    }
-
-    fn load_sent_marks(&mut self) {
-        let Some(path) = self.sent_store.clone() else {
-            return;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        let Ok(names) = serde_json::from_str::<Vec<String>>(&text) else {
-            eprintln!("[eqlparserd] sent.json is unreadable; ignoring it");
-            return;
-        };
-        for name in names {
-            let key = crate::itemdb::match_key(&name);
-            if !key.is_empty() {
-                self.sent_marks.insert(key, name);
-            }
-        }
-    }
-
-    /// Read and write the marks somewhere else, discarding what is loaded and
-    /// reading that file instead.
-    ///
-    /// Exists so the tests can exercise this without touching the real config
-    /// directory. Marks are hand-made state; a test run that clobbers them
-    /// would be worse than leaving the feature untested.
-    #[cfg(test)]
-    pub fn use_screenshot_store(&mut self, path: Option<std::path::PathBuf>) {
-        self.screenshot_marks.clear();
-        self.screenshot_store = path;
-        self.load_screenshot_marks();
-    }
-
-    fn save_screenshot_marks(&self) {
-        let Some(path) = self.screenshot_store.clone() else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        // A plain array of names: this is a list a person may well want to
-        // read, edit or paste somewhere, and the key is derivable from the
-        // name it was derived from.
-        let names: Vec<&String> = self.screenshot_marks.values().collect();
-        if let Ok(json) = serde_json::to_string_pretty(&names) {
-            let _ = std::fs::write(&path, json);
-        }
-    }
-
-    fn load_screenshot_marks(&mut self) {
-        let Some(path) = self.screenshot_store.clone() else {
-            return;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        let Ok(names) = serde_json::from_str::<Vec<String>>(&text) else {
-            eprintln!("[eqlparserd] screenshots.json is unreadable; ignoring it");
-            return;
-        };
-        for name in names {
-            let key = crate::itemdb::match_key(&name);
-            if !key.is_empty() {
-                self.screenshot_marks.insert(key, name);
-            }
-        }
     }
 
     /// Items picked up since `since` that you could still photograph.
@@ -5311,97 +5084,6 @@ mod tests {
         assert!(d.held, "one of the two is still in your bags");
     }
 
-    /// "Sent" survives a restart and is not the same set as "marked".
-    ///
-    /// Both halves matter. It is written to its own file because it has to
-    /// still be true tomorrow — the wanted list is something you come back to,
-    /// and a highlight that vanished when the daemon restarted would read as
-    /// the picture having been lost. And it is a *separate* set because the
-    /// mark beside it is set the moment a window is read, by hand as well, and
-    /// neither of those means the site took anything.
-    #[test]
-    fn sent_marks_are_kept_apart_from_ticks_and_outlive_a_restart() {
-        let dir = std::env::temp_dir().join(format!(
-            "eqlparserd-sent-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("sent.json");
-
-        let mut e = engine();
-        e.use_sent_store(Some(file.clone()));
-        e.use_screenshot_store(Some(dir.join("screenshots.json")));
-
-        assert!(!e.has_sent("Rusty Dagger"));
-        // A tick is not a send.
-        e.set_screenshot_mark("Rusty Dagger", true);
-        assert!(e.has_screenshot("Rusty Dagger"));
-        assert!(!e.has_sent("Rusty Dagger"), "a tick was mistaken for a send");
-
-        // Matched by identity rather than by the exact string: the reader
-        // hands over whatever the window said, and the list is the site's
-        // spelling.
-        e.set_sent("Rusty Dagger");
-        assert!(e.has_sent("rusty   DAGGER"), "not matched by identity");
-        // A grade is a roll of the same item, as with the marks next door.
-        assert!(e.has_sent("Rusty Dagger +2"));
-        // First spelling wins — the display name is not normalised, so a
-        // second send must not be able to rewrite it into a worse one.
-        e.set_sent("RUSTY   dagger");
-        assert_eq!(e.sent_marks(), vec!["Rusty Dagger".to_string()]);
-
-        // Unticking does not un-send: the picture is in the queue either way.
-        e.set_screenshot_mark("Rusty Dagger", false);
-        assert!(!e.has_screenshot("Rusty Dagger"));
-        assert!(e.has_sent("Rusty Dagger"), "unticking un-sent the reading");
-
-        let mut again = engine();
-        again.use_sent_store(Some(file));
-        assert!(again.has_sent("Rusty Dagger"), "the sent list did not survive a restart");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A tick is remembered by identity, not by the exact string that was
-    /// clicked — the overlay asks with the client's spelling and the tab asks
-    /// with the site's.
-    #[test]
-    fn screenshot_marks_ignore_case_and_grade() {
-        let dir = std::env::temp_dir().join(format!(
-            "eqlparserd-marks-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("screenshots.json");
-
-        let mut e = engine();
-        e.use_screenshot_store(Some(file.clone()));
-        assert!(!e.has_screenshot("Rusty Dagger"));
-        e.set_screenshot_mark("rusty   DAGGER", true);
-        assert!(e.has_screenshot("Rusty Dagger"));
-        // A grade is a roll of the same item, and only the base is ever
-        // offered, so both spellings have to land on the one mark.
-        assert!(e.has_screenshot("Rusty Dagger +2"));
-        // The display name is kept ungraded, so the list reads as item names.
-        e.set_screenshot_mark("Woven Skull Cap +1", true);
-        assert!(e.screenshot_marks().contains(&"Woven Skull Cap".to_string()));
-        // And re-ticking with a worse spelling does not rewrite it.
-        e.set_screenshot_mark("woven skull cap", true);
-        assert!(e.screenshot_marks().contains(&"Woven Skull Cap".to_string()));
-        e.set_screenshot_mark("RUSTY DAGGER", false);
-        assert!(!e.has_screenshot("Rusty Dagger"));
-
-        // And a tick survives a restart, which is the whole point of writing
-        // it down.
-        let mut again = engine();
-        again.use_screenshot_store(Some(file));
-        assert!(again.has_screenshot("woven skull cap"));
-        assert!(!again.has_screenshot("Rusty Dagger"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn loot_tally_aggregates_across_encounters() {
         let mut e = engine();
@@ -5657,31 +5339,27 @@ mod screenshot_notice_tests {
 
     const SHOT: &str = "[Fri Sep 04 14:18:33 2026] Taking a screenshot...";
 
-    #[test]
-    fn the_client_saying_it_took_a_picture_is_a_shot_to_read() {
-        let mut e = engine();
-        e.push_line(SHOT);
-        let got = e.shots_taken();
-        assert_eq!(got.len(), 1, "one line, one shot: {got:?}");
+    fn shots(e: &mut Engine) -> usize {
+        e.take_events()
+            .iter()
+            .filter(|ev| matches!(ev, eqlparser_api::Event::ScreenshotTaken { .. }))
+            .count()
     }
 
     #[test]
-    fn draining_the_queue_empties_it() {
-        // Two callers would each believe they had to handle every shot, and
-        // the second would re-read pictures the first already sent.
+    fn the_client_saying_it_took_a_picture_is_an_event() {
         let mut e = engine();
         e.push_line(SHOT);
-        assert_eq!(e.shots_taken().len(), 1);
-        assert!(e.shots_taken().is_empty(), "a drained shot came back");
+        assert_eq!(shots(&mut e), 1);
     }
 
     #[test]
-    fn a_shot_taken_before_we_caught_up_is_not_read() {
-        // The backlog is history. Reading it would send eqdb every item
-        // window photographed since the log began, on every daemon restart.
+    fn a_shot_taken_before_we_caught_up_is_not_announced() {
+        // The backlog is history: announcing it would have the collector
+        // read every window photographed since the log began.
         let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
         e.push_line(SHOT);
-        assert!(e.shots_taken().is_empty(), "a backlog shot was queued");
+        assert_eq!(shots(&mut e), 0, "a backlog shot was announced");
     }
 
     #[test]
@@ -5691,27 +5369,6 @@ mod screenshot_notice_tests {
         // The phrase in somebody's mouth is not the client announcing a file.
         e.push_line("[Fri Sep 04 14:18:34 2026] Tharn tells you, 'Taking a screenshot...'");
         e.push_line("[Fri Sep 04 14:18:35 2026] You say, 'Taking a screenshot...");
-        assert!(e.shots_taken().is_empty(), "a chat line was read as a shot");
-    }
-
-    #[test]
-    fn the_queue_keeps_the_newest_when_nothing_is_draining_it() {
-        let mut e = engine();
-        for i in 0..Engine::MOST_PENDING_SHOTS + 10 {
-            e.push_line(&format!(
-                "[Fri Sep 04 {:02}:{:02}:{:02} 2026] Taking a screenshot...",
-                14 + i / 3600,
-                (i / 60) % 60,
-                i % 60
-            ));
-        }
-        let got = e.shots_taken();
-        assert_eq!(got.len(), Engine::MOST_PENDING_SHOTS);
-        // Oldest dropped, not newest refused: the interesting picture is
-        // always the one just taken.
-        assert!(
-            got.windows(2).all(|w| w[0] <= w[1]),
-            "the queue is not in order: {got:?}"
-        );
+        assert_eq!(shots(&mut e), 0, "a chat line was read as a shot");
     }
 }

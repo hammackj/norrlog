@@ -6,11 +6,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-flate2 = { workspace = true }
 eqlparser-core = { path = "../eqlparser-core" }
 eqlparser-api = { path = "../eqlparser-api" }
-eqlparser-vision = { path = "../eqlparser-vision" }
-eqlparser-shot = { path = "../eqlparser-shot" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -27,10 +24,6 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 ksni = "0.3"
 
 [dev-dependencies]
-# For the one test that pins the blocked rule to the reader's own refusal.
-# Not a runtime dependency: the daemon reaches `held_reason` through
-# eqlparser-shot, which is the only thing that should be calling it.
-eqlparser-parse = { path = "../eqlparser-parse" }
 # To drive the whole router, middleware included, in tests.
 tower = { version = "0.5", features = ["util"] }
 eqlparser-client = { path = "../eqlparser-client" }

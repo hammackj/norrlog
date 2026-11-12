@@ -4,7 +4,6 @@
 //! API and the overlay page. The Electron GUI and OBS both talk to this one
 //! process, so there is a single source of truth for what is happening in game.
 
-mod archive;
 mod bundle;
 mod catchup;
 mod dumps;
@@ -14,8 +13,6 @@ mod locks;
 mod paths;
 mod record;
 mod server;
-mod shots;
-mod site;
 mod store;
 mod tail;
 #[cfg(target_os = "linux")]
@@ -63,14 +60,8 @@ struct Config {
     idle_exit: Option<u64>,
     /// The client's `Screenshots` folder, when it is not under `--game-dir`.
     shots: Option<PathBuf>,
-    /// Do not read screenshots at all, even where everything for it is here.
-    no_shots: bool,
     /// No tray icon: headless use, tests, a second daemon.
     no_tray: bool,
-    no_archive: bool,
-    archive_dry_run: bool,
-    /// Read what is already in the Screenshots folder, once, at startup.
-    backlog: bool,
     /// A previously accumulated item-id record to take on, once.
     adopt_item_ids: Option<PathBuf>,
     /// Read the log once, write the record's reports as JSON, and exit.
@@ -82,8 +73,6 @@ struct Config {
     logs: Vec<PathBuf>,
     /// Build the bundle from the record and write it here, then exit.
     bundle_out: Option<PathBuf>,
-    /// Build the bundle, say what sending it would do, send it, then exit.
-    send: bool,
     /// Whose rows these are, for this run. Falls back to the name on file.
     contributor: Option<String>,
 }
@@ -147,26 +136,13 @@ OPTIONS:
                        two-hour window means two hours of loot, kills and
                        encounters, not a lifetime of them. Durable history in
                        the database is unaffected.
-    --ocr <dir>        Accepted and ignored. Screenshots are read by this
-                       binary; there is no longer a Python tree to point at.
-                       Reading needs only a token, from $EQLDB_TOKEN or
-                       ~/.config/eqlparser/eqldb-token at mode 600, never from
-                       a flag: /proc/<pid>/cmdline is world-readable. With one
-                       set, every screenshot the client announces is read, and
-                       any item window in it that eqdb wants — or has never
-                       heard of — is sent to eqdb's review queue.
-    --shots <dir>      The client's Screenshots folder. Defaults to
-                       $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
-    --no-shots         Do not read screenshots, whatever else is configured.
+    --shots <dir>      The client's Screenshots folder, reported in /api/hello
+                       for the eqldb collector. Defaults to $EQL_SHOTS_DIR,
+                       else <game-dir>/Screenshots. This daemon reads none of
+                       it: --no-shots, --ocr, --no-archive, --archive-dry-run
+                       and --backlog are accepted and ignored.
     --no-tray          No tray icon (Linux). There is none anyway without a
                        D-Bus session; the daemon never needs one.
-    --no-archive       Read screenshots but leave them in the client's folder.
-    --archive-dry-run  Decide where every screenshot belongs and move none.
-    --backlog          Read what is already in the Screenshots folder, once, on
-                       startup, rather than only what arrives after it. Needs
-                       the archive on: filing is what empties the inbox, so
-                       without it the same folder would be re-read on every
-                       restart.
     --adopt-item-ids <file>
                        Fold a previously accumulated item-id record into this
                        machine's, sweep the game folder once, and exit without
@@ -178,17 +154,13 @@ OPTIONS:
     --bundle-out <file>
                        Parse, build the contribution bundle, print what
                        sending it would do to the site, write it here and
-                       exit. Follows nothing and opens no port.
-    --send             The same, and then send it to eqdb. Needs a token --
-                       see --ocr for where one is kept -- and a name, from
-                       --contributor or ~/.config/eqlparser/contributor.
-                       Refuses whatever the printed verdicts call unsafe,
-                       which is the same list the desktop app refuses on.
+                       exit. Follows nothing and opens no port. Sending is
+                       the eqldb collector's job.
 
-                       Both read *every* log they are given, not the newest:
-                       pass --log more than once, or --logs-dir on its own to
-                       read the whole folder. A bundle says what you know,
-                       and that is the union of your characters. The record
+                       Reads *every* log it is given, not the newest: pass
+                       --log more than once, or --logs-dir on its own to read
+                       the whole folder. A bundle says what you know, and
+                       that is the union of your characters. The record
                        accumulates in the same history the app uses, so a log
                        read today still counts after it has rotated away.
     --contributor <name>
@@ -230,13 +202,10 @@ ENDPOINTS:
     /api/events        Live typed events (WebSocket)
     /api/pickups       What you picked up since ?since= (log clock; default an hour)
     /api/bags          What the followed character's inventory dumps hold
+    /api/panels        Panels other apps put up for the overlay
     /api/bundle        The contribution bundle itself, for the collector to send
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
-    /api/shots/recent  What the screenshot reader made of the last few pictures
-    /api/items/held    What the site still wants that is in your bags right now
-    /api/bundle/preview  The contribution bundle, and what sending it would do
-    /api/bundle/send   Send it. Refuses whatever the preview calls unsafe.
     /api/encounters    Historical encounters (filter, search, paginate)
     /api/loot          Aggregated loot
     /ws                Live snapshot stream
@@ -339,16 +308,11 @@ fn parse_args() -> Config {
         exit_with_parent: false,
         idle_exit: None,
         shots: None,
-        no_shots: false,
         no_tray: false,
-        no_archive: false,
-        archive_dry_run: false,
-        backlog: false,
         adopt_item_ids: None,
         record_out: None,
         logs: Vec::new(),
         bundle_out: None,
-        send: false,
         contributor: None,
     };
     let mut saw_eqdb = false;
@@ -408,27 +372,30 @@ fn parse_args() -> Config {
                     cfg.eqdb.extend(split_origins(&u));
                 }
             }
-            // Gone: the reader is in this binary now and needs no tree
-            // beside it. Still swallowed, with its argument, so that a saved
-            // command line or a desktop launcher carrying it keeps working
-            // rather than dying on an unknown flag.
+            // Gone: screenshots are read and sent by the eqldb collector
+            // now. Still swallowed, with any argument, so a saved command
+            // line or launcher carrying one keeps working rather than dying
+            // on an unknown flag.
             "--ocr" => {
                 let _ = args.next();
+                eprintln!("[eqlparserd] --ocr is ignored: the eqldb collector reads screenshots");
+            }
+            "--no-shots" => {}
+            "--no-archive" | "--archive-dry-run" | "--backlog" => {
+                eprintln!("[eqlparserd] {a} is ignored: the eqldb collector reads and files screenshots");
+            }
+            "--send" => {
                 eprintln!(
-                    "[eqlparserd] --ocr is no longer used: screenshots are read by this \
-                     binary, not by a Python tree beside it"
+                    "[eqlparserd] --send is gone: the eqldb collector sends bundles. \
+                     --bundle-out <file> still writes one."
                 );
+                std::process::exit(2);
             }
             "--shots" => cfg.shots = args.next().map(PathBuf::from),
-            "--no-shots" => cfg.no_shots = true,
             "--no-tray" => cfg.no_tray = true,
-            "--no-archive" => cfg.no_archive = true,
-            "--archive-dry-run" => cfg.archive_dry_run = true,
-            "--backlog" => cfg.backlog = true,
             "--adopt-item-ids" => cfg.adopt_item_ids = args.next().map(PathBuf::from),
             "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
             "--bundle-out" => cfg.bundle_out = args.next().map(PathBuf::from),
-            "--send" => cfg.send = true,
             "--contributor" => cfg.contributor = args.next(),
             "--exit-with-parent" => cfg.exit_with_parent = true,
             "--idle-exit" => match args.next().and_then(|v| v.parse().ok()) {
@@ -491,7 +458,7 @@ async fn main() -> anyhow::Result<()> {
 
     // The one-shot a contributor runs. Above the identity line below because
     // it reads every log rather than one, and resolves its own.
-    if cfg.bundle_out.is_some() || cfg.send {
+    if cfg.bundle_out.is_some() {
         return bundle_once(&cfg).await;
     }
 
@@ -682,31 +649,6 @@ async fn main() -> anyhow::Result<()> {
 
     let itemdb = std::sync::Arc::new(crate::itemdb::ItemDb::new(cfg.eqdb.clone()));
 
-    // Reading screenshots is the one thing here that needs a second program
-    // and a credential, so it is the one thing that is off unless everything
-    // it needs is present. Whichever way that goes, it is said out loud: a
-    // feature that is silently not running is indistinguishable from one that
-    // is running and finding nothing.
-    let shots = shots::Shots::new(shots::Setup {
-        shots: cfg.shots.clone(),
-        game_dir: cfg.game_dir.clone(),
-        itemdb: std::sync::Arc::clone(&itemdb),
-        off: cfg.no_shots,
-        no_archive: cfg.no_archive,
-        archive_dry_run: cfg.archive_dry_run,
-        backlog: cfg.backlog,
-    });
-    if let Some(why) = shots.refused_backlog() {
-        eprintln!("[eqlparserd] {why}");
-    }
-    match shots.running() {
-        true => eprintln!("[eqlparserd] screenshots: {}", shots.why_running()),
-        false => eprintln!("[eqlparserd] screenshots: not read — {}", shots.why()),
-    }
-    // Spawned whether or not there is a reader right now: a token pasted into
-    // the settings box builds one, and something has to be watching for the
-    // shots it is then meant to read.
-    shots::spawn(Arc::clone(&shots), Arc::clone(&engine));
     if let Some(ids) = &ids {
         spawn_id_sweep(Arc::clone(ids), events.clone());
     }
@@ -772,7 +714,6 @@ async fn main() -> anyhow::Result<()> {
         events,
         store: history,
         itemdb,
-        shots,
         ids: ids.clone(),
         panels: Default::default(),
     };
@@ -796,7 +737,7 @@ async fn main() -> anyhow::Result<()> {
 /// same six answers, from the same lines, under the same file names the
 /// rebuild has always written. Nothing here opens the history database — this
 /// is a reading of one file, not a contribution to the record.
-/// Build the bundle from a person's own logs, and write it or send it.
+/// Build the bundle from a person's own logs, and write it.
 ///
 /// # Why this exists beside a daemon that already does it
 ///
@@ -807,10 +748,9 @@ async fn main() -> anyhow::Result<()> {
 /// happen on the machine serving the site rather than on the one that has the
 /// game installed.
 ///
-/// So this is the same three steps the button performs, with no window: parse
-/// what you have, say what sending it would do, send it. `--bundle-out`
-/// stops after the second, for somebody who would rather look first or has no
-/// token yet.
+/// So this parses what you have, says what sending it would do, and writes
+/// it. Sending is the eqldb collector's job; a written bundle can be handed
+/// to somebody who runs one.
 ///
 /// # Every log, not the newest one
 ///
@@ -940,7 +880,7 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
         // by hand, or mailed to somebody who will send it -- and the site
         // files a bundle under the digest of the bytes it received. Pretty
         // printing would give the same document a different id from the one
-        // `--send` produces, which is a difference nobody would look for.
+        // the collector sends, which is a difference nobody would look for.
         let json = serde_json::to_vec(&b)?;
         std::fs::write(out, &json).with_context(|| format!("writing {}", out.display()))?;
         eprintln!(
@@ -949,61 +889,6 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
             json.len().div_ceil(1024)
         );
     }
-    if !cfg.send {
-        if cfg.bundle_out.is_none() {
-            eprintln!("\n[eqlparserd] nothing written and nothing sent — pass --bundle-out <file> or --send");
-        }
-        return Ok(());
-    }
-
-    // The same refusal the endpoint makes, from the same list, so a bundle
-    // this says is unsafe cannot be sent by going round the window.
-    if !p.blocked.is_empty() {
-        for why in &p.blocked {
-            eprintln!("[eqlparserd] {why}");
-        }
-        anyhow::bail!("this bundle is not safe to send, so it was not sent");
-    }
-    let site = crate::site::Site::new(
-        cfg.eqdb
-            .first()
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_EQDB[0].to_string()),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let json = serde_json::to_vec(&b)?;
-    let body = crate::site::gzip(&json).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let sent_bytes = body.len();
-    let from: String = b
-        .contributor
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ' ' | '\''))
-        .take(60)
-        .collect();
-    eprintln!(
-        "\n[eqlparserd] sending {} rows to {} ({} KB gzipped)…",
-        p.rows,
-        site.base(),
-        sent_bytes.div_ceil(1024)
-    );
-    let reply = site
-        .post(
-            "/api/bundle",
-            reqwest::Body::from(body),
-            "application/octet-stream",
-            &[("X-Contributor", from.trim())],
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    eprintln!(
-        "[eqlparserd] filed{}. It is not ingested: somebody runs \
-         `deploy/worker.sh --bundles` on the server next.",
-        reply
-            .get("bundle_id")
-            .and_then(|v| v.as_str())
-            .map(|id| format!(" as {id}"))
-            .unwrap_or_default()
-    );
     Ok(())
 }
 
@@ -1518,17 +1403,12 @@ mod tests {
             exit_with_parent: false,
             idle_exit: None,
             shots: None,
-            no_shots: false,
-            no_tray: false,
-            no_archive: false,
-            archive_dry_run: false,
-            backlog: false,
+                no_tray: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
             bundle_out: None,
-            send: false,
-            contributor: None,
+                contributor: None,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -1549,17 +1429,12 @@ mod tests {
             exit_with_parent: false,
             idle_exit: None,
             shots: None,
-            no_shots: false,
-            no_tray: false,
-            no_archive: false,
-            archive_dry_run: false,
-            backlog: false,
+                no_tray: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
             bundle_out: None,
-            send: false,
-            contributor: None,
+                contributor: None,
         };
         assert!(resolve_log(&cfg).is_err());
     }

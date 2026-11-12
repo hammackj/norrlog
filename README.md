@@ -145,98 +145,25 @@ as a frameless, always-on-top, click-through desktop window.
 | `?idle=1` | Keep the last fight on screen between pulls |
 
 Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
-`auras`, `buffs`, `debuffs`, `motes`, `charm`, `sky`, `wanted`. Several hide
+`auras`, `buffs`, `debuffs`, `motes`, `charm`, `sky`, `apps`. Several hide
 themselves when they have nothing to say.
 
-`wanted` is the odd one out. It lists items you have looted in the **last
-hour** that eqldb is missing something about, in three kinds:
+`apps` draws panels that other programs put up through the daemon
+(`PUT /api/panels/{id}`). The eqldb collector's **Worth a picture** prompt is
+one: items you just looted, or are carrying, that eqldb is still missing
+something about. The daemon only stores a panel, and each lapses unless its
+app puts it again, so a closed app's panel goes on its own. `wanted`, the name
+from when the daemon drew that prompt itself, is accepted as `apps`.
 
-- **not on eqldb at all** — the site has never heard of it. These cannot appear
-  on the wanted list by construction, and are the most valuable of the three:
-  waiting for eqldb to ask means waiting for somebody else to loot it first.
-- **on the wanted list** — the site knows the item and is asking for a tooltip
-  or an icon. This is what the panel is for, so it outranks the third kind
-  however many of those there are.
-- **not known to drop here** — eqldb knows the item well, and has never been
-  shown it dropping in the zone you are standing in. Nothing needs
-  photographing; what is missing is a line on the item's map, and the only
-  person who can add it is whoever is in the zone. A whole zone nobody has
-  contributed turns every drop in it into one of these, which is why they sort
-  last and are the first to lose to the row cap.
+### eqldb: screenshots and bundles
 
-Each drop the wanted list does not name is checked against the site as it
-happens — one lookup answers both "has it heard of this" and "where has it seen
-it" — and a lookup that cannot reach the site is skipped rather than announced
-as a discovery. Neither claim is made without both halves: a pickup the log
-cannot place says nothing about zones, and neither does an item whose sources
-nobody has placed.
-
-Graded `+N` drops are never offered — a `+1` has its own tooltip, so a picture
-of one is not the picture being asked for. Anything auto-sold *is* offered,
-marked "click the chat link": the client writes a clickable item link as it
-sells, and that link opens the same tooltip. The **Screenshots** tab in the GUI shows the same list in full,
-grouped by zone, with the tickboxes that clear items off it. Its "Looted
-recently" group covers a day rather than an hour and re-asks while the tab is
-open, so it and the overlay never disagree about what is still worth a
-picture.
-
-### Reading the screenshots you take
-
-The list above says what is worth photographing. With the reader configured,
-taking the picture is the whole job: the daemon notices the shot, reads the
-item window out of it, and puts it in eqldb's review queue for a person to
-confirm.
-
-The client writes `Taking a screenshot...` to the character log in the same
-second it writes the file, and the daemon is already following that log — so
-there is no folder being polled and no watch on a wine-mapped mount. That line
-is also better evidence than a new file would be: it says *the game* took this
-picture, which a file appearing does not.
-
-What happens to each one:
-
-| | |
-|---|---|
-| eqldb is asking for the item | the window is sent to its review queue |
-| eqldb has never heard of the item | sent — a new item is what nobody can have asked for |
-| eqldb holds it and is not asking | not sent, and the daemon says which item it was |
-| the window is a graded `+N` copy | not sent; graded stats are derived from a base reading, so a `+4` is an output of that rule rather than an input to it |
-| no item window in the picture | nothing, beyond a line saying so |
-
-Nothing here decides anything. A sent window is `state = review` on eqldb and
-changes no item page; the ordinary verdict-and-publish path is still what
-carries a reading into the data.
-
-Three things have to be in place, and the daemon says at startup which one is
-not:
-
-- **`--ocr <dir>`** — the screenshot-reading tree, holding `ocr/oneshot.py`.
-  Defaults to `$EQL_OCR_DIR`, else `~/Pictures/eql-items`. The decoder is
-  Python and numpy; `eqlparserd` shells out to it rather than carrying its own
-  copy of a glyph matcher tuned against a thousand crops.
-- **`--shots <dir>`** — the client's `Screenshots` folder. Defaults to
-  `$EQL_SHOTS_DIR`, else `<game-dir>/Screenshots`.
-- **a token for eqldb** — paste one into **Settings → eqldb upload token**,
-  which is the easy way: eqldb issues them at *your account → Upload tokens*,
-  and the daemon writes what you paste to `~/.config/eqlparser/eqldb-token` at
-  mode 600 and switches the reader on without a restart. `$EQLDB_TOKEN` in the
-  daemon's environment wins over that file if it is set. Never a flag:
-  `/proc/<pid>/cmdline` is world-readable and the environment is not, so a
-  token passed as an argument is one every process on the machine can read. A
-  token file other accounts can read is refused, and the daemon says so.
-
-  The settings box is write-only. `POST /api/eqdb/token` takes a value and
-  `GET /api/shots/recent` says whether one is set and where it came from;
-  nothing hands the value back. Anything that can reach this API could already
-  read the file, but a credential that can only be *replaced* is one a stray
-  local page can break rather than steal.
-
-`--no-shots` turns it off whatever else is configured. `GET /api/shots/recent`
-says what it has done and, when it is off, which piece is missing — the strip
-at the top of the **Screenshots** tab draws that, with the last few outcomes
-under it. A reader that has been quietly off all session is the thing that
-strip exists to make visible, so "off" is a sentence there rather than an
-empty list.
+Contributing to eqldb is the **eqldb collector**'s job, a separate app that
+attaches to this daemon: it keeps the site's wanted list, reads the screenshots
+you take, sends readings and bundles, and holds the upload token. This daemon
+reads eqldb only for item tooltips and the Sky tab, and sends it nothing.
+What the collector reads from here is `/api/events` (a `ScreenshotTaken` event
+when the client writes `Taking a screenshot...`), `/api/pickups`, `/api/bags`
+and `/api/bundle`.
 
 ## Plane of Sky
 
@@ -278,22 +205,10 @@ program (`eqldb-logscan`) opening the same 161 MB file again.
 eqlparserd --log <log> --game-dir <dir> --record-out <dir>
 ```
 
-The **Bundle** tab shows what this daemon would upload, and — more to the
-point — what uploading it would do.
-
-That distinction is the whole design of the panel. An ingest does not merge a
-bundle: for every table the document declares a source for, it deletes the
-contributor's rows and writes the bundle's in their place. So a table carrying
-no rows is not a smaller contribution, it is a deletion, and from the outside
-it looks like a perfectly good bundle. The panel therefore reports verdicts
-rather than row counts, ordered by consequence, with the deletions lifted out
-above everything else.
-
-Two tables sit deliberately in **adds only**: markers and icons are each half
-this daemon's and half something else's — the eqmaps label store, and the
-screenshot matcher — so no source is declared for them and an ingest folds
-them in rather than clearing first. Undeclared is the safe state: a bundle
-that cannot clear a table cannot empty it.
+`GET /api/bundle` is the contribution bundle built from that record, which
+the collector previews and sends. `--bundle-out <file>` writes the same
+bundle with no window, and prints what an ingest of it would do to each table.
+See `crate::bundle` for why that is a set of verdicts rather than row counts.
 
 ## CLI tools
 
@@ -325,14 +240,13 @@ tools/import-eqtraders.py --reparse          # rebuild from the cache, no networ
 | `GET /api/encounters/:id` | Full breakdown for one fight |
 | `GET /api/loot` | Aggregated loot |
 | `GET /api/sky` | Plane of Sky quest progress, with eqldb's own record of the same quests alongside it — `?refresh=1` re-asks the site |
+| `GET /api/hello` | Who this daemon is, what it follows, and its API version |
+| `WS /api/events` | Typed live events: pickups, zoning, screenshots, inventory dumps |
+| `GET /api/pickups` · `/api/bags` | What you picked up (`?since=`), and what your inventory dumps hold |
+| `GET /api/bundle` | The contribution bundle, for the collector to preview and send |
+| `GET /api/panels` · `PUT`/`DELETE /api/panels/{id}` | Panels other apps put up for the overlay |
 | `GET /api/item-brief` | Icons, site slugs and "does eqldb know this" for a batch of items — `?names=` `\|`-separated |
-| `GET /api/wanted` | Items the companion site still needs a screenshot of, each flagged with whether you have ticked it off — `?refresh=1` re-asks the site |
-| `POST /api/wanted/mark` | `{item, have}` — tick an item off the screenshot list, or untick it |
-| `GET /api/wanted/recent` | Of those, what you have looted lately and could still photograph — `?window=` seconds (default an hour), `?limit=` rows |
-| `GET /api/bundle/preview` | The contribution bundle this daemon would send, and what an ingest of it would do to each of the site's tables |
 | `GET /api/bundle/contributor` · `POST` | `{contributor}` — the name your rows are filed under on the site. Kept here rather than taken from the upload token |
-| `GET /api/shots/recent` | What the screenshot reader made of the last few pictures, and whether it is running at all |
-| `POST /api/eqdb/token` | `{token}` — keep an eqldb upload token and start using it; an empty one removes it. Write-only: nothing reads it back |
 | `GET /api/items` | Item database: recipes, drop sources, prices, combine counts |
 | `GET /api/drops` | What dropped from what, with the kills behind each count |
 | `GET /api/classes` | Detected classes with evidence |
