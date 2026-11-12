@@ -903,18 +903,18 @@ impl LootQuery {
     }
 }
 
-async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<serde_json::Value> {
+async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<eqlparser_api::LootList> {
     let engine = s.engine.locked("engine");
     let start = engine.session_start();
-    let tally = engine.loot_tally_since(q.session().then_some(start));
-    Json(serde_json::json!({
-        "total": tally.len(),
-        "items": tally,
+    let items = engine.loot_tally_since(q.session().then_some(start));
+    Json(eqlparser_api::LootList {
+        total: items.len(),
+        items,
         // Always reported, so the UI can label the session without a second
         // request and can say when it began even while showing everything.
-        "session_start": start,
-        "session_coin_copper": engine.session_coin(),
-    }))
+        session_start: start,
+        session_coin_copper: engine.session_coin(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -3261,6 +3261,32 @@ mod tests {
         assert_eq!(v["encounters"][0]["title"], "a lesser mummy");
     }
 
+    /// The item card reads this through the API crate's types. With the site
+    /// unreachable a bundled item still has a card, graded drops fold onto
+    /// it, and a name nothing knows is `unknown`.
+    #[tokio::test]
+    async fn item_lookup_matches_the_api_type() {
+        let s = state_with(&[]);
+        let ask = |name: &str| {
+            let mut q = std::collections::HashMap::new();
+            q.insert("name".to_string(), name.to_string());
+            Query(q)
+        };
+        let resp = item_lookup(State(s.clone()), ask("Adamantium Earring +2")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+        let d: eqlparser_api::ItemLookup = serde_json::from_slice(&body).expect("lookup matches the API type");
+        assert_eq!(d.source, "bundled");
+        assert_eq!(d.name, "Adamantium Earring");
+        let w = d.wiki.expect("the bundled copy");
+        assert!(w.icon.unwrap().starts_with("data:image/png;base64,"));
+        assert!(w.stats.unwrap().contains("Slot: EAR"));
+
+        let resp = item_lookup(State(s), ask("Nothing Anyone Has Heard Of")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+        let d: eqlparser_api::ItemLookup = serde_json::from_slice(&body).unwrap();
+        assert_eq!(d.source, "unknown");
+    }
+
     /// The spell card reads this through the API crate's types. The site is
     /// unreachable here, so the card is the spell file's alone; a name the
     /// file does not know is `unknown`, which draws no card.
@@ -3337,8 +3363,8 @@ mod tests {
     async fn loot_endpoint_aggregates() {
         let s = state_with(SAMPLE);
         let Json(v) = loot(State(s), Query(LootQuery { session: None })).await;
-        assert_eq!(v["total"], 1);
-        assert_eq!(v["items"][0]["item"], "Mummy Wrap");
+        assert_eq!(v.total, 1);
+        assert_eq!(v.items[0].item, "Mummy Wrap");
     }
 
     /// The site writes a requirement as one string with the source in

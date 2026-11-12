@@ -360,6 +360,195 @@ pub use eqlparser_core::encounter::{
 /// `GET /api/procs`: how often each proc fired, per minute of combat.
 pub use eqlparser_core::procs::{ProcKind, ProcReport, ProcRow};
 
+// ---------------------------------------------------------------------------
+// Loot: `GET /api/loot[?session=1]` and `GET /api/loot/item?item=…`. Moved
+// here from the daemon's engine, which writes them.
+
+/// `GET /api/loot`, every item or (`?session=1`) this session's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LootList {
+    pub total: usize,
+    pub items: Vec<LootTally>,
+    /// When the current session began, in the log's clock; 0 before one has.
+    /// Always reported, so a client can label the session from either list.
+    pub session_start: i64,
+    pub session_coin_copper: u64,
+}
+
+/// Everything the log can say about one item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LootDetail {
+    pub item: String,
+    /// Items received. A stack of five counts as five.
+    pub total: u64,
+    /// Times it dropped. A stack of five counts as one.
+    pub drops: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    /// Who dropped it, most drops first.
+    pub sources: Vec<LootSource>,
+    /// Where it dropped: (zone, drops).
+    pub zones: Vec<(String, u64)>,
+    pub kept: u64,
+    pub sold: u64,
+    pub stored: u64,
+    pub transmuted: u64,
+    /// Sale proceeds across every time it was auto-sold.
+    pub sold_total_copper: u64,
+    pub sales: u64,
+    pub best_sale_copper: u64,
+    /// What a merchant charged you for one, if you ever bought it. Lets a drop
+    /// be valued at replacement cost rather than only at what a vendor pays.
+    pub buy_price_copper: Option<u64>,
+    /// Stack sizes it arrived in: (size, times). Anything other than a single
+    /// `(1, n)` means the item stacks, which is worth seeing.
+    pub stacks: Vec<(u64, u64)>,
+}
+
+/// One creature's record of dropping an item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LootSource {
+    pub mob: String,
+    /// Times this creature dropped it.
+    pub drops: u64,
+    /// Items received from it in total.
+    pub quantity: u64,
+    /// Times this creature died in a fight of yours — the denominator.
+    pub kills: u64,
+    /// `drops / kills`. Only meaningful with a denominator to divide by, so it
+    /// is `None` when no kill of this creature was observed, rather than a
+    /// fabricated 100%.
+    pub rate: Option<f64>,
+    pub zones: Vec<String>,
+    pub last: i64,
+}
+
+/// A looted item aggregated across the log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LootTally {
+    pub item: String,
+    pub count: u64,
+    pub sources: Vec<String>,
+    pub last_seen: i64,
+    pub sold_total_copper: u64,
+    /// How many of this item met each fate. The same item is routinely both
+    /// kept and auto-sold across a log, so this is a breakdown rather than a
+    /// single verdict.
+    pub kept: u64,
+    pub sold: u64,
+    pub stored: u64,
+    pub transmuted: u64,
+    /// Containers it was auto-routed into.
+    pub stored_in: Vec<String>,
+    /// Items it was combined into on pickup.
+    ///
+    /// Kept apart from `stored_in` because the two are different facts that
+    /// happen to share a field in the log line: "Dragon Hoard" is where an
+    /// item sits, "Whitened Treant Fists +2" is what it became. Two items in
+    /// this log met both fates, and merging them read as nonsense.
+    pub transmuted_into: Vec<String>,
+}
+
+
+// ---------------------------------------------------------------------------
+// `GET /api/item?name=…`: an item's hover card. eqdb's answer and the copy
+// bundled in the daemon ride together, and a card prefers eqdb field by
+// field. Read leniently, as the spell card is: eqdb's reply is passed
+// through untouched.
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ItemLookup {
+    /// The name asked about, graded `+N` folded off.
+    #[serde(default)]
+    pub name: String,
+    /// `eqdb`, `bundled` or `unknown` (no card).
+    #[serde(default)]
+    pub source: String,
+    /// The eqdb origin the daemon is set to use; absent when the lookup is off.
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub eqdb: Option<EqdbItemPage>,
+    #[serde(default)]
+    pub wiki: Option<WikiItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EqdbItemPage {
+    #[serde(default)]
+    pub matches: Vec<EqdbItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EqdbItem {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub icon: Option<SpriteIcon>,
+    #[serde(default)]
+    pub stats: Option<EqdbItemStats>,
+    /// Lists whose entries name an npc, a merchant or an item depending on
+    /// the list; kept loose and read by [`EqdbItem::named`].
+    #[serde(default)]
+    pub sources: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub vendors: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub rewarded_by: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub used_in: Vec<serde_json::Value>,
+}
+
+impl EqdbItem {
+    /// What an entry in one of the lists is called: the npc for a drop, the
+    /// merchant for a vendor, the name for a quest or recipe.
+    pub fn named(v: &serde_json::Value) -> String {
+        for k in ["npc", "merchant", "name"] {
+            if let Some(s) = v.get(k).and_then(|s| s.as_str()) {
+                return s.to_string();
+            }
+        }
+        v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
+    }
+}
+
+/// One cell of an icon sheet, served by `/api/item-icon?path=…`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpriteIcon {
+    pub path: String,
+    /// The cell's offset into the sheet, as CSS writes it: zero or negative.
+    pub x: i32,
+    pub y: i32,
+    #[serde(default = "icon_cell")]
+    pub size: u32,
+}
+
+fn icon_cell() -> u32 {
+    40
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EqdbItemStats {
+    /// Stat name to value, in the site's order.
+    #[serde(default)]
+    pub stats: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The copy bundled in the daemon (`/api/wiki` holds them all).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WikiItem {
+    #[serde(default)]
+    pub name: String,
+    /// A `data:image/png;base64,…` URI.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// The game client's own tooltip text.
+    #[serde(default)]
+    pub stats: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// The 16 classes, in the order the spell file lists their levels.
 pub use eqlparser_core::class::{CLASS_CANNOT_CAST, Class};
 
