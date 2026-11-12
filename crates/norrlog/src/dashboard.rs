@@ -14,7 +14,7 @@ use crate::api::Api;
 use crate::fight::{Metric, metric, plain_meter};
 use crate::format::{dur, num, now_log, until, when};
 use crate::item_tip::ItemCards;
-use crate::parts::{band, fill, hint, note, ROW, ROW_YOU};
+use crate::parts::{band, fill, hint, note, BarAnim, ROW, ROW_YOU};
 use crate::table::tag;
 use crate::theme::*;
 use eqlparser_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
@@ -50,6 +50,8 @@ enum Pane {
 
 pub struct DashboardView {
     api: Option<Api>,
+    /// The meter's bars, eased between snapshots.
+    bars: std::cell::RefCell<BarAnim>,
     scope: Scope,
     pane: Pane,
     /// Whether a snapshot has arrived yet: before one, the panes say
@@ -76,6 +78,7 @@ impl DashboardView {
             api: None,
             scope: Scope::Fight,
             pane: Pane::Damage,
+            bars: Default::default(),
             seen: false,
             current: None,
             session: None,
@@ -297,9 +300,9 @@ impl DashboardView {
                     dur(e.duration as f64)
                 );
                 let body = match self.pane {
-                    Pane::Damage => plain_meter(&e.meter, "No damage recorded"),
-                    Pane::Healing => metric(&e.meter, Metric::Healing, "No healing yet"),
-                    Pane::Taken => metric(&e.meter, Metric::Taken, "No damage taken"),
+                    Pane::Damage => plain_meter(&e.meter, "No damage recorded", Some(&mut self.bars.borrow_mut())),
+                    Pane::Healing => metric(&e.meter, Metric::Healing, "No healing yet", Some(&mut self.bars.borrow_mut())),
+                    Pane::Taken => metric(&e.meter, Metric::Taken, "No damage taken", Some(&mut self.bars.borrow_mut())),
                 };
                 (
                     h_flex().gap_3().items_baseline().flex_wrap().child(title).child(div().text_color(hex(MUTED)).child(meta)),

@@ -14,6 +14,7 @@ use eqlparser_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, Met
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use crate::theme::px;
+use crate::parts::BarAnim;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
 use std::collections::{HashMap, HashSet};
@@ -97,7 +98,7 @@ impl EncountersView {
         meter_card = meter_card.child(crit_breakdown(&s.meter, s.duration));
 
         let healing = {
-            let mut c = card("Healing").child(metric(&s.meter, Metric::Healing, "No healing in this fight"));
+            let mut c = card("Healing").child(metric(&s.meter, Metric::Healing, "No healing in this fight", None));
             if let Some(t) = you.and_then(heal_spells) {
                 c = c.child(div().mt_2().child(t));
             }
@@ -129,7 +130,7 @@ impl EncountersView {
             )
             .children(crate::charts::dps_card(e, s))
             .child(split(meter_card, self.damage_panes(you, &s.outgoing_groups, cx)))
-            .child(split(healing, card("Damage taken").child(metric(&s.meter, Metric::Taken, "Nobody took damage"))))
+            .child(split(healing, card("Damage taken").child(metric(&s.meter, Metric::Taken, "Nobody took damage", None))))
             .child(crate::charts::timeline_card(e, s));
 
         if s.mobs.len() >= 2 {
@@ -309,6 +310,11 @@ fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
 /// A meter row: a bar `share` wide behind a name and its numbers, the
 /// renderer's `.row` with its `::before`.
 fn bar(share: f64, color: Hsla) -> Div {
+    bar_with(div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(color).into_any_element())
+}
+
+/// A bar row around a fill already built, such as `BarAnim`'s eased one.
+fn bar_with(fill: AnyElement) -> Div {
     h_flex()
         .relative()
         .justify_between()
@@ -318,7 +324,15 @@ fn bar(share: f64, color: Hsla) -> Div {
         .rounded(px(5.))
         .bg(hex(PANEL_2))
         .overflow_hidden()
-        .child(div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(color))
+        .child(fill)
+}
+
+/// The fill for a row: eased by `anim` when given one, else drawn at its width.
+fn fill_for(anim: &mut Option<&mut BarAnim>, key: String, share: f64, color: Hsla) -> AnyElement {
+    match anim {
+        Some(a) => a.fill(key, share.clamp(0., 1.) as f32, color),
+        None => div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(color).into_any_element(),
+    }
 }
 
 /// A table row with the ability-table bar behind it, `share` of the whole.
@@ -381,7 +395,7 @@ pub(crate) enum Metric {
 /// The dashboard's damage meter: `meterHtml(enc.meter)` with no actor map,
 /// so no drill-down and no hover on the rows, but the same pet folding and
 /// the same `2+` tag as the Encounters detail.
-pub(crate) fn plain_meter(meter: &[MeterRow], empty_text: &'static str) -> Div {
+pub(crate) fn plain_meter(meter: &[MeterRow], empty_text: &'static str, mut anim: Option<&mut BarAnim>) -> Div {
     let rows = fold_pets(meter.iter().filter(|r| r.damage > 0).cloned().collect());
     if rows.is_empty() {
         return empty(empty_text);
@@ -406,12 +420,12 @@ pub(crate) fn plain_meter(meter: &[MeterRow], empty_text: &'static str) -> Div {
             .child(muted(format!("{:.0}% crit", r.crit_rate * 100.)))
             .child(muted(num(Some(r.damage as f64))))
             .child(div().min_w(px(52.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(num(Some(r.dps))));
-        bar(r.share, side_bar(&r)).child(name).child(nums)
-    }))
+        bar_with(fill_for(&mut anim, format!("dmg-{}", r.key), r.share, side_bar(&r))).child(name).child(nums)
+    }).collect::<Vec<_>>())
 }
 
 /// `metricHtml`: one row set, filtered and sorted per metric.
-pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str) -> Div {
+pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str, mut anim: Option<&mut BarAnim>) -> Div {
     let value = |r: &MeterRow| match m {
         Metric::Healing => r.healing,
         Metric::Taken => r.damage_taken,
@@ -432,10 +446,11 @@ pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str) ->
                 h_flex().gap_1().font_weight(FontWeight::SEMIBOLD).child(num(Some(rate))).child(muted("hps")),
             );
         }
-        bar(share, side_bar(r))
+        let pane = if matches!(m, Metric::Healing) { "heal" } else { "taken" };
+        bar_with(fill_for(&mut anim, format!("{pane}-{}", r.key), share, side_bar(r)))
             .child(div().font_weight(FontWeight::MEDIUM).text_color(hex(side_name(r))).child(r.name.clone()))
             .child(nums)
-    }))
+    }).collect::<Vec<_>>())
 }
 
 /// `outgoingPaneHtml`: your damage grouped by mechanism, or the flat list

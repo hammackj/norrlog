@@ -159,3 +159,38 @@ pub fn band(title: &str, note: &str) -> Div {
         .child(div().text_sm().text_color(hex(MUTED)).child(note.to_string()))
         .child(div().flex_1().h(px(1.)).bg(hex(BORDER)))
 }
+
+/// Meter bars that ease to a new width over 220 ms, as the Electron
+/// dashboard's `transition: width` does, rather than jumping.
+///
+/// Each row remembers where its bar was heading; a new target starts an
+/// animation (keyed by the target, so GPUI restarts it) from the old one.
+#[derive(Default)]
+pub struct BarAnim {
+    rows: std::collections::HashMap<String, (f32, f32)>,
+}
+
+impl BarAnim {
+    pub fn fill(&mut self, key: String, to: f32, color: Hsla) -> AnyElement {
+        // Rows come and go with every fight; a long session must not keep
+        // every one it has seen.
+        if self.rows.len() > 400 {
+            self.rows.clear();
+        }
+        let e = self.rows.entry(key.clone()).or_insert((to, to));
+        if e.1 != to {
+            *e = (e.1, to);
+        }
+        let (from, to) = *e;
+        let d = div().absolute().top_0().bottom_0().left_0().bg(color);
+        if from == to {
+            return d.w(relative(to)).into_any_element();
+        }
+        d.with_animation(
+            SharedString::from(format!("bar-{key}-{}", to.to_bits())),
+            Animation::new(std::time::Duration::from_millis(220)).with_easing(ease_in_out),
+            move |d, t| d.w(relative(from + (to - from) * t)),
+        )
+        .into_any_element()
+    }
+}
