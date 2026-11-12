@@ -436,36 +436,6 @@ async fn encounters(
     Json(serde_json::json!({ "total": total, "offset": offset, "encounters": page }))
 }
 
-/// One creature within one fight.
-///
-/// A fight is bounded by lulls, not by opponents, so a pull arrives as a
-/// single encounter with "+N more" in its title. That is the right unit for a
-/// meter — your damage over a pull is one number — and the wrong one for
-/// "how did I do against a skeletal monk", which is what this answers.
-#[derive(Debug, Clone, serde::Serialize)]
-struct MobRow {
-    /// The fight it belongs to, so a row still opens the whole encounter.
-    encounter_id: u64,
-    name: String,
-    zone: Option<String>,
-    start: i64,
-    /// The *fight's* duration. A creature inside a pull has no clock of its
-    /// own: the log records when an actor last acted but never when it first
-    /// did, and the timeline does not name targets. Reporting a share of the
-    /// fight's seconds as "its" duration, or dividing damage by it to make a
-    /// per-mob DPS, would be inventing the denominator. `shared_with` says
-    /// how far off the fight's own figures are instead.
-    duration: i64,
-    build: String,
-    difficulty: u8,
-    damage_done_to_it: u64,
-    damage_it_did: u64,
-    kills: u32,
-    loot: usize,
-    resists: u64,
-    /// Other creatures in the same fight. 0 means this row *is* the fight.
-    shared_with: usize,
-}
 
 /// The historical browser, one row per creature instead of per fight.
 ///
@@ -477,7 +447,7 @@ async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<ser
     let search = q.search.map(|v| v.to_lowercase());
     let zone = q.zone.map(|v| v.to_lowercase());
 
-    let mut rows: Vec<MobRow> = Vec::new();
+    let mut rows: Vec<eqlparser_api::MobRow> = Vec::new();
     for e in engine.encounters().iter().rev() {
         if let Some(z) = &zone {
             if !e
@@ -528,7 +498,7 @@ async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<ser
         }
         let shared_with = per_mob.len().saturating_sub(1);
         for m in wanted {
-            rows.push(MobRow {
+            rows.push(eqlparser_api::MobRow {
                 encounter_id: e.id,
                 name: m.name.clone(),
                 zone: e.zone.clone(),
@@ -550,7 +520,7 @@ async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<ser
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(100).min(1000);
     let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
-    Json(serde_json::json!({ "total": total, "offset": offset, "mobs": page }))
+    Json(serde_json::to_value(eqlparser_api::MobPage { total, offset, mobs: page }).unwrap_or_default())
 }
 
 /// Export chosen fights as a write-up.

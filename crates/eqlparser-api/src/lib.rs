@@ -268,3 +268,81 @@ pub struct DaemonLogLine {
     pub seq: u64,
     pub text: String,
 }
+
+// ---- Encounters -----------------------------------------------------------
+
+/// `GET /api/encounters`: one page of fights, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EncounterPage {
+    /// Fights matching the filters, of which this is `offset..`.
+    pub total: usize,
+    pub offset: usize,
+    pub encounters: Vec<EncounterBrief>,
+}
+
+/// A fight as the list shows it. The daemon sends more (meters, tick series
+/// and the like, empty in a list); a client reading a list needs only this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EncounterBrief {
+    pub id: u64,
+    /// Named after whichever creature took the most damage; the rest are
+    /// "+N more".
+    pub title: String,
+    /// Everything fought, hardest-hit first: what `title` hides, and what
+    /// `search` matches.
+    #[serde(default)]
+    pub opponents: Vec<String>,
+    pub zone: Option<String>,
+    pub start: i64,
+    pub end: i64,
+    pub duration: i64,
+    /// Both sides' damage, so not a meter's headline.
+    pub total_damage: u64,
+    pub damage_to_enemies: u64,
+    pub your_damage: u64,
+    pub your_dps: f64,
+    pub your_healing: u64,
+    pub your_damage_taken: u64,
+    pub your_deaths: u64,
+    pub kills: usize,
+    pub loot_count: usize,
+    pub coin_copper: u64,
+    /// The class trio active at the time, e.g. "WAR/DRU/BRD".
+    pub build: String,
+    /// Instance tier from the zone name: 0 open world to 4 Refined.
+    pub difficulty: u8,
+}
+
+/// `GET /api/mobs`: the same history, one row per creature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MobPage {
+    pub total: usize,
+    pub offset: usize,
+    pub mobs: Vec<MobRow>,
+}
+
+/// One creature within one fight: "how did I do against a skeletal monk".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MobRow {
+    /// The fight it belongs to, so a row still opens the whole encounter.
+    pub encounter_id: u64,
+    pub name: String,
+    pub zone: Option<String>,
+    pub start: i64,
+    /// The *fight's* duration. A creature inside a pull has no clock of its
+    /// own: the log records when an actor last acted but never when it first
+    /// did, and the timeline does not name targets. Reporting a share of the
+    /// fight's seconds as "its" duration, or dividing damage by it to make a
+    /// per-mob DPS, would be inventing the denominator. `shared_with` says
+    /// how far off the fight's own figures are instead.
+    pub duration: i64,
+    pub build: String,
+    pub difficulty: u8,
+    pub damage_done_to_it: u64,
+    pub damage_it_did: u64,
+    pub kills: u32,
+    pub loot: usize,
+    pub resists: u64,
+    /// Other creatures in the same fight. 0 means this row *is* the fight.
+    pub shared_with: usize,
+}

@@ -5129,6 +5129,30 @@ mod tests {
         );
     }
 
+    /// The list a client reads (`eqlparser_api::EncounterBrief`) is a subset
+    /// of what the daemon sends; this is what keeps it one.
+    #[test]
+    fn an_encounter_summary_reads_as_the_api_list_row() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a rat for 10 points of damage.",
+                "[Tue Jul 28 14:00:03 2026] You slash a rat for 12 points of damage.",
+                "[Tue Jul 28 14:00:04 2026] You have slain a rat!",
+                "[Tue Jul 28 14:00:05 2026] --You have looted a Rat Ear from a rat's corpse.--",
+                "[Tue Jul 28 15:00:00 2026] You slash a bat for 10 points of damage.",
+            ],
+        );
+        let enc = e.encounters().first().expect("a fight");
+        let wire = serde_json::to_value(e.summarise(enc, false)).unwrap();
+        let brief: eqlparser_api::EncounterBrief = serde_json::from_value(wire).expect("decodes as the API type");
+        assert_eq!(brief.title, "a rat");
+        assert_eq!(brief.your_damage, 22);
+        assert_eq!(brief.kills, 1);
+        assert_eq!(brief.loot_count, 1);
+    }
+
     #[test]
     fn now_uses_last_log_time_when_not_live() {
         let mut e = engine();
