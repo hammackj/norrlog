@@ -869,7 +869,18 @@ static RULES: &[(RuleId, &str)] = &[
     (RuleId::SystemAutoAttack, r"^Auto attack is (?:on|off)\.$"),
     (
         RuleId::SystemMessage,
-        r"^(?:You cannot see your target|Your target is too far away, get closer|You already have your target's attention|You must first select a target for this spell|You must first click on the being you wish to attack|You can't cast spells while stunned|Your attempt to disarm failed|You can't use that command right now\.\.\.|You regain your concentration and continue your casting|Your spell fizzles|Insufficient Mana to cast this spell|You cannot use this ability right now|LOADING, PLEASE WAIT\.\.\.|Making all existing corpses visible|It will take you about \d+ seconds to prepare your camp|You abandon your preparations to camp)[.!]?$",
+        r"^(?:You cannot see your target|Your target is too far away, get closer|You already have your target's attention|You must first select a target for this spell|You must first click on the being you wish to attack|You can't cast spells while stunned|Your attempt to disarm failed|You can't use that command right now\.\.\.|You regain your concentration and continue your casting|Your spell fizzles|Insufficient Mana to cast this spell|You cannot use this ability right now|LOADING, PLEASE WAIT\.\.\.|Making all existing corpses visible|It will take (?:you )?about \d+ (?:more )?seconds to prepare your camp|You abandon your preparations to camp)[.!]?$",
+    ),
+    // Client chatter with nothing in it.
+    //
+    // Swept up rather than left unknown so the unknown count keeps meaning
+    // "a line the parser should have understood". Every one of these was read
+    // off a real log; the list grows by reading, not by guessing, which is why
+    // it is spelled out rather than reduced to a loose pattern that would
+    // quietly swallow the next line worth having.
+    (
+        RuleId::SystemMessage,
+        r"^(?:Taking a screenshot\.\.\.|Reading UI data from UIFiles\\[A-Za-z0-9_]+ directory\.\.\.|Outputfile Complete: .+|You are not currently assigned to an adventure|You no longer have a target|Right click on the NPC to consider it|Right click on yourself to bring up your own inspect window\..*|Logging to '[^']*' is now \*(?:ON|OFF)\*|Players in EverQuest(?: Legends)?:|-{5,}|There (?:is|are) \d+ players? in EverQuest(?: Legends)?|You are (?:now|no longer) roleplaying|You are (?:now|no longer) A\.F\.K\. \(Away From Keyboard\)|That is not a valid command\.  Please use /help|Attempting to auto-grant AAs\.\.\.|You have \d+ overflow items available\. Type /itemoverflow to view them|You cannot perform that action right now\. Please try again in a moment|You are encumbered|You are too far away from .+? to trade|You have enabled the spell auto-grant\..*|You already have scribed the Spell: .+? in your book|This item (?:is in your bank|does not have a stat buff))[.!]?$",
     ),
 ];
 
