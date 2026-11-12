@@ -6,7 +6,7 @@
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
  *                                 incoming, auras, buffs, debuffs, motes,
- *                                 charm, sky, wanted, apps
+ *                                 charm, sky, apps (wanted is an alias)
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -107,9 +107,6 @@
     charmPanel: document.getElementById("charm-panel"),
     charmMeta: document.getElementById("charm-meta"),
     charmRows: document.getElementById("charm-rows"),
-    wantedPanel: document.getElementById("wanted-panel"),
-    wantedMeta: document.getElementById("wanted-meta"),
-    wantedRows: document.getElementById("wanted-rows"),
     appPanels: document.getElementById("app-panels"),
     skyPanel: document.getElementById("sky-panel"),
     skyMeta: document.getElementById("sky-meta"),
@@ -419,248 +416,23 @@
     setInterval(pollSky, SKY_POLL_MS);
   }
 
-  /* Items worth photographing.
-
-     The companion site publishes the items it still has no tooltip or icon
-     for. Cross-referenced against what you have just looted, that list becomes
-     a prompt: this thing in your bags is one nobody has a picture of, take one
-     before it is sold.
-
-     Two rules make it usable rather than noise, and both live in the daemon:
-
-     - Only the last hour counts. Loot from this morning has been sold, banked
-       or destroyed by now, and a panel listing things you no longer have is a
-       panel you stop reading. It is a reminder about what is in your bags, not
-       a history.
-     - Graded drops do not count. A `+1` has its own tooltip, so a picture of
-       one is not a picture of the item the site is missing.
-
-     Three kinds of row, and the last two are the point of the first being
-     cheap to check. An item on eqldb's wanted list is one the site knows about
-     and has no picture of. An item the site has never heard of at all cannot
-     be on that list by construction, and is the most valuable of the three:
-     waiting for eqldb to ask for it means waiting for somebody else to loot it
-     first. Those are asked about one at a time as they drop, and drawn in the
-     enemy colour so they do not read as more of the same.
-
-     The third is an item eqldb knows well but has never seen drop where you
-     are standing. Nobody is asking for it — its page is finished — and the
-     only person who can tell the site it drops here is whoever is here. Same
-     colour as a discovery, since it is the same kind of fact: something only
-     you currently know.
-
-     Capped at five rows. This sits over the game and competes with it for
-     screen; anything longer is a list, and a list belongs in the window.
-     Whatever is left over is counted in the header rather than dropped
-     silently.
-
-     Polled on its own timer like the other list panels — the snapshot goes out
-     on every log line and a work queue has no business riding along. Twelve
-     seconds is well inside the time it takes to loot the next corpse. */
-  const WANTED_POLL_MS = 12000;
-  const WANTED_ROWS = 5;
-  const WANTED_WINDOW = 3600;
-
-  /* And what is already in your bags, which is the same prompt with the clock
-     taken off it.
-
-     The hour above is what makes the pickups usable, and it is also what makes
-     them run out: on a quiet evening nothing has dropped and the panel is
-     empty, while the same bags hold a hundred and twenty-six items eqldb has
-     no picture of. Those do not expire, nobody is going to loot them for you,
-     and the only reason they were invisible here is that the site's own list
-     is ordered by how often a thing drops --- which scattered them from row 3
-     to row 1,714 of a 1,719-row list.
-
-     Three filters, all of them the same rule the pickups already follow:
-
-     - Nothing blocked. eqldb missing an item's *base* facts is not answered by
-       the `+3` in your bag, whose window states the graded item's numbers ---
-       the same reason a graded drop is never offered above.
-     - Nothing ticked, and nothing already sent up. This panel has no tickbox,
-       so a row it keeps offering after you have photographed it is a row that
-       teaches you to stop reading the panel.
-     - The pickups win a tie. An item that is both just-looted and in your bags
-       is drawn once, as a pickup, because that row carries the fact that it
-       may be about to be sold.
-
-     On the pickups' clock, not a slower one of its own. This first shipped at
-     sixty seconds on the theory that the underlying facts --- what is in your
-     bags --- only change when a dump lands, a few times an evening. That is
-     true of the bags and false of the panel: the *marks* change the moment the
-     reader finishes a picture, and a minute of an overlay still asking for the
-     item you just photographed is the whole of hammackj's "it still needs to
-     check them off". Measured rather than assumed the second time: the answer
-     costs the daemon 7ms, which is nothing next to the twelve-second tick it
-     now rides. */
-  let heldOffer = [];
-  let heldTotal = 0;
-  /* Whose bags. Said on the panel because the evening this shipped without it,
-     it was offering another character's dump and nothing on screen said so. */
-  let heldWho = "";
-
-  async function pollHeld() {
-    if (!opt.panels.includes("wanted")) return;
-    try {
-      const r = await fetch("/api/items/held");
-      if (!r.ok) return;
-      const d = await r.json();
-      if (!Array.isArray(d.items)) return;
-      heldOffer = d.items.filter((i) => !i.blocked && !i.have && !i.sent);
-      heldTotal = heldOffer.length;
-      heldWho = d.character || "";
-    } catch (e) {
-      /* daemon busy or restarting; the last answer stands until next tick */
-    }
-  }
-
-  async function pollWanted() {
-    if (!opt.panels.includes("wanted")) return;
-    // An app's own prompt has taken over: see `pollAppPanels`.
-    if (appPanelsUp) {
-      el.wantedPanel.classList.add("hidden");
-      return;
-    }
-    try {
-      const r = await fetch(
-        `/api/wanted/recent?window=${WANTED_WINDOW}&limit=${WANTED_ROWS}`
-      );
-      if (!r.ok) return;
-      const d = await r.json();
-      const rows = (d.items || []).slice(0, WANTED_ROWS);
-      /* Whatever room the pickups left, filled from the bags. Pickups lead
-         because they are the perishable half --- an item auto-sold or vendored
-         is gone, while a bag holds still --- and a name in both is drawn once,
-         as the pickup. */
-      const looted = new Set(rows.map((i) => (i.item || "").toLowerCase()));
-      const bag = heldOffer
-        .filter((i) => !looted.has((i.name || "").toLowerCase()))
-        .slice(0, Math.max(0, WANTED_ROWS - rows.length));
-      el.wantedPanel.classList.toggle("hidden", rows.length + bag.length === 0);
-      if (!rows.length && !bag.length) return;
-      const extra = (d.total || rows.length) - rows.length;
-      /* Both halves counted, and each said only when it is there. "126 in your
-         bags" is the number that changes what you do next, and it is not
-         derivable from five rows on screen. */
-      el.wantedMeta.textContent = [
-        extra > 0 ? `${d.total} just looted` : "",
-        heldTotal
-          ? `${heldTotal} in ${heldWho ? heldWho + "'s" : "your"} bags`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" \u00b7 ");
-      el.wantedRows.innerHTML = rows
-        .map((i) => {
-          // An item the site has never seen outranks one it has merely asked
-          // about: nobody else can contribute it, and it is only yours for as
-          // long as it is in your bags or the link is in your chat.
-          // What the site is missing. A picture leads when one is wanted: this
-          // panel exists to prompt for one, and an item that also dropped
-          // somewhere unrecorded is still an item to photograph first.
-          const needs = i.new
-            ? "new \u2014 not on eqldb at all"
-            : (i.needs || []).length
-              ? (i.needs || []).join(" + ") + (i.new_zone ? " \u00b7 new here" : "")
-              : i.new_zone
-                ? `not known to drop in ${i.zone || "this zone"}`
-                : "a picture";
-          // Held items are in your bags; the rest were auto-sold on pickup,
-          // and the client left a clickable item link in chat that opens the
-          // same tooltip. Both can be photographed, from different places, so
-          // the row says which rather than hiding the second kind.
-          const from = i.held
-            ? i.source
-              ? `from ${i.source}`
-              : "in your bags"
-            : "sold \u2014 click the chat link";
-          /* For a row that is *only* a new drop location, where the site has
-             seen it instead is the line that says why the row is there at
-             all. Where the thing physically is stays on the rows where you
-             are being asked to point a camera at it. */
-          const line = i.new_zone && !(i.needs || []).length
-            ? `known from ${(i.known_zones || []).slice(0, 2).join(", ")}${
-                (i.known_zones || []).length > 2 ? " +" + (i.known_zones.length - 2) : ""
-              }`
-            : from;
-          return `<div class="row ${i.new || i.new_zone ? "enemy" : "you"}" style="--share:100%">
-            <span class="name">${esc(i.item)}</span>
-            <span class="nums"><span class="dmg">${esc(needs)}</span></span>
-          </div>
-          <div class="row"><span class="name reward">${esc(line)}</span>
-            <span class="nums"><span class="dmg">${ago(i.at)}</span></span>
-          </div>`;
-        })
-        .join("") +
-        /* One line each, where a pickup takes two. A pickup's second line says
-           where the thing physically is and how long ago it landed, both of
-           which can stop being true while you read them; a bag item is in your
-           bags and has no clock, so the row is the name and what eqldb wants
-           of it. `\u00b7 in bags` rather than a colour alone, because the two
-           kinds sit in one list and a reader should not have to know the
-           palette to tell them apart. */
-        bag
-          .map(
-            (i) => `<div class="row you" style="--share:100%">
-            <span class="name">${esc(i.name)}</span>
-            <span class="nums"><span class="dmg">${esc(
-              (i.needs || []).join(" + ") || "a picture"
-            )} \u00b7 in bags</span></span>
-          </div>`
-          )
-          .join("");
-    } catch (e) {
-      /* daemon busy or restarting; try again next tick */
-    }
-  }
-
-  /* How long ago, in the log's clock. The daemon reports `at` as a log
-     timestamp, which is naive local time read as UTC — see `logNow`. */
-  function ago(at) {
-    const secs = Math.max(0, logNow() - at);
-    if (secs < 60) return "just now";
-    const m = Math.round(secs / 60);
-    return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`;
-  }
-
-  function logNow() {
-    return Math.floor(Date.now() / 1000) - new Date().getTimezoneOffset() * 60;
-  }
-
-  /* One tick, in order: the bags are read and awaited before the panel is
-     drawn, so a paint never uses last tick's marks and the overlay's first
-     paint already has them. Two timers would have raced --- the item you
-     photographed would vanish on whichever tick happened to run second. */
-  async function pollWantedPanel() {
-    await pollHeld();
-    await pollWanted();
-  }
-
   /* Panels other apps put up: the overlay's extension slot.
 
-     The eqldb collector prompts "worth a picture" here now, which is why
+     The eqldb collector prompts "worth a picture" here, which is why
      `wanted` turns these on as well as `apps`: an overlay URL saved with
-     `wanted` in it keeps showing the prompt after the prompt moved out of
-     the daemon. While any app panel is up, the daemon's own wanted panel
-     stays hidden so the same item is not asked for twice; that panel goes
-     with the rest of the daemon's eqldb code.
+     `wanted` in it, from when the daemon drew that prompt itself, keeps
+     showing it.
 
      The daemon only stores these. Each lapses unless its app puts it again,
      so a closed app's panel goes on its own. */
   const APP_POLL_MS = 5000;
-  let appPanelsUp = false;
 
   async function pollAppPanels() {
     try {
       const r = await fetch("/api/panels");
       if (!r.ok) return;
       const d = await r.json();
-      // Up, even with nothing to say: an app with no rows to show has still
-      // taken the prompt over, and the daemon's panel must not fill the gap
-      // with its own, older idea of what is wanted.
-      appPanelsUp = (d.panels || []).length > 0;
       const panels = (d.panels || []).filter((p) => (p.rows || []).length);
-      if (appPanelsUp) el.wantedPanel.classList.add("hidden");
       el.appPanels.innerHTML = panels
         .map(
           (p) => `<div class="panel">
@@ -693,11 +465,6 @@
   if (opt.panels.includes("apps") || opt.panels.includes("wanted")) {
     pollAppPanels();
     setInterval(pollAppPanels, APP_POLL_MS);
-  }
-
-  if (opt.panels.includes("wanted")) {
-    pollWantedPanel();
-    setInterval(pollWantedPanel, WANTED_POLL_MS);
   }
 
   /* Session totals.
