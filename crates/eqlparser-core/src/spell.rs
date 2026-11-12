@@ -298,6 +298,15 @@ impl SpellDb {
         let mut spells = Self::load_spells(spells_path)?;
         Self::apply_strings(&mut spells, strings_path)?;
         Self::verify_restrictions(&mut spells);
+        // The effects column is found by position too, and a client file has
+        // thousands of charms. None at all means the column moved again.
+        if !spells.is_empty() && !spells.values().any(|s| s.is_charm) {
+            eprintln!(
+                "[spells] no charm spell found in {} spells: the effects column has moved. \
+                 Procs, charms and linked spells will not be recognised.",
+                spells.len()
+            );
+        }
         Ok(Self::from_spells(spells))
     }
 
@@ -452,8 +461,16 @@ impl SpellDb {
         // game will not let you cast it at anything else. See
         // `target_type_restriction`.
         const F_TARGET_TYPE: usize = 30;
-        // The effect category; see `Spell::category`.
+        // The effect category; see `Spell::category`. Both this and
+        // `F_EFFECTS` are positions in the 173-field layout. The 2026-11
+        // client file has 174: a column was inserted somewhere between the
+        // class levels (36-51, unmoved) and this one, so both read one
+        // further along. `shift` below is how many columns a row has past
+        // 173. Reading the old positions from the new file is silent: the
+        // effects column held a bare number, and every proc grant, charm
+        // and linked spell quietly came back empty.
         const F_CATEGORY: usize = 146;
+        const FIELDS_V1: usize = 173;
         // The effect table: slots separated by `$`, fields within a slot by
         // `|`, the second field being the SPA id. e.g. Solon's Bewitching
         // Bravura is `1|22|1|0|100|51$2|50|-1|0|119|0`.
@@ -498,6 +515,8 @@ impl SpellDb {
                 continue;
             };
             let num = |i: usize| f.get(i).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let shift = f.len().saturating_sub(FIELDS_V1);
+            let (f_category, f_effects) = (F_CATEGORY + shift, F_EFFECTS + shift);
             let mut class_levels = [CLASS_CANNOT_CAST; CLASS_COUNT];
             for (i, slot) in class_levels.iter_mut().enumerate() {
                 *slot = f
@@ -515,18 +534,18 @@ impl SpellDb {
                         .and_then(|v| v.parse::<u8>().ok())
                         .unwrap_or(1),
                     category_id: f
-                        .get(F_CATEGORY)
+                        .get(f_category)
                         .and_then(|v| v.parse::<u8>().ok())
                         .unwrap_or(0),
                     is_charm: f
-                        .get(F_EFFECTS)
+                        .get(f_effects)
                         .map(|e| {
                             e.split('$')
                                 .any(|slot| slot.split('|').nth(1) == Some(SPA_CHARM))
                         })
                         .unwrap_or(false),
                     linked: f
-                        .get(F_EFFECTS)
+                        .get(f_effects)
                         .map(|e| {
                             e.split('$')
                                 .filter_map(|slot| {
@@ -541,7 +560,7 @@ impl SpellDb {
                         })
                         .unwrap_or_default(),
                     procs: f
-                        .get(F_EFFECTS)
+                        .get(f_effects)
                         .map(|e| {
                             e.split('$')
                                 .filter_map(|slot| {
@@ -2184,5 +2203,33 @@ mod tests {
         assert!(r.cast_recently(1001, "Harm Touch XXXIII"), "a sibling rank still counts as cast");
         assert!(r.cast_this_rank_recently(1001, "Harm Touch XII"));
         assert!(!r.cast_this_rank_recently(1001, "Harm Touch XXXIII"));
+    }
+
+    /// The 2026-11 client file inserted a column between the class levels and
+    /// the category. Read by the old positions, every charm, proc grant and
+    /// linked spell came back empty without a word.
+    #[test]
+    fn a_spell_file_with_an_inserted_column_still_reads_its_effects() {
+        let row = |extra: bool| {
+            let mut f = vec!["0".to_string(); 173];
+            f[0] = "750".into();
+            f[1] = "Solon's Bewitching Bravura".into();
+            f[146] = "4".into();
+            f[172] = "1|22|1|0|100|51$2|85|6908|400|100|0".into();
+            if extra {
+                f.insert(100, "0".into());
+            }
+            f.join("^")
+        };
+        for extra in [false, true] {
+            let path = std::env::temp_dir().join(format!("eqlparser-spells-{}-{extra}.txt", std::process::id()));
+            std::fs::write(&path, row(extra) + "\n").unwrap();
+            let spells = SpellDb::load_spells(&path).unwrap();
+            std::fs::remove_file(&path).ok();
+            let s = &spells[&750];
+            assert!(s.is_charm, "charm read with {} fields", 173 + extra as usize);
+            assert_eq!(s.procs, [ProcGrant { spell: 6908, on_melee: true }]);
+            assert_eq!(s.category_id, 4);
+        }
     }
 }
