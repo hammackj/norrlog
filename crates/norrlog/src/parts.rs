@@ -194,3 +194,35 @@ impl BarAnim {
         .into_any_element()
     }
 }
+
+/// Hand a web address to the system browser, as main.js' `open-external`
+/// does: only `http:` and `https:`. The addresses come from the daemon and
+/// the item site, and anything else — `file:`, a custom scheme — would have
+/// the desktop run whatever handles it.
+pub fn open_web(cx: &App, url: &str) -> bool {
+    if is_web(url) {
+        cx.open_url(url);
+        true
+    } else {
+        eprintln!("[norrlog] refused to open {url:?}: not an http(s) address");
+        false
+    }
+}
+
+fn is_web(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+#[cfg(test)]
+mod web_tests {
+    #[test]
+    fn only_http_and_https_open() {
+        assert!(super::is_web("https://eqldb.example/item/x"));
+        assert!(super::is_web("HTTP://127.0.0.1:8777/api/encounters/export"));
+        assert!(!super::is_web("file:///etc/passwd"));
+        assert!(!super::is_web("javascript:alert(1)"));
+        assert!(!super::is_web("steam://run/1"));
+        assert!(!super::is_web(""));
+    }
+}

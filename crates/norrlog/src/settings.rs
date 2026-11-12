@@ -484,7 +484,7 @@ impl SettingsView {
     fn save_csv(&mut self, cx: &mut Context<Self>) {
         let Some(api) = &self.api else { return };
         // Content-Disposition makes this a download rather than a page.
-        cx.open_url(&format!("{}{}", api.base(), self.export_path("csv")));
+        crate::parts::open_web(cx, &format!("{}{}", api.base(), self.export_path("csv")));
         self.say_export("Opened CSV download in your browser", cx);
     }
 }

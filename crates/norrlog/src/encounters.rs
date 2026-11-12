@@ -283,7 +283,7 @@ impl EncountersView {
         }
         // Opened rather than fetched: a download, named by the daemon's
         // Content-Disposition.
-        cx.open_url(&format!("{}/api/encounters/export?{}", api.base(), query(&q)));
+        crate::parts::open_web(cx, &format!("{}/api/encounters/export?{}", api.base(), query(&q)));
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> Div {

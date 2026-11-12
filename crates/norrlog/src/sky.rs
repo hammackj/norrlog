@@ -676,7 +676,7 @@ impl SkyView {
                 .border_b_1()
                 .border_color(wash(MUTED, if wiki_only { 0.5 } else { 0.8 }))
                 .hover(|d| d.text_color(hex(YOU)).border_color(hex(YOU)))
-                .on_click(move |_, _, cx| cx.open_url(&url)),
+                .on_click(move |_, _, cx| { crate::parts::open_web(cx, &url); }),
             None => el,
         };
         item_tip(el, &self.cards, name)
