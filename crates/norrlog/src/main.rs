@@ -12,6 +12,7 @@ mod api;
 mod config;
 mod daemon;
 mod encounters;
+mod fight;
 // The shared toolkit the tab ports draw on; ahead of its users for now.
 #[allow(dead_code)]
 mod format;

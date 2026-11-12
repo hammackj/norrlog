@@ -28,11 +28,21 @@ fn cell_box(c: &Col) -> Div {
 }
 
 pub fn head(cols: &[Col]) -> Div {
+    head_spaced(cols, px(12.))
+}
+
+/// A table inside a card, where the columns have to be packed tighter than
+/// in a page-wide list.
+pub fn head_dense(cols: &[Col]) -> Div {
+    head_spaced(cols, px(8.))
+}
+
+fn head_spaced(cols: &[Col], gap: Pixels) -> Div {
     let mut r = div()
         .flex()
         .flex_row()
-        .gap_3()
-        .px_3()
+        .gap(gap)
+        .px(gap)
         .py(px(6.))
         .bg(hex(PANEL))
         .border_b_1()
@@ -48,13 +58,22 @@ pub fn head(cols: &[Col]) -> Div {
 
 /// One row. Cells line up with `cols`; extra cells are ignored.
 pub fn row(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>) -> Stateful<Div> {
+    row_spaced(id, cols, cells, px(12.))
+}
+
+/// [`row`] for a [`head_dense`] table.
+pub fn row_dense(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>) -> Stateful<Div> {
+    row_spaced(id, cols, cells, px(8.))
+}
+
+fn row_spaced(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>, gap: Pixels) -> Stateful<Div> {
     let mut r = div()
         .id(id)
         .flex()
         .flex_row()
         .items_center()
-        .gap_3()
-        .px_3()
+        .gap(gap)
+        .px(gap)
         .py(px(5.))
         .border_b_1()
         .border_color(wash(BORDER, 0.6))

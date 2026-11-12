@@ -11,14 +11,14 @@ use crate::api::{Api, query};
 use crate::format::{dur, num, when};
 use crate::table::{self, Col, col, muted, tag};
 use crate::theme::*;
-use eqlparser_api::{EncounterBrief, EncounterPage, MobPage, MobRow};
+use crate::fight::FightUi;
+use eqlparser_api::{EncounterBrief, EncounterDetail, EncounterPage, MobPage, MobRow};
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{Sizable, v_flex};
-use serde_json::Value;
+use gpui_component::{Sizable, h_flex, v_flex};
 use std::time::Duration;
 
 /// Rows per page: the renderer's, and as much as is worth drawing at once.
@@ -29,7 +29,7 @@ const FIGHT_COLS: &[Col] = &[
     col("Encounter", None, false),
     col("Zone", Some(190.), false),
     col("Build", Some(110.), false),
-    col("When", Some(120.), false),
+    col("When", Some(132.), false),
     col("Time", Some(60.), true),
     col("Your DPS", Some(70.), true),
     col("Your dmg", Some(70.), true),
@@ -40,7 +40,7 @@ const MOB_COLS: &[Col] = &[
     col("Mob", None, false),
     col("Zone", Some(190.), false),
     col("Build", Some(110.), false),
-    col("When", Some(120.), false),
+    col("When", Some(132.), false),
     col("Fight", Some(60.), true),
     col("Dmg to it", Some(76.), true),
     col("Dmg it did", Some(76.), true),
@@ -73,7 +73,7 @@ impl Rows {
 
 enum Detail {
     Loading(u64),
-    Shown(Box<Value>),
+    Shown(Box<EncounterDetail>),
     Failed(String),
 }
 
@@ -97,6 +97,9 @@ pub struct EncountersView {
     new_waiting: bool,
     scroll: ScrollHandle,
     detail: Option<Detail>,
+    /// The open fight's subtab and drilled-open meter rows.
+    pub(crate) fight: FightUi,
+    detail_scroll: ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -136,6 +139,8 @@ impl EncountersView {
             new_waiting: false,
             scroll: ScrollHandle::new(),
             detail: None,
+            fight: FightUi::default(),
+            detail_scroll: ScrollHandle::new(),
             _subs: subs,
         }
     }
@@ -244,9 +249,11 @@ impl EncountersView {
     fn open(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(api) = self.api.clone() else { return };
         self.detail = Some(Detail::Loading(id));
+        self.fight = FightUi::default();
+        self.detail_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let got = api.get::<Value>(format!("/api/encounters/{id}")).await;
+            let got = api.get::<EncounterDetail>(format!("/api/encounters/{id}")).await;
             let _ = this.update(cx, |v, cx| {
                 if matches!(v.detail, Some(Detail::Loading(want)) if want == id) {
                     v.detail = Some(match got {
@@ -412,69 +419,24 @@ impl EncountersView {
         .on_click(cx.listener(move |v, _, _, cx| v.open(id, cx)))
     }
 
-    /// The fight's head and headline numbers. The meters, timeline and the
-    /// rest of the detail come with #87860.
-    fn render_detail(&self, cx: &mut Context<Self>) -> Div {
+    /// One fight, from `fight.rs`, under a way back to the list. The list
+    /// is kept as it was, so going back costs no fetch.
+    fn render_detail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let back = Button::new("enc-back").label("← Back to list").small().ghost().on_click(cx.listener(|v, _, _, cx| {
             v.detail = None;
             cx.notify();
         }));
-        let mut out = v_flex().gap_3().child(div().child(back));
-        match &self.detail {
-            Some(Detail::Loading(_)) | None => out = out.child(muted("Loading…")),
-            Some(Detail::Failed(e)) => out = out.child(div().text_color(hex(ENEMY)).child(e.clone())),
-            Some(Detail::Shown(d)) => {
-                let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-                let n = |k: &str| d.get(k).and_then(Value::as_f64);
-                let zone = d.get("zone").and_then(Value::as_str).unwrap_or("unknown zone").to_string();
-                let difficulty = d.get("difficulty").and_then(Value::as_u64).unwrap_or(0);
-                let mut sub = div().flex().flex_row().items_center().gap_2().text_color(hex(MUTED)).child(zone);
-                if difficulty > 0 {
-                    sub = sub.child(tag(format!("d{difficulty}"), PET));
-                }
-                sub = sub
-                    .child(format!("· {} · {}", when(d.get("start").and_then(Value::as_i64)), dur(n("duration").unwrap_or(0.0))));
-                if !s("build").is_empty() {
-                    sub = sub.child(tag(s("build"), ACCENT));
-                }
-                let stat = |label: &'static str, value: String, note: Option<String>| {
-                    let mut c = v_flex()
-                        .gap_1()
-                        .p_3()
-                        .min_w(px(150.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(hex(BORDER))
-                        .bg(hex(PANEL))
-                        .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-                        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value));
-                    if let Some(note) = note {
-                        c = c.child(div().text_xs().text_color(hex(MUTED)).child(note));
-                    }
-                    c
-                };
-                out = out
-                    .child(v_flex().gap_1().child(div().text_lg().font_weight(FontWeight::BOLD).child(s("title"))).child(sub))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap_3()
-                            .child(stat("Your DPS", num(n("your_dps")), None))
-                            .child(stat("Your damage", num(n("your_damage")), None))
-                            .child(stat(
-                                "Damage to enemy",
-                                num(n("damage_to_enemies")),
-                                Some(format!("{} both sides", num(n("total_damage")))),
-                            ))
-                            .child(stat("Your healing", num(n("your_healing")), Some(format!("{} hps", num(n("your_hps"))))))
-                            .child(stat("Damage taken", num(n("your_damage_taken")), None)),
-                    )
-                    .child(muted("The meters, timeline and the rest of this fight are not ported yet; the Electron app has them."));
-            }
-        }
-        out
+        let body = match &self.detail {
+            Some(Detail::Loading(_)) | None => muted("Loading…"),
+            Some(Detail::Failed(e)) => div().text_color(hex(ENEMY)).child(e.clone()),
+            Some(Detail::Shown(d)) => self.render_fight(d, cx),
+        };
+        div()
+            .id("fight-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.detail_scroll)
+            .child(v_flex().gap_3().pb_4().child(h_flex().child(back)).child(body))
     }
 }
 
