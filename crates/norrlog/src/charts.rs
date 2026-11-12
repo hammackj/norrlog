@@ -480,7 +480,7 @@ pub fn timeline_card(e: &Encounter, s: &EncounterSummary) -> Div {
         h_flex()
             .items_start()
             .child(names)
-            .child(div().id("tl-scroll").flex_1().min_w_0().overflow_x_scroll().child(plot)),
+            .child(div().id("tl-scroll").flex_1().min_w_0().overflow_x_scroll().own_axis().child(plot)),
     )
     .child(div().text_sm().text_color(hex(MUTED)).child(note))
 }

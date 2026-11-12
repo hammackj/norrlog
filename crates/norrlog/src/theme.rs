@@ -5,6 +5,18 @@
 use gpui::{App, Hsla, rgb};
 use gpui_component::{Theme, ThemeMode};
 
+/// A scroller that takes only its own axis from the wheel. Unset, GPUI turns
+/// a sideways wheel into vertical scrolling for a container that scrolls only
+/// vertically (and the reverse), so the timeline's sideways scroll also ran
+/// the page down, and wheeling the page over the timeline panned it.
+pub trait OwnAxis: gpui::Styled + Sized {
+    fn own_axis(mut self) -> Self {
+        self.style().restrict_scroll_to_axis = Some(true);
+        self
+    }
+}
+impl<T: gpui::Styled> OwnAxis for T {}
+
 pub fn hex(c: u32) -> Hsla {
     rgb(c).into()
 }

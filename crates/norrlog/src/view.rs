@@ -303,7 +303,7 @@ impl Render for Shell {
                 // Scrolls its own table, so its toolbar stays put.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())
             } else {
-                div().id("main").flex_1().min_h_0().overflow_y_scroll().p_4().child(self.render_body())
+                div().id("main").flex_1().min_h_0().overflow_y_scroll().own_axis().p_4().child(self.render_body())
             })
     }
 }

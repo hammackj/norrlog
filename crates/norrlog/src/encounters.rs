@@ -435,6 +435,7 @@ impl EncountersView {
             .id("fight-scroll")
             .size_full()
             .overflow_y_scroll()
+            .own_axis()
             .track_scroll(&self.detail_scroll)
             .child(v_flex().gap_3().pb_4().child(h_flex().child(back)).child(body))
     }
@@ -455,6 +456,7 @@ impl Render for EncountersView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .own_axis()
                     .track_scroll(&self.scroll)
                     // Back at the top with fights waiting: bring them in.
                     .on_scroll(cx.listener(|v, _, _, cx| {
