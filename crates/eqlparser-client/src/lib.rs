@@ -354,6 +354,7 @@ mod tests {
             screenshots_dir: None,
             clients: 0,
             idle_exit_secs: None,
+            clock_offset: None,
         }
     }
 

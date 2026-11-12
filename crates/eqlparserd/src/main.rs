@@ -741,6 +741,8 @@ async fn main() -> anyhow::Result<()> {
         screenshots_dir: screenshots_dir.map(|d| d.to_string_lossy().into_owned()),
         clients: 0,
         idle_exit_secs: cfg.idle_exit,
+        // Filled per request by the handler: it changes with every live line.
+        clock_offset: None,
     }));
     if let Some(secs) = cfg.idle_exit {
         crate::server::spawn_idle_exit(Arc::clone(&life), secs);

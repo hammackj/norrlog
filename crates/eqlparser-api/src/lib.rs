@@ -56,6 +56,14 @@ pub struct Hello {
     /// Seconds the daemon waits, once the last client has gone and nothing
     /// has been asked of it, before exiting. `None` when it never does.
     pub idle_exit_secs: Option<u64>,
+    /// The log's clock minus this machine's, in seconds, once a live line has
+    /// been seen to measure it; `None` before. The client writes local wall
+    /// time with no zone, so anything pairing a log timestamp with a file's
+    /// mtime needs this --- the collector filing a screenshot taken while it
+    /// was closed, for one. Added within API 1: defaulted, so a client that
+    /// predates it and a daemon that predates it both still read the other.
+    #[serde(default)]
+    pub clock_offset: Option<i64>,
 }
 
 /// One thing that happened, pushed on `/api/events` as it happens.
@@ -167,6 +175,11 @@ mod tests {
         });
         assert_eq!(serde_json::to_value(&p).unwrap()["type"], "pickup");
         assert_eq!(serde_json::to_value(Event::BagsChanged).unwrap()["type"], "bags_changed");
+        // A hello from before `clock_offset` existed still reads.
+        let old = r#"{"identity":"eqlparserd","version":"0.1.0","api_version":1,"pid":1,"port":1,
+            "started_at":0,"game":"g","log":"l","character":"","server":"","game_dir":null,
+            "screenshots_dir":null,"clients":0,"idle_exit_secs":null}"#;
+        assert_eq!(serde_json::from_str::<Hello>(old).unwrap().clock_offset, None);
         for e in [e, p, Event::BagsChanged] {
             let back: Event = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
             assert_eq!(back, e);
