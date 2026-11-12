@@ -9,7 +9,7 @@
 
 use crate::api::Api;
 use crate::format::{num, pp, when_short};
-use crate::parts::{ROW, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note};
+use crate::parts::{ROW, ROW_YOU, band, bar_row, card, dim, empty, figure, fill, hint, note};
 use crate::table::tag;
 use crate::theme::*;
 use eqlparser_api::{TaskRecord, TaskReport, Totals};
@@ -315,17 +315,6 @@ impl Render for CharacterView {
             .child(h_flex().items_start().gap_3().child(self.render_tasks(cx)).child(self.render_achievements()));
         div().id("character-scroll").size_full().overflow_y_scroll().own_axis().child(page)
     }
-}
-
-/// `.band`: a heading, a quiet note beside it, and a hairline to the edge.
-fn band(title: &str, note: &str) -> Div {
-    h_flex()
-        .items_center()
-        .gap(px(10.))
-        .mt_2()
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
-        .child(div().text_sm().text_color(hex(MUTED)).child(note.to_string()))
-        .child(div().flex_1().h(px(1.)).bg(hex(BORDER)))
 }
 
 /// A totals card: the title over its figure.

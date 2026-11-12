@@ -16,6 +16,7 @@ mod classes;
 mod config;
 mod charts;
 mod daemon;
+mod dashboard;
 mod encounters;
 mod experience;
 mod fight;

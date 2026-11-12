@@ -4,7 +4,6 @@
 //! and names the file in `docs/parity/` that lists what it has to do.
 
 use crate::daemon::Msg;
-use crate::format::num;
 use crate::state::{Rect, State};
 use crate::theme::*;
 use eqlparser_api::Hello;
@@ -52,6 +51,7 @@ pub struct Shell {
     tells: Entity<crate::tells::TellsView>,
     alerts: Entity<crate::alerts::AlertsView>,
     settings: Entity<crate::settings::SettingsView>,
+    dashboard: Entity<crate::dashboard::DashboardView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -77,7 +77,7 @@ impl Shell {
         });
         // Where the window is, remembered as it moves rather than on close:
         // a window killed with the session never gets to say goodbye.
-        let subs = vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
+        let mut subs = vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
         let tab = TABS.iter().find(|t| t.0 == state.tab).map(|t| t.0).unwrap_or("dashboard");
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
         let procs = cx.new(|_| crate::procs::ProcsView::new());
@@ -88,6 +88,12 @@ impl Shell {
         let tradeskills = cx.new(|_| crate::tradeskills::TradeskillsView::new());
         let forage = cx.new(|_| crate::forage::ForageView::new());
         let sky = cx.new(crate::sky::SkyView::new);
+        let dashboard = cx.new(crate::dashboard::DashboardView::new);
+        // The dashboard's Sky bars follow the Sky tab's own loads.
+        subs.push(cx.subscribe(&sky, |v: &mut Self, _, e: &crate::sky::SkyLoaded, cx| {
+            let r = e.0.clone();
+            v.dashboard.update(cx, |d, cx| d.set_sky(r, cx));
+        }));
         let tells = cx.new(|_| crate::tells::TellsView::new());
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
@@ -106,6 +112,7 @@ impl Shell {
             tells,
             alerts,
             settings,
+            dashboard,
             tab,
             snapshot: None,
             state,
@@ -162,6 +169,7 @@ impl Shell {
                     v.set_visible(false, cx);
                     v.set_visible(open == "alerts", cx);
                 });
+                self.dashboard.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 self.settings.update(cx, |v, cx| {
                     v.set_visible(open == "settings", cx);
                     v.set_api(Some(api.clone()), cx);
@@ -212,6 +220,8 @@ impl Shell {
                 self.forage.update(cx, |v, cx| v.on_snapshot(forage_open, cx));
                 let sky_open = self.tab == "sky";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
+                let current = s.get("current").filter(|c| !c.is_null()).and_then(|c| serde_json::from_value(c.clone()).ok());
+                self.dashboard.update(cx, |v, cx| v.on_snapshot(current, cx));
                 // Every snapshot, whichever tab is open: alerts are heard.
                 let fires = s.get("alerts").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
                 let seq = s.get("alert_seq").and_then(Value::as_u64).unwrap_or(0);
@@ -235,6 +245,7 @@ impl Shell {
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
                 self.alerts.update(cx, |v, cx| v.set_api(None, cx));
                 self.settings.update(cx, |v, cx| v.set_api(None, cx));
+                self.dashboard.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -378,7 +389,7 @@ impl Shell {
             return notice("The daemon is not answering", why.clone()).into_any_element();
         }
         match self.tab {
-            "dashboard" => self.render_totals().into_any_element(),
+            "dashboard" => self.dashboard.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "encounters" => self.encounters.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "procs" => self.procs.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "loot" => self.loot.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
@@ -402,48 +413,6 @@ impl Shell {
         }
     }
 
-    /// The Dashboard's totals strip: enough of the dashboard to show the
-    /// snapshot stream driving the window. The rest comes with its port.
-    fn render_totals(&self) -> Div {
-        let t = self.snapshot.as_deref().and_then(|s| s.get("totals"));
-        let n = |k: &str| t.and_then(|t| t.get(k)).and_then(Value::as_f64);
-        let pp = |k: &str| {
-            let c = n(k).unwrap_or(0.0) / 1000.0;
-            crate::format::num(Some(c.floor()))
-        };
-        let stat = |label: &'static str, value: String, sub: Option<String>| {
-            let mut v = v_flex()
-                .gap_1()
-                .p_3()
-                .min_w(px(130.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(hex(BORDER))
-                .bg(hex(PANEL))
-                .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-                .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value));
-            if let Some(sub) = sub {
-                v = v.child(div().text_xs().text_color(hex(MUTED)).child(sub));
-            }
-            v
-        };
-        div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap_3()
-            .child(stat("Your damage", num(n("your_damage")), None))
-            .child(stat("Kills", num(n("kills")), None))
-            .child(stat("Deaths", num(n("deaths")), None))
-            .child(stat("Encounters", num(n("encounters")), None))
-            .child(stat("Healing done", num(n("your_healing")), None))
-            .child(stat("Damage taken", num(n("your_damage_taken")), None))
-            .child(stat(
-                "Platinum earned",
-                pp("coin_total_copper"),
-                Some(format!("{} looted · {} sold", pp("coin_copper"), pp("coin_from_sales_copper"))),
-            ))
-    }
 }
 
 impl Render for Shell {
@@ -455,7 +424,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts" | "dashboard") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())

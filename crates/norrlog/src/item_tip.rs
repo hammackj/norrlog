@@ -194,7 +194,7 @@ impl ItemCards {
         self.icons.entry(uri.clone()).or_insert_with(|| data_uri_png(uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))).clone()
     }
 
-    fn sprite(&mut self, s: &SpriteIcon, cx: &mut Context<Self>) -> Option<Arc<Image>> {
+    pub(crate) fn sprite(&mut self, s: &SpriteIcon, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         let key = format!("{}@{},{}", s.path, s.x, s.y);
         if let Some(i) = self.icons.get(&key) {
             return i.clone();

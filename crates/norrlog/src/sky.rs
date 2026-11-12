@@ -48,6 +48,11 @@ const STATUSES: &[(Status, &str)] = &[
     (Status::Offsite, "Not on eqldb yet"),
 ];
 
+/// A fresh `/api/sky`, for the dashboard.
+pub struct SkyLoaded(pub eqlparser_api::SkyReport);
+
+impl EventEmitter<SkyLoaded> for SkyView {}
+
 pub struct SkyView {
     api: Option<Api>,
     reply: Option<SkyReply>,
@@ -113,6 +118,9 @@ impl SkyView {
             let _ = this.update(cx, |v, cx| {
                 v.refreshing = false;
                 if let Ok(r) = got {
+                    // The dashboard's progress bars redraw from every load
+                    // here, as `renderSkyProgress` is called from sky.js.
+                    cx.emit(SkyLoaded(r.report.clone()));
                     v.reply = Some(r);
                 }
                 cx.notify();

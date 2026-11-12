@@ -147,3 +147,14 @@ pub fn dim(text: impl Into<SharedString>) -> Div {
 pub fn figure(text: impl Into<SharedString>) -> Div {
     div().min_w(px(60.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(text.into())
 }
+
+/// `.band`: a heading, a quiet note beside it, and a hairline to the edge.
+pub fn band(title: &str, note: &str) -> Div {
+    h_flex()
+        .items_center()
+        .gap(px(10.))
+        .mt_2()
+        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+        .child(div().text_sm().text_color(hex(MUTED)).child(note.to_string()))
+        .child(div().flex_1().h(px(1.)).bg(hex(BORDER)))
+}

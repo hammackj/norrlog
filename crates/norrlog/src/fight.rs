@@ -372,13 +372,45 @@ fn side_bar(r: &MeterRow) -> Hsla {
 // ---------------------------------------------------------------------------
 // Panels.
 
-enum Metric {
+pub(crate) enum Metric {
     Healing,
     Taken,
 }
 
+/// The dashboard's damage meter: `meterHtml(enc.meter)` with no actor map,
+/// so no drill-down and no hover on the rows, but the same pet folding and
+/// the same `2+` tag as the Encounters detail.
+pub(crate) fn plain_meter(meter: &[MeterRow], empty_text: &'static str) -> Div {
+    let rows = fold_pets(meter.iter().filter(|r| r.damage > 0).cloned().collect());
+    if rows.is_empty() {
+        return empty(empty_text);
+    }
+    v_flex().gap_1().children(rows.into_iter().map(|(r, folded)| {
+        let mut name = h_flex().gap_1().min_w_0().overflow_hidden().font_weight(FontWeight::MEDIUM);
+        name = name.child(div().text_color(hex(side_name(&r))).whitespace_nowrap().text_ellipsis().child(r.name.clone()));
+        if let Some((label, color)) = pet_tag(&r, folded) {
+            name = name.child(tag(label, color));
+        }
+        if r.name_shared {
+            name = name.child(
+                div()
+                    .id(SharedString::from(format!("dash-shared-{}", r.key)))
+                    .child(tag("2+", MUTED))
+                    .tooltip(|window, cx| Tooltip::new(NAME_SHARED).build(window, cx)),
+            );
+        }
+        let nums = h_flex()
+            .gap_3()
+            .flex_none()
+            .child(muted(format!("{:.0}% crit", r.crit_rate * 100.)))
+            .child(muted(num(Some(r.damage as f64))))
+            .child(div().min_w(px(52.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(num(Some(r.dps))));
+        bar(r.share, side_bar(&r)).child(name).child(nums)
+    }))
+}
+
 /// `metricHtml`: one row set, filtered and sorted per metric.
-fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str) -> Div {
+pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str) -> Div {
     let value = |r: &MeterRow| match m {
         Metric::Healing => r.healing,
         Metric::Taken => r.damage_taken,

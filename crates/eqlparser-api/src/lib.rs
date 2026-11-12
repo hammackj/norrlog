@@ -269,6 +269,22 @@ pub struct DaemonLogLine {
     pub text: String,
 }
 
+// ---- Dashboard --------------------------------------------------------------
+
+/// `GET /api/lockouts`: the weekly and daily grid, and the void currency.
+pub use eqlparser_core::lockout::{LockoutCell, LockoutReport, VoidCurrency, VoidGrant, VoidTask};
+
+/// `GET /api/session?scope=session|zone`: every fight since the session
+/// began (or in this zone), merged into one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionReply {
+    pub summary: EncounterSummary,
+    pub fights: usize,
+    /// Seconds of combat, the denominator behind every rate in `summary`.
+    pub combat_seconds: i64,
+    pub session_start: i64,
+}
+
 // ---- Settings ---------------------------------------------------------------
 
 /// `GET /api/logs`: the logs beside the followed one, and whose history is on
