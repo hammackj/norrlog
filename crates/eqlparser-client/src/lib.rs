@@ -250,6 +250,33 @@ impl Client {
         self.get("/api/bundle").await
     }
 
+    /// Put a panel up on the overlay, or refresh it. See
+    /// [`eqlparser_api::Panel`]: it lapses unless put again within its TTL.
+    pub async fn put_panel(&self, id: &str, panel: &eqlparser_api::Panel) -> Result<()> {
+        let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);
+        let resp = self.http.put(&url).json(panel).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        Self::status_only(resp).await
+    }
+
+    /// Take a panel down.
+    pub async fn delete_panel(&self, id: &str) -> Result<()> {
+        let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);
+        let resp = self.http.delete(&url).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        Self::status_only(resp).await
+    }
+
+    async fn status_only(resp: reqwest::Response) -> Result<()> {
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.bytes().await.unwrap_or_default();
+        let error = serde_json::from_slice::<eqlparser_api::ApiError>(&body)
+            .map(|e| e.error)
+            .unwrap_or_else(|_| String::from_utf8_lossy(&body).into_owned());
+        Err(Error::Api { status: status.as_u16(), error })
+    }
+
     /// Any GET, decoded as `T`. For endpoints not yet typed in
     /// [`eqlparser_api`], `T` can be `serde_json::Value`.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {

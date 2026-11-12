@@ -6,7 +6,7 @@
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
  *                                 incoming, auras, buffs, debuffs, motes,
- *                                 charm, sky, wanted
+ *                                 charm, sky, wanted, apps
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
  *   ?scale=1.25           zoom, for high-resolution captures
@@ -110,6 +110,7 @@
     wantedPanel: document.getElementById("wanted-panel"),
     wantedMeta: document.getElementById("wanted-meta"),
     wantedRows: document.getElementById("wanted-rows"),
+    appPanels: document.getElementById("app-panels"),
     skyPanel: document.getElementById("sky-panel"),
     skyMeta: document.getElementById("sky-meta"),
     skyRows: document.getElementById("sky-rows"),
@@ -515,6 +516,11 @@
 
   async function pollWanted() {
     if (!opt.panels.includes("wanted")) return;
+    // An app's own prompt has taken over: see `pollAppPanels`.
+    if (appPanelsUp) {
+      el.wantedPanel.classList.add("hidden");
+      return;
+    }
     try {
       const r = await fetch(
         `/api/wanted/recent?window=${WANTED_WINDOW}&limit=${WANTED_ROWS}`
@@ -628,6 +634,62 @@
   async function pollWantedPanel() {
     await pollHeld();
     await pollWanted();
+  }
+
+  /* Panels other apps put up: the overlay's extension slot.
+
+     The eqldb collector prompts "worth a picture" here now, which is why
+     `wanted` turns these on as well as `apps`: an overlay URL saved with
+     `wanted` in it keeps showing the prompt after the prompt moved out of
+     the daemon. While any app panel is up, the daemon's own wanted panel
+     stays hidden so the same item is not asked for twice; that panel goes
+     with the rest of the daemon's eqldb code.
+
+     The daemon only stores these. Each lapses unless its app puts it again,
+     so a closed app's panel goes on its own. */
+  const APP_POLL_MS = 5000;
+  let appPanelsUp = false;
+
+  async function pollAppPanels() {
+    try {
+      const r = await fetch("/api/panels");
+      if (!r.ok) return;
+      const d = await r.json();
+      const panels = (d.panels || []).filter((p) => (p.rows || []).length);
+      appPanelsUp = panels.length > 0;
+      if (appPanelsUp) el.wantedPanel.classList.add("hidden");
+      el.appPanels.innerHTML = panels
+        .map(
+          (p) => `<div class="panel">
+            <div class="head">
+              <span class="title">${esc(p.title)}</span>
+              <span class="meta">${esc(p.meta || "")}</span>
+            </div>
+            <div class="rows">${(p.rows || [])
+              .map(
+                (row) => `<div class="row ${row.highlight ? "enemy" : "you"}" style="--share:100%">
+                  <span class="name">${esc(row.name)}</span>
+                  <span class="nums"><span class="dmg">${esc(row.value || "")}</span></span>
+                </div>${
+                  row.note || row.note_value
+                    ? `<div class="row"><span class="name reward">${esc(row.note || "")}</span>
+                        <span class="nums"><span class="dmg">${esc(row.note_value || "")}</span></span>
+                      </div>`
+                    : ""
+                }`
+              )
+              .join("")}</div>
+          </div>`
+        )
+        .join("");
+    } catch (e) {
+      /* daemon busy or restarting; the last answer stands until next tick */
+    }
+  }
+
+  if (opt.panels.includes("apps") || opt.panels.includes("wanted")) {
+    pollAppPanels();
+    setInterval(pollAppPanels, APP_POLL_MS);
   }
 
   if (opt.panels.includes("wanted")) {

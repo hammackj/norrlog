@@ -149,6 +149,31 @@ async fn typed_endpoints_and_events() {
     assert!(matches!(&got[1], Event::Pickup(p) if p.item == "Rusty Dagger" && p.held), "{got:?}");
     assert!(matches!(got[2], Event::ScreenshotTaken { .. }), "{got:?}");
 
+    // The zone, now that the log has said one.
+    let mut c3 = c.clone();
+    eventually(10, "hello naming the zone", async || {
+        c3.refresh_hello().await.map(|h| h.zone.as_deref() == Some("East Commonlands")).unwrap_or(false)
+    })
+    .await;
+
+    // The overlay's panel slot: put, list, refresh in place, refuse, take down.
+    use eqlparser_client::api::{Panel, PanelRow, Panels};
+    let row = |n: &str| PanelRow { name: n.into(), value: "icon".into(), note: None, note_value: None, highlight: false };
+    let panel = |rows: Vec<PanelRow>| Panel { title: "Worth a picture".into(), meta: String::new(), rows, ttl_secs: 30 };
+    c.put_panel("eqldb", &panel(vec![row("Rusty Dagger")])).await.unwrap();
+    c.put_panel("other", &panel(vec![])).await.unwrap();
+    c.put_panel("eqldb", &panel(vec![row("Bone Chips")])).await.unwrap();
+    let up: Panels = c.get("/api/panels").await.unwrap();
+    let ids: Vec<&str> = up.panels.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["eqldb", "other"], "a refresh keeps its place");
+    assert_eq!(up.panels[0].panel.rows[0].name, "Bone Chips");
+    assert!(c.put_panel("no/slash", &panel(vec![])).await.is_err());
+    assert!(c.put_panel("long", &panel((0..9).map(|i| row(&i.to_string())).collect())).await.is_err());
+    c.delete_panel("other").await.unwrap();
+    c.delete_panel("never-was").await.unwrap();
+    let up: Panels = c.get("/api/panels").await.unwrap();
+    assert_eq!(up.panels.len(), 1);
+
     // Let go, and the daemon goes: 2 s idle, checked every 2 s.
     drop(events);
     let port = c.port();

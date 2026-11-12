@@ -48,6 +48,9 @@ pub struct AppState {
     /// The accumulated item-id record. Absent when there is nowhere to keep
     /// it; present but empty when there is no game folder to read.
     pub ids: Option<Arc<Mutex<crate::dumps::Ids>>>,
+    /// Panels other apps have put up for the overlay: id -> (panel, put at,
+    /// expires at). See [`eqlparser_api::Panel`].
+    pub panels: Arc<Mutex<std::collections::HashMap<String, (eqlparser_api::Panel, i64, i64)>>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -68,6 +71,8 @@ pub fn router(state: AppState) -> Router {
         .route("/overlay.css", get(overlay_css))
         .route("/overlay.js", get(overlay_js))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/panels", get(panels_list))
+        .route("/api/panels/{id}", axum::routing::put(panel_put).delete(panel_delete))
         .route("/api/encounters", get(encounters))
         .route("/api/encounters/{id}", get(encounter_detail))
         .route("/api/mobs", get(mobs))
@@ -3347,6 +3352,57 @@ fn api_error(status: StatusCode, error: impl Into<String>) -> Response {
     (status, Json(eqlparser_api::ApiError { error: error.into() })).into_response()
 }
 
+/// A panel id: what an app names its panel by, kept to a URL-safe word.
+fn panel_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Rows a panel may carry. The overlay sits over the game; a panel longer
+/// than this is a list, and a list belongs in the app's own window.
+const PANEL_ROWS: usize = 8;
+
+/// `PUT /api/panels/{id}`: put a panel up, or refresh it.
+async fn panel_put(
+    State(s): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(mut p): Json<eqlparser_api::Panel>,
+) -> Response {
+    if !panel_id_ok(&id) {
+        return api_error(StatusCode::BAD_REQUEST, "a panel id is 1-64 of A-Z a-z 0-9 - _ .");
+    }
+    if p.rows.len() > PANEL_ROWS {
+        return api_error(StatusCode::BAD_REQUEST, format!("a panel carries at most {PANEL_ROWS} rows"));
+    }
+    p.ttl_secs = p.ttl_secs.clamp(5, 600);
+    let now = unix_now();
+    let mut all = s.panels.locked("panels");
+    let put_at = all.get(&id).map(|(_, at, _)| *at).unwrap_or(now);
+    let expires = now + i64::from(p.ttl_secs);
+    all.insert(id, (p, put_at, expires));
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// `DELETE /api/panels/{id}`: take a panel down. Taking down one that is not
+/// up is not an error: the outcome asked for is the one that holds.
+async fn panel_delete(State(s): State<AppState>, axum::extract::Path(id): axum::extract::Path<String>) -> StatusCode {
+    s.panels.locked("panels").remove(&id);
+    StatusCode::NO_CONTENT
+}
+
+/// `GET /api/panels`: the panels still up, oldest first, so one does not
+/// jump above another when it is refreshed.
+async fn panels_list(State(s): State<AppState>) -> Json<eqlparser_api::Panels> {
+    let now = unix_now();
+    let mut all = s.panels.locked("panels");
+    all.retain(|_, (_, _, exp)| *exp > now);
+    let mut up: Vec<(i64, eqlparser_api::PanelUp)> = all
+        .iter()
+        .map(|(id, (p, at, _))| (*at, eqlparser_api::PanelUp { id: id.clone(), panel: p.clone() }))
+        .collect();
+    up.sort_by(|a, b| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
+    Json(eqlparser_api::Panels { panels: up.into_iter().map(|(_, p)| p).collect() })
+}
+
 /// `GET /api/pickups?since=<log ts>`: what you picked up, one row per item.
 ///
 /// `since` is in the log's clock; without it, the last hour before the
@@ -3834,6 +3890,7 @@ mod tests {
                 "http://127.0.0.1:1".to_string()
             ])),
             ids: None,
+            panels: Default::default(),
             shots: crate::shots::Shots::new(crate::shots::Setup {
                 shots: None,
                 game_dir: None,

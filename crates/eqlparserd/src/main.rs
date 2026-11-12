@@ -774,6 +774,7 @@ async fn main() -> anyhow::Result<()> {
         itemdb,
         shots,
         ids: ids.clone(),
+        panels: Default::default(),
     };
 
     eprintln!("[eqlparserd] listening on http://{addr}");

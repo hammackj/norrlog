@@ -152,6 +152,61 @@ pub struct BagItem {
     pub grades: Vec<u32>,
 }
 
+/// A panel another app asks the overlay to draw: `PUT /api/panels/{id}`.
+///
+/// The overlay's extension slot. The daemon stores and serves it and knows
+/// nothing of what it says, so an app can put its prompt over the game
+/// without the daemon taking on that app's job. A panel lapses `ttl_secs`
+/// after it was last put, so an app that closes or crashes takes its panel
+/// with it; an app keeps one up by putting it again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Panel {
+    pub title: String,
+    /// A short line beside the title: counts, mostly.
+    #[serde(default)]
+    pub meta: String,
+    pub rows: Vec<PanelRow>,
+    /// Seconds the panel stays without being put again. Clamped to 5..=600.
+    #[serde(default = "Panel::default_ttl")]
+    pub ttl_secs: u32,
+}
+
+impl Panel {
+    pub const fn default_ttl() -> u32 {
+        60
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelRow {
+    /// Left: the name of the thing.
+    pub name: String,
+    /// Right: what about it.
+    #[serde(default)]
+    pub value: String,
+    /// An optional second line, left and right, in the quieter style.
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub note_value: Option<String>,
+    /// Drawn in the highlight colour: something only you know.
+    #[serde(default)]
+    pub highlight: bool,
+}
+
+/// `GET /api/panels`: every panel still up, oldest put first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Panels {
+    pub panels: Vec<PanelUp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelUp {
+    pub id: String,
+    #[serde(flatten)]
+    pub panel: Panel,
+}
+
 /// What a non-2xx answer carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiError {
