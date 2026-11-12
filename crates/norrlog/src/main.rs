@@ -18,6 +18,7 @@ mod fight;
 #[allow(dead_code)]
 mod format;
 mod procs;
+mod spell_tip;
 mod state;
 mod table;
 #[allow(dead_code)]

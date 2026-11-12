@@ -99,6 +99,8 @@ pub struct EncountersView {
     detail: Option<Detail>,
     /// The open fight's subtab and drilled-open meter rows.
     pub(crate) fight: FightUi,
+    /// Spell hover cards, each name asked about once.
+    pub(crate) spells: Entity<crate::spell_tip::SpellCards>,
     detail_scroll: ScrollHandle,
     _subs: Vec<Subscription>,
 }
@@ -140,12 +142,14 @@ impl EncountersView {
             scroll: ScrollHandle::new(),
             detail: None,
             fight: FightUi::default(),
+            spells: cx.new(|_| crate::spell_tip::SpellCards::new()),
             detail_scroll: ScrollHandle::new(),
             _subs: subs,
         }
     }
 
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
+        self.spells.update(cx, |c, _| c.set_api(api.clone()));
         self.api = api;
         cx.notify();
     }

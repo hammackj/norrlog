@@ -5,6 +5,7 @@
 //! Fetched once when opened and never refreshed: a closed fight does not
 //! change. The two charts are in `charts.rs`.
 
+use crate::spell_tip::{SpellCards, spell_tip};
 use crate::encounters::EncountersView;
 use crate::format::{dur, num, when};
 use crate::table::{self, Col, col, muted, tag};
@@ -148,7 +149,8 @@ impl EncountersView {
         }
         let mut out = v_flex().gap_1();
         for (r, folded) in rows {
-            let abilities = actors.get(&r.key).filter(|_| !r.key.is_empty()).and_then(|st| ability_rows(st, r.damage));
+            let abilities =
+                actors.get(&r.key).filter(|_| !r.key.is_empty()).and_then(|st| ability_rows(st, r.damage, &r.key, &self.spells));
             let open = self.fight.open.contains(&r.key);
             let mut name = h_flex().gap_1().min_w_0().overflow_hidden().font_weight(FontWeight::MEDIUM);
             if abilities.is_some() {
@@ -223,7 +225,7 @@ impl EncountersView {
             .bg(hex(PANEL_2))
             .child(subtab("pane-out", "Outgoing", you.map_or(0, |y| y.damage_done), !incoming, false))
             .child(subtab("pane-in", "Incoming", you.map_or(0, |y| y.damage_taken), incoming, true));
-        let body = if incoming { incoming_pane(you) } else { outgoing_pane(you, groups) };
+        let body = if incoming { incoming_pane(you) } else { outgoing_pane(you, groups, &self.spells) };
         panel().child(div().flex().child(tabs)).child(body)
     }
 }
@@ -329,6 +331,14 @@ fn table_box(cols: &[Col], rows: Vec<AnyElement>) -> Div {
     v_flex().rounded(px(6.)).border_1().border_color(hex(BORDER)).overflow_hidden().child(table::head_dense(cols)).children(rows)
 }
 
+/// An ability's name, carrying its spell card. A swing or a damage shield
+/// is named by its verb ("slash", "flames"), and the spell that happens to
+/// share the word is not what was done, so those carry none.
+fn spell_name(id: SharedString, name: &str, kind: &str, spells: &Entity<SpellCards>) -> AnyElement {
+    let el = div().id(id).child(name.to_string());
+    if matches!(kind, "melee" | "damage shield") { el.into_any_element() } else { spell_tip(el, spells, name).into_any_element() }
+}
+
 fn cell(s: impl Into<SharedString>) -> AnyElement {
     div().child(s.into()).into_any_element()
 }
@@ -397,7 +407,7 @@ fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str) -> Div {
 
 /// `outgoingPaneHtml`: your damage grouped by mechanism, or the flat list
 /// for a fight parsed before abilities carried a kind.
-fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup]) -> Div {
+fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Entity<SpellCards>) -> Div {
     let Some(you) = you.filter(|y| y.damage_done > 0) else {
         return empty("No damage dealt");
     };
@@ -451,7 +461,12 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup]) -> Div {
                     SharedString::from(format!("og-{}-{}", g.group, a.name)),
                     GROUP_COLS,
                     vec![
-                        cell(a.name.clone()),
+                        spell_name(
+                            SharedString::from(format!("sp-og-{}-{}", g.group, a.name)),
+                            &a.name,
+                            you.by_ability.get(&a.name).map_or("", |s| s.kind.as_str()),
+                            spells,
+                        ),
                         cell(num(Some(a.damage as f64))),
                         cell(dps_text(Some(a.dps))),
                         dim(format!("{:.1}%", a.share * 100.)),
@@ -746,7 +761,7 @@ fn loot_card(e: &eqlparser_api::Encounter) -> Div {
 /// An actor's own abilities, biggest first, as the renderer's drill list.
 /// Shares are of that actor's damage: the question inside a row is where
 /// *its* damage came from.
-fn ability_rows(st: &ActorStats, total: u64) -> Option<Div> {
+fn ability_rows(st: &ActorStats, total: u64, key: &str, spells: &Entity<SpellCards>) -> Option<Div> {
     let mut rows: Vec<(&String, &AbilityStats)> = st.by_ability.iter().filter(|(_, a)| a.total > 0).collect();
     if rows.is_empty() {
         return None;
@@ -756,7 +771,19 @@ fn ability_rows(st: &ActorStats, total: u64) -> Option<Div> {
     Some(v_flex().gap(px(2.)).pl_4().children(rows.into_iter().map(|(name, a)| {
         bar(a.total as f64 / sum, wash(YOU, 0.18))
             .py(px(3.))
-            .child(h_flex().gap_1().min_w_0().child(name.clone()).child(tag(if a.kind.is_empty() { "?".into() } else { a.kind.clone() }, ACCENT)))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .min_w_0()
+                    // The name gives way to the numbers, not the kind tag.
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(spell_name(
+                        SharedString::from(format!("sp-dr-{key}-{name}")),
+                        name,
+                        &a.kind,
+                        spells,
+                    )))
+                    .child(tag(if a.kind.is_empty() { "?".into() } else { a.kind.clone() }, ACCENT).flex_none()),
+            )
             .child(
                 h_flex()
                     .gap_3()
