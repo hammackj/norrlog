@@ -20,7 +20,7 @@
 
 
 pub mod install;
-use norrlog_api::{Bags, Event, Hello, Pickups, API_VERSION, IDENTITY};
+use norrlog_api::{Bags, Event, Hello, Pickups, API_VERSION, IDENTITY, OLD_IDENTITY};
 use futures_util::{Stream, StreamExt};
 use serde::de::DeserializeOwned;
 use std::ffi::OsString;
@@ -409,7 +409,7 @@ async fn hello_at(http: &reqwest::Client, port: u16) -> Result<Hello> {
 }
 
 fn check(port: u16, hello: &Hello) -> Result<()> {
-    if hello.identity != IDENTITY {
+    if hello.identity != IDENTITY && hello.identity != OLD_IDENTITY {
         return Err(Error::NotOurs { port, why: format!("it calls itself {:?}", hello.identity) });
     }
     if hello.api_version != API_VERSION {
@@ -431,6 +431,14 @@ mod tests {
         let got = hello_at(&http().unwrap(), port).await;
         assert!(matches!(got, Err(Error::Busy { port: p }) if p == port), "{got:?}");
         drop(l);
+    }
+
+    /// A daemon from before the rename is still ours.
+    #[test]
+    fn the_old_daemon_name_is_still_ours() {
+        let mut h = hello(API_VERSION);
+        h.identity = OLD_IDENTITY.into();
+        assert!(check(1, &h).is_ok());
     }
 
     fn hello(api_version: u32) -> Hello {

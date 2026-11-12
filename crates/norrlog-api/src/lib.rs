@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 /// anything else that happens to hold the port.
 pub const IDENTITY: &str = "norrlogd";
 
+/// What the daemon called itself before the rename to Norrlog. A daemon of
+/// the old build may still be running, or be what an installed collector
+/// starts, so it is still recognised for one release.
+pub const OLD_IDENTITY: &str = "eqlparserd";
+
 /// Bumped when a type here changes incompatibly. A client refuses a daemon
 /// whose number differs from its own and says which side to update.
 pub const API_VERSION: u32 = 1;
