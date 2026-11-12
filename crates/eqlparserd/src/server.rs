@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/overlay", get(overlay_page))
         .route("/api/logs/status", get(logs_status))
+        .route("/api/daemon-log", get(daemon_log))
         .route("/api/item-ids", get(item_ids))
         .route("/overlay.css", get(overlay_css))
         .route("/overlay.js", get(overlay_js))
@@ -1375,6 +1376,17 @@ async fn item_brief(State(s): State<AppState>, Query(q): Query<BriefQuery>) -> R
         "items": out,
     }))
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonLogQuery {
+    #[serde(default)]
+    since: u64,
+}
+
+/// `GET /api/daemon-log?since=N`: this daemon's own stderr, from line N.
+async fn daemon_log(Query(q): Query<DaemonLogQuery>) -> Json<eqlparser_api::DaemonLog> {
+    Json(crate::logring::since(q.since))
 }
 
 /// `GET /api/logs/status` — every log in the folder and how much of it has been read.

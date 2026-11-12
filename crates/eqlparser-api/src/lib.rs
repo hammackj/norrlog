@@ -247,3 +247,24 @@ mod tests {
         }
     }
 }
+
+/// `GET /api/daemon-log?since=N`: what the daemon has written to stderr,
+/// from line `since` on.
+///
+/// Served by the daemon itself because nothing else is guaranteed to have
+/// it: a daemon one app started outlives that app, and whoever opens a log
+/// view later is not its parent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonLog {
+    pub lines: Vec<DaemonLogLine>,
+    /// Pass back as `since` to get only what came after.
+    pub next: u64,
+    /// Whether lines older than `since` had already been dropped.
+    pub dropped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonLogLine {
+    pub seq: u64,
+    pub text: String,
+}

@@ -489,6 +489,7 @@ dependencies = [
  "eqlparser-core",
  "futures-util",
  "ksni",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",

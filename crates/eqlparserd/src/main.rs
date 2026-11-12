@@ -10,6 +10,7 @@ mod dumps;
 mod engine;
 mod itemdb;
 mod locks;
+mod logring;
 mod paths;
 mod record;
 mod server;
@@ -432,8 +433,47 @@ fn resolve_log(cfg: &Config) -> anyhow::Result<PathBuf> {
     anyhow::bail!("specify --log <file> or --logs-dir <dir>")
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Before the runtime exists, so that nothing closed here is one of its.
+    #[cfg(unix)]
+    close_inherited_fds();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+/// Close every descriptor this process was handed beyond stdin, stdout and
+/// stderr.
+///
+/// A daemon outlives whoever started it, so whatever that parent leaked into
+/// it stays held for as long as the daemon runs. Electron leaks plenty that
+/// was not opened close-on-exec: its devtools listening socket (the next
+/// instance could not bind the port), Chromium's shared memory, and a file in
+/// the app's own profile. None of it is the daemon's, so none of it is kept.
+#[cfg(unix)]
+fn close_inherited_fds() {
+    let dir = if cfg!(target_os = "linux") { "/proc/self/fd" } else { "/dev/fd" };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    // Collected first: the listing holds a descriptor of its own while it is
+    // being read, and closing that mid-listing would end it early. Once the
+    // listing is dropped, closing its number again is a harmless EBADF.
+    let fds: Vec<i32> = entries
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in fds {
+        // SAFETY: nothing in this process has opened anything yet; these
+        // are all inherited.
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let cfg = parse_args();
     // Before anything slow: a parent that dies during a long initial parse
     // should still take this with it.
@@ -481,6 +521,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
+    // From here this is a daemon that stays up, so its stderr is kept for
+    // `/api/daemon-log` (see `logring`). Not earlier: a process that prints
+    // and exits at once (usage, a taken port) could lose lines still in the
+    // pipe.
+    logring::capture();
 
     // The filename is the only place the character and server appear; history
     // is keyed on both so an alt or a second server keeps its own records.
