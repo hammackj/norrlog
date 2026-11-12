@@ -103,47 +103,7 @@ pub struct BuffInfo {
     pub beneficial: bool,
 }
 
-/// Detected class with supporting evidence.
-#[derive(Debug, Clone, Serialize)]
-pub struct ClassInfo {
-    pub name: String,
-    pub abbrev: String,
-    pub score: f32,
-    pub share: f32,
-    pub reasons: Vec<String>,
-}
-
-/// Career totals across every parsed encounter.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Totals {
-    pub encounters: usize,
-    /// Every point dealt by both sides. Includes enemies hitting you, so it is
-    /// not the figure a damage meter usually wants.
-    pub total_damage: u64,
-    /// Damage your side put into the enemy — the meaningful headline number.
-    pub damage_to_enemies: u64,
-    pub your_damage: u64,
-    pub your_healing: u64,
-    pub your_damage_taken: u64,
-    pub kills: usize,
-    pub deaths: u64,
-    pub items_looted: usize,
-    /// Sessions seen in this log, and the seconds spent inside them. The
-    /// denominator for any "per hour" figure, since the log's own span counts
-    /// the days the game was closed.
-    #[serde(default)]
-    pub sessions: u32,
-    #[serde(default)]
-    pub played_seconds: i64,
-    /// Coin taken directly from corpses.
-    pub coin_copper: u64,
-    /// Coin from items auto-sold on pickup — a large share of real income.
-    pub coin_from_sales_copper: u64,
-    /// Corpse coin plus sales.
-    pub coin_total_copper: u64,
-}
-
-pub use eqlparser_api::{LootDetail, LootSource, LootTally};
+pub use eqlparser_api::{ClassInfo, LootDetail, LootSource, LootTally, Totals};
 
 /// An item you picked up recently and probably still have.
 ///
