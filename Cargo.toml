@@ -6,7 +6,7 @@ members = ["crates/eqlparser-core", "crates/eqlparser-api", "crates/eqlparser-cl
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Jacob Hammack <jacob.hammack@hammackj.com>"]
+authors = ["Jacob Hammack <172781+hammackj@users.noreply.github.com>"]
 
 [workspace.dependencies]
 regex = "1"

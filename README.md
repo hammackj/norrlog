@@ -417,3 +417,20 @@ the player actually saw.
 its detection rests entirely on the curated skill table in `class.rs`. That
 table deliberately omits skills every melee class trains (Defense, Offense,
 Dodge, 1H Slashing) because they carry no signal.
+
+## Built with Claude
+
+eqlparser was written with a lot of help from
+[Claude Code](https://claude.com/claude-code), Anthropic's coding agent. That
+covers the log parser and daemon, the Electron app, the Norrlog port to Rust
+and GPUI, and most of the bug fixes since. The maintainer sets the design and
+features, and decides what ships in each release.
+
+Fixes come with a test that reproduces the bug and fails without it, and
+changes to what the parser counts are checked against real logs from both
+games before they are committed. Commits don't carry AI co-author trailers;
+this section is the disclosure instead.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
