@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn legends_is_not_mistaken_for_classic() {
         let legends = PathBuf::from(
-            "/path/to/CrossOver/EverquestLegends/drive_c/users/Public/\
+            "/games/bottles/Legends/drive_c/users/Public/\
              Daybreak Game Company/Installed Games/EverQuest Legends",
         );
         assert_eq!(Game::from_path(&legends), Game::EverQuestLegends);

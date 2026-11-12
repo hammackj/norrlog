@@ -668,8 +668,8 @@ async fn item_ids(State(state): State<AppState>) -> impl IntoResponse {
 ///
 /// Whose bags: the client writes one dump per character and this daemon
 /// follows one log, so "in your bags" means the character on that log and not
-/// every character who has ever typed the command. hammackj was on Tharn and the
-/// wanted list was offering things sitting in Mirela's bags 44 hours ago --- not
+/// every character who has ever typed the command. A player on Tharn was
+/// offered things sitting in Mirela's bags 44 hours ago --- not
 /// a prompt but a trip to the bank and a character select.
 ///
 /// Read from the files rather than the id record, which remembers every id
@@ -2703,7 +2703,7 @@ mod tests {
 
     /// One character's bags, not every character's.
     ///
-    /// hammackj was playing Tharn and the list offered items sitting in Mirela's
+    /// A player on Tharn was offered items sitting in Mirela's
     /// bags in a dump 44 hours old. That is not a prompt to take a picture ---
     /// it is a trip to the bank and a character select --- and nothing on the
     /// row said whose it was.

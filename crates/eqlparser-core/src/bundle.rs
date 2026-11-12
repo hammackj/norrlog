@@ -1286,8 +1286,8 @@ pub struct ItemFacts {
     /// the 91 socketed readings hold the item's own `(Exaltation)` augment,
     /// which is what an item spawns with; the other 26 are somebody's choice
     /// -- Gilded Cloth in Adamantite Epaulets, White Dragonscale Cloak in
-    /// Cloak of Flames. hammackj: "I can put custom ones in, typically an
-    /// item won't spawn with things not named the same as the item."
+    /// Cloak of Flames. Players put their own augments in; an item does not
+    /// spawn with ones named differently from itself.
     ///
     /// So this is the same class of fact as the grade and as attunement: true
     /// of one copy on one day. `augment_slots` beside it is the item's own.

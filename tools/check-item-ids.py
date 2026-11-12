@@ -33,10 +33,7 @@ import urllib.error
 import urllib.request
 
 PORT = int(os.environ.get("EQLPARSERD_PORT", "8777"))
-GAME_DIR = os.environ.get("EQL_GAME_DIR") or (
-    "/path/to/CrossOver/EverquestLegends/drive_c/users/Public/"
-    "Daybreak Game Company/Installed Games/EverQuest Legends"
-)
+GAME_DIR = os.environ.get("EQLPARSER_GAME_DIR") or os.environ.get("EQL_GAME_DIR")
 RECORD = os.path.expanduser("~/.config/eqlparser/item-ids.json")
 
 # The grade rule, as `eqlparser-core/src/itemids.rs` states it: `+1` to `+10`
@@ -132,7 +129,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--game-dir", default=GAME_DIR)
+    ap.add_argument("--game-dir", default=GAME_DIR, required=not GAME_DIR,
+                    help="the game directory (default: $EQLPARSER_GAME_DIR)")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--record", help="read this file instead of asking the daemon")
     ap.add_argument("-v", "--verbose", action="store_true",

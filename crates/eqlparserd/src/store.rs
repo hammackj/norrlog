@@ -2685,9 +2685,9 @@ impl Store {
     /// Hide what nobody played from this connection, until the guard drops.
     ///
     /// For building a bundle. The history follows every log it is pointed at,
-    /// and on 23 Sep 2026 that was the test server and six fixture logs under
-    /// Claude scratchpads beside the real ones -- all of which the bundles of
-    /// 10--12 Sep sent to eqldb as the operator's own play: 2,728 drop
+    /// and once that was the test server and six fixture logs beside the real
+    /// ones -- all of which early bundles sent to eqldb as the operator's own
+    /// play: 2,728 drop
     /// pairings and 522 kill tallies from `eqlog_Brennagh_test.txt` alone.
     /// eqldb now refuses such a bundle outright, because once built its totals
     /// cannot be taken apart.
@@ -3034,7 +3034,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let b = crate::bundle::build(&s, None, "hammackj", 10).unwrap();
+        let b = crate::bundle::build(&s, None, "operator", 10).unwrap();
         let drops: Vec<(String, u64)> = b.drops.iter().map(|d| (d.item.clone(), d.looted)).collect();
         assert_eq!(drops, [("Rusty Dagger".to_string(), 3)]);
         assert_eq!(b.kills.iter().map(|k| k.kills).sum::<u64>(), 3);
@@ -3049,8 +3049,8 @@ mod tests {
 
     /// The raid-kill export obeys the same guard as a bundle.
     ///
-    /// The history on this machine holds 46 test-server kills of Brennagh's,
-    /// and the first export sent every one of them to the site.
+    /// One history held 46 test-server kills, and the first export sent every
+    /// one of them to the site.
     #[test]
     fn the_raid_kill_export_leaves_out_the_test_server() {
         let s = Store::in_memory().unwrap();
