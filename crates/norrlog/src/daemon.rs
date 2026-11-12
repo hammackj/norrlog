@@ -22,7 +22,7 @@ pub struct Setup {
 
 pub enum Msg {
     Attaching,
-    Attached { hello: Box<Hello>, started: bool },
+    Attached { hello: Box<Hello>, started: bool, client: Box<Client> },
     Snapshot(Arc<serde_json::Value>),
     Lost(String),
 }
@@ -31,18 +31,16 @@ pub enum Msg {
 /// does not reparse the whole log; the same as Electron and the collector.
 const IDLE_EXIT: Duration = Duration::from_secs(60);
 
-pub fn spawn(setup: Setup, tx: async_channel::Sender<Msg>) {
+/// Starts the daemon thread and its runtime; the handle is for views'
+/// requests (see `api`), which run on the same runtime.
+pub fn spawn(setup: Setup, tx: async_channel::Sender<Msg>) -> tokio::runtime::Handle {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime");
+    let handle = rt.handle().clone();
     std::thread::Builder::new()
         .name("daemon".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("a tokio runtime");
-            rt.block_on(run(setup, tx));
-        })
+        .spawn(move || rt.block_on(run(setup, tx)))
         .expect("the daemon thread");
+    handle
 }
 
 async fn run(setup: Setup, tx: async_channel::Sender<Msg>) {
@@ -70,7 +68,8 @@ async fn run(setup: Setup, tx: async_channel::Sender<Msg>) {
 async fn session(setup: &Setup, spawn: &Spawn, tx: &async_channel::Sender<Msg>, retry: &mut u64) -> Result<(), String> {
     let client = Client::attach_or_spawn(setup.port, spawn).await.map_err(|e| describe(&e, setup))?;
     let hello = Box::new(client.hello().clone());
-    if tx.send(Msg::Attached { hello, started: client.started_daemon() }).await.is_err() {
+    let started = client.started_daemon();
+    if tx.send(Msg::Attached { hello, started, client: Box::new(client.clone()) }).await.is_err() {
         return Ok(());
     }
     let mut snaps = client.snapshots().await.map_err(|e| describe(&e, setup))?;

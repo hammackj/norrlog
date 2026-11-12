@@ -1,0 +1,87 @@
+//! Tables, as the Electron app draws them: an uppercase dim header, rows
+//! that highlight on hover, numbers right-aligned. Columns are either fixed
+//! width or share what is left.
+
+use crate::theme::*;
+use gpui::*;
+
+#[derive(Clone, Copy)]
+pub struct Col {
+    pub label: &'static str,
+    /// Fixed width; `None` shares the remaining space.
+    pub width: Option<f32>,
+    /// Numbers: right-aligned.
+    pub num: bool,
+}
+
+pub const fn col(label: &'static str, width: Option<f32>, num: bool) -> Col {
+    Col { label, width, num }
+}
+
+fn cell_box(c: &Col) -> Div {
+    let d = div().overflow_hidden().whitespace_nowrap().text_ellipsis();
+    let d = match c.width {
+        Some(w) => d.w(px(w)).flex_none(),
+        None => d.flex_1().min_w_0(),
+    };
+    if c.num { d.flex().justify_end() } else { d }
+}
+
+pub fn head(cols: &[Col]) -> Div {
+    let mut r = div()
+        .flex()
+        .flex_row()
+        .gap_3()
+        .px_3()
+        .py(px(6.))
+        .bg(hex(PANEL))
+        .border_b_1()
+        .border_color(hex(BORDER))
+        .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(hex(MUTED));
+    for c in cols {
+        r = r.child(cell_box(c).child(c.label.to_uppercase()));
+    }
+    r
+}
+
+/// One row. Cells line up with `cols`; extra cells are ignored.
+pub fn row(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>) -> Stateful<Div> {
+    let mut r = div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .px_3()
+        .py(px(5.))
+        .border_b_1()
+        .border_color(wash(BORDER, 0.6))
+        .hover(|s| s.bg(hex(PANEL_2)));
+    for (c, cell) in cols.iter().zip(cells) {
+        r = r.child(cell_box(c).child(cell));
+    }
+    r
+}
+
+/// A row with nothing but a message, spanning the table.
+pub fn empty_row(text: impl Into<SharedString>) -> Div {
+    div().px_3().py_4().text_color(hex(MUTED)).child(text.into())
+}
+
+/// Dim text, for the quieter columns.
+pub fn muted(text: impl Into<SharedString>) -> Div {
+    div().text_color(hex(MUTED)).child(text.into())
+}
+
+/// A small inline tag, the renderer's `.tag`.
+pub fn tag(text: impl Into<SharedString>, color: u32) -> Div {
+    div()
+        .px(px(5.))
+        .rounded(px(4.))
+        .bg(wash(color, 0.15))
+        .text_color(hex(color))
+        .text_size(px(11.))
+        .child(text.into())
+}

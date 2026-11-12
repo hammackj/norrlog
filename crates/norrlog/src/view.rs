@@ -39,6 +39,8 @@ enum Link {
 
 pub struct Shell {
     link: Link,
+    rt: tokio::runtime::Handle,
+    encounters: Entity<crate::encounters::EncountersView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -47,7 +49,13 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new(rx: async_channel::Receiver<Msg>, state: State, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        rx: async_channel::Receiver<Msg>,
+        rt: tokio::runtime::Handle,
+        state: State,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(msg) = rx.recv().await {
                 if this.update_in(cx, |v, _, cx| v.on_msg(msg, cx)).is_err() {
@@ -59,7 +67,8 @@ impl Shell {
         // a window killed with the session never gets to say goodbye.
         let subs = vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
         let tab = TABS.iter().find(|t| t.0 == state.tab).map(|t| t.0).unwrap_or("dashboard");
-        Shell { link: Link::Attaching, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
+        let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
+        Shell { link: Link::Attaching, rt, encounters, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
     }
 
     fn on_msg(&mut self, msg: Msg, cx: &mut Context<Self>) {
@@ -69,12 +78,31 @@ impl Shell {
                     self.link = Link::Attaching;
                 }
             }
-            Msg::Attached { hello, started } => self.link = Link::Attached { hello, started },
-            Msg::Snapshot(s) => self.snapshot = Some(s),
+            Msg::Attached { hello, started, client } => {
+                self.link = Link::Attached { hello, started };
+                let api = crate::api::Api { rt: self.rt.clone(), client: *client };
+                let open = self.tab;
+                self.encounters.update(cx, |v, cx| {
+                    v.set_api(Some(api), cx);
+                    if open == "encounters" {
+                        v.load(false, cx);
+                    }
+                });
+            }
+            Msg::Snapshot(s) => {
+                // The id of the newest *closed* fight: `totals.encounters`
+                // counts the one in progress too, and so moves at the wrong
+                // moment.
+                let newest = s.get("recent").and_then(|r| r.get(0)).and_then(|e| e.get("id")).and_then(Value::as_u64);
+                let visible = self.tab == "encounters";
+                self.encounters.update(cx, |v, cx| v.newest_closed(newest, visible, cx));
+                self.snapshot = Some(s);
+            }
             Msg::Lost(why) => {
                 eprintln!("[norrlog] lost the daemon: {why}");
                 self.link = Link::Lost(why);
                 self.snapshot = None;
+                self.encounters.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -95,6 +123,10 @@ impl Shell {
 
     fn select(&mut self, tab: &'static str, cx: &mut Context<Self>) {
         self.tab = tab;
+        // As the renderer does: opening a tab fetches it afresh.
+        if tab == "encounters" {
+            self.encounters.update(cx, |v, cx| v.load(false, cx));
+        }
         self.state.tab = tab.to_string();
         self.state.save();
         cx.notify();
@@ -187,6 +219,7 @@ impl Shell {
         }
         match self.tab {
             "dashboard" => self.render_totals().into_any_element(),
+            "encounters" => self.encounters.clone().into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
@@ -251,7 +284,12 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(div().id("main").flex_1().min_h_0().overflow_y_scroll().p_4().child(self.render_body()))
+            .child(if self.tab == "encounters" && !matches!(self.link, Link::Lost(_)) {
+                // Scrolls its own table, so its toolbar stays put.
+                div().id("main").flex_1().min_h_0().p_4().child(self.render_body())
+            } else {
+                div().id("main").flex_1().min_h_0().overflow_y_scroll().p_4().child(self.render_body())
+            })
     }
 }
 

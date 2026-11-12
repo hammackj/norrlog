@@ -8,12 +8,15 @@
 //! What the daemon follows comes from the Electron app's config while the
 //! two live side by side, so whichever starts it starts it the same way.
 
+mod api;
 mod config;
 mod daemon;
+mod encounters;
 // The shared toolkit the tab ports draw on; ahead of its users for now.
 #[allow(dead_code)]
 mod format;
 mod state;
+mod table;
 #[allow(dead_code)]
 mod theme;
 mod view;
@@ -46,7 +49,7 @@ fn main() {
     // Bounded, and snapshots displace the oldest waiting message: a window
     // that falls behind wants the newest state, not a queue of old ones.
     let (tx, rx) = async_channel::bounded(16);
-    daemon::spawn(setup, tx);
+    let rt = daemon::spawn(setup, tx);
     let state = state::State::load();
 
     gpui_platform::application().run(move |cx| {
@@ -67,7 +70,7 @@ fn main() {
             ..Default::default()
         };
         cx.open_window(options, move |window, cx| {
-            let view = cx.new(|cx| view::Shell::new(rx, state, window, cx));
+            let view = cx.new(|cx| view::Shell::new(rx, rt, state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("could not open the window");
