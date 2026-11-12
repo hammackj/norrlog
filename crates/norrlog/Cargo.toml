@@ -22,6 +22,9 @@ base64 = "0.22"
 # Cutting an item icon out of its sheet. Already in the tree through GPUI.
 image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Alert sounds: synthesised tones, played on the default output. Playback
+# only; no decoders, since nothing is read from a file.
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "sync"] }
 # GPUI pinned exactly as the eqldb collector pins it (the `gpui-pre`

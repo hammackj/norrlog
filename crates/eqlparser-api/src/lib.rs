@@ -1121,3 +1121,38 @@ pub struct ItemBrief {
 
 // Tells: `GET /api/tells`, core's report.
 pub use eqlparser_core::tells::{Conversation, TellMessage, TellReport};
+
+// ---------------------------------------------------------------------------
+// Alerts: `GET /api/alerts`, `POST /api/alerts`, `POST /api/alerts/delete`
+// and the feed, `GET /api/lines?since=N`. Fires ride on the snapshot.
+
+pub use eqlparser_core::alert::{AlertFire, AlertRule, SignalKind, Sound, Trigger};
+
+/// `GET /api/alerts`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AlertsReply {
+    #[serde(default)]
+    pub rules: Vec<AlertRule>,
+    /// False when the daemon has no database: rules die with it.
+    #[serde(default)]
+    pub persisted: bool,
+}
+
+/// One line as the alerts view sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogLine {
+    /// Monotonic, so a client can ask for only what it has not seen.
+    pub seq: u64,
+    pub at: i64,
+    /// The line with the client's timestamp prefix removed.
+    pub text: String,
+}
+
+/// `GET /api/lines?since=N`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LinesReply {
+    #[serde(default)]
+    pub lines: Vec<LogLine>,
+    #[serde(default)]
+    pub live: bool,
+}

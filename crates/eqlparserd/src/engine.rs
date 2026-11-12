@@ -512,15 +512,7 @@ pub struct Engine {
     line_seq: u64,
 }
 
-/// One line as the alerts view sees it.
-#[derive(Debug, Clone, Serialize)]
-pub struct LogLine {
-    /// Monotonic, so a client can ask for only what it has not seen.
-    pub seq: u64,
-    pub at: i64,
-    /// The line with the client's timestamp prefix removed.
-    pub text: String,
-}
+pub use eqlparser_api::LogLine;
 
 /// How many recent lines are kept for the alerts view.
 ///

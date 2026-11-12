@@ -241,12 +241,15 @@ pub struct AlertRule {
     /// Why this rule can never fire, when that is the case — a regular
     /// expression that would not compile. Reported rather than swallowed, so a
     /// typo shows up as a broken rule instead of silence.
-    #[serde(default, skip_deserializing)]
+    ///
+    /// Read in as well as out, so a client can show it. Whatever a client
+    /// sends back is ignored: compiling a rule resets it.
+    #[serde(default)]
     pub error: Option<String>,
 }
 
 /// One alert that went off.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertFire {
     /// Monotonic across the life of the daemon. Clients play everything newer
     /// than the last sequence they saw, which makes delivery idempotent across

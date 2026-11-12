@@ -8,6 +8,7 @@
 //! What the daemon follows comes from the Electron app's config while the
 //! two live side by side, so whichever starts it starts it the same way.
 
+mod alerts;
 mod api;
 mod character;
 mod classes;
@@ -26,6 +27,7 @@ mod loot;
 mod parts;
 mod procs;
 mod sky;
+mod sound;
 mod spell_tip;
 mod state;
 mod table;

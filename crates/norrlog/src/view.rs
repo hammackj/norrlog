@@ -50,6 +50,7 @@ pub struct Shell {
     forage: Entity<crate::forage::ForageView>,
     sky: Entity<crate::sky::SkyView>,
     tells: Entity<crate::tells::TellsView>,
+    alerts: Entity<crate::alerts::AlertsView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -86,6 +87,7 @@ impl Shell {
         let forage = cx.new(|_| crate::forage::ForageView::new());
         let sky = cx.new(crate::sky::SkyView::new);
         let tells = cx.new(|_| crate::tells::TellsView::new());
+        let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         Shell {
             link: Link::Attaching,
             rt,
@@ -99,6 +101,7 @@ impl Shell {
             forage,
             sky,
             tells,
+            alerts,
             tab,
             snapshot: None,
             state,
@@ -149,6 +152,12 @@ impl Shell {
                         v.load(cx);
                     }
                 });
+                self.alerts.update(cx, |v, cx| {
+                    v.set_api(Some(api.clone()), cx);
+                    // A fresh attach loads the tab afresh if it is open.
+                    v.set_visible(false, cx);
+                    v.set_visible(open == "alerts", cx);
+                });
                 self.tells.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
                     if open == "tells" {
@@ -195,6 +204,10 @@ impl Shell {
                 self.forage.update(cx, |v, cx| v.on_snapshot(forage_open, cx));
                 let sky_open = self.tab == "sky";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
+                // Every snapshot, whichever tab is open: alerts are heard.
+                let fires = s.get("alerts").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
+                let seq = s.get("alert_seq").and_then(Value::as_u64).unwrap_or(0);
+                self.alerts.update(cx, |v, cx| v.on_fires(fires, seq, cx));
                 let tells_open = self.tab == "tells";
                 self.tells.update(cx, |v, cx| v.on_snapshot(tells_open, cx));
                 self.snapshot = Some(s);
@@ -212,6 +225,7 @@ impl Shell {
                 self.forage.update(cx, |v, cx| v.set_api(None, cx));
                 self.sky.update(cx, |v, cx| v.set_api(None, cx));
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
+                self.alerts.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -252,6 +266,7 @@ impl Shell {
         if tab == "forage" {
             self.forage.update(cx, |v, cx| v.load(cx));
         }
+        self.alerts.update(cx, |v, cx| v.set_visible(tab == "alerts", cx));
         if tab == "tells" {
             self.tells.update(cx, |v, cx| v.load(cx));
         }
@@ -358,6 +373,7 @@ impl Shell {
             "classes" => self.classes.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "tradeskills" => self.tradeskills.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "forage" => self.forage.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "alerts" => self.alerts.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "tells" => self.tells.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "sky" => self.sky.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
@@ -424,7 +440,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells") && !matches!(self.link, Link::Lost(_)) {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts") && !matches!(self.link, Link::Lost(_)) {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())

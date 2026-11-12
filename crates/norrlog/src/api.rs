@@ -28,7 +28,14 @@ impl Api {
     /// A POST of a JSON body; only whether it worked comes back.
     pub fn post_json(&self, path: String, body: serde_json::Value) -> impl Future<Output = Result<(), String>> + use<> {
         let client = self.client.clone();
-        let task = self.rt.spawn(async move { client.post_json(&path, &body).await.map_err(|e| e.to_string()) });
+        // A refusal reads as the daemon's own words, as the renderer shows
+        // the response body.
+        let task = self.rt.spawn(async move {
+            client.post_json(&path, &body).await.map_err(|e| match e {
+                eqlparser_client::Error::Api { error, .. } => error,
+                e => e.to_string(),
+            })
+        });
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
