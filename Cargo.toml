@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/eqlparser-core", "crates/eqlparser-api", "crates/eqlparser-vision", "crates/eqlparser-read", "crates/eqlparser-parse", "crates/eqlparser-shot", "crates/eqlparserd"]
+members = ["crates/eqlparser-core", "crates/eqlparser-api", "crates/eqlparser-client", "crates/eqlparser-vision", "crates/eqlparser-read", "crates/eqlparser-parse", "crates/eqlparser-shot", "crates/eqlparserd"]
 
 [workspace.package]
 version = "0.1.0"

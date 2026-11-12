@@ -325,6 +325,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "eqlparser-client"
+version = "0.1.0"
+dependencies = [
+ "eqlparser-api",
+ "eqlparser-core",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "eqlparser-core"
 version = "0.1.0"
 dependencies = [
@@ -385,11 +399,13 @@ dependencies = [
  "anyhow",
  "axum",
  "eqlparser-api",
+ "eqlparser-client",
  "eqlparser-core",
  "eqlparser-parse",
  "eqlparser-shot",
  "eqlparser-vision",
  "flate2",
+ "futures-util",
  "reqwest",
  "rusqlite",
  "serde",

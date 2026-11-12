@@ -35,6 +35,8 @@ pub struct AppState {
     pub snapshot: Arc<RwLock<Snapshot>>,
     /// Fires whenever a new snapshot is published.
     pub updates: broadcast::Sender<()>,
+    /// Things that happened, as they happen: `/api/events`.
+    pub events: broadcast::Sender<eqlparser_api::Event>,
     /// Item reference data from the eqdb companion site, with the bundled
     /// data behind it.
     pub itemdb: Arc<crate::itemdb::ItemDb>,
@@ -114,6 +116,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session", get(session))
         .route("/ws", get(ws_upgrade))
         .route("/api/hello", get(hello))
+        .route("/api/events", get(events_upgrade))
+        .route("/api/pickups", get(api_pickups))
+        .route("/api/bags", get(api_bags))
+        .route("/api/bundle", get(api_bundle))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state.life),
             touch,
@@ -715,6 +721,75 @@ fn bags(dumps: &[(String, String)]) -> std::collections::BTreeMap<String, std::c
 // write the same character. Measured against the live wanted list and four
 // dumps -- 14 backtick names on each side -- folding it gains 0 matches of 156.
 
+/// The inventory dumps of the character this daemon follows: who that is,
+/// each file's text, and each file's age.
+///
+/// Whose bags: the client writes one dump per character and this daemon
+/// follows one log, so "in your bags" means the character on that log and not
+/// every character who has ever typed the command. hammackj was on Tharn and the
+/// wanted list was offering things sitting in Mirela's bags 44 hours ago --- not
+/// a prompt but a trip to the bank and a character select.
+///
+/// Read from the files rather than the id record, which remembers every id
+/// ever seen. Sorted newest first.
+fn my_dumps(
+    state: &AppState,
+    ids: &Arc<Mutex<crate::dumps::Ids>>,
+) -> (Option<(String, String)>, Vec<(String, String)>, Vec<eqlparser_api::BagSource>) {
+    let me: Option<(String, String)> = state.store.as_ref().and_then(|st| {
+        let st = st.lock().ok()?;
+        let (c, sv) = st.identity();
+        (!c.is_empty() && !sv.is_empty()).then(|| (c.to_string(), sv.to_string()))
+    });
+    let guard = ids.locked("item ids");
+    let mut read = Vec::new();
+    let mut seen = Vec::new();
+    for (path, kind) in guard.sources() {
+        if kind != eqlparser_core::itemids::Source::Inventory {
+            continue;
+        }
+        let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !mine(&file, me.as_ref()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let age = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs());
+        seen.push(eqlparser_api::BagSource { file: file.clone(), age_seconds: age });
+        read.push((file, text));
+    }
+    seen.sort_by_key(|b| b.age_seconds.unwrap_or(u64::MAX));
+    (me, read, seen)
+}
+
+/// Items in the dumps, one per name as [`crate::itemdb::match_key`] folds it,
+/// with every grade held.
+fn bag_items(dumps: &[(String, String)]) -> Vec<eqlparser_api::BagItem> {
+    let mut out: std::collections::BTreeMap<String, (String, std::collections::BTreeSet<u32>)> =
+        Default::default();
+    for (_, text) in dumps {
+        let Ok(rows) = eqlparser_core::itemids::read_inventory(text) else {
+            continue;
+        };
+        for r in rows {
+            let k = crate::itemdb::match_key(&r.item);
+            if k.is_empty() {
+                continue;
+            }
+            let name = eqlparser_core::drops::split_grade(&r.item).0.trim().to_string();
+            out.entry(k).or_insert_with(|| (name, Default::default())).1.insert(r.grade);
+        }
+    }
+    out.into_iter()
+        .map(|(key, (name, grades))| eqlparser_api::BagItem { name, key, grades: grades.into_iter().collect() })
+        .collect()
+}
+
 /// Is this dump the bags of the character the daemon is following?
 ///
 /// Both halves have to be known before a file is refused. The daemon learns
@@ -868,56 +943,19 @@ async fn items_held(State(state): State<AppState>) -> impl IntoResponse {
         )
             .into_response();
     };
-    // Whose bags. The client writes one dump per character and this daemon
-    // follows one log, so "in your bags" means the character on that log and
-    // not every character who has ever typed the command.
-    //
-    // It read all of them. hammackj was on Tharn and the list was offering
-    // things sitting in Mirela's bags 44 hours ago --- which is not a prompt, it
-    // is a trip to the bank and a character select. The dump names carry the
-    // character and server (`Tharn_freeport-Inventory.txt`), which is the same
-    // place the daemon learns who it is following.
-    let me: Option<(String, String)> = state.store.as_ref().and_then(|st| {
-        let st = st.lock().ok()?;
-        let (c, sv) = st.identity();
-        (!c.is_empty() && !sv.is_empty()).then(|| (c.to_string(), sv.to_string()))
-    });
-    // Read the dumps rather than the record: see `bags`. Each file's age goes
-    // out with the answer, because a snapshot is only evidence about the moment
-    // it was taken and these are often weeks apart.
-    let (rows, mut sources) = {
-        let guard = ids.locked("item ids");
-        let mut read = Vec::new();
-        let mut seen = Vec::new();
-        for (path, kind) in guard.sources() {
-            if kind != eqlparser_core::itemids::Source::Inventory {
-                continue;
-            }
-            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            if !mine(&file, me.as_ref()) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let age = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .map(|d| d.as_secs());
-            seen.push(serde_json::json!({ "file": file.clone(), "age_seconds": age }));
-            read.push((file, text));
-        }
-        drop(guard);
+    // Whose bags, read from the files: see `my_dumps`.
+    let (me, read, seen) = my_dumps(&state, ids);
+    let (rows, sources) = {
+        let seen: Vec<serde_json::Value> = seen
+            .iter()
+            .map(|b| serde_json::json!({ "file": b.file, "age_seconds": b.age_seconds }))
+            .collect();
         // Locked only to read the marks, and never across the fetch above: the
         // follower thread holds this lock while ingesting lines.
         let engine = state.engine.locked("engine");
         let marks = |n: &str| (engine.has_screenshot(n), engine.has_sent(n));
         (held_and_wanted(&wanted, &bags(&read), &marks), seen)
     };
-    sources.sort_by_key(|v| {
-        v.get("age_seconds").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX)
-    });
     let blocked = rows
         .iter()
         .filter(|r| r.get("blocked").and_then(serde_json::Value::as_bool) == Some(true))
@@ -3278,6 +3316,102 @@ async fn classes(
 }
 
 // ---------------------------------------------------------------------------
+// Typed endpoints (eqlparser-api)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct PickupsQuery {
+    since: Option<i64>,
+}
+
+fn api_error(status: StatusCode, error: impl Into<String>) -> Response {
+    (status, Json(eqlparser_api::ApiError { error: error.into() })).into_response()
+}
+
+/// `GET /api/pickups?since=<log ts>`: what you picked up, one row per item.
+///
+/// `since` is in the log's clock; without it, the last hour before the
+/// engine's `now`. Graded copies are left out, as `recent_pickups` explains.
+async fn api_pickups(State(s): State<AppState>, Query(q): Query<PickupsQuery>) -> Json<eqlparser_api::Pickups> {
+    let engine = s.engine.locked("engine");
+    let since = q.since.unwrap_or_else(|| engine.now() - 3600);
+    let pickups = engine
+        .recent_pickups(since)
+        .into_iter()
+        .map(|p| eqlparser_api::Pickup {
+            item: p.item,
+            at: p.at,
+            count: p.count,
+            source: p.source,
+            held: p.held,
+            zone: p.zone,
+        })
+        .collect();
+    Json(eqlparser_api::Pickups { since, pickups })
+}
+
+/// `GET /api/bags`: what the followed character's inventory dumps hold.
+async fn api_bags(State(s): State<AppState>) -> Response {
+    let Some(ids) = &s.ids else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no item-id record: this daemon has no config directory to keep one in",
+        );
+    };
+    let (me, read, sources) = my_dumps(&s, ids);
+    let (character, server) = me.unwrap_or_default();
+    Json(eqlparser_api::Bags { character, server, sources, items: bag_items(&read) }).into_response()
+}
+
+/// `GET /api/bundle`: the export document as it stands, for the collector to
+/// check and send. The daemon builds it because the history it is built from
+/// is the daemon's; sending it is the collector's business.
+async fn api_bundle(State(s): State<AppState>) -> Response {
+    match build_current(&s) {
+        Ok(b) => Json(b).into_response(),
+        Err(e) => api_error(StatusCode::SERVICE_UNAVAILABLE, e),
+    }
+}
+
+async fn events_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> Response {
+    ws.on_upgrade(move |socket| events_loop(socket, s))
+}
+
+/// Push each [`eqlparser_api::Event`] as a JSON text frame.
+///
+/// Nothing is sent on connect: events are news, and the state they change is
+/// a request away. A client that falls behind by more than the channel holds
+/// is told how many it missed in a log line, not on the wire, and should
+/// re-read whatever it keeps.
+async fn events_loop(mut socket: WebSocket, state: AppState) {
+    let _client = state.life.connect();
+    let mut rx = state.events.subscribe();
+    loop {
+        tokio::select! {
+            got = rx.recv() => match got {
+                Ok(e) => {
+                    let body = serde_json::to_string(&e).unwrap_or_else(|_| "{}".into());
+                    if socket.send(Message::Text(body.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("[eqlparserd] events: a client fell {n} behind");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            // Read only to notice the client going: otherwise a quiet stream
+            // finds out at the next event, which may be an hour away, and the
+            // daemon counts a client that left as still here.
+            msg = socket.recv() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
 
@@ -3300,10 +3434,17 @@ async fn ws_loop(mut socket: WebSocket, state: AppState) {
 
     loop {
         // A lagging client misses intermediate updates, which is harmless: the
-        // next snapshot is complete in itself.
-        match rx.recv().await {
-            Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => break,
+        // next snapshot is complete in itself. The socket is read only to
+        // notice a close, which otherwise went unseen until the next send.
+        tokio::select! {
+            got = rx.recv() => match got {
+                Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            msg = socket.recv() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => continue,
+            },
         }
         let snap = { state.snapshot.reading("snapshot").clone() };
         if send_snapshot(&mut socket, &snap).await.is_err() {
@@ -3642,8 +3783,10 @@ mod tests {
         }
         let snap = engine.snapshot(50);
         let (tx, _) = broadcast::channel(4);
+        let (events, _) = broadcast::channel(4);
         AppState {
             life: Arc::new(Life::new(test_hello())),
+            events,
             store: None,
             log_path: std::path::PathBuf::from("eqlog_Test_freeport.txt"),
             logs_dir: None,

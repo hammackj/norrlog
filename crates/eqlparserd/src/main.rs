@@ -222,6 +222,9 @@ ENDPOINTS:
     /                  Status page with overlay setup instructions
     /api/hello         Who this daemon is, what it follows, and its API version
     /api/events        Live typed events (WebSocket)
+    /api/pickups       What you picked up since ?since= (log clock; default an hour)
+    /api/bags          What the followed character's inventory dumps hold
+    /api/bundle        The contribution bundle itself, for the collector to send
     /overlay           The overlay (add to OBS as a Browser Source)
     /api/snapshot      Current state
     /api/shots/recent  What the screenshot reader made of the last few pictures
@@ -657,6 +660,7 @@ async fn main() -> anyhow::Result<()> {
         engine.locked("engine").snapshot(SNAPSHOT_RECENT),
     ));
     let (updates, _) = broadcast::channel(64);
+    let (events, _) = broadcast::channel::<eqlparser_api::Event>(256);
 
     spawn_follower_since(
         log_path.clone(),
@@ -664,6 +668,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&engine),
         Arc::clone(&snapshot),
         updates.clone(),
+        events.clone(),
         history.clone(),
     );
 
@@ -695,7 +700,7 @@ async fn main() -> anyhow::Result<()> {
     // shots it is then meant to read.
     shots::spawn(Arc::clone(&shots), Arc::clone(&engine));
     if let Some(ids) = &ids {
-        spawn_id_sweep(Arc::clone(ids));
+        spawn_id_sweep(Arc::clone(ids), events.clone());
     }
     // The other characters' logs. Only where there is a history database to
     // put them in -- without one there is nothing for a catch-up to be for.
@@ -748,6 +753,7 @@ async fn main() -> anyhow::Result<()> {
         engine,
         snapshot,
         updates,
+        events,
         store: history,
         itemdb,
         shots,
@@ -1301,7 +1307,7 @@ fn spawn_log_catchup(
     });
 }
 
-fn spawn_id_sweep(ids: Arc<Mutex<dumps::Ids>>) {
+fn spawn_id_sweep(ids: Arc<Mutex<dumps::Ids>>, events: broadcast::Sender<eqlparser_api::Event>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(dumps::SWEEP_INTERVAL).await;
@@ -1309,6 +1315,9 @@ fn spawn_id_sweep(ids: Arc<Mutex<dumps::Ids>>) {
             let sweep = guard.sweep(&dumps::today());
             if sweep.changed_anything() || !sweep.failures.is_empty() {
                 report_sweep(&sweep, guard.registry().items.len(), guard.path());
+            }
+            if sweep.changed_anything() {
+                let _ = events.send(eqlparser_api::Event::BagsChanged);
             }
         }
     });
@@ -1381,6 +1390,7 @@ fn spawn_follower_since(
     engine: Arc<Mutex<Engine>>,
     snapshot: Arc<RwLock<engine::Snapshot>>,
     updates: broadcast::Sender<()>,
+    events: broadcast::Sender<eqlparser_api::Event>,
     store: Option<Arc<Mutex<store::Store>>>,
 ) {
     std::thread::spawn(move || {
@@ -1418,7 +1428,7 @@ fn spawn_follower_since(
             }
             eng.set_live(true);
         }
-        publish(&engine, &snapshot, &updates);
+        publish(&engine, &snapshot, &updates, &events);
         eprintln!(
             "[eqlparserd] parsed {backlog} lines in {:.2}s; following live",
             start.elapsed().as_secs_f64()
@@ -1442,7 +1452,7 @@ fn spawn_follower_since(
                 eng.tick();
             }
             // Always republish: buff timers count down even with no new lines.
-            publish(&engine, &snapshot, &updates);
+            publish(&engine, &snapshot, &updates, &events);
 
             // History changes on the scale of minutes, so flushing on the poll
             // interval would be pure write amplification.
@@ -1460,11 +1470,18 @@ fn publish(
     engine: &Arc<Mutex<Engine>>,
     snapshot: &Arc<RwLock<engine::Snapshot>>,
     updates: &broadcast::Sender<()>,
+    events: &broadcast::Sender<eqlparser_api::Event>,
 ) {
-    let snap = { engine.locked("engine").snapshot(SNAPSHOT_RECENT) };
+    let (snap, news) = {
+        let mut eng = engine.locked("engine");
+        (eng.snapshot(SNAPSHOT_RECENT), eng.take_events())
+    };
     *snapshot.writing("snapshot") = snap;
     // No receivers is normal (nothing connected yet), so ignore send errors.
     let _ = updates.send(());
+    for e in news {
+        let _ = events.send(e);
+    }
 }
 
 #[cfg(test)]

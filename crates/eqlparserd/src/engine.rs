@@ -876,6 +876,9 @@ pub struct Engine {
     /// whether a file that appeared was written by the game or copied in by
     /// somebody. Something else drains this; see [`Engine::shots_taken`].
     shots_taken: VecDeque<i64>,
+    /// Typed events for `/api/events`, drained after each batch. Only live
+    /// lines add to it: see [`Engine::emit`].
+    events: VecDeque<eqlparser_api::Event>,
     /// Where those marks are written. Held rather than derived on each call so
     /// a test can be pointed somewhere harmless — see
     /// [`Engine::use_screenshot_store`].
@@ -1004,6 +1007,7 @@ impl Engine {
             screenshot_marks: std::collections::BTreeMap::new(),
             sent_marks: std::collections::BTreeMap::new(),
             shots_taken: VecDeque::new(),
+            events: VecDeque::new(),
             // Hand-made state that nothing can regenerate, so it sits with the
             // buff marks in the config directory rather than beside the
             // rebuildable database. See `crate::paths`.
@@ -1672,7 +1676,20 @@ impl Engine {
                 if let Some(c) = record.sold_for_copper {
                     self.coin_from_sales += c;
                 }
+                let pickup = eqlparser_api::Pickup {
+                    item: record.item.trim().to_string(),
+                    at: record.timestamp,
+                    count: record.quantity,
+                    source: record.source.clone(),
+                    held: matches!(
+                        record.fate,
+                        eqlparser_core::encounter::LootFate::Kept
+                            | eqlparser_core::encounter::LootFate::Stored
+                    ),
+                    zone: self.zone_at(record.timestamp),
+                };
                 self.all_loot.push(record);
+                self.emit(eqlparser_api::Event::Pickup(pickup));
             }
             Event::AbilityPointsGained { points, unspent } => {
                 self.exp
@@ -1763,6 +1780,10 @@ impl Engine {
                 // Where you are, remembered with its arrival time, so a pickup
                 // can be placed later without a fight having been open.
                 let place = eqlparser_core::zone::Zone::parse(zone).name;
+                self.emit(eqlparser_api::Event::ZoneChanged {
+                    zone: (!place.is_empty()).then(|| place.clone()),
+                    raw: zone.clone(),
+                });
                 if self.zone_log.last().map(|(_, z)| z.as_str()) != Some(place.as_str()) {
                     self.zone_log.push((entry.timestamp, place));
                 }
@@ -2076,9 +2097,41 @@ impl Engine {
             return;
         }
         self.shots_taken.push_back(entry.timestamp);
+        if let Some(off) = self.clock_offset {
+            self.emit(eqlparser_api::Event::ScreenshotTaken {
+                log_ts: entry.timestamp,
+                local_ts: entry.timestamp - off,
+            });
+        }
         while self.shots_taken.len() > Self::MOST_PENDING_SHOTS {
             self.shots_taken.pop_front();
         }
+    }
+
+    /// How many undrained events to keep. A client that stops reading loses
+    /// the oldest, as a lagging broadcast receiver does; it never holds the
+    /// engine's memory hostage.
+    const MOST_PENDING_EVENTS: usize = 1024;
+
+    /// Queue an event for `/api/events` — if the engine is live.
+    ///
+    /// The initial parse replays the whole log, and announcing months of loot
+    /// to a client that has just connected would be noise, not news. The
+    /// clock offset is set by the first live line and never by a backlog one,
+    /// so it is the test.
+    fn emit(&mut self, e: eqlparser_api::Event) {
+        if self.clock_offset.is_none() {
+            return;
+        }
+        self.events.push_back(e);
+        while self.events.len() > Self::MOST_PENDING_EVENTS {
+            self.events.pop_front();
+        }
+    }
+
+    /// Take every event queued since this was last called.
+    pub fn take_events(&mut self) -> Vec<eqlparser_api::Event> {
+        self.events.drain(..).collect()
     }
 
     /// Take every screenshot notice seen since this was last called.
@@ -5118,6 +5171,46 @@ mod tests {
     /// The screenshot prompt is about what you could photograph right now,
     /// which is a narrower question than the loot tally answers but a wider
     /// one than "what is in your bags".
+    #[test]
+    fn only_live_lines_become_events() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 12:00:00 2026] You have entered West Commonlands.",
+                "[Tue Jul 28 12:00:05 2026] --You have looted a Stale Bread from a rat's corpse.--",
+                "[Tue Jul 28 12:00:06 2026] Taking a screenshot...",
+            ],
+        );
+        e.set_live(true);
+        assert!(e.take_events().is_empty(), "the backlog is history, not news");
+
+        for l in [
+            "[Tue Jul 28 12:01:00 2026] You have entered East Commonlands.",
+            "[Tue Jul 28 12:01:05 2026] --You have looted a Rusty Dagger from a rat's corpse.--",
+            "[Tue Jul 28 12:01:06 2026] Taking a screenshot...",
+        ] {
+            e.push_line(l);
+        }
+        let got = e.take_events();
+        use eqlparser_api::Event;
+        assert!(
+            matches!(&got[0], Event::ZoneChanged { zone: Some(z), .. } if z == "East Commonlands"),
+            "{got:?}"
+        );
+        match &got[1] {
+            Event::Pickup(p) => {
+                assert_eq!(p.item, "Rusty Dagger");
+                assert!(p.held);
+                assert_eq!(p.zone.as_deref(), Some("East Commonlands"));
+            }
+            other => panic!("expected a pickup, got {other:?}"),
+        }
+        assert!(matches!(got[2], Event::ScreenshotTaken { .. }), "{got:?}");
+        assert_eq!(got.len(), 3);
+        assert!(e.take_events().is_empty(), "taken once");
+    }
+
     #[test]
     fn recent_pickups_offer_only_what_you_could_still_photograph() {
         let mut e = engine();

@@ -28,3 +28,5 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 eqlparser-parse = { path = "../eqlparser-parse" }
 # To drive the whole router, middleware included, in tests.
 tower = { version = "0.5", features = ["util"] }
+eqlparser-client = { path = "../eqlparser-client" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
