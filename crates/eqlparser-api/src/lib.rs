@@ -548,16 +548,10 @@ pub struct ExperienceReport {
     /// Alternate advancement ("ability points" in this client).
     pub aa_earned: u32,
     pub aa_unspent: u32,
-    /// Points spent. The player's own figure when they have given one,
-    /// otherwise what the log accounts for.
-    pub aa_spent: u32,
     /// Points spent on purchases visible in the log. A floor on the
     /// character's lifetime spend: ranks bought before logging began cannot
     /// be seen, so this reads low by exactly that amount.
-    pub aa_spent_tracked: u32,
-    /// The gap between the two — ranks that predate this log. Constant on any
-    /// given character, so once it is known the total stops drifting.
-    pub aa_spent_untracked: u32,
+    pub aa_spent: u32,
     /// Ranks the character demonstrably holds but was never seen buying.
     pub aa_unlogged: Vec<AaPurchase>,
     /// The most those ranks can have cost, which bounds the gap above.

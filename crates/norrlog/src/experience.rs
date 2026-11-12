@@ -642,12 +642,7 @@ fn aa_rate(e: &ExperienceReport) -> f64 {
 }
 
 fn aa_earned(e: &ExperienceReport) -> String {
-    let spent = if e.aa_spent_untracked > 0 {
-        format!("{} spent ({} in log + {} before it)", e.aa_spent, e.aa_spent_tracked, e.aa_spent_untracked)
-    } else {
-        format!("{} spent in log", e.aa_spent)
-    };
-    format!("{} · {} unspent · {spent}", e.aa_earned, e.aa_unspent)
+    format!("{} · {} unspent · {} spent in log", e.aa_earned, e.aa_unspent, e.aa_spent)
 }
 
 /// The ranks held but never seen bought, which the log can name exactly.
@@ -664,8 +659,7 @@ fn unlogged(e: &ExperienceReport) -> Option<String> {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let tail = if e.aa_spent_untracked > 0 { format!("; you have stated {}.", e.aa_spent_untracked) } else { ".".into() };
-    Some(format!("Bought before this log: {list}. At most {} points unaccounted{tail}", e.aa_unlogged_cost_max))
+    Some(format!("Bought before this log: {list}. At most {} points unaccounted.", e.aa_unlogged_cost_max))
 }
 
 fn xp_rate(z: &ExpSource) -> f64 {

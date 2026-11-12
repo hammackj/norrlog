@@ -80,7 +80,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/raid-kills", get(raid_kills))
         .route("/api/logs", get(logs))
         .route("/api/class-levels", get(class_levels).post(set_class_level))
-        .route("/api/aa-spent", post(set_aa_spent))
         .route("/api/export", get(export))
         .route("/api/encounters/export", get(export_encounters))
         .route("/api/charm", get(charm))
@@ -958,35 +957,6 @@ async fn class_levels(
 ) -> Json<eqlparser_core::classlevel::ClassLevelReport> {
     let engine = s.engine.locked("engine");
     Json(engine.class_level_report())
-}
-
-#[derive(Debug, Deserialize)]
-struct AaSpentBody {
-    spent: u32,
-}
-
-/// Record the lifetime points spent, as the character sheet shows it.
-///
-/// The log can only ever floor this: ranks bought before it began leave no
-/// trace. The difference is a constant per character, so one correction fixes
-/// the figure permanently rather than needing to be reapplied.
-async fn set_aa_spent(
-    State(s): State<AppState>,
-    Json(body): Json<AaSpentBody>,
-) -> Json<serde_json::Value> {
-    let at = {
-        let mut engine = s.engine.locked("engine");
-        engine.set_stated_aa_spent(body.spent);
-        engine.now()
-    };
-    if let Some(store) = &s.store {
-        if let Ok(mut store) = store.lock() {
-            if let Err(e) = store.put_stated("aa_spent", body.spent as i64, at) {
-                return Json(serde_json::json!({"ok": false, "error": e.to_string()}));
-            }
-        }
-    }
-    Json(serde_json::json!({"ok": true, "spent": body.spent}))
 }
 
 #[derive(Debug, Deserialize)]

@@ -664,9 +664,6 @@ async fn run() -> anyhow::Result<()> {
                 }
                 Err(e) => eprintln!("[eqlparserd] could not read stated class levels: {e}"),
             }
-            if let Ok(Some(spent)) = store.stated("aa_spent") {
-                engine.set_stated_aa_spent(spent as u32);
-            }
             // The level the bestiary should assume until this log says
             // otherwise; see `Store::last_known_level` for where it comes from.
             match store.last_known_level() {

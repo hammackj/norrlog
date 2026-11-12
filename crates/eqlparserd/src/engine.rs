@@ -396,8 +396,6 @@ pub struct Engine {
     classes: ClassDetector,
     /// Per-class levels, which the single reported level cannot express.
     class_levels: eqlparser_core::classlevel::ClassLevelTracker,
-    /// Lifetime points spent, as read off the character sheet by the player.
-    aa_spent_stated: Option<u32>,
     exp: ExpTracker,
     /// Effects that fire on their own: weapon and buff procs, and worn item
     /// procs. Which spells are procs comes from the spell file, so this knows
@@ -545,7 +543,6 @@ impl Engine {
             resolver: SpellResolver::new(spell_db, 1),
             classes: ClassDetector::new(),
             class_levels: eqlparser_core::classlevel::ClassLevelTracker::new(),
-            aa_spent_stated: None,
             exp: ExpTracker::new(),
             procs: ProcTracker::new(),
             grants: Vec::new(),
@@ -1870,11 +1867,6 @@ impl Engine {
         trio
     }
 
-    /// The lifetime spend the player read off their character sheet.
-    pub fn set_stated_aa_spent(&mut self, spent: u32) {
-        self.aa_spent_stated = Some(spent);
-    }
-
     /// Apply levels the player entered, from the history database.
     pub fn set_stated_level(&mut self, class: eqlparser_core::class::Class, level: u32, at: i64) {
         self.class_levels.set_stated(class, level, at);
@@ -2687,19 +2679,9 @@ impl Engine {
             // A zone visited only briefly yields a rate built on noise.
             best_zones: self.exp.zones_by_rate(10 * 60),
             best_mobs: self.exp.mobs_by_exp_per_kill(5),
-            // Earned is short by the same ranks spent before the log began, so
-            // it follows the stated total rather than drifting from it.
-            aa_earned: match self.aa_spent_stated {
-                Some(spent) => spent + self.exp.aa_unspent(),
-                None => self.exp.aa_earned(),
-            },
+            aa_earned: self.exp.aa_earned(),
             aa_unspent: self.exp.aa_unspent(),
-            aa_spent: self.aa_spent_stated.unwrap_or(self.exp.aa_spent_total()),
-            aa_spent_tracked: self.exp.aa_spent_total(),
-            aa_spent_untracked: self
-                .aa_spent_stated
-                .unwrap_or_default()
-                .saturating_sub(self.exp.aa_spent_total()),
+            aa_spent: self.exp.aa_spent_total(),
             aa_unlogged: self.exp.aa_unlogged().0,
             aa_unlogged_cost_max: self.exp.aa_unlogged().1,
             aa_per_hour: self.exp.aa_per_hour(now, AA_RATE_WINDOW),
@@ -3454,13 +3436,8 @@ impl Engine {
                 kills: self.exp.current_record().kills,
                 rate_per_hour: self.exp.current_rate_per_hour(now),
                 seconds_to_next_level: self.exp.seconds_to_next_level(now),
-                // Same correction as the full report: earned is short by the
-                // ranks bought before the log, so it follows the stated total.
-                aa_earned: match self.aa_spent_stated {
-                    Some(spent) => spent + self.exp.aa_unspent(),
-                    None => self.exp.aa_earned(),
-                },
-                aa_spent: self.aa_spent_stated.unwrap_or(self.exp.aa_spent_total()),
+                aa_earned: self.exp.aa_earned(),
+                aa_spent: self.exp.aa_spent_total(),
                 aa_unspent: self.exp.aa_unspent(),
                 aa_per_hour: self.exp.aa_per_hour(now, AA_RATE_WINDOW),
                 aa_potion_charges: self.exp.aa_potion_charges(),

@@ -640,9 +640,9 @@ impl Store {
                 at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (character, server, class)
             );
-            -- Figures the player read off their own character sheet, which
-            -- the log cannot always produce. Keyed by name so new ones need no
-            -- migration.
+            -- Figures the player read off their own character sheet. Nothing
+            -- reads or writes it since the stated AA spend was dropped; kept so
+            -- a figure that needs it later costs no migration.
             CREATE TABLE IF NOT EXISTS stated_values (
                 character TEXT NOT NULL,
                 server TEXT NOT NULL,
@@ -1301,29 +1301,6 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
-    }
-
-    /// Record a figure the player stated.
-    pub fn put_stated(&mut self, key: &str, value: i64, at: i64) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO stated_values (character, server, key, value, at)
-             VALUES (?1,?2,?3,?4,?5)",
-            params![self.character, self.server, key, value, at],
-        )?;
-        Ok(())
-    }
-
-    pub fn stated(&self, key: &str) -> Result<Option<i64>> {
-        let v = self
-            .conn
-            .query_row(
-                "SELECT value FROM stated_values
-                 WHERE character = ?1 AND server = ?2 AND key = ?3",
-                params![self.character, self.server, key],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok(v)
     }
 
     /// Write a quest, replacing any existing record of the same name.
