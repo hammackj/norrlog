@@ -18,6 +18,8 @@
 //! Plain requests count as activity but not as a client: a client that only
 //! polls keeps the daemon alive by polling more often than the idle timeout.
 
+
+pub mod install;
 use eqlparser_api::{Bags, Event, Hello, Pickups, API_VERSION, IDENTITY};
 use futures_util::{Stream, StreamExt};
 use serde::de::DeserializeOwned;
@@ -309,6 +311,28 @@ impl Client {
                 Ok(Message::Text(t)) => {
                     Some(serde_json::from_str::<Event>(&t).map_err(|e| Error::Decode(format!("{e}: {t}"))))
                 }
+                Ok(Message::Close(_)) => None,
+                Ok(_) => None,
+                Err(e) => Some(Err(Error::Socket(e.to_string()))),
+            }
+        })))
+    }
+}
+
+impl Client {
+    /// Open `/ws`: the full snapshot the parser's views draw from, once on
+    /// connect and again on every change. Untyped, because the snapshot is
+    /// the engine's own and still moves with it; read the fields a view
+    /// needs. Like [`Client::events`], holding it counts as a client.
+    pub async fn snapshots(&self) -> Result<impl Stream<Item = Result<serde_json::Value>> + Unpin + use<>> {
+        let url = format!("ws://127.0.0.1:{}/ws", self.port);
+        let (ws, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| Error::Socket(e.to_string()))?;
+        use tokio_tungstenite::tungstenite::Message;
+        Ok(Box::pin(ws.filter_map(|m| async move {
+            match m {
+                Ok(Message::Text(t)) => Some(serde_json::from_str(&t).map_err(|e| Error::Decode(format!("/ws: {e}")))),
                 Ok(Message::Close(_)) => None,
                 Ok(_) => None,
                 Err(e) => Some(Err(Error::Socket(e.to_string()))),

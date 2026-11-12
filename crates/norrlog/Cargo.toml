@@ -1,0 +1,29 @@
+[package]
+name = "norrlog"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+description = "An EverQuest log parser: the window onto the shared eqlparserd"
+publish = false
+
+[[bin]]
+name = "norrlog"
+path = "src/main.rs"
+
+[dependencies]
+eqlparser-api = { path = "../eqlparser-api" }
+eqlparser-client = { path = "../eqlparser-client" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-channel = "2.5.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+# GPUI pinned exactly as the eqldb collector pins it (the `gpui-pre`
+# releases of Zed's GPUI, with gpui-component built against that one).
+# Moving either is a deliberate upgrade of both apps, not a `cargo update`.
+gpui = { version = "=0.3.12", package = "gpui-pre" }
+gpui_platform = { version = "=0.3.12", package = "gpui-pre-platform", features = ["font-kit", "x11", "wayland"] }
+gpui-component = "=0.9.1"
