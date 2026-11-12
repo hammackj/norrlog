@@ -40,6 +40,10 @@ pub const EXIT_PORT_IN_USE: i32 = 3;
 pub enum Error {
     /// Nothing answered on the port.
     Unreachable { port: u16, why: String },
+    /// Something took the connection and said nothing before the wait ran
+    /// out. An eqlparserd binds its port before its initial parse and answers
+    /// once that is done, so this is most often one still parsing.
+    Busy { port: u16 },
     /// Something answered, and it is not an eqlparserd.
     NotOurs { port: u16, why: String },
     /// An eqlparserd from before `/api/hello` existed.
@@ -64,6 +68,10 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Unreachable { port, why } => write!(f, "nothing is answering on port {port}: {why}"),
+            Error::Busy { port } => write!(
+                f,
+                "port {port} is taken but not answering yet, most likely by an eqlparserd still on its first parse"
+            ),
             Error::NotOurs { port, why } => {
                 write!(f, "port {port} is held by something that is not eqlparserd ({why})")
             }
@@ -192,7 +200,8 @@ impl Client {
                     let started = !lost_race && hello.pid == child.id().unwrap_or(0);
                     return Ok(Client { port, http, hello, started });
                 }
-                Err(Error::Unreachable { .. }) => {}
+                // Busy is the daemon just started, on its initial parse.
+                Err(Error::Unreachable { .. } | Error::Busy { .. }) => {}
                 Err(e) => return Err(e),
             }
             if !lost_race {
@@ -361,13 +370,17 @@ fn http() -> Result<reqwest::Client> {
         .map_err(|e| Error::Http(e.to_string()))
 }
 
+/// How long `/api/hello` gets to answer before the port counts as busy.
+const HELLO_WAIT: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(5) };
+
 async fn hello_at(http: &reqwest::Client, port: u16) -> Result<Hello> {
     let url = format!("http://127.0.0.1:{port}/api/hello");
-    let resp = match http.get(&url).timeout(Duration::from_secs(5)).send().await {
+    let resp = match http.get(&url).timeout(HELLO_WAIT).send().await {
         Ok(r) => r,
         Err(e) if e.is_connect() => {
             return Err(Error::Unreachable { port, why: e.to_string() })
         }
+        Err(e) if e.is_timeout() => return Err(Error::Busy { port }),
         Err(e) => return Err(Error::NotOurs { port, why: e.to_string() }),
     };
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -400,6 +413,17 @@ fn check(port: u16, hello: &Hello) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A listener that is bound and never answers, as eqlparserd is during
+    /// its initial parse, is busy, not a stranger.
+    #[tokio::test]
+    async fn a_port_that_accepts_and_says_nothing_is_busy() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let got = hello_at(&http().unwrap(), port).await;
+        assert!(matches!(got, Err(Error::Busy { port: p }) if p == port), "{got:?}");
+        drop(l);
+    }
 
     fn hello(api_version: u32) -> Hello {
         Hello {
