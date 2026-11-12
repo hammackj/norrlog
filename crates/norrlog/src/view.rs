@@ -45,6 +45,7 @@ pub struct Shell {
     loot: Entity<crate::loot::LootView>,
     classes: Entity<crate::classes::ClassesView>,
     character: Entity<crate::character::CharacterView>,
+    experience: Entity<crate::experience::ExperienceView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -62,7 +63,7 @@ impl Shell {
     ) -> Self {
         let task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(msg) = rx.recv().await {
-                if this.update_in(cx, |v, _, cx| v.on_msg(msg, cx)).is_err() {
+                if this.update_in(cx, |v, window, cx| v.on_msg(msg, window, cx)).is_err() {
                     break;
                 }
             }
@@ -76,6 +77,7 @@ impl Shell {
         let loot = cx.new(|cx| crate::loot::LootView::new(window, cx));
         let classes = cx.new(|_| crate::classes::ClassesView::new());
         let character = cx.new(|_| crate::character::CharacterView::new());
+        let experience = cx.new(|_| crate::experience::ExperienceView::new());
         Shell {
             link: Link::Attaching,
             rt,
@@ -84,6 +86,7 @@ impl Shell {
             loot,
             classes,
             character,
+            experience,
             tab,
             snapshot: None,
             state,
@@ -92,7 +95,7 @@ impl Shell {
         }
     }
 
-    fn on_msg(&mut self, msg: Msg, cx: &mut Context<Self>) {
+    fn on_msg(&mut self, msg: Msg, window: &mut Window, cx: &mut Context<Self>) {
         match msg {
             Msg::Attaching => {
                 if !matches!(self.link, Link::Lost(_)) {
@@ -116,6 +119,12 @@ impl Shell {
                     }
                 });
                 self.character.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
+                self.experience.update(cx, |v, cx| {
+                    v.set_api(Some(api.clone()), cx);
+                    if open == "experience" {
+                        v.show(window, cx);
+                    }
+                });
                 self.loot.update(cx, |v, cx| {
                     v.set_api(Some(api), cx);
                     if open == "loot" {
@@ -142,6 +151,8 @@ impl Shell {
                 self.classes.update(cx, |v, cx| v.on_snapshot(classes, cx));
                 let totals = s.get("totals").and_then(|t| serde_json::from_value(t.clone()).ok());
                 self.character.update(cx, |v, cx| v.on_snapshot(totals, cx));
+                let experience_open = self.tab == "experience";
+                self.experience.update(cx, |v, cx| v.on_snapshot(experience_open, window, cx));
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
@@ -152,6 +163,7 @@ impl Shell {
                 self.procs.update(cx, |v, cx| v.set_api(None, cx));
                 self.loot.update(cx, |v, cx| v.set_api(None, cx));
                 self.character.update(cx, |v, cx| v.set_api(None, cx));
+                self.experience.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -170,7 +182,7 @@ impl Shell {
         }
     }
 
-    fn select(&mut self, tab: &'static str, cx: &mut Context<Self>) {
+    fn select(&mut self, tab: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         self.tab = tab;
         // As the renderer does: opening a tab fetches it afresh.
         if tab == "encounters" {
@@ -182,6 +194,9 @@ impl Shell {
         // All, whichever subtab is showing (app.js:48).
         if tab == "loot" {
             self.loot.update(cx, |v, cx| v.load_all(cx));
+        }
+        if tab == "experience" {
+            self.experience.update(cx, |v, cx| v.show(window, cx));
         }
         self.state.tab = tab.to_string();
         self.state.save();
@@ -263,7 +278,7 @@ impl Shell {
                     .text_color(hex(if on { ACCENT } else { MUTED }))
                     .hover(|s| s.text_color(hex(if on { ACCENT } else { TEXT })))
                     .child(label)
-                    .on_click(cx.listener(move |v, _, _, cx| v.select(id, cx))),
+                    .on_click(cx.listener(move |v, _, window, cx| v.select(id, window, cx))),
             );
         }
         nav
@@ -278,6 +293,7 @@ impl Shell {
             "encounters" => self.encounters.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "procs" => self.procs.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "loot" => self.loot.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "experience" => self.experience.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "character" => self.character.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "classes" => self.classes.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
@@ -344,7 +360,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character") && !matches!(self.link, Link::Lost(_)) {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience") && !matches!(self.link, Link::Lost(_)) {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())

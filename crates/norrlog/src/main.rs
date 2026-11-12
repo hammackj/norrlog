@@ -15,6 +15,7 @@ mod config;
 mod charts;
 mod daemon;
 mod encounters;
+mod experience;
 mod fight;
 // The shared toolkit the tab ports draw on; ahead of its users for now.
 #[allow(dead_code)]

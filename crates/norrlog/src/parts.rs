@@ -34,11 +34,6 @@ pub fn stat(label: &str, value: impl Into<SharedString>, note: Option<String>) -
         .when_some(note, |c, n| c.child(div().text_xs().text_color(hex(MUTED)).child(n)))
 }
 
-/// Stat cards that wrap onto as many lines as the width needs.
-pub fn stat_grid() -> Div {
-    div().flex().flex_row().flex_wrap().gap_3()
-}
-
 pub fn hint(text: impl Into<SharedString>) -> Div {
     div().text_sm().text_color(hex(MUTED)).child(text.into())
 }
