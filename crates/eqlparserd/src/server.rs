@@ -256,17 +256,15 @@ async fn hello(State(s): State<AppState>) -> Json<eqlparser_api::Hello> {
 
 /// Assets are embedded so the binary runs from anywhere, including when
 /// launched as a child process by Electron with an arbitrary CWD.
-/// Item reference data imported from eqlwiki.com by `tools/import-wiki.py`.
+/// The bundled item data, now empty.
 ///
-/// Embedded rather than fetched: the daemon does no network I/O, so the data
-/// is as available offline as the rest of the app and cannot fail mid-session.
-/// Re-run the importer to refresh it.
-///
-/// Only *item* pages are used. The wiki's quest pages describe classic
-/// EverQuest — different givers, different requirements — while this server
-/// runs its own variant, verified against what the quest NPCs actually say
-/// in-game. Item stats and icons match; quest structure does not.
-const WIKI_ITEMS: &str = include_str!("../assets/wiki-items.json");
+/// It was a copy of 220 eqlwiki.com item pages (stats and icons), compiled in
+/// as an offline fallback. The wiki states no license and the icons are game
+/// art, so it could not ship in the open-source build. eqldb, which already
+/// served 211 of the 220, is the only source now. `/api/wiki` and the `wiki`
+/// field of `/api/item` stay, empty, so both apps keep working while they
+/// still ask for them.
+const WIKI_ITEMS: &str = "{}";
 
 const OVERLAY_HTML: &str = include_str!("../assets/overlay.html");
 const OVERLAY_CSS: &str = include_str!("../assets/overlay.css");
@@ -2053,8 +2051,8 @@ async fn aa(State(s): State<AppState>) -> Json<eqlparser_core::aa::AaReport> {
 /// progress.
 /// One item, for a tooltip.
 ///
-/// Answers from eqdb when it can and from the bundled data when it cannot, and
-/// says which in `source` — a tooltip drawn from a file inside this binary and
+/// Answers from eqdb when it can (the bundled data behind it is empty now;
+/// see [`WIKI_ITEMS`]), and says which in `source` — a tooltip drawn from a file inside this binary and
 /// one drawn from the live site are not the same claim, and the panel should
 /// be able to say so.
 ///
@@ -3231,9 +3229,9 @@ mod tests {
         assert_eq!(v["encounters"][0]["title"], "a lesser mummy");
     }
 
-    /// The item card reads this through the API crate's types. With the site
-    /// unreachable a bundled item still has a card, graded drops fold onto
-    /// it, and a name nothing knows is `unknown`.
+    /// The item card reads this through the API crate's types. Graded drops
+    /// fold onto the base name, and with the site unreachable there is no
+    /// bundled copy to fall back on: every name is `unknown`.
     #[tokio::test]
     async fn item_lookup_matches_the_api_type() {
         let s = state_with(&[]);
@@ -3245,11 +3243,9 @@ mod tests {
         let resp = item_lookup(State(s.clone()), ask("Adamantium Earring +2")).await;
         let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
         let d: eqlparser_api::ItemLookup = serde_json::from_slice(&body).expect("lookup matches the API type");
-        assert_eq!(d.source, "bundled");
         assert_eq!(d.name, "Adamantium Earring");
-        let w = d.wiki.expect("the bundled copy");
-        assert!(w.icon.unwrap().starts_with("data:image/png;base64,"));
-        assert!(w.stats.unwrap().contains("Slot: EAR"));
+        assert_eq!(d.source, "unknown");
+        assert!(d.wiki.is_none());
 
         let resp = item_lookup(State(s), ask("Nothing Anyone Has Heard Of")).await;
         let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
