@@ -40,11 +40,13 @@ enum RuleId {
     SlainByOther,
     YouWereSlain,
     LootMarked,
+    LootLeft,
     LootSold,
     LootStored,
     LootTransmute,
     LootPlain,
     CoinFromCorpse,
+    CoinSplit,
     MerchantSale,
     ZoneRuleNotice,
     ZoneEntered,
@@ -53,6 +55,9 @@ enum RuleId {
     CastStartOther,
     MelodyInterrupted,
     SpellInterrupted,
+    SpellInterruptedNamed,
+    SpellInterruptedOther,
+    CastResumedOther,
     Experience,
     FactionAdjusted,
     FactionCapped,
@@ -76,6 +81,7 @@ enum RuleId {
     AvoidedByYou,
     ResistedYours,
     ResistedGeneric,
+    ResistedByYou,
     SkillUp,
     Stunned,
     StunEnded,
@@ -94,6 +100,7 @@ enum RuleId {
     MerchantQuoteOne,
     RecipeLearned,
     SongFizzle,
+    SpellFizzle,
     SpellMemorized,
     StanceChanged,
     SpellForgotten,
@@ -101,6 +108,7 @@ enum RuleId {
     PetAttack,
     PetLeader,
     EffectWoreOffTarget,
+    PetEffectWoreOff,
     EffectLandedOnTarget,
     LoggedOn,
     TradeOffer,
@@ -114,6 +122,8 @@ enum RuleId {
     EmoteGeneric,
     Consider,
     ConsiderArmy,
+    Targeted,
+    ServerVictory,
     Location,
     SystemAutoAttack,
     SystemMessage,
@@ -262,6 +272,15 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::ResistedGeneric,
         r"^Your target resisted the (?P<spell>.+?) spell\.$",
     ),
+    // "You resist a goblin soothsayer's Root!"
+    //
+    // The other direction: something cast at you and failed. The caster is
+    // named but [`Event::Resisted`] has nowhere to put it, and for a resist
+    // you made the spell is the part that matters.
+    (
+        RuleId::ResistedByYou,
+        r"^You resist (?:a |an |the )?.+?[`\u{2019}']s (?P<spell>.+?)!$",
+    ),
     // ---- Absorbs ------------------------------------------------------------
     // "A dar ghoul knight tries to cleave X, but X's magical skin absorbs the blow!"
     (
@@ -302,9 +321,13 @@ static RULES: &[(RuleId, &str)] = &[
     ),
     // ---- Deaths -------------------------------------------------------------
     (RuleId::SlainByYou, r"^You have slain (?P<victim>.+?)!$"),
+    // Two wordings for one happening. "has been slain by" is what the client
+    // writes when you are grouped with the killer; "was slain by" is the form
+    // everything else gets, including your own pet and your own mercenary.
+    // Only matching the first credited a pet class with none of its kills.
     (
         RuleId::SlainByOther,
-        r"^(?P<victim>.+?) has been slain by (?P<killer>.+?)!$",
+        r"^(?P<victim>.+?) (?:has been|was) slain by (?P<killer>.+?)!$",
     ),
     (
         RuleId::YouWereSlain,
@@ -315,6 +338,15 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::LootMarked,
         r"^--You have looted (?:a |an |the )?(?P<qty>\d+ )?(?P<item>.+?) from (?P<corpse>.+?)\.--$",
+    ),
+    // "--You left a Rusty Two Handed Sword on a snow orc trooper.--"
+    //
+    // Deliberately not folded into the looted rules: the item was on the
+    // corpse, which is what a drop table wants to know, but it never entered
+    // your inventory.
+    (
+        RuleId::LootLeft,
+        r"^--You left (?:a |an |the )?(?P<qty>\d+ )?(?P<item>.+?) on (?P<corpse>.+?)\.--$",
     ),
     // "You looted a Fire Beetle Eye from a fire beetle's corpse and sold it for 2 silver."
     (
@@ -342,6 +374,15 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::CoinFromCorpse,
         r"^You receive (?P<coin>.+?) from the corpse\.$",
+    ),
+    // "You receive 2 gold, 1 silver and 9 copper as your split (with a bonus)."
+    //
+    // Grouped coin, already divided. It is still coin off a corpse, so it
+    // counts the same way — the bonus clause is the server's own topping-up
+    // and is part of what arrived.
+    (
+        RuleId::CoinSplit,
+        r"^You receive (?P<coin>.+?) as your split(?: \(with a bonus\))?\.$",
     ),
     // "You receive 1 gold 9 copper from Klok Koglin for the Belt Pouch(s)."
     (
@@ -382,6 +423,24 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::SpellInterrupted,
         r"^Your (?:spell is interrupted|casting has been interrupted)\.?!?$",
+    ),
+    // "Your Touch of Night spell is interrupted." — same happening, but the
+    // client names the spell, so the bare rule above never sees it.
+    (
+        RuleId::SpellInterruptedNamed,
+        r"^Your (?P<spell>.+?) spell is interrupted\.$",
+    ),
+    // "a goblin soothsayer's Root spell is interrupted."
+    (
+        RuleId::SpellInterruptedOther,
+        r"^(?P<src>.+?)[`\u{2019}']s (?P<spell>.+?) spell is interrupted\.$",
+    ),
+    // "A goblin soothsayer regains concentration and continues casting."
+    // Recorded because it undoes the interrupt above: a cast counted as lost
+    // and then resumed was never lost.
+    (
+        RuleId::CastResumedOther,
+        r"^(?P<src>.+?) regains concentration and continues casting\.$",
     ),
     // `(with a bonus)` is the server saying a bonus event is running. It sits
     // between the noun and the exclamation mark, so an anchored pattern
@@ -489,6 +548,14 @@ static RULES: &[(RuleId, &str)] = &[
     (
         RuleId::EffectWoreOffTarget,
         r"^Your (?P<spell>.+?) spell has worn off of (?P<target>.+?)\.$",
+    ),
+    // "Your pet's Sicken spell has worn off."
+    //
+    // Named only as "your pet", which is enough: whichever creature is yours
+    // right now is the one it expired on.
+    (
+        RuleId::PetEffectWoreOff,
+        r"^Your pet[`\u{2019}']s (?P<spell>.+?) spell has worn off\.$",
     ),
     // A spell landing on someone else, e.g. "an imp protector's eyes glaze
     // over." Which spell it was cannot be told from the line — eleven share
@@ -629,6 +696,14 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::SongFizzle,
         r"^You miss a note, bringing your (?P<spell>.+?) to a close!$",
     ),
+    // "Your Herikol's Soothing spell fizzles!" — the named form. The bare
+    // "Your spell fizzles" is swept up as system noise further down, which is
+    // why this has to come first: a fizzle that names its spell is a cast
+    // that cost mana and produced nothing, and worth attributing.
+    (
+        RuleId::SpellFizzle,
+        r"^Your (?P<spell>.+?) spell fizzles!$",
+    ),
     // ---- Alternate advancement ---------------------------------------------
     // "You have gained 2 ability point(s)!  You now have 5 ability point(s)."
     // "You have gained an ability point!  You now have 6 ability points."
@@ -746,11 +821,29 @@ static RULES: &[(RuleId, &str)] = &[
     // than a second rule.
     (
         RuleId::Consider,
-        r"^(?P<name>.+?)(?P<rare> - a rare creature -)? (?P<attitude>{ATTITUDE}) -- (?P<difficulty>.+?) \(Lvl: *(?P<level>\d+)\)\s*$",
+        r"^(?P<name>.+?)(?P<rare> - a rare creature -)? (?P<attitude>{ATTITUDE}) -- (?P<difficulty>.+?) \(Lvl: *(?P<level>\d+)\)(?: \(Encounter Lock: (?P<lock>[^)]*)\))?\s*$",
     ),
     (
         RuleId::ConsiderArmy,
         r"^This creature would take an army to defeat!\s*$",
+    ),
+    // "Targeted (Player): Garrow"  "Targeted (NPC): a greater skeleton"
+    // "Targeted (Banker): Dogle Pitt"
+    (
+        RuleId::Targeted,
+        r"^Targeted \((?P<kind>[A-Za-z ]+)\): (?P<name>.+?)\s*$",
+    ),
+    // "Lord Yelinak has been defeated by a group of hardy adventurers! Please
+    //  join us in congratulating Draken along with everyone else who
+    //  participated in this achievement!"
+    //
+    // Must precede nothing in particular — no other rule matches it — but it
+    // is worth a rule of its own rather than being left unknown, because the
+    // shape is one keystroke away from a death line and somebody will
+    // eventually be tempted to widen the death rule far enough to swallow it.
+    (
+        RuleId::ServerVictory,
+        r"^(?P<target>.+?) has been defeated by a group of hardy adventurers! Please join us in congratulating (?P<who>.+?) along with .+$",
     ),
     (
         RuleId::Location,
@@ -1092,6 +1185,11 @@ impl Parser {
                     victim: Actor::You,
                     killer: Some(self.actor(g("killer").unwrap_or_default())),
                 },
+                RuleId::LootLeft => Event::LootLeft {
+                    item: g("item").unwrap_or_default().to_string(),
+                    quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
+                    source: g("corpse").map(|c| self.actor(c)),
+                },
                 RuleId::LootMarked | RuleId::LootPlain => Event::Loot {
                     item: g("item").unwrap_or_default().to_string(),
                     quantity: g("qty").and_then(|q| q.trim().parse().ok()).unwrap_or(1),
@@ -1120,7 +1218,7 @@ impl Parser {
                         into: g("into").unwrap_or_default().to_string(),
                     },
                 },
-                RuleId::CoinFromCorpse => Event::CoinLoot {
+                RuleId::CoinFromCorpse | RuleId::CoinSplit => Event::CoinLoot {
                     coin: Coin::parse(g("coin").unwrap_or_default()),
                 },
                 RuleId::MerchantSale => Event::MerchantSale {
@@ -1160,6 +1258,14 @@ impl Parser {
                     difficulty: g("difficulty").unwrap_or_default().trim().to_string(),
                 },
                 RuleId::ConsiderArmy => Event::ConsiderArmy,
+                RuleId::Targeted => Event::Targeted {
+                    name: self.actor(g("name").unwrap_or_default()),
+                    kind: g("kind").unwrap_or_default().to_string(),
+                },
+                RuleId::ServerVictory => Event::ServerVictory {
+                    target: g("target").unwrap_or_default().to_string(),
+                    credited: g("who").unwrap_or_default().to_string(),
+                },
                 RuleId::Location => Event::Location {
                     x: g("x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
                     y: g("y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
@@ -1272,6 +1378,10 @@ impl Parser {
                     target: Actor::Named("your target".into()),
                     spell: g("spell").unwrap_or_default().to_string(),
                 },
+                RuleId::ResistedByYou => Event::Resisted {
+                    target: Actor::You,
+                    spell: g("spell").unwrap_or_default().to_string(),
+                },
                 RuleId::SkillUp => Event::SkillUp {
                     skill: g("skill").unwrap_or_default().to_string(),
                     value: num("value") as u32,
@@ -1324,7 +1434,20 @@ impl Parser {
                 RuleId::RecipeLearned => Event::RecipeLearned {
                     recipe: g("recipe").unwrap_or_default().to_string(),
                 },
-                RuleId::SongFizzle => Event::CastInterrupted { source: Actor::You },
+                RuleId::SongFizzle
+                | RuleId::SpellFizzle
+                | RuleId::SpellInterruptedNamed => Event::CastInterrupted { source: Actor::You },
+                RuleId::SpellInterruptedOther => Event::CastInterrupted {
+                    source: self.actor(g("src").unwrap_or_default()),
+                },
+                // Resuming is the opposite of interrupting, and the model has
+                // no word for it. Reported as a start of the same cast, which
+                // is what it is: the creature is casting again from here.
+                RuleId::CastResumedOther => Event::CastStart {
+                    source: self.actor(g("src").unwrap_or_default()),
+                    spell: String::new(),
+                    singing: false,
+                },
                 RuleId::SpellMemorized => Event::SpellbookChange {
                     spell: g("spell").unwrap_or_default().to_string(),
                     change: SpellbookChangeKind::Memorized,
@@ -1370,6 +1493,10 @@ impl Parser {
                 RuleId::EffectWoreOffTarget => Event::EffectWoreOffTarget {
                     spell: g("spell").unwrap_or_default().to_string(),
                     target: self.actor(g("target").unwrap_or_default()),
+                },
+                RuleId::PetEffectWoreOff => Event::EffectWoreOffTarget {
+                    spell: g("spell").unwrap_or_default().to_string(),
+                    target: Actor::Named("your pet".into()),
                 },
                 RuleId::AbilityCooldown => Event::AbilityCooldown {
                     ability: g("ability").unwrap_or_default().to_string(),
@@ -2061,6 +2188,166 @@ mod tests {
                 assert!(flags.is_crit());
             }
             other => panic!("expected damage, got {other:?}"),
+        }
+    }
+
+    // ---- Live EverQuest wordings ------------------------------------------
+    //
+    // Every line below was taken verbatim from a real log. They are grouped
+    // because they share one cause: EverQuest and EverQuest Legends word the
+    // same happening differently, and each of these was silently unknown
+    // until it was read against the live client rather than assumed from the
+    // other one.
+
+    /// "was slain by" is the wording for a kill you were not grouped for —
+    /// which includes every kill your own pet makes. Without it a pet class
+    /// parsed as though it had killed nothing all night.
+    #[test]
+    fn a_pet_kill_is_a_death() {
+        match p().parse_body("A forest giant greenwood was slain by Tharn`s warder!") {
+            Event::Death { victim, killer } => {
+                assert_eq!(victim, Actor::Named("A forest giant greenwood".into()));
+                assert_eq!(killer, Some(Actor::Named("Tharn`s warder".into())));
+            }
+            other => panic!("expected a death, got {other:?}"),
+        }
+        // The grouped wording still parses; both forms mean the same thing.
+        match p().parse_body("Orc pawn has been slain by Reklar!") {
+            Event::Death { killer, .. } => {
+                assert_eq!(killer, Some(Actor::Named("Reklar".into())));
+            }
+            other => panic!("expected a death, got {other:?}"),
+        }
+    }
+
+    /// The server-wide boast is one word away from a death line and names a
+    /// creature nobody here fought. It must not become a kill.
+    #[test]
+    fn a_server_announcement_is_not_a_kill() {
+        let e = p().parse_body(
+            "Lord Yelinak has been defeated by a group of hardy adventurers! \
+             Please join us in congratulating Draken along with everyone else \
+             who participated in this achievement!",
+        );
+        match e {
+            Event::ServerVictory { target, credited } => {
+                assert_eq!(target, "Lord Yelinak");
+                assert_eq!(credited, "Draken");
+            }
+            other => panic!("expected a server victory, got {other:?}"),
+        }
+    }
+
+    /// An item on the corpse you chose not to take. It is a drop sighting,
+    /// not a piece of loot, and the two are kept apart deliberately.
+    #[test]
+    fn an_item_left_behind_is_not_looted() {
+        match p().parse_body("--You left a Rusty Two Handed Sword on a snow orc trooper.--") {
+            Event::LootLeft {
+                item,
+                quantity,
+                source,
+            } => {
+                assert_eq!(item, "Rusty Two Handed Sword");
+                assert_eq!(quantity, 1);
+                assert_eq!(source, Some(Actor::Named("a snow orc trooper".into())));
+            }
+            other => panic!("expected an item left behind, got {other:?}"),
+        }
+    }
+
+    /// Grouped coin arrives already divided, and the bonus clause is part of
+    /// what arrived rather than a separate payment.
+    #[test]
+    fn a_coin_split_is_coin() {
+        match p().parse_body("You receive 2 gold, 1 silver and 9 copper as your split (with a bonus).") {
+            Event::CoinLoot { coin } => assert_eq!(coin.as_copper(), 219),
+            other => panic!("expected coin, got {other:?}"),
+        }
+        match p().parse_body("You receive 3 silver as your split.") {
+            Event::CoinLoot { coin } => assert_eq!(coin.as_copper(), 30),
+            other => panic!("expected coin, got {other:?}"),
+        }
+    }
+
+    /// The live client appends who holds the encounter. The consider is the
+    /// same consider, and the level still has to come out of it.
+    #[test]
+    fn an_encounter_lock_does_not_hide_the_consider() {
+        match p().parse_body(
+            "A large heartsting scorpion scowls at you, ready to attack -- \
+             You could probably win this fight. (Lvl: 17) (Encounter Lock: Tharn)",
+        ) {
+            Event::Consider { name, level, .. } => {
+                assert_eq!(name, "A large heartsting scorpion");
+                assert_eq!(level, 17);
+            }
+            other => panic!("expected a consider, got {other:?}"),
+        }
+    }
+
+    /// The only line that says outright whether a name is a person. The kind
+    /// is carried verbatim because the client writes more than two of them.
+    #[test]
+    fn targeting_says_what_kind_of_thing_it_is() {
+        match p().parse_body("Targeted (Player): Garrow") {
+            Event::Targeted { name, kind } => {
+                assert_eq!(name, Actor::Named("Garrow".into()));
+                assert_eq!(kind, "Player");
+            }
+            other => panic!("expected a target, got {other:?}"),
+        }
+        match p().parse_body("Targeted (Banker): Dogle Pitt") {
+            Event::Targeted { kind, .. } => assert_eq!(kind, "Banker"),
+            other => panic!("expected a target, got {other:?}"),
+        }
+    }
+
+    /// A fizzle and an interruption both end a cast, and the live client
+    /// names the spell in each. The bare wordings are swept up as system
+    /// noise, so a named one that fell through was a lost cast.
+    #[test]
+    fn a_named_fizzle_ends_the_cast() {
+        for line in [
+            "Your Herikol's Soothing spell fizzles!",
+            "Your Touch of Night spell is interrupted.",
+        ] {
+            match p().parse_body(line) {
+                Event::CastInterrupted { source } => assert_eq!(source, Actor::You),
+                other => panic!("expected an interrupted cast for {line:?}, got {other:?}"),
+            }
+        }
+        match p().parse_body("a goblin soothsayer's Root spell is interrupted.") {
+            Event::CastInterrupted { source } => {
+                assert_eq!(source, Actor::Named("a goblin soothsayer".into()));
+            }
+            other => panic!("expected an interrupted cast, got {other:?}"),
+        }
+    }
+
+    /// Resisting something aimed at you, rather than something you cast
+    /// being resisted. Only the spell survives: the event has nowhere to
+    /// record the caster.
+    #[test]
+    fn a_resist_you_made_names_the_spell() {
+        match p().parse_body("You resist a goblin soothsayer's Root!") {
+            Event::Resisted { target, spell } => {
+                assert_eq!(target, Actor::You);
+                assert_eq!(spell, "Root");
+            }
+            other => panic!("expected a resist, got {other:?}"),
+        }
+    }
+
+    /// A buff expiring on a pet the client will not name.
+    #[test]
+    fn a_pet_buff_expiry_lands_on_the_pet() {
+        match p().parse_body("Your pet's Sicken spell has worn off.") {
+            Event::EffectWoreOffTarget { spell, target } => {
+                assert_eq!(spell, "Sicken");
+                assert_eq!(target, Actor::Named("your pet".into()));
+            }
+            other => panic!("expected a buff expiry, got {other:?}"),
         }
     }
 

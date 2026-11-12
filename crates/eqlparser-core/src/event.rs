@@ -395,6 +395,19 @@ pub enum Event {
         source: Option<Actor>,
         disposition: LootDisposition,
     },
+    /// An item seen on a corpse and deliberately not taken.
+    ///
+    /// The client says so as plainly as it says what you looted, and for a
+    /// drop table the two are the same observation: the creature dropped it.
+    /// Kept apart from [`Event::Loot`] because only one of them changed what
+    /// you are carrying — folding them together would inflate an inventory
+    /// audit with items still lying on the ground.
+    LootLeft {
+        item: String,
+        quantity: u64,
+        /// The corpse it was left on, when named.
+        source: Option<Actor>,
+    },
     /// Coin taken from a corpse.
     CoinLoot { coin: Coin },
     /// Coin received for selling an item to a merchant.
@@ -505,6 +518,21 @@ pub enum Event {
     },
     /// A spell was resisted by its target.
     Resisted { target: Actor, spell: String },
+    /// You changed target, and the client said what kind of thing it is.
+    ///
+    /// The only line that states outright whether a name belongs to a player
+    /// or to the world. Everything else is inference — a `/who` roster covers
+    /// only who was in the zone when it was run, and a name that never fights
+    /// never appears in a combat line at all. `kind` is carried verbatim
+    /// rather than enumerated: the client writes `Banker` and `Merchant`
+    /// beside `Player` and `NPC`, and a category added by a patch should
+    /// widen the roster rather than fall out of it.
+    Targeted { name: Actor, kind: String },
+    /// A server-wide announcement that somebody, somewhere, killed something
+    /// notable. Nothing to do with your own fight: it names a stranger in a
+    /// zone you are not in, and counting it as a death would credit you with
+    /// kills you never saw.
+    ServerVictory { target: String, credited: String },
     /// You were stunned. The client states the start and the end as a pair,
     /// so the two together are a measurable span rather than a count.
     Stunned,
