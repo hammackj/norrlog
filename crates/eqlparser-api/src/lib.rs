@@ -406,6 +406,72 @@ pub struct Totals {
     pub coin_total_copper: u64,
 }
 
+// Experience: `GET /api/experience`, `GET /api/class-levels` and `GET /api/aa`.
+// The report is moved here from the daemon's engine; its parts, and the
+// other two replies, are core's own types.
+
+pub use eqlparser_core::aa::{AaAbility, AaRank, AaReport};
+pub use eqlparser_core::classlevel::{ClassLevel, ClassLevelReport, LevelSource};
+pub use eqlparser_core::experience::{AaPurchase, ExpSource, LevelRecord, ZoneShare};
+
+/// Level-progression analysis.
+///
+/// All experience figures are "percent of a level", because that is the only
+/// unit the client reports. It is comparable across levels as *progress*, but
+/// deliberately not as raw experience: 1% at level 50 is far more than 1% at
+/// level 10.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExperienceReport {
+    pub current_level: Option<u32>,
+    pub current_percent: f64,
+    pub current_kills: u32,
+    pub current_seconds: i64,
+    pub rate_per_hour: f64,
+    pub seconds_to_next_level: Option<i64>,
+    pub average_seconds_per_level: Option<i64>,
+    pub average_kills_per_level: Option<f64>,
+    pub levels: Vec<LevelRecord>,
+    pub best_zones: Vec<ExpSource>,
+    pub best_mobs: Vec<ExpSource>,
+    /// Alternate advancement ("ability points" in this client).
+    pub aa_earned: u32,
+    pub aa_unspent: u32,
+    /// Points spent. The player's own figure when they have given one,
+    /// otherwise what the log accounts for.
+    pub aa_spent: u32,
+    /// Points spent on purchases visible in the log. A floor on the
+    /// character's lifetime spend: ranks bought before logging began cannot
+    /// be seen, so this reads low by exactly that amount.
+    pub aa_spent_tracked: u32,
+    /// The gap between the two — ranks that predate this log. Constant on any
+    /// given character, so once it is known the total stops drifting.
+    pub aa_spent_untracked: u32,
+    /// Ranks the character demonstrably holds but was never seen buying.
+    pub aa_unlogged: Vec<AaPurchase>,
+    /// The most those ranks can have cost, which bounds the gap above.
+    pub aa_unlogged_cost_max: u32,
+    /// Recent rate, over `aa_window_seconds`.
+    pub aa_per_hour: f64,
+    pub aa_window_seconds: i64,
+    /// Rate across the whole period in which points were earned.
+    pub aa_lifetime_per_hour: f64,
+    pub aa_zones: Vec<ExpSource>,
+    pub aa_purchases: Vec<AaPurchase>,
+    /// Experience potions. These are charge-based rather than timed: each
+    /// grants five doubled awards, and charges stack.
+    pub aa_potions_used: u32,
+    pub aa_potion_charges: u32,
+    pub aa_potion_active: bool,
+    pub aa_gains_doubled: u32,
+    pub aa_gains_normal: u32,
+    /// Share of awards that were doubled, 0.0–1.0.
+    pub aa_doubled_share: f64,
+    /// Average points per award: 1.0 with no potion, 2.0 with full coverage.
+    pub aa_effective_multiplier: f64,
+    /// Doubled awards from a potion that predated the log.
+    pub aa_doubled_unaccounted: u32,
+}
+
 // Loot: `GET /api/loot[?session=1]` and `GET /api/loot/item?item=…`. Moved
 // here from the daemon's engine, which writes them.
 

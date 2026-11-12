@@ -269,6 +269,14 @@ impl Client {
         Self::status_only(resp).await
     }
 
+    /// POST a JSON body, for the few settings the daemon takes that way
+    /// (`/api/class-levels`). Only the status matters.
+    pub async fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<()> {
+        let url = format!("http://127.0.0.1:{}{path}", self.port);
+        let resp = self.http.post(&url).json(body).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        Self::status_only(resp).await
+    }
+
     /// Take a panel down.
     pub async fn delete_panel(&self, id: &str) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);
