@@ -8,6 +8,7 @@ use crate::state::{Rect, State};
 use crate::theme::*;
 use eqlparser_api::Hello;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::v_flex;
 use serde_json::Value;

@@ -20,6 +20,7 @@ use crate::theme::*;
 use eqlparser_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};

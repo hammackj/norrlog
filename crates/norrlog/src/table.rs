@@ -4,6 +4,7 @@
 
 use crate::theme::*;
 use gpui::*;
+use crate::theme::px;
 
 #[derive(Clone, Copy)]
 pub struct Col {
@@ -44,9 +45,13 @@ pub fn fit(cols: &[Col], rows: &[Vec<String>]) -> Vec<Col> {
 
 fn cell_box(c: &Col) -> Div {
     let d = div().overflow_hidden().whitespace_nowrap().text_ellipsis();
+    // When the window is too narrow for every column (a large UI scale, a
+    // small window), the fixed columns give up to a third of their width
+    // before the flexible one drops below a readable floor; the cells
+    // ellipsize rather than spill.
     let d = match c.width {
-        Some(w) => d.w(px(w)).flex_none(),
-        None => d.flex_1().min_w_0(),
+        Some(w) => d.w(px(w)).flex_shrink(1.).min_w(px(w * 0.7)),
+        None => d.flex_1().min_w(px(120.)),
     };
     if c.num { d.flex().justify_end() } else { d }
 }

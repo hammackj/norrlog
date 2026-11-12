@@ -24,6 +24,7 @@ use crate::theme::*;
 use eqlparser_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::{self, px};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
@@ -92,6 +93,8 @@ pub struct SettingsView {
     build: Option<String>,
     cfg_status: String,
     exp_status: String,
+    /// Why the last theme or scale change could not be saved.
+    display_err: Option<String>,
     /// Bumped by every status message, so a timer clears only its own.
     cfg_gen: u64,
     exp_gen: u64,
@@ -150,6 +153,7 @@ impl SettingsView {
             build: None,
             cfg_status: String::new(),
             exp_status: String::new(),
+            display_err: None,
             cfg_gen: 0,
             exp_gen: 0,
             daemon_log: "waiting for daemon…".into(),
@@ -559,6 +563,15 @@ const EQDB_HINT: &str = "Item tooltips, icons and the Sky tab's quest record are
 const EXPORT_HINT: &str = "Boss kills grouped by loadout, with kill counts, average and best times, and your DPS. \
     Drawn from the durable history, so it spans every log file ever parsed — not just the one being followed. Timing \
     and DPS averages exclude kills whose fight could not be bounded, rather than counting them as zero.";
+/// A scale as the Electron app writes it: `1.3`, not the `1.2999999523`
+/// an `f32` widens to, which its dropdown would not recognise.
+fn scale_json(v: f32) -> f64 {
+    (f64::from(v) * 100.).round() / 100.
+}
+
+const THEME_HINT: &str = "The default matches eqldb and hammackj.com, so the tools read as one family. Applies to \
+    this window; the overlay keeps its own palette, tuned against game footage rather than a desktop.";
+const SCALE_HINT: &str = "Scales the whole window, text and spacing alike, to taste. Applies immediately.";
 const OVERLAY_HINT: &str = "The overlay windows and their settings (panels, click-through, position, the OBS URL) \
     come with Norrlog's overlay. Until then the Electron app's overlay reads the same daemon.";
 
@@ -573,7 +586,11 @@ impl Render for SettingsView {
                 .gap_3()
                 .child(split(
                     self.render_paths(cx),
-                    v_flex().gap_3().child(self.render_export(cx)).child(card("Overlay").child(hint(OVERLAY_HINT))),
+                    v_flex()
+                        .gap_3()
+                        .child(self.render_display(cx))
+                        .child(self.render_export(cx))
+                        .child(card("Overlay").child(hint(OVERLAY_HINT))),
                 ))
                 .child(self.render_daemon_log(cx)),
         )
@@ -581,6 +598,57 @@ impl Render for SettingsView {
 }
 
 impl SettingsView {
+    /// Theme and UI scale: both apply at once and are saved on the spot, with
+    /// no daemon restart, as the Electron app does.
+    fn render_display(&self, cx: &mut Context<Self>) -> Div {
+        let this = cx.entity().downgrade();
+        let current = theme::palette();
+        let w = this.clone();
+        let theme_menu = Button::new("set-theme")
+            .label(theme::THEMES.iter().find(|t| t.0 == current).map_or("", |t| t.1))
+            .small()
+            .w_full()
+            .dropdown_menu(move |mut menu, _, _| {
+                for &(val, label) in &theme::THEMES {
+                    let w = w.clone();
+                    menu = menu.item(PopupMenuItem::new(label).checked(current == val).on_click(move |_, _, cx| {
+                        theme::set_palette(val);
+                        theme::apply(cx);
+                        let _ = w.update(cx, |v, cx| v.save_display("theme", serde_json::json!(val), cx));
+                    }));
+                }
+                menu
+            });
+        let scale = theme::scale();
+        let w = this;
+        let scale_menu = Button::new("set-scale")
+            .label(theme::SCALES.iter().find(|t| t.0 == scale).map_or_else(|| format!("{:.0}%", scale * 100.), |t| t.1.to_string()))
+            .small()
+            .w_full()
+            .dropdown_menu(move |mut menu, _, _| {
+                for &(val, label) in &theme::SCALES {
+                    let w = w.clone();
+                    menu = menu.item(PopupMenuItem::new(label).checked(scale == val).on_click(move |_, _, cx| {
+                        theme::set_scale(val);
+                        theme::apply(cx);
+                        let _ = w.update(cx, |v, cx| v.save_display("uiScale", serde_json::json!(scale_json(val)), cx));
+                    }));
+                }
+                menu
+            });
+        card("Display")
+            .child(field("Theme").child(theme_menu).child(hint(THEME_HINT)))
+            .child(field("UI scale").child(scale_menu).child(hint(SCALE_HINT)))
+            .when_some(self.display_err.clone(), |d, e| d.child(div().text_sm().text_color(hex(ERR)).child(e)))
+    }
+
+    fn save_display(&mut self, key: &str, value: serde_json::Value, cx: &mut Context<Self>) {
+        let mut patch = serde_json::Map::new();
+        patch.insert(key.to_string(), value);
+        self.display_err = config::save_patch(patch).err().map(|e| format!("Could not save: {e}"));
+        cx.notify();
+    }
+
     fn render_paths(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
         let browse = |id: &'static str, what: Pick| {
@@ -847,7 +915,7 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings in `gpui::test`, which shadows `#[test]`.
-    use super::{HistoryBrief, LogFile, builds, bytes, eqdb_mode_of, file_time, log_option_at, markdown_rows};
+    use super::{scale_json, HistoryBrief, LogFile, builds, bytes, eqdb_mode_of, file_time, log_option_at, markdown_rows};
 
     #[test]
     fn formats_follow_settings_js() {
@@ -879,5 +947,12 @@ mod tests {
         };
         assert_eq!(builds(&h), ["SHD/BRD", "unknown"]);
         assert_eq!(eqdb_mode_of("https://x.example"), "url");
+    }
+
+    #[test]
+    fn scale_is_saved_as_written() {
+        for (v, want) in [(1.3f32, 1.3f64), (0.85, 0.85), (1.15, 1.15), (1.5, 1.5)] {
+            assert_eq!(scale_json(v), want);
+        }
     }
 }

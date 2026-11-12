@@ -16,6 +16,7 @@ use crate::theme::*;
 use eqlparser_api::{IslandProgress, SiteQuest, SkyItemProgress, SkyQuestProgress, SkyReply, SkySite};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};

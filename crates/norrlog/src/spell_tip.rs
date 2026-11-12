@@ -12,6 +12,7 @@ use crate::theme::*;
 use eqlparser_api::{CLASS_CANNOT_CAST, Class, SpellLookup};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
 use std::collections::HashMap;
 

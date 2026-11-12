@@ -22,6 +22,10 @@ pub struct ParserConfig {
     pub since: String,
     /// eqldb lookups: empty for the default, a URL, or `off`.
     pub eqdb: String,
+    /// The palette: empty for the house one, or `spellbook`.
+    pub theme: String,
+    /// A multiplier on the whole layout; absent means 1.
+    pub ui_scale: Option<f32>,
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`: where Electron keeps `userData`.

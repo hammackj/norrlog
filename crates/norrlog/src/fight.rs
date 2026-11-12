@@ -13,6 +13,7 @@ use crate::theme::*;
 use eqlparser_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
 use std::collections::{HashMap, HashSet};

@@ -15,6 +15,7 @@ use crate::theme::*;
 use eqlparser_api::{TaskRecord, TaskReport, Totals};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 use std::collections::HashSet;

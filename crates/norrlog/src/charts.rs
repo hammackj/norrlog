@@ -12,6 +12,7 @@ use crate::theme::*;
 use eqlparser_api::{Encounter, EncounterSummary, Outcome, TickSeries, TimelineEvent, TimelineMark};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
 
@@ -117,7 +118,7 @@ pub fn dps_card(e: &Encounter, s: &EncounterSummary) -> Option<Div> {
             let w = f32::from(b.size.width);
             let pt = |i: usize, v: f64| {
                 let y = DPS_H - 6. - (v / peak) as f32 * (DPS_H - 14.);
-                b.origin + point(px(frac(i, n) * w), px(y))
+                b.origin + point(gpui::px(frac(i, n) * w), px(y))
             };
             for l in &paint_lines {
                 if l.fill {
@@ -126,7 +127,7 @@ pub fn dps_card(e: &Encounter, s: &EncounterSummary) -> Option<Div> {
                     for (i, &v) in l.run.iter().enumerate() {
                         p.line_to(pt(i, v));
                     }
-                    p.line_to(b.origin + point(px(w), px(DPS_H)));
+                    p.line_to(b.origin + point(gpui::px(w), px(DPS_H)));
                     p.close();
                     if let Ok(path) = p.build() {
                         window.paint_path(path, wash(l.colour, 0.14));
@@ -146,7 +147,7 @@ pub fn dps_card(e: &Encounter, s: &EncounterSummary) -> Option<Div> {
                 }
             }
             for &(f, c) in &paint_swaps {
-                dashed_vline(window, b.origin.x + px(f * w), b.origin.y, px(DPS_H), wash(c, 0.7), 1.);
+                dashed_vline(window, b.origin.x + gpui::px(f * w), b.origin.y, px(DPS_H), wash(c, 0.7), 1.);
             }
         }),
     )
@@ -547,7 +548,8 @@ fn dashed_vline(window: &mut Window, x: Pixels, top: Pixels, h: Pixels, colour: 
     let mut y = 0.;
     while y < f32::from(h) {
         let seg = 3f32.min(f32::from(h) - y);
-        window.paint_quad(fill(Bounds::new(point(x - px(w / 2.), top + px(y)), size(px(w), px(seg))), colour));
+        // `h` is measured; `w` is a stroke width in layout pixels.
+        window.paint_quad(fill(Bounds::new(point(x - px(w / 2.), top + gpui::px(y)), size(px(w), gpui::px(seg))), colour));
         y += 5.;
     }
 }
@@ -560,8 +562,9 @@ fn hatch(window: &mut Window, r: Bounds<Pixels>, c: u32) {
         let mut x = -h;
         while x < f32::from(r.size.width) {
             let mut p = PathBuilder::stroke(px(2.));
-            p.move_to(r.origin + point(px(x), px(h)));
-            p.line_to(r.origin + point(px(x + h), px(0.)));
+            // Measured from the bar, so already in screen pixels.
+            p.move_to(r.origin + point(gpui::px(x), gpui::px(h)));
+            p.line_to(r.origin + point(gpui::px(x + h), gpui::px(0.)));
             if let Ok(path) = p.build() {
                 window.paint_path(path, wash(c, 0.45));
             }

@@ -4,6 +4,7 @@
 use crate::theme::*;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
 
 /// A titled card: `<div class="card"><h3>`.

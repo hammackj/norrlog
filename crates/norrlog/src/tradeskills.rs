@@ -18,6 +18,7 @@ use crate::theme::*;
 use eqlparser_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::Button;
 use gpui_component::tooltip::Tooltip;

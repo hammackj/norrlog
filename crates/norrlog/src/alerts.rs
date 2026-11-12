@@ -19,6 +19,7 @@ use crate::theme::*;
 use eqlparser_api::{AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;

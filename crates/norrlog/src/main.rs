@@ -76,6 +76,8 @@ fn main() {
 
     gpui_platform::application().run(move |cx| {
         gpui_component::init(cx);
+        theme::set_palette(&cfg.theme);
+        theme::set_scale(cfg.ui_scale.unwrap_or(1.));
         theme::apply(cx);
         let bounds = match state.bounds {
             Some(r) => {

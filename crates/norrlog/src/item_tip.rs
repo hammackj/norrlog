@@ -17,6 +17,7 @@ use base64::Engine as _;
 use eqlparser_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
 use std::collections::HashMap;
 use std::sync::Arc;
