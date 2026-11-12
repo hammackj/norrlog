@@ -499,6 +499,14 @@ pub struct ClassInfo {
     pub score: f32,
     pub share: f32,
     pub reasons: Vec<String>,
+    /// True when the game named this class (a `/who` row, or in live
+    /// EverQuest the class channel) rather than it being read off the
+    /// evidence. A share is how much of the evidence pointed one way;
+    /// beside a line that says the word outright it is not a confidence in
+    /// anything, so the apps say "stated" instead. Absent from older
+    /// daemons, which read as not stated.
+    #[serde(default)]
+    pub stated: bool,
 }
 
 /// Career totals across every parsed encounter.
@@ -640,14 +648,20 @@ pub struct LootDetail {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LootSource {
     pub mob: String,
-    /// Times this creature dropped it.
+    /// Times this creature dropped it and you took it.
     pub drops: u64,
+    /// Times it dropped and you left it on the corpse. Still the creature
+    /// dropping it, which is what a rate is about. 0 from older daemons.
+    #[serde(default)]
+    pub left: u64,
     /// Items received from it in total.
     pub quantity: u64,
     /// Times this creature died in a fight of yours — the denominator.
     pub kills: u64,
-    /// `drops / kills`. Only meaningful with a denominator to divide by, so it
-    /// is `None` when no kill of this creature was observed, rather than a
+    /// `(drops + left) / kills`. Both go on top, because the question is how
+    /// often the creature drops the item, not how often you fancied picking
+    /// it up. Only meaningful with a denominator to divide by, so it is
+    /// `None` when no kill of this creature was observed, rather than a
     /// fabricated 100%.
     pub rate: Option<f64>,
     pub zones: Vec<String>,

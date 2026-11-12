@@ -435,7 +435,13 @@ impl LootView {
                             .child(s.mob.clone())
                             .child(div().text_xs().text_color(hex(MUTED)).whitespace_normal().child(s.zones.join(", ")))
                             .into_any_element(),
-                        div().child(s.drops.to_string()).into_any_element(),
+                        // What you left stays apart from what you took: same
+                        // evidence about the creature, a different fact about you.
+                        h_flex()
+                            .gap_1()
+                            .child(s.drops.to_string())
+                            .when(s.left > 0, |d| d.child(muted(format!("+{} left", s.left))))
+                            .into_any_element(),
                         muted(if s.quantity != s.drops { s.quantity.to_string() } else { String::new() }).into_any_element(),
                         muted(if s.kills > 0 { s.kills.to_string() } else { "—".into() }).into_any_element(),
                         match s.rate {
@@ -493,9 +499,11 @@ impl LootView {
             )
             .child(
                 card("Dropped by").child(table_card(SOURCE_COLS, sources)).child(hint(
-                    "Rate is drops divided by deaths of that creature in your own fights. It counts corpses you were \
-                     there for, not the game's loot table: a corpse you never looted still counts as a kill, so a rate \
-                     reads low rather than wrong. A creature you have no recorded kill for shows no rate at all.",
+                    "Rate is every time the creature was seen dropping it — taken and left — divided by deaths of that \
+                     creature in your own fights. Both go on top because the question is how often it drops, not how \
+                     often you fancied picking it up. It counts corpses you were there for, not the game's loot table: \
+                     a corpse you never opened still counts as a kill, so a rate reads low rather than wrong. A \
+                     creature you have no recorded kill for shows no rate at all.",
                 )),
             )
             .child(card("Where and what it was worth").child(table_card(ZONE_COLS, zones)).child(hint(worth(d))))

@@ -24,7 +24,7 @@ impl ClassesView {
     pub fn on_snapshot(&mut self, classes: Vec<ClassInfo>, cx: &mut Context<Self>) {
         let same = classes.len() == self.classes.len()
             && classes.iter().zip(&self.classes).all(|(a, b)| {
-                a.name == b.name && pct(a.share) == pct(b.share) && reasons(a) == reasons(b)
+                a.name == b.name && a.stated == b.stated && pct(a.share) == pct(b.share) && reasons(a) == reasons(b)
             });
         if !same {
             self.classes = classes;
@@ -33,10 +33,13 @@ impl ClassesView {
     }
 }
 
-const NOTE: &str = "EverQuest Legends characters hold three classes at once, and the combination changes over time. \
-    Classes are inferred from the spellbook (authoritative — the game's own spell data records which classes may cast \
-    each spell) and from class-defining skills, which is the only way pure-melee classes can be detected at all. \
-    Evidence is scoped to the last 24 hours of log time, so a class you have since dropped does not linger.";
+const NOTE: &str = "A Legends character holds three classes at once and the combination changes over time; a live \
+    EverQuest character holds one at a time, and can switch. Where the game names the class — a /who row for your own \
+    character, or in live EverQuest the class chat channel it joins you to on every zone-in — that is the answer, and \
+    it is shown as stated rather than with a percentage: it is not a reading with a confidence. Otherwise classes are \
+    inferred from the spellbook (authoritative — the game's own spell data records which classes may cast each spell) \
+    and from class-defining skills, which is the only way pure-melee classes can be detected at all. In Legends, \
+    evidence is scoped to the last 24 hours of log time, so a class you have since dropped does not linger.";
 
 impl Render for ClassesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -52,7 +55,10 @@ impl Render for ClassesView {
                         .gap_3()
                         // Long reasons give way to the share, on one line as the renderer keeps them.
                         .child(dim(reasons(c)).max_w(px(640.)).overflow_hidden().whitespace_nowrap().text_ellipsis())
-                        .child(figure(pct(c.share))),
+                        // A class the game named is not a reading with a
+                        // confidence, and a percentage beside it would invite
+                        // reading it as one.
+                        .child(figure(if c.stated { "stated".into() } else { pct(c.share) })),
                 )
             }))
         };
@@ -90,7 +96,7 @@ mod tests {
 
     #[test]
     fn a_row_shows_four_reasons_at_most_and_a_rounded_share() {
-        let mut c = ClassInfo { name: "Shaman".into(), abbrev: "SHM".into(), score: 1., share: 0.179, reasons: vec![] };
+        let mut c = ClassInfo { name: "Shaman".into(), abbrev: "SHM".into(), score: 1., share: 0.179, reasons: vec![], stated: false };
         assert_eq!(reasons(&c), "—");
         c.reasons = (1..=6).map(|n| format!("r{n}")).collect();
         assert_eq!(reasons(&c), "r1, r2, r3, r4");

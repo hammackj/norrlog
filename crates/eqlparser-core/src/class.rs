@@ -363,6 +363,14 @@ impl ClassDetector {
         self.stated.get(i.saturating_sub(1)).map(|(_, c)| *c)
     }
 
+    /// The class the game itself named as in force at `at`, in a one-class
+    /// game: a `/who` row or the class channel. `None` in Legends, where a
+    /// declared trio may be a spell set the player typed, and when nothing
+    /// was ever stated. What the apps show as "stated" rather than a share.
+    pub fn stated_class(&self, at: i64) -> Option<Class> {
+        if self.slots() == 1 { self.stated_at(at) } else { None }
+    }
+
     fn slots(&self) -> usize {
         if self.slots == 0 { 3 } else { self.slots }
     }

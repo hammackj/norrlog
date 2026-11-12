@@ -2911,14 +2911,49 @@ impl Engine {
 
         // Deaths per creature across every fight, built once rather than
         // rescanned for each source.
+        //
+        // Keyed with the client's article stripped, because the same creature
+        // is written both ways across a log — "a scaled wolf tracker" in a
+        // death line, "scaled wolf tracker" everywhere the drop tracker
+        // touched it. Keyed as written, the two never meet and a creature
+        // ends up with a drop and no denominator to divide it by.
         let mut kills: HashMap<String, u64> = HashMap::new();
         for enc in self.encounters.iter().chain(self.tracker.current()) {
             for d in &enc.deaths {
                 if !d.victim.eq_ignore_ascii_case(&self.player) {
-                    *kills.entry(d.victim.to_lowercase()).or_default() += 1;
+                    *kills
+                        .entry(eqlparser_core::drops::canonical_npc(&d.victim).to_lowercase())
+                        .or_default() += 1;
                 }
             }
         }
+
+        // Times this item was seen on a corpse and left there, per creature.
+        // The loot log cannot answer this — it only ever records what you
+        // took — so it comes from the drop tracker, which keys on the name
+        // with the client's article stripped and on the ungraded item.
+        let left_behind: HashMap<String, (String, u64, Vec<String>)> = {
+            use eqlparser_core::drops::{canonical_item, canonical_npc};
+            let base = canonical_item(item).to_lowercase();
+            self.drops
+                .report()
+                .items
+                .into_iter()
+                .find(|i| i.item.to_lowercase() == base)
+                .map(|i| {
+                    i.sources
+                        .into_iter()
+                        .filter(|s| s.left > 0)
+                        .map(|s| {
+                            (
+                                canonical_npc(&s.npc).to_lowercase(),
+                                (s.npc, s.left, s.zones),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
 
         let mut by_mob: HashMap<String, LootSource> = HashMap::new();
         let mut zones: HashMap<String, u64> = HashMap::new();
@@ -2946,11 +2981,15 @@ impl Engine {
                 *zones.entry(z.clone()).or_default() += 1;
             }
             if let Some(src) = &l.source {
+                // Keyed the way `left_behind` and `kills` are, article
+                // stripped, or a creature both looted and left on would meet
+                // itself as two rows.
                 let e = by_mob
-                    .entry(src.to_lowercase())
+                    .entry(eqlparser_core::drops::canonical_npc(src).to_lowercase())
                     .or_insert_with(|| LootSource {
                         mob: src.clone(),
                         drops: 0,
+                        left: 0,
                         quantity: 0,
                         kills: 0,
                         rate: None,
@@ -2968,16 +3007,54 @@ impl Engine {
             }
         }
 
+        // A creature you saw drop this and never looted from has no entry in
+        // the loot log at all, so it would be missing from a table headed
+        // "Dropped by" — which is the very omission this is here to fix.
+        for (key, (npc, left, seen_in)) in &left_behind {
+            if !by_mob.contains_key(key) {
+                by_mob.insert(
+                    key.clone(),
+                    LootSource {
+                        mob: npc.clone(),
+                        drops: 0,
+                        left: *left,
+                        quantity: 0,
+                        kills: 0,
+                        rate: None,
+                        // Where this item was seen on this creature: with no
+                        // loot behind the row, every one of them is a sighting
+                        // left on the corpse.
+                        zones: seen_in.clone(),
+                        last: 0,
+                    },
+                );
+            }
+        }
+
         let mut sources: Vec<LootSource> = by_mob
             .into_iter()
             .map(|(key, mut s)| {
-                s.kills = kills.get(&key).copied().unwrap_or(0);
-                s.rate = (s.kills > 0).then(|| s.drops as f64 / s.kills as f64);
+                s.kills = kills
+                    .get(eqlparser_core::drops::canonical_npc(&key))
+                    .copied()
+                    .unwrap_or(0);
+                // The times you walked away from it are in the drop tracker,
+                // not in the loot log — the loot log only ever records what
+                // you actually took.
+                s.left = left_behind
+                    .get(eqlparser_core::drops::canonical_npc(&key))
+                    .map(|(_, n, _)| *n)
+                    .unwrap_or(0);
+                s.rate = (s.kills > 0).then(|| (s.drops + s.left) as f64 / s.kills as f64);
                 s.zones.sort();
                 s
             })
             .collect();
-        sources.sort_by(|a, b| b.drops.cmp(&a.drops).then_with(|| a.mob.cmp(&b.mob)));
+        sources.sort_by(|a, b| {
+            (b.drops + b.left)
+                .cmp(&(a.drops + a.left))
+                .then_with(|| a.mob.cmp(&b.mob))
+        });
 
         let mut zones: Vec<(String, u64)> = zones.into_iter().collect();
         zones.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -3389,11 +3466,13 @@ impl Engine {
     pub fn snapshot(&self, recent_limit: usize) -> Snapshot {
         let now = self.now();
 
+        let stated = self.classes.stated_class(now);
         let classes = self
             .classes
             .current_trio(now, 24 * 3600)
             .into_iter()
             .map(|c: ClassScore| ClassInfo {
+                stated: stated == Some(c.class),
                 name: c.class.name().to_string(),
                 abbrev: c.class.abbrev().to_string(),
                 score: c.score,
@@ -4290,6 +4369,75 @@ mod tests {
         assert_eq!(item.looted, 0);
         assert_eq!(item.sources[0].npc, "a snow orc trooper", "named as the client names it");
         assert_eq!(item.sources[0].kills, 1, "the kill is the denominator");
+    }
+
+    /// A creature you only ever walked away from still belongs in a table
+    /// headed "Dropped by" — and it still needs a denominator.
+    ///
+    /// The trap is the client's article. A death line writes "a scaled wolf
+    /// tracker" and the drop tracker files it as "scaled wolf tracker", so
+    /// keying the kill count as written leaves the row with a drop and
+    /// nothing to divide it by.
+    #[test]
+    fn a_creature_you_never_looted_still_gets_a_denominator() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered The Field of Bone.",
+                // One you loot from...
+                "[Tue Jul 28 14:00:01 2026] You slash a scaled wolf for 100 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You have slain a scaled wolf!",
+                "[Tue Jul 28 14:00:03 2026] --You have looted a Loose Scale from a scaled wolf's corpse.--",
+                // ...and one you do not.
+                "[Tue Jul 28 14:00:10 2026] You slash a scaled wolf tracker for 100 points of damage.",
+                "[Tue Jul 28 14:00:11 2026] You have slain a scaled wolf tracker!",
+                "[Tue Jul 28 14:00:12 2026] --You left a Loose Scale on a scaled wolf tracker.--",
+            ],
+        );
+        let d = e.loot_detail("Loose Scale").expect("the scale was looted once");
+        let tracker = d
+            .sources
+            .iter()
+            .find(|s| s.mob.to_lowercase().contains("tracker"))
+            .expect("the creature you walked away from is still a source");
+        assert_eq!(tracker.drops, 0);
+        assert_eq!(tracker.left, 1);
+        assert_eq!(tracker.kills, 1, "the article must not hide the kill");
+        assert_eq!(tracker.rate, Some(1.0), "seen once, killed once");
+
+        let wolf = d
+            .sources
+            .iter()
+            .find(|s| s.mob.eq_ignore_ascii_case("a scaled wolf"))
+            .expect("the one you looted");
+        assert_eq!(wolf.drops, 1);
+        assert_eq!(wolf.left, 0);
+    }
+
+    /// One creature, one row: an item taken from a creature once and left on
+    /// it once is one source with both counts, not two rows that each claim
+    /// the left one. The loot log names it "a black wolf" and the drop
+    /// tracker "black wolf", and the rows used to be keyed on each.
+    #[test]
+    fn taken_and_left_from_one_creature_is_one_row() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You slash a black wolf for 100 points of damage.",
+                "[Tue Jul 28 14:00:01 2026] You have slain a black wolf!",
+                "[Tue Jul 28 14:00:02 2026] --You have looted a Wolf Pelt from a black wolf's corpse.--",
+                "[Tue Jul 28 14:01:00 2026] You slash a black wolf for 100 points of damage.",
+                "[Tue Jul 28 14:01:01 2026] You have slain a black wolf!",
+                "[Tue Jul 28 14:01:02 2026] --You left a Wolf Pelt on a black wolf.--",
+            ],
+        );
+        let d = e.loot_detail("Wolf Pelt").expect("looted once");
+        let rows: Vec<(&str, u64, u64, u64)> =
+            d.sources.iter().map(|s| (s.mob.as_str(), s.drops, s.left, s.kills)).collect();
+        assert_eq!(rows, [("a black wolf", 1, 1, 2)]);
+        assert_eq!(d.sources[0].rate, Some(1.0), "two sightings over two kills");
     }
 
     /// A resist that is not a charm must never reach the charm overlay, and a

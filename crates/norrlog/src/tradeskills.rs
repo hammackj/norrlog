@@ -403,7 +403,8 @@ impl TradeskillsView {
         let sources = self.drops.get(&item.to_lowercase()).filter(|s| !s.is_empty())?;
         let one = |s: &DropSighting| {
             let kills = if s.kills > 0 { s.kills.to_string() } else { "?".into() };
-            format!("{} {}/{kills}", s.npc, s.looted)
+            // Sightings over kills: an item left on the corpse dropped just the same.
+            format!("{} {}/{kills}", s.npc, s.looted + s.left)
         };
         let all: SharedString = sources
             .iter()
