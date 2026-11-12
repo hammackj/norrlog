@@ -295,6 +295,18 @@ impl Client {
         serde_json::from_slice(&body).map_err(|e| Error::Decode(format!("{path}: {e}")))
     }
 
+    /// Any GET, as the raw body: an image, say `/api/item-icon`.
+    pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let url = format!("http://127.0.0.1:{}{path}", self.port);
+        let resp = self.http.get(&url).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
+        if !status.is_success() {
+            return Err(Error::Api { status: status.as_u16(), error: String::from_utf8_lossy(&body).into_owned() });
+        }
+        Ok(body.to_vec())
+    }
+
     /// Open `/api/events`. The daemon counts this as a client for as long as
     /// the stream is held, so holding it is how an app keeps the daemon up.
     ///
