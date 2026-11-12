@@ -15,6 +15,7 @@ use crate::theme::*;
 use eqlparser_api::{TaskRecord, TaskReport, Totals};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -313,7 +314,7 @@ impl Render for CharacterView {
             .child(self.render_totals())
             .child(band("Character", "what this character is carrying and has earned"))
             .child(h_flex().items_start().gap_3().child(self.render_tasks(cx)).child(self.render_achievements()));
-        div().id("character-scroll").size_full().overflow_y_scroll().own_axis().child(page)
+        div().id("character-scroll").size_full().overflow_y_scrollbar().child(page)
     }
 }
 

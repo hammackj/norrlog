@@ -16,6 +16,7 @@ use crate::theme::*;
 use eqlparser_api::{IslandProgress, SiteQuest, SkyItemProgress, SkyQuestProgress, SkyReply, SkySite};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
@@ -211,7 +212,7 @@ const NOTE: &str = "Counts are items looted in this log, not current inventory â
 impl Render for SkyView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(reply) = self.reply.clone() else {
-            return div().id("sky-scroll").size_full().child(card("Plane of Sky quests"));
+            return div().id("sky-scroll").size_full().child(card("Plane of Sky quests")).into_any_element();
         };
         let d = &reply.report;
         let rows = self.rows();
@@ -256,9 +257,9 @@ impl Render for SkyView {
         div()
             .id("sky-scroll")
             .size_full()
-            .overflow_y_scroll()
-            .own_axis()
+            .overflow_y_scrollbar()
             .child(card_suffixed("Plane of Sky quests", Some(summary)).text_base().child(body))
+            .into_any_element()
     }
 }
 

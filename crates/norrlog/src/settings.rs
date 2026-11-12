@@ -24,6 +24,7 @@ use crate::theme::*;
 use eqlparser_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
@@ -567,7 +568,7 @@ fn field(label: &str) -> Div {
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("settings-scroll").size_full().overflow_y_scroll().own_axis().child(
+        div().id("settings-scroll").size_full().overflow_y_scrollbar().child(
             v_flex()
                 .gap_3()
                 .child(split(
@@ -825,7 +826,8 @@ impl SettingsView {
     }
 
     fn render_daemon_log(&self, cx: &mut Context<Self>) -> Div {
-        card("Daemon log").child(
+        card("Daemon log").child(vbar(
+            &self.log_scroll,
             div()
                 .id("set-daemon-log")
                 .track_scroll(&self.log_scroll)
@@ -838,7 +840,7 @@ impl SettingsView {
                 .text_xs()
                 .text_color(hex(MUTED))
                 .child(self.daemon_log.clone()),
-        )
+        ))
     }
 }
 

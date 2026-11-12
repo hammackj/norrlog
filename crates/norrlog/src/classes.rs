@@ -3,9 +3,9 @@
 //! section of `docs/parity/experience-character-classes.md`.
 
 use crate::parts::{ROW, bar_row, card, dim, empty, figure, fill, note};
-use crate::theme::OwnAxis;
 use eqlparser_api::ClassInfo;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 
 pub struct ClassesView {
@@ -56,7 +56,7 @@ impl Render for ClassesView {
             }))
         };
         // The notes come before the rows, as in the renderer.
-        div().id("classes-scroll").size_full().overflow_y_scroll().own_axis().child(
+        div().id("classes-scroll").size_full().overflow_y_scrollbar().child(
             card("Detected classes")
                 .child(note(
                     "classes-note",

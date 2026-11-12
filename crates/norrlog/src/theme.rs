@@ -2,7 +2,8 @@
 //! with the eqldb collector so the two read as one family. Every view takes
 //! its colours from here, never from a literal.
 
-use gpui::{App, Hsla, rgb};
+use gpui::{App, Div, Hsla, IntoElement, ParentElement, ScrollHandle, Styled, div, rgb};
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{Theme, ThemeMode};
 
 /// A scroller that takes only its own axis from the wheel. Unset, GPUI turns
@@ -75,11 +76,26 @@ pub fn apply(cx: &mut App) {
         c.primary = hex(YOU);
         c.title_bar = hex(PANEL);
         c.title_bar_border = hex(BORDER);
-        c.scrollbar = hex(BG);
-        c.scrollbar_thumb = hex(BORDER);
+        c.scrollbar = gpui::transparent_black();
+        c.scrollbar_thumb = wash(MUTED, 0.45);
+        c.scrollbar_thumb_hover = wash(MUTED, 0.7);
         c.success = hex(OK);
         c.warning = hex(WARN);
         c.danger = hex(ERR);
         c.info = hex(INFO);
+        // Always drawn, as the Electron app's were: a bar that shows only
+        // while scrolling hides that there is more below.
+        t.scrollbar_mode = ScrollbarMode::Always;
     });
+}
+
+/// A vertical scroll bar laid over `scroller`, for a scroll area that keeps
+/// its own handle (to jump to the bottom, or to keep its place), which
+/// `overflow_y_scrollbar` would replace with one of its own. The wrapper
+/// takes the scroller's place in the layout, so size it as the scroller was.
+pub fn vbar(handle: &ScrollHandle, scroller: impl IntoElement) -> Div {
+    div()
+        .relative()
+        .child(scroller)
+        .child(div().absolute().inset_0().child(Scrollbar::vertical(handle).viewport_from_layout()))
 }

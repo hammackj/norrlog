@@ -428,7 +428,7 @@ impl EncountersView {
 
     /// One fight, from `fight.rs`, under a way back to the list. The list
     /// is kept as it was, so going back costs no fetch.
-    fn render_detail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_detail(&self, cx: &mut Context<Self>) -> Div {
         let back = Button::new("enc-back").label("← Back to list").small().ghost().on_click(cx.listener(|v, _, _, cx| {
             v.detail = None;
             cx.notify();
@@ -438,13 +438,17 @@ impl EncountersView {
             Some(Detail::Failed(e)) => div().text_color(hex(ENEMY)).child(e.clone()),
             Some(Detail::Shown(d)) => self.render_fight(d, cx),
         };
-        div()
-            .id("fight-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .own_axis()
-            .track_scroll(&self.detail_scroll)
-            .child(v_flex().gap_3().pb_4().child(h_flex().child(back)).child(body))
+        vbar(
+            &self.detail_scroll,
+            div()
+                .id("fight-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .own_axis()
+                .track_scroll(&self.detail_scroll)
+                .child(v_flex().gap_3().pb_4().child(h_flex().child(back)).child(body)),
+        )
+        .size_full()
     }
 }
 
@@ -457,11 +461,11 @@ impl Render for EncountersView {
             .size_full()
             .gap_3()
             .child(self.render_toolbar(cx))
-            .child(
+            .child(vbar(
+                &self.scroll,
                 div()
                     .id("enc-scroll")
-                    .flex_1()
-                    .min_h_0()
+                    .size_full()
                     .overflow_y_scroll()
                     .own_axis()
                     .track_scroll(&self.scroll)
@@ -473,6 +477,8 @@ impl Render for EncountersView {
                     }))
                     .child(self.render_list(cx)),
             )
+            .flex_1()
+            .min_h_0())
             .into_any_element()
     }
 }

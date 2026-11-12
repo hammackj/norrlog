@@ -11,6 +11,7 @@ use crate::theme::*;
 use eqlparser_api::{ProcKind, ProcReport, ProcRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 use std::time::{Duration, Instant};
 
@@ -147,7 +148,7 @@ impl Render for ProcsView {
                     ))
                 }),
         );
-        div().id("procs-scroll").size_full().overflow_y_scroll().own_axis().child(out)
+        div().id("procs-scroll").size_full().overflow_y_scrollbar().child(out)
     }
 }
 

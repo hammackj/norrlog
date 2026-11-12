@@ -20,6 +20,7 @@ use crate::theme::*;
 use eqlparser_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
 use std::collections::HashMap;
@@ -181,7 +182,7 @@ impl DashboardView {
 impl Render for DashboardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sky_meta = self.sky.as_ref().map(|r| sky_meta(&sky_classes(r))).unwrap_or_default();
-        div().id("dashboard-scroll").size_full().overflow_y_scroll().own_axis().child(
+        div().id("dashboard-scroll").size_full().overflow_y_scrollbar().child(
             v_flex()
                 .gap_3()
                 .child(band("Combat", "what the parser makes of the fighting"))

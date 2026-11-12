@@ -16,6 +16,7 @@ use crate::theme::*;
 use eqlparser_api::{AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -441,7 +442,7 @@ impl ExperienceView {
             .bg(hex(PANEL))
             .overflow_hidden()
             .child(table::head(LEVEL_COLS))
-            .child(div().id("x-levels").max_h(px(420.)).overflow_y_scroll().own_axis().child(body))
+            .child(div().id("x-levels").max_h(px(420.)).overflow_y_scrollbar().child(body))
     }
 
     fn render_aa(&self, cx: &mut Context<Self>) -> Div {
@@ -509,7 +510,7 @@ impl Render for ExperienceView {
             .child(self.render_lists())
             .child(self.render_levels())
             .child(self.render_aa(cx));
-        div().id("experience-scroll").size_full().overflow_y_scroll().own_axis().child(page)
+        div().id("experience-scroll").size_full().overflow_y_scrollbar().child(page)
     }
 }
 

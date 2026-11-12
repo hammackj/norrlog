@@ -18,6 +18,7 @@ use crate::theme::*;
 use eqlparser_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::Button;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Sizable, h_flex, v_flex};
@@ -171,7 +172,7 @@ impl Render for TradeskillsView {
                         .on_click(cx.listener(|v, _, _, cx| v.select(None, cx))),
                 )
         });
-        div().id("ts-scroll").size_full().overflow_y_scroll().own_axis().child(
+        div().id("ts-scroll").size_full().overflow_y_scrollbar().child(
             v_flex()
                 .gap_3()
                 .child(self.render_skills(cx))

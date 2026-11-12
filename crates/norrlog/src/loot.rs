@@ -17,6 +17,7 @@ use crate::theme::*;
 use eqlparser_api::{LootDetail, LootList, LootTally};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Sizable, h_flex, v_flex};
 use std::time::{Duration, Instant};
@@ -517,7 +518,7 @@ impl Render for LootView {
         // The detail scrolls apart from the list, so going back keeps the
         // list where it was.
         let id = if self.detail.is_some() { "loot-detail-scroll" } else { "loot-scroll" };
-        div().id(id).size_full().overflow_y_scroll().own_axis().child(page).into_any_element()
+        div().size_full().overflow_y_scrollbar().id(id).child(page).into_any_element()
     }
 }
 

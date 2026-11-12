@@ -8,6 +8,7 @@ use crate::state::{Rect, State};
 use crate::theme::*;
 use eqlparser_api::Hello;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::v_flex;
 use serde_json::Value;
 use std::sync::Arc;
@@ -427,9 +428,9 @@ impl Render for Shell {
             .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts" | "dashboard") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
-                div().id("main").flex_1().min_h_0().p_4().child(self.render_body())
+                div().id("main").flex_1().min_h_0().p_4().child(self.render_body()).into_any_element()
             } else {
-                div().id("main").flex_1().min_h_0().overflow_y_scroll().own_axis().p_4().child(self.render_body())
+                div().id("main").flex_1().min_h_0().overflow_y_scrollbar().p_4().child(self.render_body()).into_any_element()
             })
     }
 }

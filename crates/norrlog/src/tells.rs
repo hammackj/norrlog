@@ -13,6 +13,7 @@ use crate::theme::*;
 use eqlparser_api::{Conversation, TellReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 use std::time::{Duration, Instant};
 
@@ -107,8 +108,7 @@ impl Render for TellsView {
             Some(c) => div()
                 .id("tell-thread")
                 .max_h(px(560.))
-                .overflow_y_scroll()
-                .own_axis()
+                .overflow_y_scrollbar()
                 .child(v_flex().gap(px(5.)).children(c.messages.iter().map(|m| {
                     h_flex()
                         .items_start()
@@ -134,7 +134,7 @@ impl Render for TellsView {
                 })))
                 .into_any_element(),
         };
-        div().id("tells-scroll").size_full().overflow_y_scroll().own_axis().child(split(
+        div().id("tells-scroll").size_full().overflow_y_scrollbar().child(split(
             card_suffixed("People", count).child(people),
             card_suffixed("Conversation", who).child(messages).child(note(
                 "tells-note",

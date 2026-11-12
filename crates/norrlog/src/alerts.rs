@@ -19,6 +19,7 @@ use crate::theme::*;
 use eqlparser_api::{AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
@@ -598,8 +599,7 @@ impl Render for AlertsView {
         div()
             .id("alerts-scroll")
             .size_full()
-            .overflow_y_scroll()
-            .own_axis()
+            .overflow_y_scrollbar()
             .child(v_flex().gap_3().child(toolbar).child(split(left, right)).child(feed))
     }
 }
@@ -773,8 +773,7 @@ impl AlertsView {
         div()
             .id("al-feed")
             .max_h(px(352.))
-            .overflow_y_scroll()
-            .own_axis()
+            .overflow_y_scrollbar()
             .font_family(mono)
             .text_sm()
             .child(v_flex().gap(px(2.)).children(self.feed.iter().enumerate().map(|(i, l)| {
