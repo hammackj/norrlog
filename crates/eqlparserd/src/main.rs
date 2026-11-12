@@ -18,6 +18,8 @@ mod shots;
 mod site;
 mod store;
 mod tail;
+#[cfg(target_os = "linux")]
+mod tray;
 
 use anyhow::Context;
 use engine::Engine;
@@ -63,6 +65,8 @@ struct Config {
     shots: Option<PathBuf>,
     /// Do not read screenshots at all, even where everything for it is here.
     no_shots: bool,
+    /// No tray icon: headless use, tests, a second daemon.
+    no_tray: bool,
     no_archive: bool,
     archive_dry_run: bool,
     /// Read what is already in the Screenshots folder, once, at startup.
@@ -154,6 +158,8 @@ OPTIONS:
     --shots <dir>      The client's Screenshots folder. Defaults to
                        $EQL_SHOTS_DIR, else <game-dir>/Screenshots.
     --no-shots         Do not read screenshots, whatever else is configured.
+    --no-tray          No tray icon (Linux). There is none anyway without a
+                       D-Bus session; the daemon never needs one.
     --no-archive       Read screenshots but leave them in the client's folder.
     --archive-dry-run  Decide where every screenshot belongs and move none.
     --backlog          Read what is already in the Screenshots folder, once, on
@@ -334,6 +340,7 @@ fn parse_args() -> Config {
         idle_exit: None,
         shots: None,
         no_shots: false,
+        no_tray: false,
         no_archive: false,
         archive_dry_run: false,
         backlog: false,
@@ -414,6 +421,7 @@ fn parse_args() -> Config {
             }
             "--shots" => cfg.shots = args.next().map(PathBuf::from),
             "--no-shots" => cfg.no_shots = true,
+            "--no-tray" => cfg.no_tray = true,
             "--no-archive" => cfg.no_archive = true,
             "--archive-dry-run" => cfg.archive_dry_run = true,
             "--backlog" => cfg.backlog = true,
@@ -747,6 +755,11 @@ async fn main() -> anyhow::Result<()> {
     }));
     if let Some(secs) = cfg.idle_exit {
         crate::server::spawn_idle_exit(Arc::clone(&life), secs);
+    }
+    #[cfg(target_os = "linux")]
+    if !cfg.no_tray {
+        let engine = Arc::clone(&engine);
+        crate::tray::spawn(Arc::clone(&life), Box::new(move || engine.locked("engine").zone_place()));
     }
 
     let state = AppState {
@@ -1505,6 +1518,7 @@ mod tests {
             idle_exit: None,
             shots: None,
             no_shots: false,
+            no_tray: false,
             no_archive: false,
             archive_dry_run: false,
             backlog: false,
@@ -1535,6 +1549,7 @@ mod tests {
             idle_exit: None,
             shots: None,
             no_shots: false,
+            no_tray: false,
             no_archive: false,
             archive_dry_run: false,
             backlog: false,

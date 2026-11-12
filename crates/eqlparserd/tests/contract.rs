@@ -52,7 +52,7 @@ fn spawn(s: &Scratch) -> Spawn {
     let mut sp = Spawn::new(env!("CARGO_BIN_EXE_eqlparserd"));
     sp.args = ["--log".into(), s.log.clone().into_os_string(), "--game-dir".into(), s.game.clone().into_os_string()]
         .into_iter()
-        .chain(["--no-shots", "--eqdb", "http://127.0.0.1:1"].map(Into::into))
+        .chain(["--no-shots", "--no-tray", "--eqdb", "http://127.0.0.1:1"].map(Into::into))
         .collect();
     sp.env = vec![
         ("HOME".into(), home.clone().into()),

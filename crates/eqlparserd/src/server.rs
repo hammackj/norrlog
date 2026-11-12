@@ -143,6 +143,9 @@ pub struct Life {
     clients: std::sync::atomic::AtomicUsize,
     /// Unix seconds of the last request or socket close.
     last_activity: std::sync::atomic::AtomicI64,
+    /// Stay up with no client: the tray's "keep running". An OBS browser
+    /// source polls rather than holding a socket, so it never counts.
+    stay: std::sync::atomic::AtomicBool,
 }
 
 impl Life {
@@ -151,7 +154,19 @@ impl Life {
             hello,
             clients: Default::default(),
             last_activity: std::sync::atomic::AtomicI64::new(unix_now()),
+            stay: Default::default(),
         }
+    }
+
+    pub fn stays(&self) -> bool {
+        self.stay.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_stay(&self, on: bool) {
+        self.stay.store(on, std::sync::atomic::Ordering::SeqCst);
+        // Unticking starts the idle wait from now, not from whenever the
+        // last client left an hour ago.
+        self.touch();
     }
 
     pub fn hello(&self) -> eqlparser_api::Hello {
@@ -171,9 +186,9 @@ impl Life {
     }
 
     /// Seconds since anybody needed this daemon, or `None` while a client is
-    /// connected.
+    /// connected or it has been told to stay.
     pub fn idle_for(&self, now: i64) -> Option<i64> {
-        (self.clients() == 0)
+        (self.clients() == 0 && !self.stays())
             .then(|| now - self.last_activity.load(std::sync::atomic::Ordering::SeqCst))
     }
 
@@ -3717,6 +3732,19 @@ mod tests {
         );
         let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["Beta", "Gamma", "Alpha"]);
+    }
+
+    /// The tray's "keep running" holds off the idle exit, and letting go
+    /// starts the wait from then.
+    #[test]
+    fn staying_holds_off_the_idle_exit() {
+        let life = Life::new(test_hello());
+        let now = unix_now();
+        assert!(life.idle_for(now + 100).is_some_and(|i| i >= 99));
+        life.set_stay(true);
+        assert_eq!(life.idle_for(now + 100), None);
+        life.set_stay(false);
+        assert!(life.idle_for(unix_now()).is_some_and(|i| i < 5));
     }
 
     fn test_hello() -> eqlparser_api::Hello {

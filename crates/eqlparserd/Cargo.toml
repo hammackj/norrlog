@@ -21,6 +21,11 @@ sha2 = { workspace = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "charset", "http2"] }
 
+# The tray icon, Linux only: StatusNotifierItem over D-Bus, no GTK, and it
+# runs on the tokio runtime the server already has.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
+
 [dev-dependencies]
 # For the one test that pins the blocked rule to the reader's own refusal.
 # Not a runtime dependency: the daemon reaches `held_reason` through
