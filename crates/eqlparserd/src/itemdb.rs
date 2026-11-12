@@ -150,6 +150,12 @@ impl ItemDb {
         }
     }
 
+    /// No site to ask: `--eqdb off`. Every lookup is answered from the
+    /// bundled data.
+    pub fn off(&self) -> bool {
+        self.bases.is_empty()
+    }
+
     /// The origin that last answered, or the first configured one before
     /// anything has.
     pub fn base(&self) -> String {

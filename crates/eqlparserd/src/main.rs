@@ -191,6 +191,8 @@ OPTIONS:
                        local instance to develop against one. When none can be
                        reached the bundled item data is used, so this is never
                        required.
+                       `--eqdb off` (or EQLPARSER_EQDB=off) asks no site
+                       anything and uses only the bundled data.
 
 EXIT STATUS:
     3                  The port is already taken -- most likely by another
@@ -282,6 +284,11 @@ fn exit_with_parent() {
 #[cfg(not(unix))]
 fn exit_with_parent() {}
 
+/// `--eqdb off` (or `none`): no item site at all.
+fn is_off(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "none")
+}
+
 /// Split a comma-separated list of origins, dropping blanks.
 fn split_origins(raw: &str) -> Vec<String> {
     raw.split(',')
@@ -299,11 +306,13 @@ fn parse_args() -> Config {
         port: DEFAULT_PORT,
         game: None,
         since: None,
-        eqdb: std::env::var("EQLPARSER_EQDB")
-            .ok()
-            .map(|v| split_origins(&v))
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_EQDB.iter().map(|s| s.to_string()).collect()),
+        eqdb: match std::env::var("EQLPARSER_EQDB").ok() {
+            Some(v) if is_off(&v) => Vec::new(),
+            v => v
+                .map(|v| split_origins(&v))
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| DEFAULT_EQDB.iter().map(|s| s.to_string()).collect()),
+        },
         // Off by default: run from a terminal, this daemon belongs to whoever
         // started it and should outlive nothing in particular.
         exit_with_parent: false,
@@ -370,7 +379,11 @@ fn parse_args() -> Config {
                         cfg.eqdb.clear();
                         saw_eqdb = true;
                     }
-                    cfg.eqdb.extend(split_origins(&u));
+                    // `off` asks no site anything: tooltips, icons and
+                    // Sky come from the bundled data alone.
+                    if !is_off(&u) {
+                        cfg.eqdb.extend(split_origins(&u));
+                    }
                 }
             }
             // Gone: screenshots are read and sent by the eqldb collector

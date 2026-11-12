@@ -2300,6 +2300,14 @@ async fn sky_site_overlay(
     report: &eqlparser_core::skyquest::SkyReport,
     force: bool,
 ) -> serde_json::Value {
+    if s.itemdb.off() {
+        return serde_json::json!({
+            "ok": false,
+            "off": true,
+            "base": "",
+            "error": "eqldb lookups are switched off",
+        });
+    }
     let Some((zone, age)) = s.itemdb.zone(SKY_ZONE_SLUG, force).await else {
         return serde_json::json!({
             "ok": false,
