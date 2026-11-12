@@ -373,6 +373,16 @@ impl SpellDb {
             }
             by_name.entry(s.name.to_lowercase()).or_default().push(s.id);
         }
+        // `spells` is a HashMap, so the order above is different every time
+        // the daemon starts. Every lookup that takes the first or the best of
+        // several candidates inherited that, and the same fight named its
+        // effect "Harm Touch XII" on one run and "Harm Touch XXXIII" on the
+        // next. In id order the answer is the same every run.
+        for index in [&mut by_landed_on_other, &mut by_landed_on_you, &mut by_fades, &mut by_name] {
+            for ids in index.values_mut() {
+                ids.sort_unstable();
+            }
+        }
 
         SpellDb {
             spells,
@@ -383,6 +393,9 @@ impl SpellDb {
                     if let Some(tail) = landing_tail(phrase) {
                         m.entry(tail).or_default().push(phrase.clone());
                     }
+                }
+                for phrases in m.values_mut() {
+                    phrases.sort_unstable();
                 }
                 m
             },
@@ -934,6 +947,20 @@ impl SpellResolver {
         self.recent_casts
             .iter()
             .any(|c| c.timestamp >= cutoff && same_spell(&c.spell_name, spell_name))
+    }
+
+    /// Whether you cast exactly this rank recently, not just a spell of the
+    /// same name.
+    pub fn cast_this_rank_recently(&self, timestamp: i64, spell_name: &str) -> bool {
+        self.recent_cast_names(timestamp).any(|n| n.eq_ignore_ascii_case(spell_name))
+    }
+
+    /// The names you cast within the association window, rank included.
+    /// A handful at most, so searching from these is cheaper than testing
+    /// every candidate a landing phrase could belong to.
+    pub fn recent_cast_names(&self, timestamp: i64) -> impl Iterator<Item = &str> {
+        let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
+        self.recent_casts.iter().filter(move |c| c.timestamp >= cutoff).map(|c| c.spell_name.as_str())
     }
 
     pub fn db(&self) -> &SpellDb {
@@ -2131,5 +2158,31 @@ mod tests {
         let mut r = SpellResolver::new(SpellDb::empty(), 50);
         assert_eq!(r.resolve_landing(0, "Something unrelated."), None);
         assert_eq!(r.resolve_fade("Also unrelated."), None);
+    }
+
+    /// Ranks share a landing phrase, and the candidates used to come back in
+    /// whatever order the HashMap held them, so the same fight named a
+    /// different rank on each daemon start.
+    #[test]
+    fn candidates_for_a_shared_phrase_come_back_in_id_order() {
+        for _ in 0..8 {
+            let mut m = HashMap::new();
+            for (id, name) in [(907, "Harm Touch XXXIII"), (88, "Harm Touch XII"), (412, "Harm Touch XX")] {
+                let mut s = spell(id, name, "", "", 0, 0);
+                s.landed_on_other = Some(" is struck by a harmful touch.".into());
+                m.insert(id, s);
+            }
+            let db = SpellDb::from_spells(m);
+            assert_eq!(db.candidates_for_landing_on_other(" is struck by a harmful touch."), [88, 412, 907]);
+        }
+    }
+
+    #[test]
+    fn the_rank_you_cast_is_told_apart_from_its_siblings() {
+        let mut r = SpellResolver::new(SpellDb::from_spells(HashMap::new()), 50);
+        r.note_cast(1000, "Harm Touch XII");
+        assert!(r.cast_recently(1001, "Harm Touch XXXIII"), "a sibling rank still counts as cast");
+        assert!(r.cast_this_rank_recently(1001, "Harm Touch XII"));
+        assert!(!r.cast_this_rank_recently(1001, "Harm Touch XXXIII"));
     }
 }

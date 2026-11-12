@@ -2438,16 +2438,30 @@ impl Engine {
     fn resolve_span(&self, timestamp: i64, ids: &[u32]) -> Option<(String, i64, String)> {
         let db = self.resolver.db();
         let level = self.resolver.level();
-        let best = ids
+        // The rank you cast, when it is among the candidates, is the one that
+        // landed, and its siblings are out even if they last longer: "Harm
+        // Touch VI" is instant and "Harm Touch XII" is a 36 s dot under the
+        // same phrase, and matching on the base name drew a 36 s bar for a
+        // spell with no duration at the rank cast. Found from the few recent
+        // casts rather than by testing every candidate. `ids` is sorted.
+        let exact: Vec<u32> = self
+            .resolver
+            .recent_cast_names(timestamp)
+            .flat_map(|n| db.candidates_for_name(n).iter().copied())
+            .filter(|id| ids.binary_search(id).is_ok())
+            .collect();
+        let pool: &[u32] = if exact.is_empty() { ids } else { &exact };
+        let best = pool
             .iter()
             .filter_map(|id| db.get(*id))
             // Only effects with a real duration. An instant has no span to
             // draw, and a zero-length bar would say the opposite of what it
             // means; a permanent has no end worth drawing on one fight.
             .filter(|sp| sp.is_timed_buff() && !sp.is_permanent())
-            .filter(|sp| self.resolver.cast_recently(timestamp, &sp.name))
-            // Longest of the candidates you actually cast: ranks of one spell
-            // share a phrase, and the one still in your book is the longer.
+            .filter(|sp| !exact.is_empty() || self.resolver.cast_recently(timestamp, &sp.name))
+            // Longest of the candidates you cast: ranks of one spell share a
+            // phrase, and the one still in your book is the longer. Candidates
+            // are in id order, so a tie goes the same way every run.
             .max_by_key(|sp| sp.duration_seconds(level))?;
         let seconds = best.duration_seconds(level);
         if seconds <= 0 {
@@ -4141,6 +4155,65 @@ mod tests {
         m.insert(6, restricted(6, "Ambiguous Word", CreatureKind::Undead));
         m.insert(7, mk(7, "Ambiguous Word", false));
         SpellDb::from_spells(m)
+    }
+
+    /// Two ranks under one landing phrase, as the real file has them: VI is
+    /// instant, XII a 36 s dot. Casting VI once drew a 36 s bar named after
+    /// a rank never cast, and which one depended on HashMap order.
+    fn harm_touch_db() -> SpellDb {
+        use eqlparser_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT};
+        use eqlparser_core::spell::Spell;
+        let mk = |id: u32, name: &str, formula: u32, cap: u32| Spell {
+            id,
+            name: name.into(),
+            cast_time_ms: 0,
+            recovery_ms: 0,
+            recast_ms: 0,
+            duration_formula: formula,
+            duration_cap: cap,
+            mana: 0,
+            landed_on_you: None,
+            landed_on_other: Some(" writhes in the grip of agony.".into()),
+            fades: None,
+            class_levels: [CLASS_CANNOT_CAST; CLASS_COUNT],
+            good_effect: 0,
+            category_id: 0,
+            is_charm: false,
+            restricted_to: None,
+            linked: Vec::new(),
+            procs: Vec::new(),
+        };
+        let mut m = std::collections::HashMap::new();
+        m.insert(10, mk(10, "Harm Touch VI", 0, 0));
+        m.insert(20, mk(20, "Harm Touch XII", 3, 6));
+        m.insert(30, mk(30, "Harm Touch XXXIII", 3, 6));
+        SpellDb::from_spells(m)
+    }
+
+    fn harm_touch_effects(cast: &str) -> Vec<String> {
+        let mut e = Engine::new("Mirela".to_string(), harm_touch_db());
+        feed(
+            &mut e,
+            &[
+                "[Sun Sep 13 14:59:40 2026] You have entered The Estate of Unrest.",
+                &format!("[Sun Sep 13 14:59:52 2026] You begin casting {cast}."),
+                &format!("[Sun Sep 13 14:59:52 2026] You hit reclusive ghoul magus for 443 points of unresistable damage by {cast}."),
+                "[Sun Sep 13 14:59:52 2026] Reclusive ghoul magus writhes in the grip of agony.",
+            ],
+        );
+        e.tracker.current().map(|enc| enc.effects.iter().map(|f| f.spell.clone()).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn an_instant_rank_draws_no_span_however_long_its_siblings_last() {
+        assert!(harm_touch_effects("Harm Touch VI").is_empty());
+    }
+
+    #[test]
+    fn a_timed_rank_is_named_as_the_rank_cast() {
+        for _ in 0..4 {
+            assert_eq!(harm_touch_effects("Harm Touch XII"), ["Harm Touch XII"]);
+        }
     }
 
     /// The body type of the 43 creatures this finds in the shipped logs comes
