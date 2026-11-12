@@ -689,11 +689,6 @@ fn table_card(cols: &[Col], rows: Vec<AnyElement>) -> Div {
     v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(cols)).children(rows)
 }
 
-
-
-
-/// The renderer's `<details class="note">`.
-
 #[cfg(test)]
 mod tests {
     use super::{fates, first, is_mote, left_badge, matches, mote_ladder, mote_tier, motes_first, motes_summary, seen_line, worth};

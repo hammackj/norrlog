@@ -4,6 +4,14 @@
 //! API and the overlay page. The Electron GUI and OBS both talk to this one
 //! process, so there is a single source of truth for what is happening in game.
 
+// Clippy 1.100.0 overflows its stack running this lint over this crate
+// (1.97.1 did not; a 256 MiB stack does not help, so it recurses without
+// end). An item-level allow does not stop the analysis, only the report, so
+// it has to be crate-wide. The one site 1.97 flagged (server.rs, a borrowed
+// String into serde_json's `Value::get`) is fixed. Remove this once a clippy
+// release runs clean without it: `cargo clippy -p eqlparserd`.
+#![allow(clippy::needless_borrows_for_generic_args)]
+
 mod bundle;
 mod catchup;
 mod dumps;

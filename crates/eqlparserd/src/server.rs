@@ -2078,7 +2078,7 @@ async fn item_lookup(
     // field without this endpoint deciding which fields matter.
     let bundled: Option<serde_json::Value> = serde_json::from_str::<serde_json::Value>(WIKI_ITEMS)
         .ok()
-        .and_then(|m| m.get(&name.to_lowercase()).cloned());
+        .and_then(|m| m.get(name.to_lowercase()).cloned());
     let source = match (&live, &bundled) {
         (Some(_), _) => "eqdb",
         (None, Some(_)) => "bundled",
