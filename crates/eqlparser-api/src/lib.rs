@@ -1017,3 +1017,104 @@ pub struct ForagedItem {
     pub item: String,
     pub times: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Sky: `GET /api/sky[?refresh=1]` is core's `SkyReport` with the item site's
+// account of the same quests merged in under `site`. `GET /api/item-brief`
+// answers the icons and links a row needs.
+
+pub use eqlparser_core::skyquest::{BossKills, GiverLine, IslandProgress, SkyItemProgress, SkyQuestProgress, SkyReport};
+
+/// The `/api/sky` reply: the report, and the site beside it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkyReply {
+    #[serde(flatten)]
+    pub report: SkyReport,
+    #[serde(default)]
+    pub site: Option<SkySite>,
+}
+
+/// The item site's record of the Plane of Sky, or why there is none.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkySite {
+    #[serde(default)]
+    pub ok: bool,
+    /// Lookups are switched off.
+    #[serde(default)]
+    pub off: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The site's origin, which item links are built from.
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub age_seconds: i64,
+    /// Our quest names the site has no record of.
+    #[serde(default)]
+    pub missing: Vec<String>,
+    #[serde(default)]
+    pub quests: std::collections::HashMap<String, SiteQuest>,
+    #[serde(default)]
+    pub drops: std::collections::HashMap<String, SiteDrop>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteQuest {
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub disagrees: Vec<String>,
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub contributors: Option<u64>,
+    #[serde(default)]
+    pub dialogue: Option<Vec<SiteLine>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteLine {
+    #[serde(default)]
+    pub speaker: String,
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteDrop {
+    #[serde(default)]
+    pub looted: Option<u64>,
+    #[serde(default)]
+    pub sources: Vec<SiteDropSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteDropSource {
+    pub npc: String,
+    #[serde(default)]
+    pub island: Option<String>,
+    #[serde(default)]
+    pub looted: Option<u64>,
+}
+
+/// `GET /api/item-brief?names=a|b`: per name, an icon cell, the slug and
+/// whether the site has a page.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ItemBriefReply {
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub items: std::collections::HashMap<String, ItemBrief>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ItemBrief {
+    #[serde(default)]
+    pub icon: Option<SpriteIcon>,
+    #[serde(default)]
+    pub on_site: bool,
+    #[serde(default)]
+    pub slug: String,
+}

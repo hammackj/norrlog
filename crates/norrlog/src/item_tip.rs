@@ -14,7 +14,7 @@
 use crate::api::{Api, query};
 use crate::theme::*;
 use base64::Engine as _;
-use eqlparser_api::{EqdbItem, ItemLookup, SpriteIcon};
+use eqlparser_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
@@ -33,11 +33,29 @@ pub struct ItemCards {
     /// Cut cells and decoded bundled icons, by sheet path and offset or by
     /// the data URI itself.
     icons: HashMap<String, Option<Arc<Image>>>,
+    /// Row briefs (`/api/item-brief`), by the name as asked. A name asked
+    /// about and not answered is kept as `None`, so it is not asked again.
+    briefs: HashMap<String, Option<ItemBrief>>,
+    brief_task: Option<Task<()>>,
+    /// The bundled item data (`/api/wiki`), by lowercased name. Fetched once;
+    /// a failure leaves it empty.
+    wiki: Option<Slot<HashMap<String, WikiItem>>>,
 }
+
+/// Names per `/api/item-brief` request: under the endpoint's own cap.
+const BRIEF_CHUNK: usize = 150;
 
 impl ItemCards {
     pub fn new() -> Self {
-        ItemCards { api: None, known: HashMap::new(), sheets: HashMap::new(), icons: HashMap::new() }
+        ItemCards {
+            api: None,
+            known: HashMap::new(),
+            sheets: HashMap::new(),
+            icons: HashMap::new(),
+            briefs: HashMap::new(),
+            brief_task: None,
+            wiki: None,
+        }
     }
 
     /// A different daemon may answer differently: start over.
@@ -46,6 +64,100 @@ impl ItemCards {
         self.known.clear();
         self.sheets.clear();
         self.icons.clear();
+        self.clear_briefs();
+        self.wiki = None;
+    }
+
+    /// Forget every brief, so the next look asks again.
+    pub fn clear_briefs(&mut self) {
+        self.briefs.clear();
+        self.brief_task = None;
+    }
+
+    /// Fetch the bundled item data, once.
+    pub fn load_wiki(&mut self, cx: &mut Context<Self>) {
+        if self.wiki.is_some() {
+            return;
+        }
+        let Some(api) = self.api.clone() else { return };
+        let task = cx.spawn(async move |this, cx| {
+            let got = api.get::<HashMap<String, WikiItem>>("/api/wiki".to_string()).await.unwrap_or_default();
+            let _ = this.update(cx, |c, cx| {
+                c.wiki = Some(Slot::Done(Some(got)));
+                cx.notify();
+            });
+        });
+        self.wiki = Some(Slot::Pending(task));
+    }
+
+    fn wiki_of(&self, name: &str) -> Option<&WikiItem> {
+        match &self.wiki {
+            Some(Slot::Done(Some(w))) => w.get(&name.to_lowercase()),
+            _ => None,
+        }
+    }
+
+    /// Ask about any of `names` not asked about yet: in chunks, one after
+    /// another, one batch at a time. Notifies when any chunk was answered.
+    pub fn load_briefs(&mut self, names: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
+        if self.brief_task.is_some() {
+            return;
+        }
+        let mut want: Vec<String> = Vec::new();
+        for n in names {
+            if !n.is_empty() && !self.briefs.contains_key(&n) && !want.contains(&n) {
+                want.push(n);
+            }
+        }
+        if want.is_empty() {
+            return;
+        }
+        let Some(api) = self.api.clone() else { return };
+        for n in &want {
+            self.briefs.insert(n.clone(), None);
+        }
+        self.brief_task = Some(cx.spawn(async move |this, cx| {
+            let mut got = Vec::new();
+            for chunk in want.chunks(BRIEF_CHUNK) {
+                let path = format!("/api/item-brief?{}", query(&[("names", chunk.join("|"))]));
+                if let Ok(r) = api.get::<ItemBriefReply>(path).await {
+                    got.push(r);
+                }
+            }
+            let _ = this.update(cx, |c, cx| {
+                c.brief_task = None;
+                if !got.is_empty() {
+                    for r in got {
+                        for (k, b) in r.items {
+                            c.briefs.insert(k, Some(b));
+                        }
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn brief(&self, name: &str) -> Option<&ItemBrief> {
+        self.briefs.get(name).and_then(Option::as_ref)
+    }
+
+    /// A row's icon: the site's sprite cell, else the bundled image.
+    pub fn row_icon(&mut self, name: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
+        if let Some(s) = self.brief(name).and_then(|b| b.icon.clone()) {
+            return self.sprite(&s, cx);
+        }
+        let uri = self.wiki_of(name)?.icon.clone()?;
+        self.icons.entry(uri.clone()).or_insert_with(|| data_uri_png(&uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))).clone()
+    }
+
+    /// Where an item's name links: the site's page when it has one (false),
+    /// else the wiki's (true), else nowhere.
+    pub fn link(&self, name: &str, site_base: &str) -> Option<(String, bool)> {
+        if let Some(b) = self.brief(name).filter(|b| b.on_site && !b.slug.is_empty() && !site_base.is_empty()) {
+            return Some((format!("{site_base}/item/{}", b.slug), false));
+        }
+        self.wiki_of(name).and_then(|w| w.url.clone()).map(|u| (u, true))
     }
 
     fn ensure(&mut self, name: &str, cx: &mut Context<Self>) {

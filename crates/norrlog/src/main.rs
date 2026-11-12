@@ -25,6 +25,7 @@ mod item_tip;
 mod loot;
 mod parts;
 mod procs;
+mod sky;
 mod spell_tip;
 mod state;
 mod table;
