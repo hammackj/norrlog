@@ -232,9 +232,8 @@ fn restart() {
     eprintln!("[eqlparserd] tray: restart failed: {err}");
 }
 
-/// The parser's desktop entry, if one is installed.
-fn find_parser() -> Option<Launch> {
-    let id = "eqlparser";
+/// Where desktop entries live: the user's own, then the system's.
+fn application_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
         dirs.push(d);
@@ -243,19 +242,47 @@ fn find_parser() -> Option<Launch> {
     }
     let sys = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
     dirs.extend(sys.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
-    dirs.iter()
-        .any(|d| d.join("applications").join(format!("{id}.desktop")).is_file())
-        .then(|| Launch { id: id.into() })
+    dirs.into_iter().map(|d| d.join("applications")).collect()
 }
 
-/// The collector: `EQLDB_COLLECTOR`, else `eqldb-collector` on the PATH.
+fn desktop_entry(id: &str) -> Option<PathBuf> {
+    application_dirs()
+        .into_iter()
+        .map(|d| d.join(format!("{id}.desktop")))
+        .find(|p| p.is_file())
+}
+
+/// The program a desktop entry runs: the first word of its `Exec=`, with
+/// field codes and quotes dropped. Enough for the entries the install scripts
+/// write, which name one launcher by its full path.
+fn exec_of(entry: &str) -> Option<PathBuf> {
+    let line = entry.lines().find_map(|l| l.strip_prefix("Exec="))?;
+    let first = line.split_whitespace().next()?.trim_matches('"');
+    (!first.is_empty() && !first.starts_with('%')).then(|| PathBuf::from(first))
+}
+
+/// The parser's desktop entry, if one is installed.
+fn find_parser() -> Option<Launch> {
+    let id = "eqlparser";
+    desktop_entry(id).map(|_| Launch { id: id.into() })
+}
+
+/// The collector: `EQLDB_COLLECTOR`, else `eqldb-collector` on the PATH,
+/// else whatever its installed desktop entry runs. Run as a program rather
+/// than through `gtk-launch` so it can be told which port this daemon is on.
 fn find_collector() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("EQLDB_COLLECTOR").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join("eqldb-collector"))
-        .find(|p| p.is_file())
+    let on_path = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|d| d.join("eqldb-collector"))
+            .find(|p| p.is_file())
+    });
+    on_path.or_else(|| {
+        let entry = std::fs::read_to_string(desktop_entry("eqldb-collector")?).ok()?;
+        exec_of(&entry).filter(|p| p.is_file())
+    })
 }
 
 /// Start the tray, or say why not. Never fails the daemon.
@@ -300,6 +327,14 @@ pub fn spawn(life: Arc<Life>, zone: Zone) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_program_a_desktop_entry_runs() {
+        let e = "[Desktop Entry]\nName=x\nExec=/opt/x/launch.sh %U\nIcon=x\n";
+        assert_eq!(super::exec_of(e), Some("/opt/x/launch.sh".into()));
+        assert_eq!(super::exec_of("Exec=\"/opt/y/run\" --flag"), Some("/opt/y/run".into()));
+        assert_eq!(super::exec_of("Name=nothing to run"), None);
+    }
+
     #[test]
     fn underscores_survive_a_menu_label() {
         assert_eq!(super::label("eqlog_Tharn_freeport.txt"), "eqlog__Tharn__freeport.txt");
