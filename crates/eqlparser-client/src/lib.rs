@@ -40,6 +40,8 @@ pub enum Error {
     Unreachable { port: u16, why: String },
     /// Something answered, and it is not an eqlparserd.
     NotOurs { port: u16, why: String },
+    /// An eqlparserd from before `/api/hello` existed.
+    Outdated { port: u16 },
     /// An eqlparserd answered, speaking another version of the API.
     Incompatible { port: u16, daemon: Box<Hello> },
     /// The daemon this started exited before it answered.
@@ -63,6 +65,11 @@ impl fmt::Display for Error {
             Error::NotOurs { port, why } => {
                 write!(f, "port {port} is held by something that is not eqlparserd ({why})")
             }
+            Error::Outdated { port } => write!(
+                f,
+                "port {port} is held by an eqlparserd from before the shared daemon (it has no \
+                 /api/hello); quit whatever started it, most likely the parser app, and start again"
+            ),
             Error::Incompatible { port, daemon } => {
                 let side = if daemon.api_version < API_VERSION {
                     format!(
@@ -300,6 +307,15 @@ async fn hello_at(http: &reqwest::Client, port: u16) -> Result<Hello> {
         }
         Err(e) => return Err(Error::NotOurs { port, why: e.to_string() }),
     };
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // Every eqlparserd answers `/api/snapshot`; one that predates the
+        // shared daemon has no `/api/hello`. Most likely the parser app's own
+        // daemon from before the rebuild, and it needs saying as that.
+        let snap = format!("http://127.0.0.1:{port}/api/snapshot");
+        if http.get(&snap).timeout(Duration::from_secs(5)).send().await.is_ok_and(|r| r.status().is_success()) {
+            return Err(Error::Outdated { port });
+        }
+    }
     if !resp.status().is_success() {
         return Err(Error::NotOurs { port, why: format!("/api/hello answered {}", resp.status()) });
     }
