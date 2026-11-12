@@ -436,6 +436,9 @@ pub struct Engine {
     last_charm_attempt: Option<(String, String)>,
     /// The description line awaiting its cost, so a rank keeps its text.
     aa_pending_desc: String,
+    /// Whether a `Description:` has been read and its `Cost per Level:` has
+    /// not. Only inside that window does an unstamped line mean anything.
+    aa_description_open: bool,
     trades: TradeskillTracker,
     /// Where items were seen coming from, tagged with the game they were seen
     /// in — see [`eqlparser_core::game`] for why that tag is not optional.
@@ -600,6 +603,7 @@ impl Engine {
             charm_failures: Vec::new(),
             last_charm_attempt: None,
             aa_pending_desc: String::new(),
+            aa_description_open: false,
             trades: TradeskillTracker::new(),
             drops: DropTracker::new(game),
             bestiary: Bestiary::new(game, &player),
@@ -756,9 +760,35 @@ impl Engine {
     /// Feed one raw log line.
     pub fn push_line(&mut self, line: &str) {
         let Some(entry) = self.parser.parse_line(line) else {
+            self.push_continuation(line);
             return;
         };
         self.push_entry(entry);
+    }
+
+    /// A line the client wrote with no timestamp of its own.
+    ///
+    /// The client stamps every line it writes except one: the body of a long
+    /// alternate-advancement description, which it spills across as many
+    /// lines as it needs and stamps only the first. Those continuations are
+    /// unparseable on their own — there is no timestamp to split off and no
+    /// rule that would match the prose — so they were dropped, and every
+    /// description longer than a line was silently truncated to its first.
+    ///
+    /// It is worth 1,985 lines across the sample logs, and on the largest of
+    /// them a fifth of the file. Every one sits between a `Description:` line
+    /// and the `Cost per Level:` that closes it — checked, not assumed —
+    /// which is exactly the window this appends into. Outside that window
+    /// there is nothing sensible to do with an unstamped line, and it is
+    /// dropped as before.
+    fn push_continuation(&mut self, line: &str) {
+        if !self.aa_description_open {
+            return;
+        }
+        // A blank line is a paragraph break in the middle of a description,
+        // not the end of one. Kept, so the text reads as it was written.
+        self.aa_pending_desc.push('\n');
+        self.aa_pending_desc.push_str(line.trim_end());
     }
 
     /// Record a live line for the alerts view and run the line-level rules.
@@ -1189,13 +1219,18 @@ impl Engine {
             Event::AbilityListEntry { id, ability } => {
                 self.aa.on_entry(*id, ability);
                 self.aa_pending_desc.clear();
+                self.aa_description_open = false;
             }
             Event::AbilityListDescription { text } => {
                 self.aa_pending_desc = text.clone();
+                self.aa_description_open = true;
             }
             Event::AbilityListCost { cost } => {
+                self.aa_description_open = false;
                 let desc = std::mem::take(&mut self.aa_pending_desc);
-                self.aa.on_cost(*cost, &desc);
+                // Trailing blank lines are the client's spacing, not the
+                // description.
+                self.aa.on_cost(*cost, desc.trim_end());
             }
             Event::AchievementEarned { name } => {
                 self.tasks.on_achievement(entry.timestamp, name);
@@ -4613,6 +4648,82 @@ mod tests {
         let src = &d.sources[0];
         assert_eq!(src.kills, 1);
         assert_eq!(src.rate, Some(2.0), "two per kill, not a 200% chance");
+    }
+
+    /// The client stamps every line it writes except the body of a long
+    /// alternate-advancement description, which it spills across as many
+    /// lines as it needs and stamps only the first.
+    ///
+    /// Those continuations have no timestamp to split off and no rule that
+    /// would match the prose, so they were dropped and every description
+    /// longer than a line was truncated to its first. On the sample logs that
+    /// is 228 of 258 abilities.
+    #[test]
+    fn a_long_ability_description_is_not_truncated_to_its_first_line() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] Ability #1501: Companion's Discipline",
+                "[Tue Jul 28 14:00:00 2026] Description: This ability moves your companion forward.",
+                "As a passive effect it allows you to give your pet advanced commands.",
+                "",
+                "Hold and Greater Hold - /pet hold -or- /pet ghold",
+                "[Tue Jul 28 14:00:00 2026] Cost per Level: 3",
+                // A dump stays pending until a line that is not part of one
+                // closes it.
+                "[Tue Jul 28 14:00:10 2026] Auto attack is on.",
+            ],
+        );
+        let ab = e
+            .aa_report()
+            .abilities
+            .into_iter()
+            .find(|a| a.name == "Companion's Discipline")
+            .expect("the ability was listed");
+        let desc = &ab.ranks[0].description;
+        assert!(desc.starts_with("This ability moves your companion forward."));
+        assert!(
+            desc.contains("advanced commands"),
+            "the continuation was dropped: {desc:?}"
+        );
+        assert!(
+            desc.contains("/pet ghold"),
+            "a paragraph break ended the description early: {desc:?}"
+        );
+        // The blank line is a paragraph break, kept as written.
+        assert!(desc.contains("\n\n"), "{desc:?}");
+    }
+
+    /// Outside a description block there is nothing sensible to do with an
+    /// unstamped line, and one must not glue itself onto the last ability
+    /// that happened to be read.
+    #[test]
+    fn a_stray_unstamped_line_is_still_dropped() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] Ability #1: Mend",
+                "[Tue Jul 28 14:00:00 2026] Description: Heals you a little.",
+                "[Tue Jul 28 14:00:00 2026] Cost per Level: 1",
+                "a stray line from a corrupted write",
+                "[Tue Jul 28 14:00:05 2026] Ability #2: Sneak",
+                "[Tue Jul 28 14:00:05 2026] Description: Moves you quietly.",
+                "[Tue Jul 28 14:00:05 2026] Cost per Level: 1",
+                "[Tue Jul 28 14:00:10 2026] Auto attack is on.",
+            ],
+        );
+        for a in e.aa_report().abilities {
+            for r in a.ranks {
+                assert!(
+                    !r.description.contains("corrupted write"),
+                    "{}: {:?}",
+                    a.name,
+                    r.description
+                );
+            }
+        }
     }
 
     /// A resist that is not a charm must never reach the charm overlay, and a

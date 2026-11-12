@@ -471,6 +471,17 @@ impl SpellDb {
         // and linked spell quietly came back empty.
         const F_CATEGORY: usize = 146;
         const FIELDS_V1: usize = 173;
+        // Live EverQuest's file (2026-11) is a different, shorter layout:
+        // 166 fields, the category at 145 and the effects at 165. Shared
+        // with Legends' up to the class levels and beyond (every column
+        // the parser reads below 146 agrees), it lacks two columns before
+        // the category and six before the effects, so neither `shift` nor
+        // the old fixed positions find them. Read at 146/172 it found no
+        // charm in 71,013 spells; read here it finds 522, against Legends'
+        // 523. Measured by comparing column value distributions across
+        // both files.
+        const FIELDS_LIVE: usize = 166;
+        const F_CATEGORY_LIVE: usize = 145;
         // The effect table: slots separated by `$`, fields within a slot by
         // `|`, the second field being the SPA id. e.g. Solon's Bewitching
         // Bravura is `1|22|1|0|100|51$2|50|-1|0|119|0`.
@@ -515,8 +526,17 @@ impl SpellDb {
                 continue;
             };
             let num = |i: usize| f.get(i).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-            let shift = f.len().saturating_sub(FIELDS_V1);
-            let (f_category, f_effects) = (F_CATEGORY + shift, F_EFFECTS + shift);
+            // Every layout seen so far ends with the effect table, so it is
+            // the last column; the category has no such anchor and is placed
+            // per layout. An unknown layout gets no category rather than
+            // whatever number sits at a guessed position.
+            let f_effects = f.len() - 1;
+            let f_category = match f.len() {
+                n if n >= FIELDS_V1 => F_CATEGORY + (n - FIELDS_V1),
+                FIELDS_LIVE => F_CATEGORY_LIVE,
+                _ => usize::MAX,
+            };
+            debug_assert!(f.len() < FIELDS_V1 || f_effects == F_EFFECTS + (f.len() - FIELDS_V1));
             let mut class_levels = [CLASS_CANNOT_CAST; CLASS_COUNT];
             for (i, slot) in class_levels.iter_mut().enumerate() {
                 *slot = f
@@ -2231,5 +2251,25 @@ mod tests {
             assert_eq!(s.procs, [ProcGrant { spell: 6908, on_melee: true }]);
             assert_eq!(s.category_id, 4);
         }
+    }
+
+    /// Live EverQuest's file is 166 fields: the category at 145, the effect
+    /// table last, at 165. Read at Legends' positions it found no charm at
+    /// all, and every proc and linked spell went with it.
+    #[test]
+    fn the_live_everquest_layout_reads_its_category_and_effects() {
+        let mut f = vec!["0".to_string(); 166];
+        f[0] = "751".into();
+        f[1] = "Beguile".into();
+        f[145] = "4".into();
+        f[165] = "1|22|1|0|100|51$2|85|6908|400|100|0".into();
+        let path = std::env::temp_dir().join(format!("eqlparser-spells-live-{}.txt", std::process::id()));
+        std::fs::write(&path, f.join("^") + "\n").unwrap();
+        let spells = SpellDb::load_spells(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let s = &spells[&751];
+        assert!(s.is_charm);
+        assert_eq!(s.procs, [ProcGrant { spell: 6908, on_melee: true }]);
+        assert_eq!(s.category_id, 4);
     }
 }

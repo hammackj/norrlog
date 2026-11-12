@@ -289,9 +289,19 @@ graph rather than from where the section comments happened to fall.
 
 ## Notes on accuracy
 
-**Parser coverage is ~94%** of all log lines. The remainder is a long tail of
-cosmetic strings, none more frequent than 0.05% of lines. Run `eqlcoverage` to
-see exactly what is unhandled.
+**Unread lines run 0.1–7%** of the lines the client stamped, measured with the
+game's spell file: 2.5% on a 4.8-million-line Legends log, 0.1–7% across six
+live EverQuest logs (the high one is mostly creature emotes). The figure is
+against stamped lines because the client spills a long alternate-advancement
+description across unstamped continuation lines, which the daemon appends to
+the description they belong to rather than counting as unread.
+
+Most of the old tail was spell flavour text landing on somebody else —
+"Zibekab looks valorous." No regular expression can find where the creature's
+name ends and the text begins, so the spell database is asked. What remains is
+mostly creature emotes, per-creature strings with no list to check against.
+Run `eqlcoverage <log> 40 <game dir>` to see exactly what is unhandled on your
+own log.
 
 **Buff identification is ambiguous by nature.** The client never names the spell
 when an effect lands — it prints flavour text, and ~54,000 spells share only

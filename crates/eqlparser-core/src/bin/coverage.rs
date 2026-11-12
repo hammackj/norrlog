@@ -126,16 +126,32 @@ fn main() -> anyhow::Result<()> {
     let unknown = by_kind.get("Unknown").copied().unwrap_or(0);
     let classified = total - unknown - no_timestamp;
 
+    // Three numbers, and the last is the one that means anything.
+    //
+    // "classified" divides by every line in the file, including the ones the
+    // client never stamped — the continuation lines of a long alternate
+    // advancement description. Those are not failures: the daemon appends
+    // them to the description they belong to. But they cannot be classified
+    // *here*, because a rule table works on one line at a time, so on an AA
+    // dump they drag the headline figure down by a fifth while nothing is
+    // actually being lost.
+    //
+    // So report unknown against the lines that could have been classified.
+    // That is the number to quote, and the number to try to move.
+    let stamped = (total - no_timestamp).max(1);
     println!("\n=== coverage ===");
     println!("lines            : {total}");
-    println!("no timestamp     : {no_timestamp}");
     println!(
-        "classified       : {classified}  ({:.2}%)",
-        100.0 * classified as f64 / total as f64
+        "no timestamp     : {no_timestamp}  (AA description continuations; the daemon keeps them)"
     );
     println!(
-        "unknown          : {unknown}  ({:.2}%)",
-        100.0 * unknown as f64 / total as f64
+        "classified       : {classified}  ({:.2}% of all lines, {:.2}% of stamped)",
+        100.0 * classified as f64 / total as f64,
+        100.0 * classified as f64 / stamped as f64
+    );
+    println!(
+        "unknown          : {unknown}  ({:.2}% of stamped)",
+        100.0 * unknown as f64 / stamped as f64
     );
     println!(
         "parse time       : {:.2}s  ({:.0} lines/sec)",
