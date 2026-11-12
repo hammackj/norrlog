@@ -469,6 +469,16 @@ pub struct Engine {
     /// and omitting them understated total income by more than half.
     coin_from_corpses: u64,
     coin_from_sales: u64,
+    /// When the game last paid you experience that no death has claimed yet.
+    ///
+    /// The game prints the experience line just before the death line of
+    /// every kill it credits to you, so that line is the game's own word on
+    /// whose kill it was. Participation (your damage on it in the open
+    /// fight) misses every kill your group, mercenary or pet finished on a
+    /// creature you never touched: Garrow, grouped with a mercenary, had 29
+    /// greater spurbones paid out and 16 counted. Each line credits one
+    /// death and is spent on it.
+    xp_unclaimed: Option<i64>,
     /// Every loot event, recorded independently of encounters.
     ///
     /// Loot must not depend on a fight being open. Corpses are looted *after*
@@ -613,6 +623,7 @@ impl Engine {
             encounters: Vec::new(),
             coin_from_corpses: 0,
             coin_from_sales: 0,
+            xp_unclaimed: None,
             all_loot: Vec::new(),
             zone_log: Vec::new(),
             events: VecDeque::new(),
@@ -1304,6 +1315,7 @@ impl Engine {
                     .on_level_up(entry.timestamp, *level, &trio);
             }
             Event::Experience { percent, bonus } => {
+                self.xp_unclaimed = Some(entry.timestamp);
                 self.exp.on_experience(entry.timestamp, *percent, *bonus)
             }
             Event::CoinLoot { coin } => self.coin_from_corpses += coin.as_copper(),
@@ -1426,11 +1438,23 @@ impl Engine {
                     //   "Lady Vox has been slain by a priest of Nagafen!"
                     // Requiring your own killing blow silently discarded those
                     // kills from both experience attribution and boss lockouts.
-                    let fought_it = self
-                        .tracker
-                        .current()
-                        .and_then(|e| e.actors.get(&victim.key()))
-                        .is_some_and(|s| s.damaged_by_you);
+                    //
+                    // And participation is itself only a proxy: the game pays
+                    // experience on kills you never touched when a groupmate,
+                    // mercenary or pet finished them, and says so on the line
+                    // before. So a fresh, unclaimed experience line credits
+                    // the death too. Within a second, because coin and the
+                    // corpse's last words can land between the two.
+                    let paid = self
+                        .xp_unclaimed
+                        .take()
+                        .is_some_and(|at| entry.timestamp - at <= 1);
+                    let fought_it = paid
+                        || self
+                            .tracker
+                            .current()
+                            .and_then(|e| e.actors.get(&victim.key()))
+                            .is_some_and(|s| s.damaged_by_you);
                     if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
                         let name = victim.display(&self.player);
                         self.exp.on_kill(entry.timestamp, &name);
@@ -4588,6 +4612,33 @@ mod tests {
             d.sources.iter().map(|s| (s.mob.as_str(), s.drops, s.left, s.kills)).collect();
         assert_eq!(rows, [("a black wolf", 1, 1, 2)]);
         assert_eq!(d.sources[0].rate, Some(1.0), "two sightings over two kills");
+    }
+
+    /// Grouped with a mercenary, most kills are finished by somebody else on
+    /// a creature you never touched, and participation alone missed 13 of
+    /// Garrow's 29 greater spurbones. The game pays experience on the line
+    /// before the death of every kill it credits you with, so that counts;
+    /// a death with no experience and no damage of yours still does not, and
+    /// one experience line credits one death, not every death after it.
+    #[test]
+    fn a_kill_the_game_paid_you_for_counts_without_your_damage() {
+        let mut e = Engine::new("Garrow".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Nov 10 14:27:10 2026] A greater spurbone hits YOU for 39 points of damage.",
+                "[Tue Nov 10 14:27:11 2026] Valkyrie Warden slashes a greater spurbone for 119 points of damage.",
+                "[Tue Nov 10 14:27:12 2026] You gain party experience (with a bonus)! (6.372%)",
+                "[Tue Nov 10 14:27:12 2026] You receive 3 platinum as your split (with a bonus).",
+                "[Tue Nov 10 14:27:12 2026] A greater spurbone was slain by Valkyrie Warden!",
+                // Unpaid and untouched: somebody else's kill.
+                "[Tue Nov 10 14:27:13 2026] A greater spurbone was slain by Valkyrie Warden!",
+                // Paid, but stale: a quest reward, not this death.
+                "[Tue Nov 10 14:30:00 2026] You gain party experience (with a bonus)! (1.000%)",
+                "[Tue Nov 10 14:30:05 2026] A greater spurbone was slain by Valkyrie Warden!",
+            ],
+        );
+        assert_eq!(e.drops.kills_of("a greater spurbone"), 1);
     }
 
     /// EverQuest has no auto-sell, so most of what a corpse holds is walked
