@@ -278,6 +278,9 @@ impl ItemTip {
 
 impl Render for ItemTip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if crate::parts::cards_hidden() {
+            return div();
+        }
         let Some(d) = self.cards.read(cx).get(&self.name).cloned() else { return div() };
         let Some(c) = card(&d) else { return div() };
         let icon = self.cards.update(cx, |cards, cx| cards.icon(&d, cx));

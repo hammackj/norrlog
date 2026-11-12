@@ -88,6 +88,9 @@ impl SpellTip {
 
 impl Render for SpellTip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if crate::parts::cards_hidden() {
+            return div();
+        }
         let Some(c) = self.cards.read(cx).get(&self.name).and_then(card) else {
             return div();
         };

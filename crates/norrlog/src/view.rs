@@ -424,6 +424,7 @@ impl Render for Shell {
             .bg(hex(BG))
             .text_color(hex(TEXT))
             .text_sm()
+            .child(crate::parts::scroll_watch())
             .child(self.render_header())
             .child(self.render_nav(cx))
             .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts" | "dashboard") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {

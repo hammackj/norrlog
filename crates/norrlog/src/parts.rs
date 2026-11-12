@@ -226,3 +226,46 @@ mod web_tests {
         assert!(!super::is_web(""));
     }
 }
+
+thread_local! {
+    /// Where the pointer was at the last scroll, until it next moves.
+    static SCROLLED_AT: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Item and spell cards hide from a scroll until the pointer moves again,
+/// as tips.js hides them on any scroll.
+///
+/// GPUI clears a visible tooltip on scroll, but not one still waiting out
+/// its show delay. That one opens after the scroll, judged against where
+/// its row was *before* the scroll, and stays open over whatever row is
+/// there now, since the pointer is still inside the stale bounds.
+///
+/// Mount once in the window: it registers window-level handlers each frame.
+pub fn scroll_watch() -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            window.on_mouse_event(|e: &ScrollEvent, phase, window, _| {
+                if phase.capture() {
+                    SCROLLED_AT.with(|s| s.set(Some(e.position)));
+                    window.refresh();
+                }
+            });
+            window.on_mouse_event(|e: &MouseMoveEvent, phase, window, _| {
+                // GPUI may send a move at the same spot after a scroll;
+                // only a real move counts.
+                if phase.capture() && SCROLLED_AT.with(|s| s.get()).is_some_and(|p| p != e.position) {
+                    SCROLLED_AT.with(|s| s.set(None));
+                    window.refresh();
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_0()
+}
+
+/// True from a scroll until the pointer moves: draw no card.
+pub fn cards_hidden() -> bool {
+    SCROLLED_AT.with(|s| s.get()).is_some()
+}
