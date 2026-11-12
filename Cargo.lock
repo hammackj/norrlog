@@ -343,6 +343,7 @@ name = "eqlparser-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "regex",
  "serde",
  "serde_json",

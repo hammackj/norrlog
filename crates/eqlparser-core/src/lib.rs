@@ -25,6 +25,7 @@ pub mod itemids;
 pub mod lockout;
 pub mod npc;
 pub mod parser;
+pub mod preview;
 pub mod procs;
 pub mod recipe;
 pub mod skyquest;
