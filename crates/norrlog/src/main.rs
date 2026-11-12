@@ -30,6 +30,7 @@ mod spell_tip;
 mod state;
 mod table;
 #[allow(dead_code)]
+mod tells;
 mod theme;
 mod tradeskills;
 mod view;

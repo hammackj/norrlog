@@ -1118,3 +1118,6 @@ pub struct ItemBrief {
     #[serde(default)]
     pub slug: String,
 }
+
+// Tells: `GET /api/tells`, core's report.
+pub use eqlparser_core::tells::{Conversation, TellMessage, TellReport};

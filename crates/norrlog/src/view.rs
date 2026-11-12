@@ -49,6 +49,7 @@ pub struct Shell {
     tradeskills: Entity<crate::tradeskills::TradeskillsView>,
     forage: Entity<crate::forage::ForageView>,
     sky: Entity<crate::sky::SkyView>,
+    tells: Entity<crate::tells::TellsView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -84,6 +85,7 @@ impl Shell {
         let tradeskills = cx.new(|_| crate::tradeskills::TradeskillsView::new());
         let forage = cx.new(|_| crate::forage::ForageView::new());
         let sky = cx.new(crate::sky::SkyView::new);
+        let tells = cx.new(|_| crate::tells::TellsView::new());
         Shell {
             link: Link::Attaching,
             rt,
@@ -96,6 +98,7 @@ impl Shell {
             tradeskills,
             forage,
             sky,
+            tells,
             tab,
             snapshot: None,
             state,
@@ -146,6 +149,12 @@ impl Shell {
                         v.load(cx);
                     }
                 });
+                self.tells.update(cx, |v, cx| {
+                    v.set_api(Some(api.clone()), cx);
+                    if open == "tells" {
+                        v.load(cx);
+                    }
+                });
                 self.sky.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
                     if open == "sky" {
@@ -186,6 +195,8 @@ impl Shell {
                 self.forage.update(cx, |v, cx| v.on_snapshot(forage_open, cx));
                 let sky_open = self.tab == "sky";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
+                let tells_open = self.tab == "tells";
+                self.tells.update(cx, |v, cx| v.on_snapshot(tells_open, cx));
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
@@ -200,6 +211,7 @@ impl Shell {
                 self.tradeskills.update(cx, |v, cx| v.set_api(None, cx));
                 self.forage.update(cx, |v, cx| v.set_api(None, cx));
                 self.sky.update(cx, |v, cx| v.set_api(None, cx));
+                self.tells.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -239,6 +251,9 @@ impl Shell {
         }
         if tab == "forage" {
             self.forage.update(cx, |v, cx| v.load(cx));
+        }
+        if tab == "tells" {
+            self.tells.update(cx, |v, cx| v.load(cx));
         }
         if tab == "sky" {
             self.sky.update(cx, |v, cx| v.load(false, cx));
@@ -343,6 +358,7 @@ impl Shell {
             "classes" => self.classes.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "tradeskills" => self.tradeskills.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "forage" => self.forage.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "tells" => self.tells.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "sky" => self.sky.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
@@ -408,7 +424,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky") && !matches!(self.link, Link::Lost(_)) {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells") && !matches!(self.link, Link::Lost(_)) {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())
