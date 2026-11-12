@@ -18,6 +18,30 @@ pub const fn col(label: &'static str, width: Option<f32>, num: bool) -> Col {
     Col { label, width, num }
 }
 
+/// About how wide a character draws, rounded up: table text (digits, commas,
+/// `%`), and the small capitals of a header.
+const CHAR_W: f32 = 10.;
+const HEAD_CHAR_W: f32 = 7.5;
+
+/// `cols` with each fixed-width number column widened to fit the longest of
+/// its texts. A number cell is right-aligned and clips on the left, so a
+/// column one digit too narrow shows `00%` for `100%` and drops a fight's
+/// leading digit without a sign. The fixed widths stay as minimums, and the
+/// header takes the same widths, so the columns still line up.
+pub fn fit(cols: &[Col], rows: &[Vec<String>]) -> Vec<Col> {
+    cols.iter()
+        .enumerate()
+        .map(|(i, c)| match c.width {
+            Some(w) if c.num => {
+                let longest = rows.iter().filter_map(|r| r.get(i)).map(|t| t.chars().count()).max().unwrap_or(0);
+                let head = c.label.chars().count() as f32 * HEAD_CHAR_W;
+                Col { width: Some(w.max(longest as f32 * CHAR_W).max(head)), ..*c }
+            }
+            _ => *c,
+        })
+        .collect()
+}
+
 fn cell_box(c: &Col) -> Div {
     let d = div().overflow_hidden().whitespace_nowrap().text_ellipsis();
     let d = match c.width {
@@ -103,4 +127,25 @@ pub fn tag(text: impl Into<SharedString>, color: u32) -> Div {
         .text_color(hex(color))
         .text_size(px(11.))
         .child(text.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{col, fit};
+
+    #[test]
+    fn a_number_column_widens_to_its_longest_text_and_no_further_down() {
+        let cols = [col("Ability", None, false), col("Crit", Some(32.), true), col("Kind", Some(40.), false)];
+        let rows = vec![
+            vec!["kick".to_string(), "100%".to_string(), "a long kind".to_string()],
+            vec!["shoot".to_string(), "40%".to_string(), "x".to_string()],
+        ];
+        let w: Vec<Option<f32>> = fit(&cols, &rows).iter().map(|c| c.width).collect();
+        assert_eq!(w, [None, Some(40.), Some(40.)]);
+        let short = vec![vec!["a".to_string(), "1%".to_string(), "x".to_string()]];
+        assert_eq!(fit(&cols, &short)[1].width, Some(32.));
+        // The header counts too.
+        let wide = [col("% of group", Some(68.), true)];
+        assert_eq!(fit(&wide, &[]).first().and_then(|c| c.width), Some(75.));
+    }
 }

@@ -415,31 +415,65 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
     if groups.is_empty() {
         let mut list: Vec<(&String, &AbilityStats)> = you.by_ability.iter().collect();
         list.sort_by(|a, b| b.1.total.cmp(&a.1.total).then_with(|| a.0.cmp(b.0)));
+        list.truncate(16);
+        let texts: Vec<Vec<String>> = list
+            .iter()
+            .map(|(name, a)| {
+                vec![
+                    (*name).clone(),
+                    num(Some(a.total as f64)),
+                    format!("{:.1}%", a.total as f64 / total * 100.),
+                    a.hits.to_string(),
+                    format!("{:.0}", if a.hits > 0 { a.total as f64 / a.hits as f64 } else { 0. }),
+                    a.max.to_string(),
+                    format!("{:.0}%", crit_pct(a.crits, a.hits)),
+                ]
+            })
+            .collect();
+        let cols = table::fit(FLAT_COLS, &texts);
         let rows = list
             .into_iter()
-            .take(16)
-            .map(|(name, a)| {
+            .zip(texts)
+            .map(|((name, a), t)| {
+                let mut t = t.into_iter();
+                let mut next = || t.next().unwrap_or_default();
                 bar_row(
                     SharedString::from(format!("flat-{name}")),
-                    FLAT_COLS,
-                    vec![
-                        cell(name.clone()),
-                        cell(num(Some(a.total as f64))),
-                        dim(format!("{:.1}%", a.total as f64 / total * 100.)),
-                        dim(a.hits.to_string()),
-                        cell(format!("{:.0}", if a.hits > 0 { a.total as f64 / a.hits as f64 } else { 0. })),
-                        cell(a.max.to_string()),
-                        dim(format!("{:.0}%", crit_pct(a.crits, a.hits))),
-                    ],
+                    &cols,
+                    vec![cell(next()), cell(next()), dim(next()), dim(next()), cell(next()), cell(next()), dim(next())],
                     a.total as f64 / total,
                 )
                 .into_any_element()
             })
             .collect();
-        return v_flex().child(table_box(FLAT_COLS, rows));
+        return v_flex().child(table_box(&cols, rows));
     }
+    // The numbers as text first, so every group's table takes the same
+    // fitted widths and the groups line up with one another.
+    let texts: Vec<Vec<Vec<String>>> = groups
+        .iter()
+        .map(|g| {
+            g.abilities
+                .iter()
+                .map(|a| {
+                    vec![
+                        a.name.clone(),
+                        num(Some(a.damage as f64)),
+                        dps_text(Some(a.dps)),
+                        format!("{:.1}%", a.share * 100.),
+                        if a.casts > 0 { num(Some(a.casts as f64)) } else { "—".into() },
+                        a.hits.to_string(),
+                        format!("{:.0}", a.average),
+                        a.max.to_string(),
+                        format!("{:.0}%", crit_pct(a.crits, a.hits)),
+                    ]
+                })
+                .collect()
+        })
+        .collect();
+    let cols = table::fit(GROUP_COLS, &texts.iter().flatten().cloned().collect::<Vec<_>>());
     let mut out = v_flex().gap_1();
-    for g in groups {
+    for (g, texts) in groups.iter().zip(texts) {
         out = out.child(
             h_flex()
                 .mt_2()
@@ -456,10 +490,13 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
         let rows = g
             .abilities
             .iter()
-            .map(|a| {
+            .zip(texts)
+            .map(|(a, t)| {
+                let mut t = t.into_iter().skip(1);
+                let mut next = || t.next().unwrap_or_default();
                 bar_row(
                     SharedString::from(format!("og-{}-{}", g.group, a.name)),
-                    GROUP_COLS,
+                    &cols,
                     vec![
                         spell_name(
                             SharedString::from(format!("sp-og-{}-{}", g.group, a.name)),
@@ -467,21 +504,21 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                             you.by_ability.get(&a.name).map_or("", |s| s.kind.as_str()),
                             spells,
                         ),
-                        cell(num(Some(a.damage as f64))),
-                        cell(dps_text(Some(a.dps))),
-                        dim(format!("{:.1}%", a.share * 100.)),
-                        dim(if a.casts > 0 { num(Some(a.casts as f64)) } else { "—".into() }),
-                        dim(a.hits.to_string()),
-                        cell(format!("{:.0}", a.average)),
-                        cell(a.max.to_string()),
-                        dim(format!("{:.0}%", crit_pct(a.crits, a.hits))),
+                        cell(next()),
+                        cell(next()),
+                        dim(next()),
+                        dim(next()),
+                        dim(next()),
+                        cell(next()),
+                        cell(next()),
+                        dim(next()),
                     ],
                     a.damage as f64 / total,
                 )
                 .into_any_element()
             })
             .collect();
-        out = out.child(table_box(GROUP_COLS, rows));
+        out = out.child(table_box(&cols, rows));
     }
     out
 }
