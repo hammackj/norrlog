@@ -28,12 +28,19 @@ pub struct ParserConfig {
     pub ui_scale: Option<f32>,
 }
 
-/// `$XDG_CONFIG_HOME`, else `~/.config`: where Electron keeps `userData`.
+/// Where Electron keeps `userData` (its `appData`): `%APPDATA%` on Windows,
+/// `~/Library/Application Support` on macOS, else `$XDG_CONFIG_HOME` or
+/// `~/.config`. Only an absolute base counts: a relative one would follow
+/// the working directory and save somewhere different each run.
 pub fn config_home() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    let abs = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    if cfg!(target_os = "windows") {
+        return abs("APPDATA");
+    }
+    if cfg!(target_os = "macos") {
+        return abs("HOME").map(|h| h.join("Library/Application Support"));
+    }
+    abs("XDG_CONFIG_HOME").or_else(|| abs("HOME").map(|h| h.join(".config")))
 }
 
 /// Electron's `userData` config.
