@@ -43,6 +43,8 @@ pub struct Shell {
     encounters: Entity<crate::encounters::EncountersView>,
     procs: Entity<crate::procs::ProcsView>,
     loot: Entity<crate::loot::LootView>,
+    classes: Entity<crate::classes::ClassesView>,
+    character: Entity<crate::character::CharacterView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -72,7 +74,22 @@ impl Shell {
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
         let procs = cx.new(|_| crate::procs::ProcsView::new());
         let loot = cx.new(|cx| crate::loot::LootView::new(window, cx));
-        Shell { link: Link::Attaching, rt, encounters, procs, loot, tab, snapshot: None, state, _tasks: vec![task], _subs: subs }
+        let classes = cx.new(|_| crate::classes::ClassesView::new());
+        let character = cx.new(|_| crate::character::CharacterView::new());
+        Shell {
+            link: Link::Attaching,
+            rt,
+            encounters,
+            procs,
+            loot,
+            classes,
+            character,
+            tab,
+            snapshot: None,
+            state,
+            _tasks: vec![task],
+            _subs: subs,
+        }
     }
 
     fn on_msg(&mut self, msg: Msg, cx: &mut Context<Self>) {
@@ -98,6 +115,7 @@ impl Shell {
                         v.load(cx);
                     }
                 });
+                self.character.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 self.loot.update(cx, |v, cx| {
                     v.set_api(Some(api), cx);
                     if open == "loot" {
@@ -119,6 +137,11 @@ impl Shell {
                 let sessions = totals.and_then(|t| t.get("sessions")).and_then(Value::as_u64).unwrap_or(0);
                 let loot_open = self.tab == "loot";
                 self.loot.update(cx, |v, cx| v.on_snapshot(loot_open, played, sessions, cx));
+                // Every push, whichever tab is open, as renderSnapshot does.
+                let classes = s.get("classes").and_then(|c| serde_json::from_value(c.clone()).ok()).unwrap_or_default();
+                self.classes.update(cx, |v, cx| v.on_snapshot(classes, cx));
+                let totals = s.get("totals").and_then(|t| serde_json::from_value(t.clone()).ok());
+                self.character.update(cx, |v, cx| v.on_snapshot(totals, cx));
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
@@ -128,6 +151,7 @@ impl Shell {
                 self.encounters.update(cx, |v, cx| v.set_api(None, cx));
                 self.procs.update(cx, |v, cx| v.set_api(None, cx));
                 self.loot.update(cx, |v, cx| v.set_api(None, cx));
+                self.character.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -254,6 +278,8 @@ impl Shell {
             "encounters" => self.encounters.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "procs" => self.procs.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "loot" => self.loot.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "character" => self.character.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "classes" => self.classes.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
@@ -318,7 +344,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot") && !matches!(self.link, Link::Lost(_)) {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character") && !matches!(self.link, Link::Lost(_)) {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())

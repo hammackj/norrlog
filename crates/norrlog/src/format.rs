@@ -18,6 +18,12 @@ pub fn num(n: Option<f64>) -> String {
     }
 }
 
+/// Copper as whole platinum, rounded, with thousands separators: app.js'
+/// `pp`, `(c / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 })`.
+pub fn pp(copper: u64) -> String {
+    grouped(round_half_up(copper as f64 / 1000.))
+}
+
 /// `H:MM:SS`, `M:SS`, or `Ns`. Negative is zero.
 pub fn dur(sec: f64) -> String {
     let sec = round_half_up(sec.max(0.0)).max(0) as u64;
@@ -86,6 +92,13 @@ fn grouped(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platinum_rounds_and_groups_rather_than_abbreviating() {
+        assert_eq!(super::pp(169_141_704), "169,142");
+        assert_eq!(super::pp(499), "0");
+        assert_eq!(super::pp(500), "1");
+    }
 
     #[test]
     fn num_matches_the_renderer() {

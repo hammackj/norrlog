@@ -9,6 +9,8 @@
 //! two live side by side, so whichever starts it starts it the same way.
 
 mod api;
+mod character;
+mod classes;
 mod config;
 mod charts;
 mod daemon;
@@ -19,6 +21,7 @@ mod fight;
 mod format;
 mod item_tip;
 mod loot;
+mod parts;
 mod procs;
 mod spell_tip;
 mod state;

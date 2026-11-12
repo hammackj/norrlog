@@ -12,6 +12,7 @@ use crate::api::{Api, query};
 use crate::format::when;
 use crate::item_tip::{ItemCards, item_tip};
 use crate::table::{self, Col, col, muted};
+use crate::parts::{card, hint, note, stat};
 use crate::theme::*;
 use eqlparser_api::{LootDetail, LootList, LootTally};
 use gpui::prelude::FluentBuilder;
@@ -637,61 +638,10 @@ fn table_card(cols: &[Col], rows: Vec<AnyElement>) -> Div {
     v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(cols)).children(rows)
 }
 
-fn card(title: &str) -> Div {
-    v_flex()
-        .gap_2()
-        .p_3()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(hex(BORDER))
-        .bg(hex(PANEL))
-        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
-}
 
-fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
-    let mut c = v_flex()
-        .gap_1()
-        .p_3()
-        .min_w(px(180.))
-        .flex_1()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(hex(BORDER))
-        .bg(hex(PANEL))
-        .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value));
-    if let Some(note) = note {
-        c = c.child(div().text_xs().text_color(hex(MUTED)).child(note));
-    }
-    c
-}
 
-fn hint(text: impl Into<SharedString>) -> Div {
-    div().text_sm().text_color(hex(MUTED)).child(text.into())
-}
 
 /// The renderer's `<details class="note">`.
-fn note(
-    id: &'static str,
-    open: bool,
-    text: &'static str,
-    toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    v_flex()
-        .gap_1()
-        .child(
-            h_flex()
-                .id(id)
-                .gap_1()
-                .cursor_pointer()
-                .text_sm()
-                .text_color(hex(MUTED))
-                .child(if open { "▾" } else { "▸" })
-                .child("Notes")
-                .on_click(toggle),
-        )
-        .when(open, |d| d.child(hint(text)))
-}
 
 #[cfg(test)]
 mod tests {
