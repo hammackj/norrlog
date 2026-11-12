@@ -396,6 +396,8 @@ pub struct Engine {
     classes: ClassDetector,
     /// Per-class levels, which the single reported level cannot express.
     class_levels: eqlparser_core::classlevel::ClassLevelTracker,
+    /// Classes held at once in this game (`profile::class_slots`).
+    class_slots: u8,
     exp: ExpTracker,
     /// Effects that fire on their own: weapon and buff procs, and worn item
     /// procs. Which spells are procs comes from the spell file, so this knows
@@ -541,9 +543,10 @@ impl Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
             resolver: SpellResolver::new(spell_db, 1),
-            classes: ClassDetector::new(),
-            class_levels: eqlparser_core::classlevel::ClassLevelTracker::with_cap(
-                eqlparser_core::profile::profile(game).level_cap,
+            classes: ClassDetector::with_slots(eqlparser_core::profile::profile(game).class_slots.into()),
+            class_slots: eqlparser_core::profile::profile(game).class_slots,
+            class_levels: eqlparser_core::classlevel::ClassLevelTracker::for_profile(
+                &eqlparser_core::profile::profile(game),
             ),
             exp: ExpTracker::new(),
             procs: ProcTracker::new(),
@@ -1152,6 +1155,14 @@ impl Engine {
                 // states a named class's level, and the only way to learn the
                 // level of a class that capped before this log began.
                 self.class_levels.on_achievement(entry.timestamp, name);
+            }
+            Event::ChannelRoster { channels } => {
+                // EverQuest joins you to your class's channel; Legends
+                // characters swap classes, so there a channel may name one
+                // no longer played. One-class games only.
+                if self.class_slots == 1 {
+                    self.classes.observe_channels(entry.timestamp, channels);
+                }
             }
             Event::WhoEntry {
                 level,

@@ -25,8 +25,13 @@ pub struct Profile {
     /// level-up message, which the class tracker has to know.
     pub level_cap: u32,
     /// How many classes a character holds at once: three in Legends' loadouts,
-    /// one for life in EverQuest.
+    /// one at a time in EverQuest. One at a time, not one for life: a live
+    /// character can switch class, each one levelled on its own.
     pub class_slots: u8,
+    /// The level an unplayed class sits at: 10 in Legends, where every class
+    /// a character holds starts there. `None` in EverQuest, where there is no
+    /// such thing and a level nothing has stated is unknown.
+    pub unplayed_level: Option<u32>,
     /// The Plane of Sky quest tracker (Sky tab, the Dashboard's Sky bars).
     pub sky: bool,
     /// Weekly and daily lockouts, with Void-Touched (the Dashboard's grid).
@@ -43,6 +48,7 @@ const LEGENDS: Profile = Profile {
     game: Game::EverQuestLegends,
     level_cap: 50,
     class_slots: 3,
+    unplayed_level: Some(10),
     sky: true,
     lockouts: true,
     motes: true,
@@ -53,6 +59,7 @@ const EVERQUEST: Profile = Profile {
     game: Game::EverQuest,
     level_cap: 130,
     class_slots: 1,
+    unplayed_level: None,
     sky: false,
     lockouts: false,
     motes: false,

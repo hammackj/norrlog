@@ -217,6 +217,15 @@ const SKILL_SIGNALS: &[(&str, Class, f32)] = &[
     ("Frenzy", Class::Berserker, 2.0),
 ];
 
+/// A class by its full name only, as a channel or EverQuest's `/who` writes
+/// it: case and spaces ignored, so the channel's "Shadowknight" is a Shadow
+/// Knight. Abbreviations do not count here, where "WAR" could be anything.
+pub fn parse_class_name(name: &str) -> Option<Class> {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+    let want = squash(name);
+    Class::ALL.into_iter().find(|c| squash(c.name()) == want)
+}
+
 /// Parse a `/who` class list such as "WAR/BRD/SHM" into classes.
 ///
 /// Order is preserved: the first entry is the primary class, which is the one
@@ -281,6 +290,13 @@ const UNIVERSAL_CASTER_LIMIT: usize = 10;
 /// set renamed once by mistake cannot permanently rewrite the character.
 const SPELL_SET_WEIGHT: f32 = 25.0;
 
+/// Weight of the class channel EverQuest joins you to.
+///
+/// Heavier than a spell set name, because nobody typed it; lighter than
+/// certainty, because a channel can be joined by hand and the roster does not
+/// say which is which. Still loses to `/who`. From the eqparser fork.
+const CLASS_CHANNEL_WEIGHT: f32 = 40.0;
+
 /// One class's evidence within a window.
 struct ClassTally {
     class: Class,
@@ -302,11 +318,80 @@ pub struct ClassDetector {
     /// respec the outgoing class has a full day banked and the incoming one
     /// has minutes, so scoring alone reports the swap hours late.
     spell_sets: Vec<(i64, Vec<Class>)>,
+    /// Classes held at once: 3 in Legends, 1 in EverQuest (see
+    /// [`crate::profile::Profile::class_slots`]). 0 is read as 3, the
+    /// default.
+    slots: usize,
+    /// In a one-class game, every time the game stated the class, in log
+    /// order: `/who` rows and the class channel on the roster. One class at a
+    /// time is not one class for life: a live EverQuest character can switch
+    /// class (a persona), and one log then holds both, each levelled
+    /// separately. Each statement holds until the next.
+    stated: Vec<(i64, Class)>,
 }
 
 impl ClassDetector {
     pub fn new() -> Self {
         ClassDetector::default()
+    }
+
+    /// A detector for a game whose characters hold `slots` classes at once.
+    ///
+    /// One slot changes the rules, as the eqparser fork found: no novelty test
+    /// (the top scorer is the class; a shadow class scores on borrowed
+    /// evidence and cannot outscore the real one), and what the game states
+    /// (a `/who` row, the class channel) holds until it states otherwise.
+    pub fn with_slots(slots: usize) -> Self {
+        ClassDetector { slots, ..Self::default() }
+    }
+
+    /// Note a class the game stated, keeping the timeline in order. A repeat
+    /// of the class already in force adds nothing.
+    fn state(&mut self, at: i64, class: Class) {
+        let i = self.stated.partition_point(|(t, _)| *t <= at);
+        if i > 0 && self.stated[i - 1].1 == class {
+            return;
+        }
+        self.stated.insert(i, (at, class));
+    }
+
+    /// In a one-class game, the class the game last stated at or before `at`.
+    /// Before the first statement, the first one: nothing earlier says
+    /// otherwise, and a log rarely opens with a `/who`.
+    fn stated_at(&self, at: i64) -> Option<Class> {
+        let i = self.stated.partition_point(|(t, _)| *t <= at);
+        self.stated.get(i.saturating_sub(1)).map(|(_, c)| *c)
+    }
+
+    fn slots(&self) -> usize {
+        if self.slots == 0 { 3 } else { self.slots }
+    }
+
+    /// Record the chat channels the client says you are in.
+    ///
+    /// EverQuest auto-joins you to your class's channel, so a channel named
+    /// after a class is usually your class. Weighted evidence rather than an
+    /// answer, because it can be joined by hand. Only full class names count:
+    /// "General", "Kunark" and zone channels name nothing. From the eqparser
+    /// fork (a2d76c4).
+    pub fn observe_channels(&mut self, timestamp: i64, channels: &[String]) {
+        let named: Vec<Class> = channels.iter().filter_map(|n| parse_class_name(n)).collect();
+        // One class channel is the game saying which class you are on: it
+        // re-joins you to the new one when you switch. Two say nothing for
+        // certain, since one of them was joined by hand.
+        if self.slots() == 1 && named.len() == 1 {
+            self.state(timestamp, named[0]);
+        }
+        for name in channels {
+            if let Some(class) = parse_class_name(name) {
+                self.evidence.push(ClassEvidence {
+                    timestamp,
+                    class,
+                    weight: CLASS_CHANNEL_WEIGHT,
+                    reason: format!("class channel: {name}"),
+                });
+            }
+        }
     }
 
     /// Record that the character knows a spell (memorised, scribed or cast).
@@ -401,6 +486,9 @@ impl ClassDetector {
     pub fn observe_who(&mut self, timestamp: i64, classes: &[Class]) {
         if classes.is_empty() {
             return;
+        }
+        if self.slots() == 1 {
+            self.state(timestamp, classes[0]);
         }
         self.spell_sets.push((timestamp, classes.to_vec()));
         for class in classes {
@@ -533,7 +621,7 @@ impl ClassDetector {
         let mut shadows: Vec<usize> = Vec::new();
 
         for (i, t) in tallied.iter().enumerate() {
-            if picked.len() == 3 {
+            if picked.len() == self.slots() {
                 break;
             }
             let novel: f32 = t
@@ -551,7 +639,7 @@ impl ClassDetector {
         }
         // Nothing better on offer: a shadow class still beats a gap.
         for i in shadows {
-            if picked.len() == 3 {
+            if picked.len() == self.slots() {
                 break;
             }
             picked.push(i);
@@ -641,9 +729,15 @@ impl ClassDetector {
     /// there are several on hot paths (labelling each kill, and the snapshot
     /// rebuilt four times a second), should not pay for that.
     pub fn declared_trio(&self, at: i64, window: i64) -> Option<Vec<Class>> {
+        // One class at a time: the game's last word on it, which holds until
+        // the next, however long ago it was.
+        if let Some(c) = self.stated_at(at) {
+            return Some(vec![c]);
+        }
+        let slots = self.slots();
         self.spell_sets
             .iter()
-            .filter(|(t, c)| c.len() == 3 && (at - t).abs() <= window)
+            .filter(|(t, c)| c.len() == slots && (at - t).abs() <= window)
             .min_by_key(|(t, _)| (at - t).abs())
             .map(|(_, c)| c.clone())
     }
@@ -661,7 +755,7 @@ impl ClassDetector {
         }
         for factor in [1, 4, 16, 64] {
             let ranked = self.select_trio(at - half_window * factor, at + half_window * factor);
-            if ranked.len() >= 3 {
+            if ranked.len() >= self.slots() {
                 return ranked;
             }
         }
@@ -674,7 +768,7 @@ impl ClassDetector {
         }
         for factor in [1, 4, 16, 64] {
             let ranked = self.select_trio(now - window_seconds * factor, now);
-            if ranked.len() >= 3 {
+            if ranked.len() >= self.slots() {
                 return ranked;
             }
         }
@@ -1032,5 +1126,68 @@ mod tests {
         let r = d.ranked_all_time();
         let total: f32 = r.iter().map(|c| c.share).sum();
         assert!((total - 1.0).abs() < 1e-5, "shares summed to {total}");
+    }
+
+    /// One slot (EverQuest): the top scorer takes it,
+    /// and a `/who` row answers back to the start of the log when nothing
+    /// was stated before it.
+    #[test]
+    fn one_slot_reads_one_class_and_who_settles_the_log() {
+        let mut d = ClassDetector::with_slots(1);
+        for t in 0..20 {
+            d.observe_spell(t, "Grim Aura", &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]));
+        }
+        let now: Vec<Class> = d.current_trio(100, 3600).into_iter().map(|c| c.class).collect();
+        assert_eq!(now.len(), 1, "one class, not a trio: {now:?}");
+        d.observe_who(10_000_000, &[Class::ShadowKnight]);
+        assert_eq!(d.declared_trio(0, 60), Some(vec![Class::ShadowKnight]), "back to the start, not a window");
+    }
+
+    /// The class channel is evidence a one-class log usually has; zone and
+    /// general channels name nothing, and `/who` beats the channel.
+    #[test]
+    fn the_class_channel_names_the_class_and_loses_to_who() {
+        let mut d = ClassDetector::with_slots(1);
+        for t in 0..20 {
+            d.observe_spell(t, "Grim Aura", &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]));
+        }
+        d.observe_channels(100, &["General".into(), "Necromancer".into(), "Antonica".into()]);
+        assert_eq!(d.current_trio(200, 3600)[0].class, Class::Necromancer);
+        let mut q = ClassDetector::with_slots(1);
+        q.observe_channels(0, &["General1".into(), "Kunark".into(), "Housing".into()]);
+        assert_eq!(q.evidence_count(), 0);
+        assert_eq!(parse_class_name("Shadowknight"), Some(Class::ShadowKnight));
+        assert_eq!(parse_class_name("WAR"), None, "abbreviations are not channel names");
+        d.observe_who(300, &[Class::Wizard]);
+        assert_eq!(d.declared_trio(400, 60), Some(vec![Class::Wizard]));
+    }
+
+    /// One class at a time, not for life: a live EverQuest character can
+    /// switch class, and the client re-joins it to the new class channel.
+    /// Each statement holds until the next, so a level-up between them goes
+    /// to the class in force, not to whichever the log stated last. From the
+    /// Garrow log, a Warrior at 130 levelling a Shaman from 42.
+    #[test]
+    fn a_class_switch_holds_until_the_next_statement() {
+        let mut d = ClassDetector::with_slots(1);
+        d.observe_who(100, &[Class::Warrior]);
+        d.observe_channels(200, &["General".into(), "Shaman".into()]);
+        d.observe_channels(300, &["General".into(), "Warrior".into()]);
+        d.observe_channels(400, &["General".into(), "Warrior".into(), "Shaman".into()]);
+        let at = |t| d.declared_trio(t, 60).unwrap()[0];
+        assert_eq!(at(0), Class::Warrior, "before anything is stated, the first statement");
+        assert_eq!(at(150), Class::Warrior);
+        assert_eq!(at(250), Class::Shaman, "long after any window, still the Shaman");
+        assert_eq!(at(10_000), Class::Warrior, "two class channels state nothing");
+    }
+
+    /// Legends keeps three slots and its window: one `/who` does not settle
+    /// a log whose loadout can change.
+    #[test]
+    fn three_slots_keep_the_window() {
+        let mut d = ClassDetector::new();
+        d.observe_who(0, &[Class::Warrior, Class::Bard, Class::Shaman]);
+        assert_eq!(d.declared_trio(10, 60).map(|t| t.len()), Some(3));
+        assert_eq!(d.declared_trio(10_000, 60), None);
     }
 }

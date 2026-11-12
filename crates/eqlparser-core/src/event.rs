@@ -489,14 +489,26 @@ pub enum Event {
     },
     /// Cosmetic combat feedback ("X winces.", "X is bound by...").
     Emote { actor: Actor, text: String },
+    /// The chat channels joined, as the client lists them on every zone-in
+    /// ("Channels: 1=General(399), 2=Necromancer(26)"), names only.
+    ///
+    /// EverQuest joins you to your own class's channel, so the roster names
+    /// your class without anybody typing anything. Evidence, not proof: a
+    /// channel can be joined by hand. From the eqparser fork (a2d76c4).
+    ChannelRoster { channels: Vec<String> },
     /// The logging character gained a level. Tracked because buff durations
     /// scale with caster level.
     LevelUp { level: u32 },
     /// One row of `/who` output: a level and a class loadout together.
     WhoEntry {
         level: u32,
-        /// As written, e.g. "WAR/BRD/SHM".
+        /// As written: "WAR/BRD/SHM" in Legends, "Shadow Knight" in
+        /// EverQuest. [`crate::class::parse_class_list`] reads both. Empty when
+        /// the row is anonymous.
         classes: String,
+        /// The level title EverQuest shows in place of the class past level
+        /// 50, as in `[130 Imperator (Warrior)]`. Empty otherwise.
+        title: String,
         name: String,
         race: String,
         /// Empty when unguilded.

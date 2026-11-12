@@ -229,6 +229,7 @@ fn kind_name(e: &Event) -> &'static str {
         Event::Location { .. } => "Location",
         Event::LoggedOn => "LoggedOn",
         Event::WhoEntry { .. } => "WhoEntry",
+        Event::ChannelRoster { .. } => "ChannelRoster",
         Event::Tell { .. } => "Tell",
         Event::ItemGranted { .. } => "ItemGranted",
         Event::Stunned => "Stunned",

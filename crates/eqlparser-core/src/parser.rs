@@ -69,6 +69,7 @@ enum RuleId {
     GroupLeft,
     LevelUp,
     WhoEntry,
+    ChannelRoster,
     WhoAnonymous,
     AbilityPointsGained,
     AbilityFirstRank,
@@ -772,9 +773,24 @@ static RULES: &[(RuleId, &str)] = &[
     //
     // Guild and zone are optional — the unguilded have neither the angle
     // brackets nor, in some client versions, the trailing zone.
+    //
+    // EverQuest writes the class out instead ("[30 Beastlord]"), and past
+    // level 50 shows the level title with the class in brackets after it
+    // ("[130 Imperator (Warrior)]"). Titles are per class and per rank, so
+    // reading "Imperator" as a class would invent one for every rank. The LFG
+    // marker sits inside the brackets and is not part of the class. From the
+    // eqparser fork (cd8664b).
     (
         RuleId::WhoEntry,
-        r"^(?:AFK +)?\[(?P<level>\d+) (?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)\] (?P<name>[A-Za-z`']+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+        r"^(?:AFK +)?\[(?P<level>\d+) (?:(?P<classes>[A-Z]{2,3}(?:/[A-Z]{2,3})*)|(?P<title>[A-Za-z' -]+?) \((?P<class>[A-Za-z ]+)\)|(?P<plain>[A-Za-z ]+?))(?: LFG)?\] (?P<name>[A-Za-z`']+) \((?P<race>[^)]+)\)\s*(?:<(?P<guild>[^>]+)>)?\s*(?:ZONE: (?P<zone>.+?))?\s*$",
+    ),
+    // "Channels: 1=General(399), 2=Necromancer(26), 3=Antonica(33)"
+    //
+    // Printed on every zone-in: the only class evidence that arrives without
+    // the player typing anything. See [`Event::ChannelRoster`].
+    (
+        RuleId::ChannelRoster,
+        r"^Channels: (?P<list>\d+=.*)$",
     ),
     // "[ANONYMOUS] Sneaky" — level, class and race withheld, name still
     // given. Still a WhoEntry, because the fact that matters is that this
@@ -1318,6 +1334,7 @@ impl Parser {
                 RuleId::WhoAnonymous => Event::WhoEntry {
                     level: 0,
                     classes: String::new(),
+                    title: String::new(),
                     name: g("name").unwrap_or_default().to_string(),
                     race: String::new(),
                     guild: g("guild").unwrap_or_default().to_string(),
@@ -1325,7 +1342,15 @@ impl Parser {
                 },
                 RuleId::WhoEntry => Event::WhoEntry {
                     level: num("level") as u32,
-                    classes: g("classes").unwrap_or_default().to_string(),
+                    // Legends' abbreviations, else EverQuest's class: inside
+                    // the brackets after a title past 50, the whole of it below.
+                    classes: g("classes")
+                        .or_else(|| g("class"))
+                        .or_else(|| g("plain"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    title: g("title").unwrap_or_default().trim().to_string(),
                     name: g("name").unwrap_or_default().to_string(),
                     race: g("race").unwrap_or_default().to_string(),
                     guild: g("guild").unwrap_or_default().to_string(),
@@ -1333,6 +1358,19 @@ impl Parser {
                 },
                 RuleId::LevelUp => Event::LevelUp {
                     level: num("level") as u32,
+                },
+                RuleId::ChannelRoster => Event::ChannelRoster {
+                    channels: g("list")
+                        .unwrap_or_default()
+                        .split(',')
+                        .filter_map(|c| {
+                            // "2=Necromancer(26)": drop the slot number and
+                            // the occupant count, keep the name.
+                            let (_, rest) = c.trim().split_once('=')?;
+                            let name = rest.split('(').next()?.trim();
+                            (!name.is_empty()).then(|| name.to_string())
+                        })
+                        .collect(),
                 },
                 RuleId::AbilityPointsGained => Event::AbilityPointsGained {
                     // The "an ability point" wording carries no number.
@@ -3049,5 +3087,45 @@ mod zone_notice_tests {
     #[test]
     fn the_guard_does_not_swallow_an_ordinary_name() {
         assert!(matches!(ev("You have entered Areana.") , Event::ZoneChange { .. }));
+    }
+}
+
+/// `/who` and the channel roster in both games' wordings. Live EverQuest's are
+/// from the eqparser fork (cd8664b, a2d76c4).
+#[cfg(test)]
+mod who_tests {
+    use super::*;
+    use crate::event::Event;
+
+    fn who(body: &str) -> (u32, String, String, String) {
+        match Parser::new("Tharn").parse_body(body) {
+            Event::WhoEntry { level, classes, title, name, .. } => (level, classes, title, name),
+            other => panic!("{body:?} parsed as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legends_abbreviations_still_parse() {
+        let (l, c, t, n) = who("[50 WAR/BRD/SHM] Tharn (Ogre) <Iron Lantern> ZONE: The Plane of Sky (airplane)");
+        assert_eq!((l, c.as_str(), t.as_str(), n.as_str()), (50, "WAR/BRD/SHM", "", "Tharn"));
+    }
+
+    #[test]
+    fn everquest_writes_the_class_and_a_title_past_fifty() {
+        let (l, c, t, _) = who("[30 Beastlord] Tharn (Iksar)  ZONE: The Field of Bone (fieldofbone)");
+        assert_eq!((l, c.as_str(), t.as_str()), (30, "Beastlord", ""));
+        let (l, c, t, n) = who("[130 Imperator (Warrior)] Orrin (Skeleton) <Iron Lantern> ZONE: Crescent Reach (crescent)");
+        assert_eq!((l, c.as_str(), t.as_str(), n.as_str()), (130, "Warrior", "Imperator", "Orrin"));
+        let (_, c, _, _) = who("[60 Shadow Knight LFG] Orrin (Dark Elf)");
+        assert_eq!(c, "Shadow Knight", "LFG is not part of the class");
+        assert_eq!(crate::class::parse_class_list(&c), [crate::class::Class::ShadowKnight]);
+    }
+
+    #[test]
+    fn the_channel_roster_keeps_names_only() {
+        match Parser::new("Tharn").parse_body("Channels: 1=General(399), 2=Shadowknight(26), 3=Antonica(33)") {
+            Event::ChannelRoster { channels } => assert_eq!(channels, ["General", "Shadowknight", "Antonica"]),
+            other => panic!("{other:?}"),
+        }
     }
 }
