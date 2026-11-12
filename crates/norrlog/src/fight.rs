@@ -798,33 +798,37 @@ fn pet_line(d: &EncounterDetail) -> Option<String> {
         return None;
     }
     let s = &d.summary;
-    let charmed = d.charmed_pets.len();
+    let own = d.encounter.actors.get("you").map_or(0, |y| y.damage_done);
+    Some(pet_sentence(pets.len(), d.charmed_pets.len(), own, d.your_damage_with_pets, s.duration, s.charm_uptime, s.charm_breaks))
+}
+
+/// `pets` you had, `charmed` of them charmed; `own` your damage alone, `with`
+/// it plus the pets'.
+fn pet_sentence(pets: usize, charmed: usize, own: u64, with: u64, duration: i64, uptime: f64, breaks: u32) -> String {
     // Only "charmed" when every one of them was: a magician's pet and a
     // bard's charm can share a meter.
-    let all_charmed = charmed == pets.len() && charmed > 0;
-    let word = match (all_charmed, charmed == 1, pets.len() == 1) {
+    let all_charmed = charmed == pets && charmed > 0;
+    let word = match (all_charmed, charmed == 1, pets == 1) {
         (true, true, _) => "Your charmed pet",
         (true, false, _) => "Charmed pets",
         (false, _, true) => "Your pet",
         (false, _, false) => "Your pets",
     };
-    let own = d.encounter.actors.get("you").map_or(0, |y| y.damage_done);
-    let with = d.your_damage_with_pets;
     let mut line = format!(
         "{word} contributed {} damage — your total including pets is {} ({} dps).",
         num(Some(with.saturating_sub(own) as f64)),
         num(Some(with as f64)),
-        num(Some(if s.duration > 0 { with as f64 / s.duration as f64 } else { 0. })),
+        num(Some(if duration > 0 { with as f64 / duration as f64 } else { 0. })),
     );
     if charmed > 0 {
-        line.push_str(&format!(" Charm held {} of the fight", charm_pct(s.charm_uptime, s.charm_breaks)));
-        if s.charm_breaks > 0 {
-            line.push_str(&format!(", breaking {} time{}.", s.charm_breaks, plural(s.charm_breaks as u64)));
+        line.push_str(&format!(" Charm held {} of the fight", charm_pct(uptime, breaks)));
+        if breaks > 0 {
+            line.push_str(&format!(", breaking {} time{}.", breaks, plural(breaks as u64)));
         } else {
             line.push_str(" without breaking.");
         }
     }
-    Some(line)
+    line
 }
 
 /// A broken charm did not hold all of the fight, however the rounding falls.
@@ -943,7 +947,7 @@ fn plural(n: u64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
+    use super::{pet_sentence, MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
     use eqlparser_api::AbilityStats;
 
     fn row(name: &str, damage: u64) -> MeterRow {
@@ -978,6 +982,22 @@ mod tests {
         assert_eq!(out[0].1, 1);
         assert_eq!(pet_tag(&out[0].0, out[0].1).unwrap().0, "+1 pet");
         assert_eq!(pet_tag(&out[1].0, 0).unwrap().0, "charmed King Tranix");
+    }
+
+    #[test]
+    fn the_pet_line_names_the_pets_and_how_the_charm_held() {
+        // Lord Nagafen in the Tharn log, as the renderer wrote it.
+        assert_eq!(
+            pet_sentence(1, 1, 56_735, 73_964, 244, 0.877, 1),
+            "Your charmed pet contributed 17.2k damage — your total including pets is 74.0k (303 dps). \
+             Charm held 88% of the fight, breaking 1 time."
+        );
+        assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).starts_with("Charmed pets contributed"));
+        assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).ends_with("Charm held 100% of the fight without breaking."));
+        assert!(pet_sentence(2, 2, 0, 10, 10, 0.5, 5).ends_with("breaking 5 times."));
+        let summoned = pet_sentence(1, 0, 0, 10, 10, 0.0, 0);
+        assert!(summoned.starts_with("Your pet contributed") && !summoned.contains("Charm"));
+        assert!(pet_sentence(2, 1, 0, 10, 10, 0.5, 0).starts_with("Your pets contributed"));
     }
 
     #[test]
