@@ -1,15 +1,37 @@
 # eqlparser
 
-A log parser, DPS meter, and stream overlay for **EverQuest Legends**.
+A log parser, DPS meter, and stream overlay for **EverQuest Legends** and
+**live EverQuest**.
 
 Rust does the parsing and analysis; Electron provides the desktop GUI; the
 overlay is a plain web page served over localhost so OBS and the desktop can
 consume the same thing.
 
-A 48 MB / 595,000-line log parses in **~1.4 seconds**, so there is no database:
-the daemon re-reads the log on start and keeps everything in memory. After that
+A 4.8-million-line log parses in **about 8.5 seconds**, so the daemon re-reads
+the log on start and keeps it in memory; `history.db` holds only what outlives
+a log (drops, kills, vendors, AA purchases across characters). After that
 it follows the file live, picking up new lines within **~250 ms** (measured:
 225–258 ms) and pushing them to the GUI and overlay over WebSocket.
+
+## Two games
+
+The two games share a client and a log format, and nearly everything reads
+both the same way. What differs is in one place, `eqlparser_core::profile`,
+chosen per log from the install path (or `--game eq|eql`):
+
+| | Legends | live EverQuest |
+|---|---|---|
+| Classes held | three at once, the loadout changes | one at a time; a character can switch, each class levelled on its own |
+| Level cap | 50 | 130 |
+| An unplayed class | level 10 | unknown until something states it |
+| Where the class comes from | `/who`, spell sets, the spellbook | `/who`, the auto-joined class chat channel, the spellbook |
+| Plane of Sky, lockouts, motes | yes | no (the tabs and panels are hidden) |
+| Auto-sell on loot | yes | no — most drops are left on the corpse, and counted as seen |
+| Item and quest site | eqldb | eqdb |
+
+The spell file differs too (174 fields against 166), which the loader tells
+apart by shape. Live EverQuest support began as a fork, eqparser, and was
+folded back in.
 
 ---
 
