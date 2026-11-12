@@ -165,7 +165,11 @@
       const fails = d.failures
         .slice(0, opt.rows)
         .map((f) => {
-          const ago = Math.max(0, Math.round(Date.now() / 1000 - f.at));
+          // Log times are the game's local wall clock written as if it
+          // were UTC, so "now" has to be put on that clock too, or every
+          // failure is hours old west of Greenwich.
+          const nowLog = Date.now() / 1000 - new Date().getTimezoneOffset() * 60;
+          const ago = Math.max(0, Math.round(nowLog - f.at));
           return `<div class="row enemy" style="--share:100%">
             <span class="name">${esc(f.target)}
               <span class="tag fail">${esc(f.kind)}</span></span>
