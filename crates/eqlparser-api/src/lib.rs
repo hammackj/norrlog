@@ -360,6 +360,85 @@ pub use eqlparser_core::encounter::{
 /// `GET /api/procs`: how often each proc fired, per minute of combat.
 pub use eqlparser_core::procs::{ProcKind, ProcReport, ProcRow};
 
+/// The 16 classes, in the order the spell file lists their levels.
+pub use eqlparser_core::class::{CLASS_CANNOT_CAST, Class};
+
+// ---------------------------------------------------------------------------
+// `GET /api/spell?name=…`: a spell's hover card. Read leniently: eqdb's reply
+// is passed through by the daemon, so every field it might leave out is
+// defaulted rather than failing the whole card.
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpellLookup {
+    #[serde(default)]
+    pub name: String,
+    /// `eqdb`, `local` (the spell file only) or `unknown` (no card).
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub eqdb: Option<EqdbSpell>,
+    #[serde(default)]
+    pub local: Option<LocalSpell>,
+}
+
+/// eqdb's spell, or a page of name matches when it was asked by name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EqdbSpell {
+    #[serde(default)]
+    pub id: Option<u64>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub mana: u64,
+    #[serde(default)]
+    pub endurance: u64,
+    #[serde(default)]
+    pub cast_time: Option<SpellTime>,
+    #[serde(default)]
+    pub recast: Option<SpellTime>,
+    #[serde(default)]
+    pub duration: Option<SpellTime>,
+    #[serde(default)]
+    pub classes: Vec<SpellClass>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub matches: Vec<EqdbSpell>,
+}
+
+impl EqdbSpell {
+    /// The spell itself, or the first match when this is a page of them.
+    pub fn resolved(&self) -> Option<&EqdbSpell> {
+        if self.id.is_some() { Some(self) } else { self.matches.first() }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpellTime {
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpellClass {
+    pub class: String,
+    pub level: u32,
+}
+
+/// What the daemon's own spell file says.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalSpell {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub is_charm: bool,
+    /// Level per class in `Class::ALL` order; `CLASS_CANNOT_CAST` for never.
+    #[serde(default)]
+    pub classes: Vec<u8>,
+}
+
 /// `GET /api/encounters/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncounterDetail {

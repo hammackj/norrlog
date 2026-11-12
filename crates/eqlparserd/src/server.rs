@@ -3261,6 +3261,57 @@ mod tests {
         assert_eq!(v["encounters"][0]["title"], "a lesser mummy");
     }
 
+    /// The spell card reads this through the API crate's types. The site is
+    /// unreachable here, so the card is the spell file's alone; a name the
+    /// file does not know is `unknown`, which draws no card.
+    #[tokio::test]
+    async fn spell_lookup_matches_the_api_type() {
+        use eqlparser_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT, Class};
+        use eqlparser_core::spell::Spell;
+        let mut levels = [CLASS_CANNOT_CAST; CLASS_COUNT];
+        levels[Class::Shaman.index()] = 49;
+        let bolt = Spell {
+            id: 436,
+            name: "Envenomed Bolt".into(),
+            cast_time_ms: 3000,
+            recovery_ms: 0,
+            recast_ms: 0,
+            duration_formula: 0,
+            duration_cap: 0,
+            mana: 409,
+            landed_on_you: None,
+            landed_on_other: None,
+            fades: None,
+            class_levels: levels,
+            good_effect: 0,
+            category_id: 0,
+            is_charm: false,
+            restricted_to: None,
+            linked: Vec::new(),
+            procs: Vec::new(),
+        };
+        let s = state_with(&[]);
+        *s.engine.locked("test") = Engine::new("Tharn".into(), SpellDb::from_spells([(436, bolt)].into()));
+        let ask = |name: &str| {
+            let mut q = std::collections::HashMap::new();
+            q.insert("name".to_string(), name.to_string());
+            Query(q)
+        };
+
+        let resp = spell_lookup(State(s.clone()), ask("Envenomed Bolt X")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let d: eqlparser_api::SpellLookup = serde_json::from_slice(&body).expect("lookup matches the API type");
+        assert_eq!(d.source, "local");
+        let local = d.local.expect("the spell file places the rank by its base name");
+        assert_eq!(local.name, "Envenomed Bolt");
+        assert_eq!(local.classes[Class::Shaman.index()], 49);
+
+        let resp = spell_lookup(State(s), ask("slash")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let d: eqlparser_api::SpellLookup = serde_json::from_slice(&body).unwrap();
+        assert_eq!(d.source, "unknown");
+    }
+
     #[tokio::test]
     async fn encounter_detail_returns_404_for_unknown_id() {
         let s = state_with(SAMPLE);
