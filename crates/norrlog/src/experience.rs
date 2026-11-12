@@ -4,8 +4,9 @@
 //!
 //! `/api/experience` is fetched when the tab opens and every ten seconds
 //! while it is on screen, and `/api/class-levels` with every one of those.
-//! `/api/aa` is fetched only when the tab opens and when "Unfinished only"
-//! changes: the renderer never refreshes it while the tab sits open.
+//! `/api/aa` is fetched when the tab opens, when "Unfinished only" changes
+//! and with every ten-second refresh. The renderer never refreshes it while
+//! the tab sits open; that was an oversight (a3bphvj), not a choice.
 
 use crate::api::Api;
 use crate::format::{dur, when};
@@ -77,6 +78,9 @@ impl ExperienceView {
     pub fn on_snapshot(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         if visible && self.last_load.is_none_or(|t| t.elapsed() >= REFRESH) {
             self.load(window, cx);
+            // The catalogue too, so an AA bought while the tab is open shows
+            // up; the renderer's `VIEW_LOADERS` leaves it out (a3bphvj).
+            self.load_aa(cx);
         }
     }
 

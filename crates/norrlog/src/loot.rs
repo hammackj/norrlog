@@ -3,8 +3,8 @@
 //! section of `docs/parity/loot-and-tooltips.md`.
 //!
 //! Like the renderer, the three lists are separate fetches with separate
-//! caches. Opening the tab fetches All whichever subtab is showing; Session
-//! fetches its own on selection; Motes reads both, so it draws from what is
+//! caches. Opening the tab fetches the subtab showing (the renderer fetches
+//! All whichever it is); Session fetches its own on selection; Motes reads both, so it draws from what is
 //! cached and fetches both behind it. Snapshots refresh the visible one at
 //! most every ten seconds.
 
@@ -160,6 +160,13 @@ impl LootView {
             }
             return;
         }
+        self.load_open(cx);
+    }
+
+    /// Fetch what the open subtab shows. Opening the tab calls this, so
+    /// returning to Loot with This session showing refreshes that rather
+    /// than All, which the renderer reloads whatever is open (a3bphvj).
+    pub fn load_open(&mut self, cx: &mut Context<Self>) {
         match self.sub {
             Sub::All => self.load_all(cx),
             Sub::Session => self.load_session(cx),
@@ -271,7 +278,7 @@ impl LootView {
         let body: Vec<AnyElement> = if rows.is_empty() {
             vec![table::empty_row("Nothing looted this session yet").into_any_element()]
         } else {
-            rows.iter().map(|i| self.row("ls", i, false, cx)).collect()
+            rows.iter().map(|i| self.row("ls", i, true, cx)).collect()
         };
         let summary = format!("{:.2}pp from corpses · {:.2}pp auto-sold", self.session_coin as f64 / 1000., sold as f64 / 1000.);
         let open = self.session_note;
@@ -317,7 +324,7 @@ impl LootView {
                 .map(|m| {
                     let n = this_session.get(&m.item.to_lowercase()).copied().unwrap_or(0);
                     let name = m.item.clone();
-                    h_flex()
+                    let row = h_flex()
                         .id(SharedString::from(format!("mote-{}", m.item)))
                         .relative()
                         .justify_between()
@@ -342,8 +349,11 @@ impl LootView {
                                 })
                                 .child(div().min_w(px(50.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(m.count.to_string())),
                         )
-                        .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)))
-                        .into_any_element()
+                        .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)));
+                    // The card on every list, not only All: the renderer's
+                    // Session and Motes rows carry `data-item` but were
+                    // never wired (a3bphvj).
+                    item_tip(row, &self.items, &m.item).into_any_element()
                 })
                 .collect()
         };

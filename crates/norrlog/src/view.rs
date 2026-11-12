@@ -189,7 +189,7 @@ impl Shell {
                 self.loot.update(cx, |v, cx| {
                     v.set_api(Some(api), cx);
                     if open == "loot" {
-                        v.load_all(cx);
+                        v.load_open(cx);
                     }
                 });
             }
@@ -275,7 +275,7 @@ impl Shell {
         }
         // All, whichever subtab is showing (app.js:48).
         if tab == "loot" {
-            self.loot.update(cx, |v, cx| v.load_all(cx));
+            self.loot.update(cx, |v, cx| v.load_open(cx));
         }
         if tab == "experience" {
             self.experience.update(cx, |v, cx| v.show(window, cx));

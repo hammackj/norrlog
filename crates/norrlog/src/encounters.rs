@@ -101,6 +101,7 @@ pub struct EncountersView {
     pub(crate) fight: FightUi,
     /// Spell hover cards, each name asked about once.
     pub(crate) spells: Entity<crate::spell_tip::SpellCards>,
+    pub(crate) items: Entity<crate::item_tip::ItemCards>,
     detail_scroll: ScrollHandle,
     _subs: Vec<Subscription>,
 }
@@ -143,6 +144,7 @@ impl EncountersView {
             detail: None,
             fight: FightUi::default(),
             spells: cx.new(|_| crate::spell_tip::SpellCards::new()),
+            items: cx.new(|_| crate::item_tip::ItemCards::new()),
             detail_scroll: ScrollHandle::new(),
             _subs: subs,
         }
@@ -150,6 +152,7 @@ impl EncountersView {
 
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
         self.spells.update(cx, |c, _| c.set_api(api.clone()));
+        self.items.update(cx, |c, _| c.set_api(api.clone()));
         self.api = api;
         cx.notify();
     }

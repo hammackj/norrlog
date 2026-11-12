@@ -138,6 +138,9 @@ impl ForageView {
                 None,
             )
             .cursor_pointer()
+            // The renderer sets an `on` class here that nothing styles
+            // (a3bphvj); the selected zone is marked.
+            .when(self.open.as_deref() == Some(z.zone.as_str()), |d| d.border_1().border_color(hex(ACCENT)))
             .on_click(cx.listener(move |v, _, _, cx| v.select(Some(zone.clone()), cx)))
         }))
     }

@@ -137,7 +137,7 @@ impl EncountersView {
         if !s.resists.is_empty() {
             out = out.child(resists_card(&s.resists));
         }
-        out.child(split(deaths_card(&e.deaths), loot_card(e)))
+        out.child(split(deaths_card(&e.deaths), loot_card(e, &self.items)))
     }
 
     /// One row per actor that dealt damage. A row whose actor has abilities
@@ -799,7 +799,9 @@ fn deaths_card(deaths: &[eqlparser_api::DeathRecord]) -> Div {
     c.child(table_box(DEATH_COLS, rows))
 }
 
-fn loot_card(e: &eqlparser_api::Encounter) -> Div {
+/// With the item card on each name, which the renderer's table lacks
+/// (a3bphvj).
+fn loot_card(e: &eqlparser_api::Encounter, items: &Entity<crate::item_tip::ItemCards>) -> Div {
     let c = card("Loot & coin");
     if e.loot.is_empty() && e.coin_copper == 0 {
         return c.child(empty("No loot"));
@@ -816,7 +818,12 @@ fn loot_card(e: &eqlparser_api::Encounter) -> Div {
             table::row_dense(
                 SharedString::from(format!("loot-{i}")),
                 LOOT_COLS,
-                vec![cell(l.item.clone()), cell(l.quantity.to_string()), dim(l.source.clone().unwrap_or_else(|| "—".into()))],
+                vec![
+                    crate::item_tip::item_tip(div().id(SharedString::from(format!("loot-item-{i}"))).child(l.item.clone()), items, &l.item)
+                        .into_any_element(),
+                    cell(l.quantity.to_string()),
+                    dim(l.source.clone().unwrap_or_else(|| "—".into())),
+                ],
             )
             .into_any_element()
         })

@@ -554,7 +554,7 @@ const SINCE_HINT: &str = "A shorter window starts far faster, but every figure d
     history are kept in the database and are unaffected. Changing this restarts the parser.";
 const EQDB_HINT: &str = "Item tooltips, icons and the Sky tab's quest record are asked of an eqldb site, with the item \
     data bundled in the app behind it. Off asks no site anything; tooltips then come from the bundled data alone. \
-    Saved with Save & restart daemon, and only for a daemon this app starts.";
+    Saved with Save & restart daemon, which restarts the shared daemon with it, whichever app started it.";
 const EXPORT_HINT: &str = "Boss kills grouped by loadout, with kill counts, average and best times, and your DPS. \
     Drawn from the durable history, so it spans every log file ever parsed — not just the one being followed. Timing \
     and DPS averages exclude kills whose fight could not be bounded, rather than counting them as zero.";
