@@ -1072,7 +1072,28 @@ impl Parser {
         if name.is_empty() {
             return None;
         }
-        Some((name.to_string(), server.to_string()))
+        Some((name.to_string(), Self::server_without_rotation(server).to_string()))
+    }
+
+    /// A server name with a log rotation's date taken off.
+    ///
+    /// A rotated copy keeps the client's name and gains a date --
+    /// `eqlog_Faul_rivervale-260808.txt` -- and reading the server straight
+    /// off it put `rivervale-260808`, `rivervale-260831` and `rivervale-260908`
+    /// on eqldb's server list as three servers. No EverQuest server name ends
+    /// in `-` and digits, so the suffix is the rotation's and not the
+    /// server's.
+    pub fn server_without_rotation(server: &str) -> &str {
+        match server.rsplit_once('-') {
+            Some((base, date))
+                if !base.is_empty()
+                    && !date.is_empty()
+                    && date.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                base
+            }
+            _ => server,
+        }
     }
 
     pub fn player(&self) -> &str {
@@ -1838,6 +1859,16 @@ mod tests {
             Some(("Alt".to_string(), "test_server".to_string()))
         );
         assert_eq!(Parser::identity_from_filename("eqlog_NoServer.txt"), None);
+
+        // A rotated copy is the same server, not a new one.
+        assert_eq!(
+            Parser::identity_from_filename("eqlog_Faul_rivervale-260808.txt"),
+            Some(("Faul".to_string(), "rivervale".to_string()))
+        );
+        // Only a dash followed by digits alone is a rotation.
+        assert_eq!(Parser::server_without_rotation("rivervale-2b"), "rivervale-2b");
+        assert_eq!(Parser::server_without_rotation("-260808"), "-260808");
+        assert_eq!(Parser::server_without_rotation("rivervale-"), "rivervale-");
     }
 
     #[test]
