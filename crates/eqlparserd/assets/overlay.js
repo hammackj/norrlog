@@ -655,8 +655,11 @@
       const r = await fetch("/api/panels");
       if (!r.ok) return;
       const d = await r.json();
+      // Up, even with nothing to say: an app with no rows to show has still
+      // taken the prompt over, and the daemon's panel must not fill the gap
+      // with its own, older idea of what is wanted.
+      appPanelsUp = (d.panels || []).length > 0;
       const panels = (d.panels || []).filter((p) => (p.rows || []).length);
-      appPanelsUp = panels.length > 0;
       if (appPanelsUp) el.wantedPanel.classList.add("hidden");
       el.appPanels.innerHTML = panels
         .map(
