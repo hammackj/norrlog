@@ -4,6 +4,10 @@
 //! Reconnects as the Electron renderer does: after `min(500 ms × n, 5 s)`,
 //! `n` capped at 10 and reset on a good attach. Quitting never stops the
 //! daemon; one this app started exits a minute after its last client.
+//!
+//! Settings can ask for a restart with a new [`Setup`]: the daemon on the
+//! old port is stopped, whoever started it, as `restartDaemon` in
+//! `gui/main.js` does, and the new one is attached to or started.
 
 use eqlparser_api::Hello;
 use eqlparser_client::{Client, Error, Spawn};
@@ -32,62 +36,133 @@ pub enum Msg {
 const IDLE_EXIT: Duration = Duration::from_secs(60);
 
 /// Starts the daemon thread and its runtime; the handle is for views'
-/// requests (see `api`), which run on the same runtime.
-pub fn spawn(setup: Setup, tx: async_channel::Sender<Msg>) -> tokio::runtime::Handle {
+/// requests (see `api`), which run on the same runtime. A [`Setup`] sent on
+/// `ctl` restarts the daemon with it.
+pub fn spawn(setup: Setup, tx: async_channel::Sender<Msg>, ctl: async_channel::Receiver<Setup>) -> tokio::runtime::Handle {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime");
     let handle = rt.handle().clone();
     std::thread::Builder::new()
         .name("daemon".into())
-        .spawn(move || rt.block_on(run(setup, tx)))
+        .spawn(move || rt.block_on(run(setup, tx, ctl)))
         .expect("the daemon thread");
     handle
 }
 
-async fn run(setup: Setup, tx: async_channel::Sender<Msg>) {
-    let mut spawn = Spawn::new(&setup.daemon);
-    spawn.args = setup.args.clone();
-    spawn.idle_exit = IDLE_EXIT;
+/// How a session ended.
+enum End {
+    /// The window has gone.
+    Closed,
+    Lost(String),
+    /// Settings asked for a restart with this.
+    Restart(Setup),
+}
+
+async fn run(mut setup: Setup, tx: async_channel::Sender<Msg>, ctl: async_channel::Receiver<Setup>) {
     let mut retry: u64 = 0;
     loop {
         if tx.send(Msg::Attaching).await.is_err() {
             return;
         }
-        let why = match session(&setup, &spawn, &tx, &mut retry).await {
-            Ok(()) => return, // the window has gone
-            Err(why) => why,
+        let next = match session(&setup, &tx, &ctl, &mut retry).await {
+            End::Closed => return,
+            End::Restart(next) => Some(next),
+            End::Lost(why) => {
+                if tx.send(Msg::Lost(why)).await.is_err() {
+                    return;
+                }
+                retry = (retry + 1).min(10);
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis((500 * retry).min(5000))) => None,
+                    Ok(next) = ctl.recv() => Some(next),
+                }
+            }
         };
-        if tx.send(Msg::Lost(why)).await.is_err() {
-            return;
+        if let Some(next) = next {
+            stop(setup.port).await;
+            setup = next;
+            retry = 0;
         }
-        retry = (retry + 1).min(10);
-        tokio::time::sleep(Duration::from_millis((500 * retry).min(5000))).await;
     }
 }
 
-/// One attachment. `Ok` only when the window has closed.
-async fn session(setup: &Setup, spawn: &Spawn, tx: &async_channel::Sender<Msg>, retry: &mut u64) -> Result<(), String> {
-    let client = Client::attach_or_spawn(setup.port, spawn).await.map_err(|e| describe(&e, setup))?;
+/// One attachment.
+async fn session(
+    setup: &Setup,
+    tx: &async_channel::Sender<Msg>,
+    ctl: &async_channel::Receiver<Setup>,
+    retry: &mut u64,
+) -> End {
+    let mut spawn = Spawn::new(&setup.daemon);
+    spawn.args = setup.args.clone();
+    spawn.idle_exit = IDLE_EXIT;
+    let client = tokio::select! {
+        got = Client::attach_or_spawn(setup.port, &spawn) => match got {
+            Ok(c) => c,
+            Err(e) => return End::Lost(describe(&e, setup)),
+        },
+        Ok(next) = ctl.recv() => return End::Restart(next),
+    };
     let hello = Box::new(client.hello().clone());
     let started = client.started_daemon();
     if tx.send(Msg::Attached { hello, started, client: Box::new(client.clone()) }).await.is_err() {
-        return Ok(());
+        return End::Closed;
     }
-    let mut snaps = client.snapshots().await.map_err(|e| describe(&e, setup))?;
+    let mut snaps = match client.snapshots().await {
+        Ok(s) => s,
+        Err(e) => return End::Lost(describe(&e, setup)),
+    };
     *retry = 0;
-    while let Some(got) = snaps.next().await {
+    loop {
+        let got = tokio::select! {
+            got = snaps.next() => got,
+            Ok(next) = ctl.recv() => return End::Restart(next),
+        };
         match got {
             // A snapshot is complete in itself: when the window is behind,
             // the oldest waiting one is the one to drop.
-            Ok(v) => {
+            Some(Ok(v)) => {
                 if tx.force_send(Msg::Snapshot(Arc::new(v))).is_err() {
-                    return Ok(());
+                    return End::Closed;
                 }
             }
-            Err(Error::Decode(e)) => eprintln!("[norrlog] a snapshot did not decode: {e}"),
-            Err(e) => return Err(describe(&e, setup)),
+            Some(Err(Error::Decode(e))) => eprintln!("[norrlog] a snapshot did not decode: {e}"),
+            Some(Err(e)) => return End::Lost(describe(&e, setup)),
+            None => return End::Lost("the daemon closed the connection".into()),
         }
     }
-    Err("the daemon closed the connection".into())
+}
+
+/// Stop the daemon on `port`, if one answers, and wait up to five seconds
+/// for the port to come free. Whoever started it: every app attached to it
+/// reconnects to the new one, as they do after Electron's restart.
+async fn stop(port: u16) {
+    let Ok(old) = Client::attach(port).await else { return };
+    terminate(old.hello().pid).await;
+    for _ in 0..50 {
+        if matches!(Client::attach(port).await, Err(Error::Unreachable { .. })) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    eprintln!("[norrlog] the daemon on port {port} did not stop within five seconds");
+}
+
+async fn terminate(pid: u32) {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("kill");
+        c.arg("-TERM").arg(pid.to_string());
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("taskkill");
+        c.arg("/PID").arg(pid.to_string());
+        c
+    };
+    if let Err(e) = cmd.stdin(std::process::Stdio::null()).status().await {
+        eprintln!("[norrlog] could not stop pid {pid}: {e}");
+    }
 }
 
 fn describe(e: &Error, setup: &Setup) -> String {

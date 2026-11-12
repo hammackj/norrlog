@@ -26,7 +26,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # only; no decoders, since nothing is read from a file.
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "sync", "process"] }
 # GPUI pinned exactly as the eqldb collector pins it (the `gpui-pre`
 # releases of Zed's GPUI, with gpui-component built against that one).
 # Moving either is a deliberate upgrade of both apps, not a `cargo update`.

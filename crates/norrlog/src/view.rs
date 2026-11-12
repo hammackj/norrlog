@@ -51,6 +51,7 @@ pub struct Shell {
     sky: Entity<crate::sky::SkyView>,
     tells: Entity<crate::tells::TellsView>,
     alerts: Entity<crate::alerts::AlertsView>,
+    settings: Entity<crate::settings::SettingsView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     state: State,
@@ -63,6 +64,7 @@ impl Shell {
         rx: async_channel::Receiver<Msg>,
         rt: tokio::runtime::Handle,
         state: State,
+        restart: crate::settings::Restart,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -88,6 +90,7 @@ impl Shell {
         let sky = cx.new(crate::sky::SkyView::new);
         let tells = cx.new(|_| crate::tells::TellsView::new());
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
+        let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
         Shell {
             link: Link::Attaching,
             rt,
@@ -102,6 +105,7 @@ impl Shell {
             sky,
             tells,
             alerts,
+            settings,
             tab,
             snapshot: None,
             state,
@@ -157,6 +161,10 @@ impl Shell {
                     // A fresh attach loads the tab afresh if it is open.
                     v.set_visible(false, cx);
                     v.set_visible(open == "alerts", cx);
+                });
+                self.settings.update(cx, |v, cx| {
+                    v.set_visible(open == "settings", cx);
+                    v.set_api(Some(api.clone()), cx);
                 });
                 self.tells.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
@@ -226,6 +234,7 @@ impl Shell {
                 self.sky.update(cx, |v, cx| v.set_api(None, cx));
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
                 self.alerts.update(cx, |v, cx| v.set_api(None, cx));
+                self.settings.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
         cx.notify();
@@ -267,6 +276,7 @@ impl Shell {
             self.forage.update(cx, |v, cx| v.load(cx));
         }
         self.alerts.update(cx, |v, cx| v.set_visible(tab == "alerts", cx));
+        self.settings.update(cx, |v, cx| v.set_visible(tab == "settings", cx));
         if tab == "tells" {
             self.tells.update(cx, |v, cx| v.load(cx));
         }
@@ -360,7 +370,11 @@ impl Shell {
     }
 
     fn render_body(&self) -> AnyElement {
-        if let Link::Lost(why) = &self.link {
+        // Settings stays reachable without a daemon: a wrong path or port is
+        // the likeliest reason there is none.
+        if let Link::Lost(why) = &self.link
+            && self.tab != "settings"
+        {
             return notice("The daemon is not answering", why.clone()).into_any_element();
         }
         match self.tab {
@@ -376,6 +390,7 @@ impl Shell {
             "alerts" => self.alerts.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "tells" => self.tells.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "sky" => self.sky.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "settings" => self.settings.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
                 let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
@@ -440,7 +455,7 @@ impl Render for Shell {
             .text_sm()
             .child(self.render_header())
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts") && !matches!(self.link, Link::Lost(_)) {
+            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
                 // These scroll themselves, and are drawn cached: each redraws
                 // only when it notifies, not on every snapshot the shell takes.
                 div().id("main").flex_1().min_h_0().p_4().child(self.render_body())

@@ -1,6 +1,11 @@
-//! What to follow: read from the Electron app's own config while the two
-//! apps live side by side, so both start the shared daemon the same way.
-//! This app does not write it yet; that comes with the Settings port.
+//! What to follow: the Electron app's own config while the two apps live
+//! side by side, so both start the shared daemon the same way.
+//!
+//! Settings writes it by patching: the file is read as JSON, only the keys
+//! this app owns are replaced, and the rest (the overlay's, the theme) are
+//! written back untouched. Electron holds its config in memory, so a save
+//! there while this app is open puts back what it last read; the two are not
+//! meant to be driven at once.
 
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -27,11 +32,41 @@ pub fn config_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
 }
 
+/// Electron's `userData` config.
+pub fn path() -> Option<PathBuf> {
+    config_home().map(|d| d.join("eqlparser-gui/config.json"))
+}
+
+/// Replace `patch`'s keys in the config file and keep every other key.
+/// Written to a sibling and renamed into place, so a crash mid-write leaves
+/// the old file rather than half of a new one.
+pub fn save_patch(patch: serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
+    let p = path().ok_or_else(|| std::io::Error::other("no home directory"))?;
+    save_patch_at(&p, patch)
+}
+
+fn save_patch_at(p: &std::path::Path, patch: serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
+    let mut v = match std::fs::read(p) {
+        Ok(b) => serde_json::from_slice::<serde_json::Value>(&b)
+            .map_err(|e| std::io::Error::other(format!("{} is not JSON: {e}", p.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(e),
+    };
+    let obj = v.as_object_mut().ok_or_else(|| std::io::Error::other(format!("{} is not an object", p.display())))?;
+    obj.extend(patch);
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = p.with_extension("json.norrlog-tmp");
+    // Two-space indent, as `saveConfig` writes it.
+    std::fs::write(&tmp, serde_json::to_string_pretty(&v).map_err(std::io::Error::other)?)?;
+    std::fs::rename(&tmp, p)
+}
+
 impl ParserConfig {
     /// The Electron app's `config.json`, or defaults when there is none.
     pub fn load() -> Self {
-        config_home()
-            .map(|d| d.join("eqlparser-gui/config.json"))
+        path()
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
@@ -68,6 +103,21 @@ impl ParserConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_patch_keeps_the_keys_it_does_not_name() {
+        let dir = std::env::temp_dir().join(format!("norrlog-cfg-{}", std::process::id()));
+        let p = dir.join("eqlparser-gui/config.json");
+        let mut patch = serde_json::Map::new();
+        patch.insert("logFile".into(), "/a".into());
+        save_patch_at(&p, patch.clone()).unwrap();
+        std::fs::write(&p, r#"{"logFile":"/b","theme":"spellbook","overlayOptions":"panels=meter"}"#).unwrap();
+        patch.insert("port".into(), 8800.into());
+        save_patch_at(&p, patch).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(v, serde_json::json!({"logFile":"/a","port":8800,"theme":"spellbook","overlayOptions":"panels=meter"}));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn args_follow_the_electron_rules() {

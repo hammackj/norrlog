@@ -269,6 +269,102 @@ pub struct DaemonLogLine {
     pub text: String,
 }
 
+// ---- Settings ---------------------------------------------------------------
+
+/// `GET /api/logs`: the logs beside the followed one, and whose history is on
+/// file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogsReply {
+    pub dir: Option<String>,
+    pub current: String,
+    /// Null until the history database has been opened.
+    pub following: Option<Following>,
+    pub characters: Vec<KnownCharacter>,
+    /// Most recently written first.
+    pub logs: Vec<LogFile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Following {
+    pub character: Option<String>,
+    pub server: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnownCharacter {
+    pub character: String,
+    pub server: Option<String>,
+    pub kills: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogFile {
+    pub path: String,
+    pub name: String,
+    pub character: Option<String>,
+    pub server: Option<String>,
+    pub bytes: u64,
+    /// Unix seconds.
+    pub modified: i64,
+    pub current: bool,
+}
+
+/// `GET /api/logs/status`: every log in the folder and how far behind each is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogsStatusReply {
+    pub dir: Option<String>,
+    /// Seconds between sweeps of the logs that are not followed.
+    pub every: Option<u64>,
+    /// Why nothing was looked at, when nothing was.
+    pub why: Option<String>,
+    /// Worst gap first.
+    pub logs: Vec<LogStatusRow>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogStatusRow {
+    pub path: String,
+    pub name: String,
+    pub player: String,
+    pub server: String,
+    pub followed: bool,
+    pub bytes: u64,
+    pub parsed: u64,
+    pub behind: u64,
+    pub last_seen: i64,
+}
+
+/// `GET /api/history`, as far as Settings reads it: which loadouts the kills
+/// on file were made with. The kills carry more than this; it is ignored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryBrief {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub kills: Vec<KillBuild>,
+    pub counts: HistoryCounts,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KillBuild {
+    pub build: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryCounts {
+    pub kills: u64,
+    pub encounters: u64,
+    pub levels: u64,
+}
+
 // ---- Encounters -----------------------------------------------------------
 
 /// `GET /api/encounters`: one page of fights, newest first.

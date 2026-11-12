@@ -6,7 +6,8 @@
 //!     norrlog [--port N] [--daemon PATH]
 //!
 //! What the daemon follows comes from the Electron app's config while the
-//! two live side by side, so whichever starts it starts it the same way.
+//! two live side by side, so whichever starts it starts it the same way;
+//! Settings writes it.
 
 mod alerts;
 mod api;
@@ -27,6 +28,7 @@ mod loot;
 mod parts;
 mod procs;
 mod sky;
+mod settings;
 mod sound;
 mod spell_tip;
 mod state;
@@ -61,11 +63,14 @@ fn main() {
         }
     }
 
-    let setup = daemon::Setup { port, daemon: daemon::find_daemon(daemon_bin), args: cfg.daemon_args() };
+    let daemon_bin = daemon::find_daemon(daemon_bin);
+    let setup = daemon::Setup { port, daemon: daemon_bin.clone(), args: cfg.daemon_args() };
     // Bounded, and snapshots displace the oldest waiting message: a window
     // that falls behind wants the newest state, not a queue of old ones.
     let (tx, rx) = async_channel::bounded(16);
-    let rt = daemon::spawn(setup, tx);
+    // Settings' restarts.
+    let (ctl_tx, ctl_rx) = async_channel::bounded(4);
+    let rt = daemon::spawn(setup, tx, ctl_rx);
     let state = state::State::load();
 
     gpui_platform::application().run(move |cx| {
@@ -86,7 +91,8 @@ fn main() {
             ..Default::default()
         };
         cx.open_window(options, move |window, cx| {
-            let view = cx.new(|cx| view::Shell::new(rx, rt, state, window, cx));
+            let restart = settings::Restart { ctl: ctl_tx, daemon: daemon_bin };
+            let view = cx.new(|cx| view::Shell::new(rx, rt, state, restart, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("could not open the window");
