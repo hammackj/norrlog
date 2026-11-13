@@ -898,7 +898,11 @@ const AURA_MAX_INTERVAL: i64 = 45;
 ///
 /// 1. **Unique candidate** — no ambiguity at all.
 /// 2. **Recent cast** — a `You begin casting/singing <name>.` inside the
-///    association window naming one of the candidates.
+///    association window naming one of the candidates; failing that, the
+///    same from anyone else (`<name> begins casting <spell>.`, or a heal
+///    line naming its spell). Most buffs in a group or raid are cast by
+///    someone else, and their landing text is shared by dozens of spells,
+///    while the caster's line names the one that landed.
 /// 3. **Repertoire** — a candidate the character has cast at *any* point this
 ///    session. This matters enormously for bards: a song's landing text pulses
 ///    thousands of times while the "begins singing" line appears once, so
@@ -910,6 +914,9 @@ pub struct SpellResolver {
     db: SpellDb,
     /// Casts started by the logging character, newest last.
     recent_casts: Vec<RecentCast>,
+    /// Casts started by anyone else, and spells named by their heals. Not
+    /// the character's repertoire: only evidence of what just landed.
+    others_casts: Vec<RecentCast>,
     /// Every spell name the logging character has been seen to cast or sing,
     /// lowercased. Never pruned: it is a model of what this character *can*
     /// do, which does not expire.
@@ -933,6 +940,7 @@ impl SpellResolver {
         SpellResolver {
             db,
             recent_casts: Vec::new(),
+            others_casts: Vec::new(),
             repertoire: std::collections::HashSet::new(),
             learned: HashMap::new(),
             marks: HashMap::new(),
@@ -1034,6 +1042,39 @@ impl SpellResolver {
         // Keep the window small; this list is scanned on every landing.
         let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
         self.recent_casts.retain(|c| c.timestamp >= cutoff);
+    }
+
+    /// Record that someone else began casting a spell, or healed with one.
+    pub fn note_cast_by_other(&mut self, timestamp: i64, spell_name: &str) {
+        self.others_casts.push(RecentCast {
+            timestamp,
+            spell_name: spell_name.to_string(),
+        });
+        let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
+        self.others_casts.retain(|c| c.timestamp >= cutoff);
+    }
+
+    /// The candidate a recent cast names, newest cast first: the very rank
+    /// if it is one of them, else a rank of the same spell.
+    fn named_by(&self, casts: &[RecentCast], candidates: &[u32], timestamp: i64) -> Option<u32> {
+        let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
+        for cast in casts.iter().rev().filter(|c| c.timestamp >= cutoff) {
+            let names = |exact: bool| {
+                candidates.iter().copied().find(|&id| {
+                    self.db.get(id).is_some_and(|s| {
+                        if exact {
+                            s.name.eq_ignore_ascii_case(&cast.spell_name)
+                        } else {
+                            same_spell(&s.name, &cast.spell_name)
+                        }
+                    })
+                })
+            };
+            if let Some(id) = names(true).or_else(|| names(false)) {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Record that the character owns a spell, without implying they just cast
@@ -1151,19 +1192,13 @@ impl SpellResolver {
             return (candidates[0], 1.0);
         }
 
-        // 2. A cast naming one of the candidates, close in time.
-        let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
-        for cast in self.recent_casts.iter().rev() {
-            if cast.timestamp < cutoff {
-                continue;
-            }
-            for &id in candidates {
-                if let Some(s) = self.db.get(id) {
-                    if same_spell(&s.name, &cast.spell_name) {
-                        return (id, 0.95);
-                    }
-                }
-            }
+        // 2. A cast naming one of the candidates, close in time: yours,
+        // then anyone's.
+        if let Some(id) = self.named_by(&self.recent_casts, candidates, timestamp) {
+            return (id, 0.95);
+        }
+        if let Some(id) = self.named_by(&self.others_casts, candidates, timestamp) {
+            return (id, 0.9);
         }
 
         // 3a. A previously learned binding for this exact text.
@@ -1329,6 +1364,21 @@ impl SpellResolver {
     pub fn clear_buffs(&mut self) {
         self.active.clear();
     }
+
+    /// Hold every timer still for `secs`: the client keeps a buff's
+    /// remaining time while you are camped and resumes it at the next logon,
+    /// so the hours logged out must not count against it.
+    pub fn pause(&mut self, secs: i64) {
+        if secs <= 0 {
+            return;
+        }
+        for b in self.active.iter_mut() {
+            b.started += secs;
+            if let Some(e) = b.expires.as_mut() {
+                *e += secs;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1433,6 +1483,48 @@ mod tests {
         // 360 ticks * 6s = 2160s
         assert_eq!(buffs[0].expires, Some(1000 + 2160));
         assert_eq!(buffs[0].remaining(1000), Some(2160));
+    }
+
+    /// Most buffs in a group are someone else's: "Shiromaru begins casting
+    /// Flight of Eagles II." names the spell, then only the shared landing
+    /// text follows. The exact rank wins over another rank of it.
+    #[test]
+    fn someone_elses_cast_names_the_buff_that_landed() {
+        let lands = "Your body pulses with an avian spirit.";
+        let db = db_with(vec![
+            spell(1, "Spirit of Eagle", lands, "", 10, 100),
+            spell(2, "Flight of Eagles", lands, "", 10, 100),
+            spell(3, "Flight of Eagles II", lands, "", 10, 100),
+        ]);
+        let mut r = SpellResolver::new(db, 66);
+        r.note_cast_by_other(995, "Flight of Eagles II");
+        assert_eq!(r.resolve_landing(1000, lands), Some(3));
+        assert_eq!(r.active_buffs(1000)[0].confidence, 0.9);
+        assert_eq!(r.repertoire_size(), 0, "not the character's own spell");
+
+        // Past the window, the cast says nothing.
+        let mut r = SpellResolver::new(
+            db_with(vec![
+                spell(1, "Spirit of Eagle", lands, "", 10, 100),
+                spell(2, "Flight of Eagles", lands, "", 10, 100),
+            ]),
+            66,
+        );
+        r.note_cast_by_other(900, "Flight of Eagles");
+        r.resolve_landing(1000, lands);
+        assert!(r.active_buffs(1000)[0].confidence < 0.5);
+    }
+
+    /// Time camped does not count down a buff.
+    #[test]
+    fn a_pause_keeps_the_time_a_buff_had_left() {
+        let db = db_with(vec![spell(1, "Haste", "You feel quick.", "", 10, 100)]);
+        let mut r = SpellResolver::new(db, 50);
+        r.resolve_landing(1000, "You feel quick.");
+        let left = |r: &SpellResolver, now| r.active_buffs(now)[0].expires.unwrap() - now;
+        let before = left(&r, 1010);
+        r.pause(3600);
+        assert_eq!(left(&r, 1010 + 3600), before);
     }
 
     #[test]

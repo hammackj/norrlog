@@ -530,13 +530,14 @@ static RULES: &[(RuleId, &str)] = &[
         r"^(?P<who>.+?) ha(?:s|ve) left the group\.$",
     ),
     // ---- Charm / pets -------------------------------------------------------
-    // "Welcome to EverQuest Legends!"
+    // "Welcome to EverQuest Legends!", and live EverQuest's "Welcome to
+    // EverQuest!"
     //
     // Written once per logon, so it marks the start of a play session
     // outright. Better than inferring one from a gap in the log: a quick
     // relog leaves almost no gap at all, and a long silence mid-session looks
     // identical to having logged off.
-    (RuleId::LoggedOn, r"^Welcome to EverQuest Legends!$"),
+    (RuleId::LoggedOn, r"^Welcome to EverQuest(?: Legends)?!$"),
     // "You offered 1 Efreeti Scimitar to Strandar Pinemist."
     // "You complete the trade with Strandar Pinemist."
     //
@@ -3394,6 +3395,22 @@ mod who_tests {
         assert!(matches!(
             Parser::new("Tharn").parse_body("Orrin tells you, 'inc'"),
             Event::Tell { .. }
+        ));
+    }
+
+    /// Live EverQuest's logon line went unread, so its logs had no
+    /// sessions stated and buff timers ran on through every camp.
+    #[test]
+    fn both_games_logon_lines_are_logons() {
+        for line in ["Welcome to EverQuest Legends!", "Welcome to EverQuest!"] {
+            assert!(
+                matches!(Parser::new("Tharn").parse_body(line), Event::LoggedOn),
+                "{line}"
+            );
+        }
+        assert!(!matches!(
+            Parser::new("Tharn").parse_body("Welcome to level 7!"),
+            Event::LoggedOn
         ));
     }
 

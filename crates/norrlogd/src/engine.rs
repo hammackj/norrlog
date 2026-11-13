@@ -409,6 +409,9 @@ pub struct Engine {
     tracker: EncounterTracker,
     resolver: SpellResolver,
     classes: ClassDetector,
+    /// The class the buffs were gathered under, in a one-class game. A
+    /// different class stated means a switch, and another class's buffs.
+    buff_class: Option<norrlog_core::class::Class>,
     /// Per-class levels, which the single reported level cannot express.
     class_levels: norrlog_core::classlevel::ClassLevelTracker,
     /// Classes held at once in this game (`profile::class_slots`).
@@ -600,6 +603,7 @@ impl Engine {
                 norrlog_core::profile::profile(game).class_slots.into(),
             ),
             class_slots: norrlog_core::profile::profile(game).class_slots,
+            buff_class: None,
             class_levels: norrlog_core::classlevel::ClassLevelTracker::for_profile(
                 &norrlog_core::profile::profile(game),
             ),
@@ -969,6 +973,18 @@ impl Engine {
             self.aa.on_other();
         }
 
+        // Someone else's cast, or a heal naming its spell, says which of the
+        // spells sharing a landing message is the one that just landed.
+        match &entry.event {
+            Event::CastStart { source, spell, .. } if !source.is_you() => {
+                self.resolver.note_cast_by_other(entry.timestamp, spell)
+            }
+            Event::Heal {
+                spell: Some(spell), ..
+            } => self.resolver.note_cast_by_other(entry.timestamp, spell),
+            _ => {}
+        }
+
         match &entry.event {
             Event::CastStart { source, spell, .. } if source.is_you() => {
                 self.resolver.note_cast(entry.timestamp, spell);
@@ -1140,6 +1156,10 @@ impl Engine {
             Event::LoggedOn => {
                 self.begin_session(entry.timestamp);
                 self.seen_logon = true;
+                // Buff timers stood still while you were logged out.
+                if let Some(gap) = record_gap {
+                    self.resolver.pause(gap);
+                }
             }
             Event::Tell { from, to, message } => {
                 // The counterpart is whichever end is not you.
@@ -1273,6 +1293,7 @@ impl Engine {
                 // no longer played. One-class games only.
                 if self.class_slots == 1 {
                     self.classes.observe_channels(entry.timestamp, channels);
+                    self.on_class_stated(entry.timestamp);
                 }
             }
             Event::WhoEntry {
@@ -1295,6 +1316,7 @@ impl Engine {
                         // The game naming your own loadout beats any inference
                         // from spell set names or cast history.
                         self.classes.observe_who(entry.timestamp, &trio);
+                        self.on_class_stated(entry.timestamp);
                     }
                 }
             }
@@ -1718,6 +1740,20 @@ impl Engine {
             });
         }
         out
+    }
+
+    /// In a one-class game, a different class stated is a switch: the buffs
+    /// gathered so far belong to the other class, and the client drops them
+    /// without a fade line. Five-day combat stances from a Warrior session
+    /// otherwise sat on a Shaman's buff list.
+    fn on_class_stated(&mut self, at: i64) {
+        let Some(now) = self.classes.stated_class(at) else {
+            return;
+        };
+        if self.buff_class.is_some_and(|was| was != now) {
+            self.resolver.clear_buffs();
+        }
+        self.buff_class = Some(now);
     }
 
     fn observe_class_spell(&mut self, timestamp: i64, spell: &str) {
@@ -4370,6 +4406,119 @@ mod tests {
         m.insert(6, restricted(6, "Ambiguous Word", CreatureKind::Undead));
         m.insert(7, mk(7, "Ambiguous Word", false));
         SpellDb::from_spells(m)
+    }
+
+    /// A Warrior's stance lasts days by the spell file. When the character
+    /// switches to Shaman (the class channel says so) it must go, and a
+    /// camp must not count down what a buff has left.
+    #[test]
+    fn a_class_switch_clears_buffs_and_a_camp_pauses_them() {
+        use norrlog_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT};
+        use norrlog_core::spell::Spell;
+        let mk = |id: u32, name: &str, lands: &str, cap: u32| Spell {
+            id,
+            name: name.into(),
+            cast_time_ms: 0,
+            recovery_ms: 0,
+            recast_ms: 0,
+            duration_formula: 3,
+            duration_cap: cap,
+            mana: 0,
+            landed_on_you: Some(lands.into()),
+            landed_on_other: None,
+            fades: None,
+            class_levels: [CLASS_CANNOT_CAST; CLASS_COUNT],
+            good_effect: 1,
+            category_id: 0,
+            is_charm: false,
+            restricted_to: None,
+            linked: Vec::new(),
+            procs: Vec::new(),
+        };
+        let mut m = std::collections::HashMap::new();
+        // Formula 50, as the real stance has: the spell file calls it
+        // permanent.
+        m.insert(
+            1,
+            Spell {
+                duration_formula: 50,
+                ..mk(
+                    1,
+                    "Defensive Proficiency I",
+                    "You stand ready for incoming attacks.",
+                    0,
+                )
+            },
+        );
+        m.insert(
+            2,
+            mk(
+                2,
+                "Granitebark Blessing",
+                "Your skin takes on a granitebark blessing.",
+                1000,
+            ),
+        );
+        let mut e = Engine::with_game("Garrow".into(), SpellDb::from_spells(m), Game::EverQuest);
+        let names = |e: &Engine| -> Vec<String> {
+            e.snapshot(5).buffs.iter().map(|b| b.name.clone()).collect()
+        };
+        feed(
+            &mut e,
+            &[
+                "[Tue Nov 10 17:00:00 2026] Welcome to EverQuest!",
+                "[Tue Nov 10 17:00:01 2026] Channels: 1=General(378), 2=Warrior(23)",
+                "[Tue Nov 10 17:05:38 2026] You stand ready for incoming attacks.",
+            ],
+        );
+        assert_eq!(names(&e), ["Defensive Proficiency I"]);
+
+        // Camped for two days; back as a Shaman, as the channel says.
+        feed(
+            &mut e,
+            &[
+                "[Tue Nov 10 17:10:00 2026] You slash a rat for 1 point of damage.",
+                "[Thu Nov 12 17:54:30 2026] Welcome to EverQuest!",
+            ],
+        );
+        assert_eq!(
+            names(&e),
+            ["Defensive Proficiency I"],
+            "a camp keeps buffs, so the switch is what removes it"
+        );
+        feed(
+            &mut e,
+            &["[Thu Nov 12 17:54:31 2026] Channels: 1=General(378), 2=Shaman(42)"],
+        );
+        assert!(
+            names(&e).is_empty(),
+            "another class's buffs: {:?}",
+            names(&e)
+        );
+
+        // A buff with time left keeps it across a night logged out.
+        feed(
+            &mut e,
+            &[
+                "[Thu Nov 12 18:00:00 2026] Your skin takes on a granitebark blessing.",
+                "[Thu Nov 12 18:01:00 2026] You slash a rat for 1 point of damage.",
+            ],
+        );
+        let left = |e: &Engine| e.snapshot(5).buffs[0].remaining.unwrap();
+        let before = left(&e);
+        feed(
+            &mut e,
+            &[
+                "[Fri Nov 13 09:00:00 2026] Welcome to EverQuest!",
+                "[Fri Nov 13 09:00:01 2026] Channels: 1=General(378), 2=Shaman(42)",
+            ],
+        );
+        assert!(
+            (left(&e) - before).abs() <= 1,
+            "{} left before the camp, {} after",
+            before,
+            left(&e)
+        );
     }
 
     /// Two ranks under one landing phrase, as the real file has them: VI is
