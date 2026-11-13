@@ -58,6 +58,10 @@ fn spawn(s: &Scratch) -> Spawn {
         ("HOME".into(), home.clone().into()),
         ("XDG_CONFIG_HOME".into(), home.join(".config").into()),
         ("XDG_DATA_HOME".into(), home.join(".local/share").into()),
+        // Windows keeps both kinds of state under %APPDATA%. Left alone, the
+        // tests shared the machine's real history.db, and on a CI runner two
+        // of them at once lost the store to file locking.
+        ("APPDATA".into(), home.join("AppData/Roaming").into()),
     ];
     sp.idle_exit = Duration::from_secs(2);
     sp.wait = Duration::from_secs(30);
