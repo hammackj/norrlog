@@ -44,6 +44,7 @@ enum Pane {
     Damage,
     Healing,
     Taken,
+    Resisted,
 }
 
 pub struct DashboardView {
@@ -296,11 +297,12 @@ impl DashboardView {
             .child(scope_tab("dash-session", "Session", Scope::Session))
             .child(scope_tab("dash-zone", "This zone", Scope::Zone));
 
-        let (dmg, heal, taken) = enc.map_or((0, 0, 0), |e| {
+        let (dmg, heal, taken, resisted) = enc.map_or((0, 0, 0, 0), |e| {
             (
                 e.damage_to_enemies,
                 e.meter.iter().map(|r| r.healing).sum::<u64>(),
                 e.meter.iter().map(|r| r.damage_taken).sum::<u64>(),
+                e.resists.iter().map(|r| r.resisted).sum::<u64>(),
             )
         });
         let pane_tab = |id, label, p: Pane, n: u64| {
@@ -312,7 +314,17 @@ impl DashboardView {
         let panes = subtabs()
             .child(pane_tab("dash-damage", "Damage", Pane::Damage, dmg))
             .child(pane_tab("dash-healing", "Healing", Pane::Healing, heal))
-            .child(pane_tab("dash-taken", "Damage taken", Pane::Taken, taken));
+            .child(pane_tab("dash-taken", "Damage taken", Pane::Taken, taken))
+            // Only when something was: most fights resist nothing, and an
+            // always-empty tab would be noise.
+            .when(resisted > 0, |d| {
+                d.child(pane_tab(
+                    "dash-resisted",
+                    "Resisted",
+                    Pane::Resisted,
+                    resisted,
+                ))
+            });
 
         let (head, body) = match enc {
             None => {
@@ -329,6 +341,7 @@ impl DashboardView {
                     Pane::Damage => empty("No fights to add up"),
                     Pane::Healing => empty("No healing yet"),
                     Pane::Taken => empty("Nothing has hit you yet"),
+                    Pane::Resisted => empty("Nothing resisted"),
                 };
                 (
                     h_flex().child(
@@ -395,6 +408,8 @@ impl DashboardView {
                         "No damage taken",
                         Some(&mut self.bars.borrow_mut()),
                     ),
+                    Pane::Resisted if e.resists.is_empty() => empty("Nothing resisted"),
+                    Pane::Resisted => crate::fight::resists_table(&e.resists),
                 };
                 (
                     h_flex()

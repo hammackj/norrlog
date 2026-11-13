@@ -1175,12 +1175,23 @@ fn mobs_card(mobs: &[norrlog_api::MobBreakdown]) -> Div {
 }
 
 fn resists_card(resists: &[norrlog_api::ResistTally]) -> Div {
+    card("Resisted").child(resists_table(resists))
+}
+
+/// The most resistant targets to name under a spell; a session's worth of
+/// them would otherwise run on for lines.
+const RESIST_TARGETS_SHOWN: usize = 5;
+
+/// What was resisted, per spell, with who resisted it and the rate where the
+/// spell also landed. Shared by a fight and the dashboard's session and zone.
+pub(crate) fn resists_table(resists: &[norrlog_api::ResistTally]) -> Div {
     let rows = resists
         .iter()
         .map(|r| {
-            let who = r
+            let mut who = r
                 .targets
                 .iter()
+                .take(RESIST_TARGETS_SHOWN)
                 .map(|(t, n)| {
                     if *n > 1 {
                         format!("{t} ×{n}")
@@ -1190,6 +1201,12 @@ fn resists_card(resists: &[norrlog_api::ResistTally]) -> Div {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            if r.targets.len() > RESIST_TARGETS_SHOWN {
+                who.push_str(&format!(
+                    " and {} more",
+                    r.targets.len() - RESIST_TARGETS_SHOWN
+                ));
+            }
             table::row_dense(
                 SharedString::from(format!("resist-{}", r.spell)),
                 RESIST_COLS,
@@ -1206,7 +1223,7 @@ fn resists_card(resists: &[norrlog_api::ResistTally]) -> Div {
             .into_any_element()
         })
         .collect();
-    card("Resisted").child(table_box(RESIST_COLS, rows)).child(hint(
+    v_flex().child(table_box(RESIST_COLS, rows)).child(hint(
         "Landed counts come from your own ability breakdown, so a spell that sometimes worked carries a real \
          rate rather than a bare failure count. A spell that never landed shows no rate.",
     ))
