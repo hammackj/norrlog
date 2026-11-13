@@ -67,7 +67,7 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(
-        rx: async_channel::Receiver<Msg>,
+        mut rx: crate::daemon::Inbox,
         rt: tokio::runtime::Handle,
         state: State,
         restart: crate::settings::Restart,
@@ -75,7 +75,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Self {
         let task = cx.spawn_in(window, async move |this, cx| {
-            while let Ok(msg) = rx.recv().await {
+            while let Some(msg) = rx.recv().await {
                 if this.update_in(cx, |v, window, cx| v.on_msg(msg, window, cx)).is_err() {
                     break;
                 }

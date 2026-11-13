@@ -31,6 +31,143 @@ pub enum Msg {
     Lost(String),
 }
 
+/// What travels on the channel. Snapshots do not: they wait in [`Latest`],
+/// and the channel carries at most one notice that one is waiting.
+enum Wire {
+    /// A lifecycle message, and what it does to which attachment's
+    /// snapshots the window takes.
+    Life(Msg, Generation),
+    SnapshotWaiting,
+}
+
+enum Generation {
+    Keep,
+    /// Attached: from now on, this attachment's.
+    Set(u64),
+    /// Lost: nobody's.
+    Clear,
+}
+
+/// The newest snapshot, and the attachment it came from.
+///
+/// Snapshots used to share the bounded channel with the lifecycle messages
+/// and push out the oldest waiting message when it was full, on the
+/// assumption that the oldest was an old snapshot. A window busy for a few
+/// seconds after attaching lost `Attached`, the one message carrying the
+/// client, and then showed snapshots from a daemon none of its views could
+/// ask anything of. Now a snapshot replaces the last one here, never a
+/// message, and memory stays at one snapshot however far behind the window
+/// falls.
+#[derive(Default)]
+struct Latest {
+    slot: std::sync::Mutex<Option<(u64, Arc<serde_json::Value>)>>,
+    /// A notice is on the channel and not yet taken.
+    noticed: std::sync::atomic::AtomicBool,
+}
+
+impl Latest {
+    /// Keep `v` as the newest; true when the window needs telling.
+    fn put(&self, generation: u64, v: Arc<serde_json::Value>) -> bool {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((generation, v));
+        !self.noticed.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn take(&self) -> Option<(u64, Arc<serde_json::Value>)> {
+        // Cleared first, so a snapshot put after the take sends a notice.
+        self.noticed.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    fn clear(&self) {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+/// The daemon thread's end.
+#[derive(Clone)]
+pub struct Outbox {
+    tx: async_channel::Sender<Wire>,
+    latest: Arc<Latest>,
+}
+
+/// The window's end. Hands out messages in order, snapshots only from the
+/// attachment the window last heard about.
+pub struct Inbox {
+    rx: async_channel::Receiver<Wire>,
+    latest: Arc<Latest>,
+    generation: Option<u64>,
+    /// A snapshot from an attachment announced after its notice was read:
+    /// handed over straight after that `Attached`.
+    early: Option<(u64, Arc<serde_json::Value>)>,
+    after: Option<Msg>,
+}
+
+pub fn mailbox() -> (Outbox, Inbox) {
+    // Lifecycle messages are few, and at most one snapshot notice is ever
+    // waiting, so this never fills in practice; when it does the sender waits.
+    let (tx, rx) = async_channel::bounded(16);
+    let latest = Arc::new(Latest::default());
+    (Outbox { tx, latest: latest.clone() }, Inbox { rx, latest, generation: None, early: None, after: None })
+}
+
+impl Outbox {
+    async fn send(&self, w: Wire) -> Result<(), ()> {
+        self.tx.send(w).await.map_err(|_| ())
+    }
+
+    async fn attached(&self, hello: Box<Hello>, started: bool, client: Box<Client>, generation: u64) -> Result<(), ()> {
+        // A snapshot from the attachment before is not this one's.
+        self.latest.clear();
+        self.send(Wire::Life(Msg::Attached { hello, started, client }, Generation::Set(generation))).await
+    }
+
+    async fn snapshot(&self, generation: u64, v: Arc<serde_json::Value>) -> Result<(), ()> {
+        if self.latest.put(generation, v) {
+            self.send(Wire::SnapshotWaiting).await?;
+        }
+        Ok(())
+    }
+}
+
+impl Inbox {
+    /// The next message, or `None` once the daemon thread has gone.
+    pub async fn recv(&mut self) -> Option<Msg> {
+        if let Some(m) = self.after.take() {
+            return Some(m);
+        }
+        loop {
+            return Some(match self.rx.recv().await.ok()? {
+                Wire::Life(msg, g) => {
+                    match g {
+                        Generation::Keep => {}
+                        Generation::Set(n) => {
+                            self.generation = Some(n);
+                            if let Some((e, v)) = self.early.take()
+                                && e == n
+                            {
+                                self.after = Some(Msg::Snapshot(v));
+                            }
+                        }
+                        Generation::Clear => self.generation = None,
+                    }
+                    msg
+                }
+                Wire::SnapshotWaiting => match self.latest.take() {
+                    Some((g, v)) if Some(g) == self.generation => Msg::Snapshot(v),
+                    // From an attachment not announced yet: kept for when it
+                    // is, since its notice has been used up.
+                    Some((g, v)) if self.generation.is_none_or(|now| g > now) => {
+                        self.early = Some((g, v));
+                        continue;
+                    }
+                    // From one already over.
+                    _ => continue,
+                },
+            });
+        }
+    }
+}
+
 /// Long enough that closing one app and opening another within a minute
 /// does not reparse the whole log; the same as Electron and the collector.
 const IDLE_EXIT: Duration = Duration::from_secs(60);
@@ -38,7 +175,7 @@ const IDLE_EXIT: Duration = Duration::from_secs(60);
 /// Starts the daemon thread and its runtime; the handle is for views'
 /// requests (see `api`), which run on the same runtime. A [`Setup`] sent on
 /// `ctl` restarts the daemon with it.
-pub fn spawn(setup: Setup, tx: async_channel::Sender<Msg>, ctl: async_channel::Receiver<Setup>) -> tokio::runtime::Handle {
+pub fn spawn(setup: Setup, tx: Outbox, ctl: async_channel::Receiver<Setup>) -> tokio::runtime::Handle {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime");
     let handle = rt.handle().clone();
     std::thread::Builder::new()
@@ -57,17 +194,19 @@ enum End {
     Restart(Setup),
 }
 
-async fn run(mut setup: Setup, tx: async_channel::Sender<Msg>, ctl: async_channel::Receiver<Setup>) {
+async fn run(mut setup: Setup, tx: Outbox, ctl: async_channel::Receiver<Setup>) {
     let mut retry: u64 = 0;
+    let mut generation: u64 = 0;
     loop {
-        if tx.send(Msg::Attaching).await.is_err() {
+        if tx.send(Wire::Life(Msg::Attaching, Generation::Keep)).await.is_err() {
             return;
         }
-        let next = match session(&setup, &tx, &ctl, &mut retry).await {
+        generation += 1;
+        let next = match session(&setup, &tx, &ctl, &mut retry, generation).await {
             End::Closed => return,
             End::Restart(next) => Some(next),
             End::Lost(why) => {
-                if tx.send(Msg::Lost(why)).await.is_err() {
+                if tx.send(Wire::Life(Msg::Lost(why), Generation::Clear)).await.is_err() {
                     return;
                 }
                 retry = (retry + 1).min(10);
@@ -88,9 +227,10 @@ async fn run(mut setup: Setup, tx: async_channel::Sender<Msg>, ctl: async_channe
 /// One attachment.
 async fn session(
     setup: &Setup,
-    tx: &async_channel::Sender<Msg>,
+    tx: &Outbox,
     ctl: &async_channel::Receiver<Setup>,
     retry: &mut u64,
+    generation: u64,
 ) -> End {
     let mut spawn = Spawn::new(&setup.daemon);
     spawn.args = setup.args.clone();
@@ -104,7 +244,7 @@ async fn session(
     };
     let hello = Box::new(client.hello().clone());
     let started = client.started_daemon();
-    if tx.send(Msg::Attached { hello, started, client: Box::new(client.clone()) }).await.is_err() {
+    if tx.attached(hello, started, Box::new(client.clone()), generation).await.is_err() {
         return End::Closed;
     }
     let mut snaps = match client.snapshots().await {
@@ -119,9 +259,9 @@ async fn session(
         };
         match got {
             // A snapshot is complete in itself: when the window is behind,
-            // the oldest waiting one is the one to drop.
+            // it gets the newest and the rest are dropped.
             Some(Ok(v)) => {
-                if tx.force_send(Msg::Snapshot(Arc::new(v))).is_err() {
+                if tx.snapshot(generation, Arc::new(v)).await.is_err() {
                     return End::Closed;
                 }
             }
@@ -187,4 +327,55 @@ pub fn find_daemon(given: Option<PathBuf>) -> PathBuf {
     candidates.push(target.join("release").join(exe));
     candidates.push(target.join("debug").join(exe));
     candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(exe))
+}
+
+#[cfg(test)]
+mod mailbox_tests {
+    use super::*;
+
+    /// What the window was handed, in a form a test can compare.
+    async fn drain(inbox: &mut Inbox) -> Vec<String> {
+        let mut got = Vec::new();
+        while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(50), inbox.recv()).await {
+            got.push(match m {
+                Msg::Attaching => "attaching".to_string(),
+                Msg::Attached { .. } => "attached".to_string(),
+                Msg::Lost(_) => "lost".to_string(),
+                Msg::Snapshot(v) => v.to_string(),
+            });
+        }
+        got
+    }
+
+    /// The lifecycle messages go as they do, with `Attaching` standing in for
+    /// `Attached`, whose client needs a daemon to make.
+    async fn attach(out: &Outbox, generation: u64) {
+        out.latest.clear();
+        out.send(Wire::Life(Msg::Attaching, Generation::Set(generation))).await.unwrap();
+    }
+
+    #[test]
+    fn a_window_far_behind_hears_every_lifecycle_message_and_the_newest_snapshot() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (out, mut inbox) = mailbox();
+            // The window is stalled: nothing is read until all of this is sent.
+            attach(&out, 1).await;
+            for i in 0..40 {
+                out.snapshot(1, Arc::new(serde_json::json!(i))).await.unwrap();
+            }
+            assert_eq!(drain(&mut inbox).await, ["attaching", "39"], "the attach was pushed out, or not the newest");
+
+            out.snapshot(1, Arc::new(serde_json::json!(1000))).await.unwrap();
+            out.send(Wire::Life(Msg::Lost("gone".into()), Generation::Clear)).await.unwrap();
+            for i in 0..40 {
+                out.snapshot(1, Arc::new(serde_json::json!(i))).await.unwrap();
+            }
+            attach(&out, 2).await;
+            out.snapshot(2, Arc::new(serde_json::json!(2000))).await.unwrap();
+            // The old attachment's snapshot waiting when Lost was sent is
+            // taken late and dropped; nothing of attachment 1 follows Lost.
+            assert_eq!(drain(&mut inbox).await, ["lost", "attaching", "2000"]);
+        });
+    }
 }

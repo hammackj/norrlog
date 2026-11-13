@@ -69,9 +69,9 @@ fn main() {
 
     let daemon_bin = daemon::find_daemon(daemon_bin);
     let setup = daemon::Setup { port, daemon: daemon_bin.clone(), args: cfg.daemon_args() };
-    // Bounded, and snapshots displace the oldest waiting message: a window
-    // that falls behind wants the newest state, not a queue of old ones.
-    let (tx, rx) = async_channel::bounded(16);
+    // A window that falls behind gets the newest snapshot, and every
+    // lifecycle message; see `daemon::Inbox`.
+    let (tx, rx) = daemon::mailbox();
     // Settings' restarts.
     let (ctl_tx, ctl_rx) = async_channel::bounded(4);
     let rt = daemon::spawn(setup, tx, ctl_rx);
