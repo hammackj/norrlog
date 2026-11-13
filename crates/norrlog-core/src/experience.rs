@@ -817,6 +817,15 @@ impl ExpTracker {
     /// Tharn went from 50 to 10, and the 50's progress carried on into the
     /// 10's, reading 120% of a level. A different level closes the record
     /// as partial and starts another; the same level changes nothing.
+    /// You changed class: a Legends loadout, or a live EverQuest persona,
+    /// which has its own level. The level now is unknown until the game says
+    /// it, so the record starts with none; a `/who` or a level-up fills it.
+    pub fn on_class_switch(&mut self, timestamp: i64) {
+        self.restart_at(timestamp, None);
+        // A level-up after this closes a record that began mid-level.
+        self.current_level = None;
+    }
+
     pub fn on_level_stated(&mut self, timestamp: i64, level: u32) {
         // Compared with the record's level, not `current_level`: that one
         // says a level-up has been seen, which is what makes the next record
@@ -828,16 +837,22 @@ impl ExpTracker {
         if was == level {
             return;
         }
+        self.restart_at(timestamp, Some(level));
+        self.current_level = Some(level);
+    }
+
+    /// Close the current record as partial, and start another at `level`.
+    fn restart_at(&mut self, timestamp: i64, level: Option<u32>) {
+        let was = self.current.level;
         if self.current.events > 0 {
             self.current.ended = Some(timestamp);
-            self.current.level = Some(was);
+            self.current.level = was;
             self.current.complete = false;
             self.current.zones = self.zone_shares();
             self.completed.push(self.current.clone());
         }
-        self.current_level = Some(level);
         self.current = LevelRecord {
-            level: Some(level),
+            level,
             started: timestamp,
             ended: None,
             percent: 0.0,
@@ -1004,6 +1019,27 @@ mod tests {
         t.on_experience(410, 1.0, false);
         t.on_level_up(500, 12);
         assert!(t.completed_levels().last().unwrap().complete, "this one is");
+    }
+
+    /// A live EverQuest persona swap: the class channel changes, no level is
+    /// given. The Warrior's progress must not run on into the Shaman's.
+    #[test]
+    fn a_class_switch_starts_a_record_of_unknown_level() {
+        let mut t = ExpTracker::new();
+        t.on_level_up(10, 61);
+        t.on_experience(20, 40.0, false);
+        t.on_class_switch(30);
+        assert_eq!(t.current_percent(), 0.0);
+        assert_eq!(t.current_record().level, None);
+        t.on_experience(40, 5.0, false);
+        t.on_level_stated(50, 130);
+        assert_eq!(t.current_record().level, Some(130), "the /who fills it in");
+        assert!(
+            (t.current_percent() - 5.0).abs() < 1e-9,
+            "and does not restart"
+        );
+        let gone = t.completed_levels().last().unwrap();
+        assert_eq!((gone.level, gone.complete), (Some(61), false));
     }
 
     /// A statement at the start of a log is not a level-up: the first

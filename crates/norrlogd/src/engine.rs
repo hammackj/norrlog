@@ -1307,13 +1307,15 @@ impl Engine {
                     let trio = norrlog_core::class::parse_class_list(classes);
                     if !trio.is_empty() {
                         self.class_levels.on_who(entry.timestamp, *level, &trio);
-                        if *level > 0 {
-                            self.exp.on_level_stated(entry.timestamp, *level as u32);
-                        }
                         // The game naming your own loadout beats any inference
                         // from spell set names or cast history.
                         self.classes.observe_who(entry.timestamp, &trio);
                         self.on_class_stated(entry.timestamp);
+                        // After the class: a switch empties the level, and
+                        // this is the line that fills it.
+                        if *level > 0 {
+                            self.exp.on_level_stated(entry.timestamp, *level as u32);
+                        }
                     }
                 }
             }
@@ -1749,6 +1751,9 @@ impl Engine {
         };
         if self.buff_class.is_some_and(|was| was != now) {
             self.resolver.clear_buffs();
+            // A persona has its own level; the last one's progress is not
+            // this one's.
+            self.exp.on_class_switch(at);
         }
         self.buff_class = Some(now);
     }
