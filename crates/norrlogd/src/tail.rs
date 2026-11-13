@@ -92,21 +92,26 @@ impl Follower {
         }
 
         // Bisect on byte offset for the first line at or after the cutoff.
-        let (mut lo, mut hi) = (0u64, len);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match Follower::first_timestamp_at(f.reader.get_mut(), mid)? {
-                // No timestamp between here and the end: everything at or
-                // after `mid` is unusable, so the answer is to its left.
-                None => hi = mid,
-                Some((at, _)) if at >= cutoff => hi = mid,
-                Some(_) => lo = mid + 1,
+        let mut find = |file: &mut File| -> anyhow::Result<u64> {
+            let (mut lo, mut hi) = (0u64, len);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                match Follower::first_timestamp_at(file, mid)? {
+                    // No timestamp between here and the end: everything at or
+                    // after `mid` is unusable, so the answer is to its left.
+                    None => hi = mid,
+                    Some((at, _)) if at >= cutoff => hi = mid,
+                    Some(_) => lo = mid + 1,
+                }
             }
-        }
-        let start = match Follower::first_timestamp_at(f.reader.get_mut(), lo)? {
-            Some((_, offset)) => offset,
-            None => 0,
+            Ok(Follower::first_timestamp_at(file, lo)?.map_or(0, |(_, offset)| offset))
         };
+        // A read that fails part-way falls back to the whole file, as the
+        // window's promise says, rather than leaving nothing followed.
+        let start = find(f.reader.get_mut()).unwrap_or_else(|e| {
+            eprintln!("[norrlogd] could not find where the window starts ({e}); reading the whole log");
+            0
+        });
         f.reader.get_mut().seek(SeekFrom::Start(start))?;
         f.reader = BufReader::with_capacity(1 << 20, f.reader.into_inner());
         f.position = start;
@@ -143,14 +148,19 @@ impl Follower {
 
     /// The timestamp of the first complete line at or after `offset`, and
     /// where that line begins.
+    ///
+    /// Read as bytes. An offset can land inside a multi-byte character, and
+    /// reading the rest of that line as a `String` failed on a file that was
+    /// valid UTF-8 throughout. Lines are decoded the way `read_available`
+    /// decodes them, lossily.
     fn first_timestamp_at(file: &mut File, offset: u64) -> anyhow::Result<Option<(i64, u64)>> {
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::with_capacity(1 << 16, file);
-        let mut line = String::new();
+        let mut line = Vec::new();
         let mut at = offset;
         // Anything but the very start begins mid-line; discard the remainder.
         if offset > 0 {
-            let n = reader.read_line(&mut line)?;
+            let n = reader.read_until(b'\n', &mut line)?;
             if n == 0 {
                 return Ok(None);
             }
@@ -158,11 +168,12 @@ impl Follower {
             line.clear();
         }
         for _ in 0..64 {
-            let n = reader.read_line(&mut line)?;
+            let n = reader.read_until(b'\n', &mut line)?;
             if n == 0 {
                 return Ok(None);
             }
-            if let Some((ts, _)) = norrlog_core::parser::split_timestamp(line.trim_end()) {
+            let text = String::from_utf8_lossy(&line);
+            if let Some((ts, _)) = norrlog_core::parser::split_timestamp(text.trim_end()) {
                 return Ok(Some((ts, at)));
             }
             at += n as u64;
@@ -306,6 +317,47 @@ mod tests {
         ));
         std::fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    /// The window's start is found even when the bisection lands inside a
+    /// multi-byte character, and following carries on from there.
+    #[test]
+    fn a_window_over_text_that_is_not_ascii_is_found() {
+        let dir = tmpdir();
+        let path = dir.join("utf8.txt");
+        let text = "[Tue Jul 28 12:00:00 2026] \u{e9}\u{e9}\u{e9}\u{e9}\n[Tue Jul 28 12:00:05 2026] done\n";
+        std::fs::write(&path, text).unwrap();
+        // Every offset, so some land inside an é.
+        let mut file = File::open(&path).unwrap();
+        for off in 0..text.len() as u64 {
+            Follower::first_timestamp_at(&mut file, off).unwrap_or_else(|e| panic!("offset {off}: {e}"));
+        }
+        let cutoff = norrlog_core::parser::split_timestamp("[Tue Jul 28 12:00:05 2026] done").unwrap().0;
+        let mut f = Follower::open_since(&path, cutoff).unwrap();
+        let mut got = Vec::new();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert_eq!(got, ["[Tue Jul 28 12:00:05 2026] done"]);
+        let mut w = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(w, "[Tue Jul 28 12:00:09 2026] after").unwrap();
+        got.clear();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert_eq!(got, ["[Tue Jul 28 12:00:09 2026] after"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_window_over_crlf_lines_starts_at_the_right_line() {
+        let dir = tmpdir();
+        let path = dir.join("crlf.txt");
+        let lines: Vec<String> = (0..50).map(|i| format!("[Tue Jul 28 12:{:02}:00 2026] line {i}", i)).collect();
+        std::fs::write(&path, lines.join("\r\n") + "\r\n").unwrap();
+        let cutoff = norrlog_core::parser::split_timestamp(&lines[30]).unwrap().0;
+        let mut f = Follower::open_since(&path, cutoff).unwrap();
+        let mut got = Vec::new();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert_eq!(got.first(), Some(&lines[30]));
+        assert_eq!(got.len(), 20);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
