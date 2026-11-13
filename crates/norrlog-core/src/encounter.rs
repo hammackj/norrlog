@@ -1253,11 +1253,38 @@ impl Encounter {
                 n => format!("{name} (+{} more)", n - 1),
             };
         }
-        // Nothing died: name it after whatever we hit hardest.
+        // Nothing died: name it after whatever we hit hardest. Failing that,
+        // what your pet fought, then what hit you: a fight of your pet's, or
+        // one where you never swung, was still about a creature, and was
+        // titled "Unknown encounter".
+        let pets: Vec<&str> = self
+            .actors
+            .values()
+            .filter(|s| s.is_yours())
+            .map(|s| s.name.as_str())
+            .collect();
+        let pet_target = |s: &&ActorStats| {
+            !s.is_yours()
+                && pets
+                    .iter()
+                    .any(|p| s.damage_taken_by_source.get(*p).is_some_and(|d| *d > 0))
+        };
         self.actors
             .values()
             .filter(|s| s.damaged_by_you)
             .max_by_key(|s| s.damage_taken)
+            .or_else(|| {
+                self.actors
+                    .values()
+                    .filter(pet_target)
+                    .max_by_key(|s| s.damage_taken)
+            })
+            .or_else(|| {
+                self.actors
+                    .values()
+                    .filter(|s| s.fought_you && !s.is_yours())
+                    .max_by_key(|s| s.damage_done)
+            })
             .map(|s| s.name.clone())
             .unwrap_or_else(|| "Unknown encounter".to_string())
     }
@@ -1367,6 +1394,20 @@ impl Encounter {
 
     pub fn is_significant(&self) -> bool {
         self.total_damage() > 0
+    }
+
+    /// Whether you took part: hit something, were hit, healed, or had a pet
+    /// in it. Hitting yourself does not count.
+    ///
+    /// The log shows other people's damage as well as yours. In a crowded
+    /// guild hall that opened fights of their Cannibalize and of DoTs ticking
+    /// on them, with nothing in them of yours: "Unknown encounter", 0 DPS,
+    /// one with ninety players in it.
+    pub fn involves_you(&self) -> bool {
+        self.actors
+            .values()
+            .any(|s| s.damaged_by_you || s.fought_you || (s.is_yours() && s.damage_done > 0))
+            || self.actors.get("you").is_some_and(|y| y.healing_done > 0)
     }
 
     fn entry(&mut self, actor: &Actor, player: &str) -> &mut ActorStats {
@@ -2057,10 +2098,12 @@ impl EncounterTracker {
                     *t.damage_taken_by_source
                         .entry(source_name.clone())
                         .or_default() += *amount;
-                    if src_is_you {
+                    // Not when it was you: Cannibalize made the player the
+                    // opponent, and the fight was titled after them.
+                    if src_is_you && !hit_yourself {
                         t.damaged_by_you = true;
                     }
-                    if target.is_you() {
+                    if target.is_you() && !hit_yourself {
                         // Engagement in this fight, recorded on the attacker.
                         // Set here rather than read off the session-wide
                         // `hostile` set; see `fought_you`.
@@ -2433,7 +2476,7 @@ impl EncounterTracker {
             fold_proc_casts(st);
             fold_heal_casts(st);
         }
-        if enc.is_significant() {
+        if enc.is_significant() && enc.involves_you() {
             Some(enc)
         } else {
             // An encounter with no damage was opened by a stray miss or death
@@ -4311,6 +4354,83 @@ mod tests {
         assert_eq!(st.charm_breaks, 1, "it still broke");
         assert_eq!(st.charmed_seconds, 9, "101 to the last blow at 110");
         assert!(st.charmed_seconds <= enc.end - enc.start);
+    }
+
+    /// A shaman's Cannibalize hits the caster and nothing else. It is not a
+    /// fight, and it made one titled after the player, on live EverQuest.
+    #[test]
+    fn hitting_yourself_alone_is_not_a_fight() {
+        let encs = run(&[
+            (
+                100,
+                "You hit yourself for 1924 points of unresistable damage by Cannibalization I.",
+            ),
+            (
+                130,
+                "You hit yourself for 1924 points of unresistable damage by Cannibalization I.",
+            ),
+        ]);
+        assert!(
+            encs.is_empty(),
+            "{:?}",
+            encs.iter().map(|e| e.title()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Other players' damage you can see but took no part in: their own
+    /// Cannibalize, a DoT ticking on them from nobody named. In a guild hall
+    /// that made a stream of "Unknown encounter" rows with nothing in them.
+    #[test]
+    fn a_fight_you_took_no_part_in_is_not_kept() {
+        let encs = run(&[
+            (
+                100,
+                "Immacomin hit Immacomin for 150 points of unresistable damage by Cannibalize IV.",
+            ),
+            (104, "Elinee has taken 328 damage by Rotting Flesh."),
+        ]);
+        assert!(
+            encs.is_empty(),
+            "{:?}",
+            encs.iter().map(|e| e.title()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Cannibalizing mid-fight keeps the fight, and it is named for the
+    /// creature, not for you.
+    #[test]
+    fn hitting_yourself_mid_fight_does_not_make_you_the_opponent() {
+        let encs = run(&[
+            (100, "You slash a rat for 10 points of damage."),
+            (
+                101,
+                "You hit yourself for 1924 points of unresistable damage by Cannibalization I.",
+            ),
+            (102, "You slash a rat for 10 points of damage."),
+        ]);
+        assert_eq!(encs.len(), 1);
+        assert_eq!(encs[0].title(), "a rat");
+        assert_eq!(encs[0].opponents(), vec!["a rat".to_string()]);
+    }
+
+    /// Your pet fighting while you stand back is still your fight, and is
+    /// named for what it fought.
+    #[test]
+    fn your_pets_fight_is_kept() {
+        let encs = run(&[
+            (100, "Tharn`s warder slashes a rat for 30 points of damage."),
+            (102, "Tharn`s warder slashes a rat for 30 points of damage."),
+        ]);
+        assert_eq!(encs.len(), 1);
+        assert_eq!(encs[0].title(), "a rat");
+    }
+
+    /// Hit and never swinging back is a fight about what hit you.
+    #[test]
+    fn a_fight_you_only_took_is_named_for_the_attacker() {
+        let encs = run(&[(100, "A goblin hits YOU for 12 points of damage.")]);
+        assert_eq!(encs.len(), 1);
+        assert_eq!(encs[0].title(), "A goblin");
     }
 
     /// A creature you hold does not attack you. When one does, that is the
