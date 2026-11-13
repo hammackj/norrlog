@@ -1,13 +1,10 @@
-//! Settings: what the daemon follows, the export, and the daemon's own log
-//! (settings.js). The checklist is the Settings section of
-//! the parity inventory.
+//! Settings: what the daemon follows, the export, and the daemon's own log.
 //!
-//! The config is the Electron app's `config.json`, patched rather than
-//! rewritten (see `config`). A change to something the daemon reads only at
+//! The config is `config.json`, patched rather than rewritten (see
+//! `config`). A change to something the daemon reads only at
 //! startup restarts it through the daemon thread, which stops the old one
 //! on the old port, whoever started it, and attaches to or starts the new
-//! one; every other app attached reconnects, as they do after Electron's
-//! restart.
+//! one; every other app attached, the collector among them, reconnects.
 //!
 //! `/api/logs` and `/api/history` are fetched on every attach and on every
 //! visit to the tab, `/api/logs/status` on every visit only. The daemon's

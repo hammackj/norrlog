@@ -1,7 +1,5 @@
-//! Character: the lifetime totals from the snapshot (app.js'
-//! `renderSnapshot`), and tasks and achievements from `/api/tasks`
-//! (`tasks.js`). The checklist is the Character section of
-//! the parity inventory.
+//! Character: the lifetime totals from the snapshot, and tasks and
+//! achievements from `/api/tasks`.
 //!
 //! Tasks are fetched on every snapshot whichever tab is open, at most every
 //! fifteen seconds, as the renderer does: they change rarely, and the

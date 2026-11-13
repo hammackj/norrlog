@@ -14,26 +14,22 @@ use norrlog_api::Hello;
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Nav order, as the Electron app had it: (id, label, parity file).
-pub const TABS: &[(&str, &str, &str)] = &[
-    ("dashboard", "Dashboard", "shell-and-dashboard.md"),
-    ("encounters", "Encounters", "encounters-and-procs.md"),
-    ("loot", "Loot", "loot-and-tooltips.md"),
-    (
-        "experience",
-        "Experience",
-        "experience-character-classes.md",
-    ),
-    ("procs", "Procs", "encounters-and-procs.md"),
-    ("tradeskills", "Tradeskills", "tradeskills-and-forage.md"),
-    ("forage", "Forage", "tradeskills-and-forage.md"),
-    ("sky", "Sky", "sky-and-quests.md"),
-    ("quests", "Quests", "sky-and-quests.md"),
-    ("tells", "Tells", "tells-alerts-settings.md"),
-    ("alerts", "Alerts", "tells-alerts-settings.md"),
-    ("character", "Character", "experience-character-classes.md"),
-    ("classes", "Classes", "experience-character-classes.md"),
-    ("settings", "Settings", "tells-alerts-settings.md"),
+/// Nav order: (id, label).
+pub const TABS: &[(&str, &str)] = &[
+    ("dashboard", "Dashboard"),
+    ("encounters", "Encounters"),
+    ("loot", "Loot"),
+    ("experience", "Experience"),
+    ("procs", "Procs"),
+    ("tradeskills", "Tradeskills"),
+    ("forage", "Forage"),
+    ("sky", "Sky"),
+    ("quests", "Quests"),
+    ("tells", "Tells"),
+    ("alerts", "Alerts"),
+    ("character", "Character"),
+    ("classes", "Classes"),
+    ("settings", "Settings"),
 ];
 
 enum Link {
@@ -372,7 +368,7 @@ impl Shell {
         if tab == "procs" {
             self.procs.update(cx, |v, cx| v.load(cx));
         }
-        // All, whichever subtab is showing (app.js:48).
+        // All, whichever subtab is showing.
         if tab == "loot" {
             self.loot.update(cx, |v, cx| v.load_open(cx));
         }
@@ -566,7 +562,7 @@ impl Shell {
             .bg(hex(PANEL))
             .border_b_1()
             .border_color(hex(BORDER));
-        for &(id, label, _) in TABS {
+        for &(id, label) in TABS {
             if crate::features::of_tab(id).is_some_and(|f| !crate::features::has(f)) {
                 continue;
             }
@@ -664,7 +660,7 @@ impl Shell {
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
             id => {
-                let (_, label, _) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
+                let (_, label) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
                     &format!("{label} is not here yet"),
                     "This view has not been built in this app yet.".to_string(),

@@ -1,5 +1,4 @@
-//! Forage: `loadForage` and `draw` (forage.js). The checklist is the Forage
-//! section of the parity inventory.
+//! Forage: what foraging has yielded, per zone.
 //!
 //! `/api/forage` is fetched when the tab opens and every ten seconds while it
 //! is on screen. Clicking a zone narrows "What it yields" to it.
@@ -228,7 +227,7 @@ impl ForageView {
     }
 }
 
-/// A `.row` as forage.js draws it: a bold line over a small muted one, and a
+/// A forage row: a bold line over a small muted one, and a
 /// figure on the right. `sub_title` is the muted line's hover text.
 fn row(
     id: SharedString,

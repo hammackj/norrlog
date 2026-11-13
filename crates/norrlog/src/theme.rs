@@ -1,5 +1,4 @@
-//! The palette: the Electron app's tokens (`gui/renderer/app.css`), shared
-//! with the eqldb collector so the two read as one family. Every view takes
+//! The palette, shared with the eqldb collector so the two read as one family. Every view takes
 //! its colours from here, never from a literal.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -107,8 +106,8 @@ fn resolve(c: u32) -> u32 {
     }
 }
 
-// The parser's palette (gui/renderer/app.css), so the two apps read as one
-// family: eqldb's surfaces and text, gold for the accent, cyan for you.
+// The parser's palette, shared with the collector so the two apps read as
+// one family: eqldb's surfaces and text, gold for the accent, cyan for you.
 pub const BG: u32 = 0x14161a;
 /// `--bg-2`: header, tabs, section cards.
 pub const PANEL: u32 = 0x1b1e24;

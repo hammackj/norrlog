@@ -1,6 +1,5 @@
 //! Loot: everything picked up, this session's haul, and the mote ladder,
-//! with a drill-down per item. Ports `loot.js`; the checklist is the Loot
-//! section of the parity inventory.
+//! with a drill-down per item.
 //!
 //! Like the renderer, the three lists are separate fetches with separate
 //! caches. Opening the tab fetches the subtab showing (the renderer fetches

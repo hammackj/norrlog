@@ -1,13 +1,13 @@
 //! The daemon thread: attach to the shared norrlogd (starting it if nobody
 //! has), hold its snapshot stream, and say what happens to the window.
 //!
-//! Reconnects as the Electron renderer does: after `min(500 ms × n, 5 s)`,
+//! Reconnects after `min(500 ms × n, 5 s)`,
 //! `n` capped at 10 and reset on a good attach. Quitting never stops the
 //! daemon; one this app started exits a minute after its last client.
 //!
 //! Settings can ask for a restart with a new [`Setup`]: the daemon on the
-//! old port is stopped, whoever started it, as `restartDaemon` in
-//! `gui/main.js` does, and the new one is attached to or started.
+//! old port is stopped, whoever started it, and the new one is attached to
+//! or started.
 
 use futures_util::StreamExt;
 use norrlog_api::Hello;
@@ -200,7 +200,7 @@ impl Inbox {
 }
 
 /// Long enough that closing one app and opening another within a minute
-/// does not reparse the whole log; the same as Electron and the collector.
+/// does not reparse the whole log; the same as the collector.
 const IDLE_EXIT: Duration = Duration::from_secs(60);
 
 /// Starts the daemon thread and its runtime; the handle is for views'
@@ -325,7 +325,7 @@ async fn session(
 
 /// Stop the daemon on `port`, if one answers, and wait up to five seconds
 /// for the port to come free. Whoever started it: every app attached to it
-/// reconnects to the new one, as they do after Electron's restart.
+/// reconnects to the new one.
 async fn stop(port: u16) {
     let Ok(old) = Client::attach(port).await else {
         return;

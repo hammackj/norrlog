@@ -1,6 +1,6 @@
-//! Alert sounds and speech: `playSound` and `speak` (alerts.js).
+//! Alert sounds and speech.
 //!
-//! Sounds are synthesised, as the renderer's are: one oscillator per tone
+//! Sounds are synthesised: one oscillator per tone
 //! from the same recipes, with the same envelope. They play on a thread of
 //! their own that opens the default output the first time it is asked to,
 //! so a machine with no audio device costs one log line and nothing else.
@@ -23,7 +23,7 @@ enum Wave {
     Sawtooth,
 }
 
-/// `[frequency, seconds, waveform, ramp-to]`, as `SOUNDS` in alerts.js.
+/// `[frequency, seconds, waveform, ramp-to]` for each sound.
 fn recipe(s: Sound) -> Option<(f32, f32, Wave, f32)> {
     Some(match s {
         Sound::Chime => (880., 0.18, Wave::Sine, 1320.),

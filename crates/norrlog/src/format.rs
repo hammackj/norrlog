@@ -1,7 +1,6 @@
-//! Numbers and times, written exactly as the Electron renderer writes them
-//! (`gui/renderer/core.js`), so a port reads the same as what it replaces.
-//! The overlay (`crates/norrlogd/assets/overlay.js`) has its own copies of
-//! `num` and `dur`; all three agree.
+//! Numbers and times, written the same way everywhere. The OBS overlay
+//! (`crates/norrlogd/assets/overlay.js`) has its own copies of `num` and
+//! `dur`, and the two agree.
 
 /// `—` for nothing; `1.23B`, `1.23M`, `12.3k` from ten thousand up;
 /// otherwise rounded, with thousands separators.
@@ -18,8 +17,7 @@ pub fn num(n: Option<f64>) -> String {
     }
 }
 
-/// Copper as whole platinum, rounded, with thousands separators: app.js'
-/// `pp`, `(c / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 })`.
+/// Copper as whole platinum, rounded, with thousands separators.
 pub fn pp(copper: u64) -> String {
     grouped(round_half_up(copper as f64 / 1000.))
 }

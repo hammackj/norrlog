@@ -1,6 +1,4 @@
-//! Experience: `loadExperience` and `loadClassLevels` (experience.js) and the
-//! AA catalogue, `loadAa` (tasks.js). The checklist is the Experience section
-//! of the parity inventory.
+//! Experience: experience and class levels, and the AA catalogue.
 //!
 //! `/api/experience` is fetched when the tab opens and every ten seconds
 //! while it is on screen, and `/api/class-levels` with every one of those.

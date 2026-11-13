@@ -1,4 +1,4 @@
-//! The Overlay and Charm overlay cards in Settings (settings.js).
+//! The Overlay and Charm overlay cards in Settings.
 //!
 //! The controls only edit the saved settings and say what changed. The shell
 //! holds the windows, so it opens, closes and reshapes them when it hears
@@ -15,7 +15,7 @@ use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::{Sizable, h_flex, v_flex};
 
-/// Every panel the overlay can show, as settings.js lists them. A panel
+/// Every panel the overlay can show. A panel
 /// missing here can only be had by typing it into the options.
 pub const PANELS: &[(&str, &str)] = &[
     ("meter", "Damage meter"),

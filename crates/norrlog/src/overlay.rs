@@ -16,9 +16,10 @@
 //!
 //! # Settings
 //!
-//! The windows read and write the Electron app's keys (`overlayOptions`,
+//! The windows read and write the config's `overlayOptions`,
 //! `overlayBounds`, `overlayClickThrough`, and `overlay2…` for the charm
-//! overlay), so a layout made there carries over. The options are the page's
+//! overlay; the earlier Electron app wrote the same keys, so a layout made
+//! there carried over. The options are the page's
 //! query string, parsed the way `overlay.js` parses it.
 
 use crate::format::{dur, num};

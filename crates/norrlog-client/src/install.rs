@@ -2,9 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// An EverQuest Legends install, found without asking: the same places the
-/// Electron app looks (`guessPaths` in `gui/main.js`), and the eqldb
-/// collector, which had this copy first.
+/// An EverQuest Legends install, found without asking. The eqldb collector
+/// looks in the same places.
 ///
 /// `$NORRLOG_GAME_DIR` (or the old `$EQLPARSER_GAME_DIR`) first, then the client's default folder inside every
 /// Wine prefix the usual tools make (CrossOver bottles on Linux and macOS,

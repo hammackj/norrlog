@@ -2,7 +2,7 @@
 //!
 //! # Why a sweep and not a tailer per log
 //!
-//! [EQLDB-242] asked for one tailer per log, and measuring says that is the
+//! One tailer per log was asked for, and measuring says that is the
 //! wrong shape for the same reason it was wrong for screenshots: which log is
 //! followed is a choice about the *live view*, and it must not decide whether
 //! a character's kills, loot and factions are ever read.
@@ -253,10 +253,10 @@ pub fn sweep(
 
 /// How far behind every log in the folder is, followed or not.
 ///
-/// The reporting half of [EQLDB-242]. Nothing today says that a log is being
+/// The reporting half of the sweep. Without it nothing says that a log is being
 /// read by nothing — the symptom is a folder that looks exactly like a folder
 /// whose files have all been handled, which is the same shape of silence
-/// [EQLDB-238] found on the eqldb side and [EQLDB-172] found in the detector.
+/// eqldb and the screenshot detector each turned up once before.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LogStatus {
     pub path: String,

@@ -1,4 +1,4 @@
-//! Spell hover cards: `tips.js`' `spellTipHtml` and the cache behind it.
+//! Spell hover cards, and the cache behind them.
 //!
 //! Each name is asked about once per run. The answer is kept, and so is a
 //! failure, as nothing, so a name the daemon cannot place is never asked

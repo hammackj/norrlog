@@ -378,7 +378,7 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     // `POST /api/bundle` ended that. A bundle now arrives from whoever holds
     // a token, and nothing about the document says it came from an export.
     // A submitter sending only item tooltips -- `sources: ["item_facts"]`,
-    // exactly the shape EQLDB-188's OCR reader is specified to send --
+    // exactly the shape the site's screenshot reader is specified to send --
     // reached `may_replace`'s default of true for every table not named here
     // and silently deleted that contributor's drops, kills and creatures.
     //
@@ -399,7 +399,7 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("spell_grants", &["history"]),
     // Raids come from `--raids`, an optional file, and were listed nowhere at
     // all -- so an export run without the flag emptied them. The same shape
-    // as the EQLDB-3 incident recorded against `recipes` below, found by the
+    // as the incident recorded against `recipes` below, found by the
     // same question asked of every table this time rather than one.
     ("raids", &["raids"]),
     ("raid_encounters", &["raids"]),
@@ -441,7 +441,7 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     // carrying one recipe and looking entirely plausible, and the ingest
     // replaces the hand-stated book with it.
     //
-    // That is the shape of the incident recorded on EQLDB-3: a config mistake
+    // That is the shape of an incident on eqldb: a config mistake
     // that would have deleted 3,848 recipes, caught only because somebody
     // compared the bundle against the previous one by hand.
     ("recipes", &["recipes"]),
@@ -1996,7 +1996,7 @@ pub enum SpawnKind {
     /// Does not respawn because it does not die: a quest giver, a merchant,
     /// anything that stands where it stands. Distinct from `Timed` with an
     /// unknown number, and the honest answer for the seven quest NPCs on
-    /// EQLDB-46 that are on the list because a wiki page exists for them and
+    /// eqldb's list that are on it because a wiki page exists for them and
     /// not because anybody should kill one.
     Static,
     /// Nobody has established which of the above applies. Written down rather

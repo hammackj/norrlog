@@ -1,6 +1,4 @@
-//! Tradeskills: `loadTradeskills` and the panels under it (tradeskills.js).
-//! The checklist is the Tradeskills section of
-//! the parity inventory.
+//! Tradeskills: combines, skill-ups and what each recipe cost to raise.
 //!
 //! `/api/tradeskills` is fetched when the tab opens and every ten seconds
 //! while it is on screen, and `/api/drops` after each of those. Selecting a

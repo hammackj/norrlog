@@ -260,8 +260,7 @@ impl BarAnim {
     }
 }
 
-/// Hand a web address to the system browser, as main.js' `open-external`
-/// does: only `http:` and `https:`. The addresses come from the daemon and
+/// Hand a web address to the system browser: only `http:` and `https:`. The addresses come from the daemon and
 /// the item site, and anything else — `file:`, a custom scheme — would have
 /// the desktop run whatever handles it.
 pub fn open_web(cx: &App, url: &str) -> bool {
@@ -297,8 +296,7 @@ thread_local! {
     static SCROLLED_AT: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
 }
 
-/// Item and spell cards hide from a scroll until the pointer moves again,
-/// as tips.js hides them on any scroll.
+/// Item and spell cards hide from a scroll until the pointer moves again.
 ///
 /// GPUI clears a visible tooltip on scroll, but not one still waiting out
 /// its show delay. That one opens after the scroll, judged against where

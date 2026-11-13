@@ -1,5 +1,4 @@
-//! Item hover cards: `tips.js`' `itemTipHtml`, the cache behind it, and the
-//! icons it shows.
+//! Item hover cards, the cache behind them, and the icons they show.
 //!
 //! A card prefers eqdb field by field over the copy bundled in the daemon:
 //! eqdb knows where an item drops and what it is used in, the bundled copy

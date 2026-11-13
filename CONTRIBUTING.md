@@ -85,6 +85,10 @@ reads the log, and the daemon's HTTP and WebSocket API. In short:
 - **norrlog** is the desktop app that draws what the daemon reports;
 - **norrlog-core** is the parsing itself.
 
+Norrlog replaced an earlier Electron app, and was checked against it screen
+by screen. Comments that compare with "the renderer" or "the Electron app"
+describe how that app behaved, which is usually why Norrlog does the same.
+
 ## Licence
 
 Norrlog is MIT-licensed. By contributing, you agree that your contribution is

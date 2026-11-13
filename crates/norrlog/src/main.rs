@@ -5,9 +5,8 @@
 //!
 //!     norrlog [--port N] [--daemon PATH]
 //!
-//! What the daemon follows comes from the Electron app's config while the
-//! two live side by side, so whichever starts it starts it the same way;
-//! Settings writes it.
+//! What the daemon follows comes from the app's config (see `config`), so
+//! whichever app starts it starts it the same way; Settings writes it.
 
 mod alerts;
 mod api;

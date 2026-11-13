@@ -1,11 +1,10 @@
-//! What to follow: the Electron app's own config while the two apps live
-//! side by side, so both start the shared daemon the same way.
+//! What to follow, and how the app looks: `eqlparser-gui/config.json` in the
+//! config directory. The name is the earlier Electron app's, kept so nobody's
+//! settings move.
 //!
 //! Settings writes it by patching: the file is read as JSON, only the keys
-//! this app owns are replaced, and the rest (the overlay's, the theme) are
-//! written back untouched. Electron holds its config in memory, so a save
-//! there while this app is open puts back what it last read; the two are not
-//! meant to be driven at once.
+//! being changed are replaced, and the rest are written back untouched, so
+//! a key this version does not know survives a save.
 
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -95,8 +94,8 @@ impl ParserConfig {
             .unwrap_or_default()
     }
 
-    /// The daemon's arguments after `--port` and `--idle-exit`, as
-    /// `ensureDaemon` in `gui/main.js` builds them. With nothing configured,
+    /// The daemon's arguments after `--port` and `--idle-exit`. With nothing
+    /// configured,
     /// the install is guessed and its Logs folder followed.
     pub fn daemon_args(&self) -> Vec<OsString> {
         self.daemon_args_with(norrlog_client::install::guess_game_dir)

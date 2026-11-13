@@ -1,6 +1,5 @@
-//! One fight opened up: the Encounters detail. Ports `showEncounter` in
-//! `encounters.js` and the panels it draws with (`panels.js`); the checklist
-//! is the Layout and Formatting sections of the parity inventory.
+//! One fight opened up: the Encounters detail, and the panels it draws
+//! with.
 //!
 //! Fetched once when opened and never refreshed: a closed fight does not
 //! change. The two charts are in `charts.rs`.
