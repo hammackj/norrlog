@@ -296,6 +296,13 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
+/// A length in the page's CSS pixels. The window's rem is 16 of them times
+/// `scale=`, so the option grows the whole layout, as the page's transform
+/// does, and not only its text.
+fn u(v: f32) -> Rems {
+    rems(v / 16.)
+}
+
 // ---- the view --------------------------------------------------------------
 
 pub struct OverlayView {
@@ -319,6 +326,8 @@ pub struct OverlayView {
     dps: Dps,
     /// Seconds since the overlay opened, to space the polls.
     ticks: u64,
+    /// More panels than the screen has room for; the bottom edge says so.
+    clipped: bool,
     api: Option<crate::api::Api>,
     _tick: Task<()>,
 }
@@ -403,6 +412,7 @@ impl OverlayView {
             session: None,
             dps: Dps::default(),
             ticks: 0,
+            clipped: false,
             api: None,
             _tick: tick,
         }
@@ -513,16 +523,39 @@ impl OverlayView {
 }
 
 impl Render for OverlayView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let o = &self.opts;
-        let mut col = div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(px(16. * self.opts.scale));
+        let me = cx.entity().downgrade();
+        let col = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(u(6.))
             .w_full()
             .text_color(gpui::rgb(TEXT))
-            .text_size(px(13. * o.scale))
-            .on_children_prepainted(fit_height);
+            .text_size(u(13.))
+            .on_children_prepainted(move |children, window, cx| {
+                let over = fit_height(children, window, cx);
+                let _ = me.update(cx, |v, cx| {
+                    if v.clipped != over {
+                        v.clipped = over;
+                        cx.notify();
+                    }
+                });
+            });
+        let col = self.panels(col);
+        div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .child(col)
+            .children(self.clipped.then(more_below))
+    }
+}
+
+impl OverlayView {
+    /// The panels, in the page's order, then the status line.
+    fn panels(&self, mut col: Div) -> Div {
+        let o = &self.opts;
         let Some(snap) = self.snap.clone() else {
             // "Connecting…", with nothing else drawn yet.
             if o.has("meter") {
@@ -1082,8 +1115,8 @@ impl OverlayView {
             .w_full()
             .flex()
             .items_end()
-            .gap(px(1.))
-            .h(px(24.))
+            .gap(u(1.))
+            .h(u(24.))
             .children(buckets.into_iter().map(|v| {
                 div()
                     .flex_1()
@@ -1261,7 +1294,7 @@ impl OverlayView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(u(6.))
                 .children(panels.into_iter().map(|p| {
                     let mut rows = Vec::new();
                     for r in p
@@ -1378,10 +1411,10 @@ fn name_with_tag(r: &Value, side: Side) -> Div {
     if let Some(t) = tag {
         d = d.child(
             div()
-                .px(px(4.))
-                .rounded(px(3.))
+                .px(u(4.))
+                .rounded(u(3.))
                 .bg(rgba_of(PET, 0.25))
-                .text_size(px(10.))
+                .text_size(u(10.))
                 .text_color(gpui::rgb(TEXT))
                 .child(t),
         );
@@ -1416,10 +1449,10 @@ fn sub_chips(snap: &Value, enc: &Value) -> Div {
         .gap_1()
         .children(bits.into_iter().map(|b| {
             div()
-                .px(px(6.))
-                .rounded(px(8.))
+                .px(u(6.))
+                .rounded(u(8.))
                 .bg(rgba_of(WASH, 0.08))
-                .text_size(px(10.))
+                .text_size(u(10.))
                 .text_color(gpui::rgb(DIM))
                 .child(b)
         }))
@@ -1455,10 +1488,10 @@ pub fn long_dur(sec: f64, coarse: bool) -> String {
 /// Keep the window as tall as what it shows (`fitOverlayToContent`): the
 /// user picks where it sits and how wide it is, the panels decide how tall.
 /// Never past the bottom of the screen, and with a dead band so a rounding
-/// pixel does not resize it forever.
-fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) {
+/// pixel does not resize it forever. Says whether the panels were cut.
+fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) -> bool {
     let Some(bottom) = children.iter().map(|b| b.bottom()).max() else {
-        return;
+        return false;
     };
     let have = window.viewport_size();
     let room = window
@@ -1470,6 +1503,26 @@ fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) 
     if (want - have.height).abs() > px(4.) {
         window.resize(size(have.width, want));
     }
+    // The children are measured from the window's top.
+    bottom.max(px(60.)) > room + px(1.)
+}
+
+/// The page's `body.clipped::after`: a panel that is simply absent reads as
+/// a bug, so the bottom edge says the window is too small.
+fn more_below() -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .px(u(8.))
+        .py(u(2.))
+        .flex()
+        .justify_end()
+        .bg(rgba_of(SCRIM, 0.92))
+        .text_size(u(10.))
+        .text_color(gpui::rgb(DIM))
+        .child("more below — fewer panels, or a taller window")
 }
 
 // ---- pieces ------------------------------------------------------------------
@@ -1480,9 +1533,9 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
     div()
         .flex()
         .flex_col()
-        .gap(px(3.))
-        .p(px(6.))
-        .rounded(px(6.))
+        .gap(u(3.))
+        .p(u(6.))
+        .rounded(u(6.))
         .bg(rgba_of(SCRIM, 0.74))
         .border_1()
         .border_color(rgba_of(WASH, 0.1))
@@ -1499,7 +1552,7 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
                         .child(title),
                 )
                 .children(
-                    meta.map(|m| div().text_size(px(11.)).text_color(gpui::rgb(DIM)).child(m)),
+                    meta.map(|m| div().text_size(u(11.)).text_color(gpui::rgb(DIM)).child(m)),
                 ),
         )
         .children(rows)
@@ -1509,8 +1562,8 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
 fn bar_row(name: Div, nums: Vec<(String, u32)>, share: f64, bar: Rgba, opacity: f64) -> Div {
     div()
         .relative()
-        .h(px(20.))
-        .rounded(px(3.))
+        .h(u(20.))
+        .rounded(u(3.))
         .bg(rgba_of(WASH, 0.05))
         .opacity(opacity as f32)
         .child(
@@ -1519,7 +1572,7 @@ fn bar_row(name: Div, nums: Vec<(String, u32)>, share: f64, bar: Rgba, opacity: 
                 .top_0()
                 .bottom_0()
                 .left_0()
-                .rounded(px(3.))
+                .rounded(u(3.))
                 .w(relative(share.clamp(0., 1.) as f32))
                 .bg(bar),
         )
@@ -1527,14 +1580,14 @@ fn bar_row(name: Div, nums: Vec<(String, u32)>, share: f64, bar: Rgba, opacity: 
             div()
                 .absolute()
                 .inset_0()
-                .px(px(6.))
+                .px(u(6.))
                 .flex()
                 .items_center()
                 .justify_between()
                 .gap_2()
                 .child(name.overflow_hidden().whitespace_nowrap())
                 .child(
-                    div().flex().gap(px(8.)).children(
+                    div().flex().gap(u(8.)).children(
                         nums.into_iter()
                             .map(|(t, c)| div().text_color(gpui::rgb(c)).child(t)),
                     ),
@@ -1560,8 +1613,8 @@ fn timer_row(b: &Value, left: f64, share: f64, bar: Rgba, time: u32) -> Div {
 
 fn empty(text: &str) -> AnyElement {
     div()
-        .px(px(6.))
-        .text_size(px(12.))
+        .px(u(6.))
+        .text_size(u(12.))
         .text_color(gpui::rgb(DIM))
         .child(text.to_string())
         .into_any_element()
@@ -1573,11 +1626,11 @@ fn status(show: bool) -> Div {
     if !show {
         return d;
     }
-    d.px(px(6.))
-        .py(px(2.))
-        .rounded(px(4.))
+    d.px(u(6.))
+        .py(u(2.))
+        .rounded(u(4.))
         .bg(rgba_of(SCRIM, 0.74))
-        .text_size(px(11.))
+        .text_size(u(11.))
         .text_color(gpui::rgb(ACCENT))
         .child("Reconnecting…")
 }
