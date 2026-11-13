@@ -136,7 +136,10 @@ impl RecipeBook {
                 Some(_) => {}
             }
         }
-        self.skill_by_product = seen.into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
+        self.skill_by_product = seen
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect();
     }
 
     /// Read a full book from `path` as well, if there is one there. Takes
@@ -160,9 +163,10 @@ impl RecipeBook {
                 RecipeBook::default()
             });
             if let Some(path) = EXTRA.get().filter(|p| p.is_file()) {
-                match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|s| {
-                    RecipeBook::parse(&s).map_err(|e| e.to_string())
-                }) {
+                match std::fs::read_to_string(path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|s| RecipeBook::parse(&s).map_err(|e| e.to_string()))
+                {
                     Ok(extra) => book.merge(extra),
                     Err(e) => eprintln!("{} is not a usable recipe book: {e}", path.display()),
                 }
@@ -320,7 +324,13 @@ mod tests {
                  "components":[{"item":"Flour"},{"item":"Egg","qty":4,"vendor":true}]}]}"#,
         )
         .unwrap();
-        let c = b.recipes_for("X").next().unwrap().components.as_ref().unwrap();
+        let c = b
+            .recipes_for("X")
+            .next()
+            .unwrap()
+            .components
+            .as_ref()
+            .unwrap();
         assert_eq!((c[0].qty, c[0].vendor), (1, false));
         assert_eq!((c[1].qty, c[1].vendor), (4, true));
     }

@@ -5,12 +5,12 @@
 
 use crate::daemon::Msg;
 use crate::state::{Rect, State};
-use crate::theme::*;
-use norrlog_api::Hello;
-use gpui::*;
 use crate::theme::px;
+use crate::theme::*;
+use gpui::*;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::v_flex;
+use norrlog_api::Hello;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -19,7 +19,11 @@ pub const TABS: &[(&str, &str, &str)] = &[
     ("dashboard", "Dashboard", "shell-and-dashboard.md"),
     ("encounters", "Encounters", "encounters-and-procs.md"),
     ("loot", "Loot", "loot-and-tooltips.md"),
-    ("experience", "Experience", "experience-character-classes.md"),
+    (
+        "experience",
+        "Experience",
+        "experience-character-classes.md",
+    ),
     ("procs", "Procs", "encounters-and-procs.md"),
     ("tradeskills", "Tradeskills", "tradeskills-and-forage.md"),
     ("forage", "Forage", "tradeskills-and-forage.md"),
@@ -59,7 +63,11 @@ pub struct Shell {
     /// The daemon, once attached, for an overlay opened later.
     api: Option<crate::api::Api>,
     /// The overlay windows that are open.
-    overlays: Vec<(crate::overlay::Kind, AnyWindowHandle, Entity<crate::overlay::OverlayView>)>,
+    overlays: Vec<(
+        crate::overlay::Kind,
+        AnyWindowHandle,
+        Entity<crate::overlay::OverlayView>,
+    )>,
     state: State,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
@@ -76,15 +84,23 @@ impl Shell {
     ) -> Self {
         let task = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.recv().await {
-                if this.update_in(cx, |v, window, cx| v.on_msg(msg, window, cx)).is_err() {
+                if this
+                    .update_in(cx, |v, window, cx| v.on_msg(msg, window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
         });
         // Where the window is, remembered as it moves rather than on close:
         // a window killed with the session never gets to say goodbye.
-        let mut subs = vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
-        let tab = TABS.iter().find(|t| t.0 == state.tab).map(|t| t.0).unwrap_or("dashboard");
+        let mut subs =
+            vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
+        let tab = TABS
+            .iter()
+            .find(|t| t.0 == state.tab)
+            .map(|t| t.0)
+            .unwrap_or("dashboard");
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
         let procs = cx.new(|_| crate::procs::ProcsView::new());
         let loot = cx.new(|cx| crate::loot::LootView::new(window, cx));
@@ -96,18 +112,27 @@ impl Shell {
         let sky = cx.new(crate::sky::SkyView::new);
         let dashboard = cx.new(crate::dashboard::DashboardView::new);
         // The dashboard's Sky bars follow the Sky tab's own loads.
-        subs.push(cx.subscribe(&sky, |v: &mut Self, _, e: &crate::sky::SkyLoaded, cx| {
-            let r = e.0.clone();
-            v.dashboard.update(cx, |d, cx| d.set_sky(r, cx));
-        }));
+        subs.push(
+            cx.subscribe(&sky, |v: &mut Self, _, e: &crate::sky::SkyLoaded, cx| {
+                let r = e.0.clone();
+                v.dashboard.update(cx, |d, cx| d.set_sky(r, cx));
+            }),
+        );
         let tells = cx.new(|_| crate::tells::TellsView::new());
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
         let controls = settings.read(cx).overlay.clone();
-        subs.push(cx.subscribe(&controls, |v: &mut Self, _, e: &crate::overlay_settings::OverlayRequest, cx| match e {
-            crate::overlay_settings::OverlayRequest::Toggle(kind) => v.toggle_overlay(*kind, cx),
-            crate::overlay_settings::OverlayRequest::Apply(kind, saved) => v.apply_overlay(*kind, saved.clone(), cx),
-        }));
+        subs.push(cx.subscribe(
+            &controls,
+            |v: &mut Self, _, e: &crate::overlay_settings::OverlayRequest, cx| match e {
+                crate::overlay_settings::OverlayRequest::Toggle(kind) => {
+                    v.toggle_overlay(*kind, cx)
+                }
+                crate::overlay_settings::OverlayRequest::Apply(kind, saved) => {
+                    v.apply_overlay(*kind, saved.clone(), cx)
+                }
+            },
+        ));
         Shell {
             link: Link::Attaching,
             rt,
@@ -141,7 +166,11 @@ impl Shell {
                     self.link = Link::Attaching;
                 }
             }
-            Msg::Attached { hello, started, client } => {
+            Msg::Attached {
+                hello,
+                started,
+                client,
+            } => {
                 crate::features::set(hello.features.clone());
                 // A tab this game does not have (Sky, for live EverQuest)
                 // gives way to the Dashboard.
@@ -149,7 +178,10 @@ impl Shell {
                     self.tab = "dashboard";
                 }
                 self.link = Link::Attached { hello, started };
-                let api = crate::api::Api { rt: self.rt.clone(), client: *client };
+                let api = crate::api::Api {
+                    rt: self.rt.clone(),
+                    client: *client,
+                };
                 self.api = Some(api.clone());
                 let base = api.base();
                 let controls = self.settings.read(cx).overlay.clone();
@@ -170,7 +202,8 @@ impl Shell {
                         v.load(cx);
                     }
                 });
-                self.character.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
+                self.character
+                    .update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 self.experience.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
                     if open == "experience" {
@@ -195,7 +228,8 @@ impl Shell {
                     v.set_visible(false, cx);
                     v.set_visible(open == "alerts", cx);
                 });
-                self.dashboard.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
+                self.dashboard
+                    .update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 self.settings.update(cx, |v, cx| {
                     v.set_visible(open == "settings", cx);
                     v.set_api(Some(api.clone()), cx);
@@ -223,33 +257,60 @@ impl Shell {
                 // The id of the newest *closed* fight: `totals.encounters`
                 // counts the one in progress too, and so moves at the wrong
                 // moment.
-                let newest = s.get("recent").and_then(|r| r.get(0)).and_then(|e| e.get("id")).and_then(Value::as_u64);
+                let newest = s
+                    .get("recent")
+                    .and_then(|r| r.get(0))
+                    .and_then(|e| e.get("id"))
+                    .and_then(Value::as_u64);
                 let visible = self.tab == "encounters";
-                self.encounters.update(cx, |v, cx| v.newest_closed(newest, visible, cx));
+                self.encounters
+                    .update(cx, |v, cx| v.newest_closed(newest, visible, cx));
                 let procs_open = self.tab == "procs";
                 self.procs.update(cx, |v, cx| v.on_snapshot(procs_open, cx));
                 let totals = s.get("totals");
-                let played = totals.and_then(|t| t.get("played_seconds")).and_then(Value::as_i64).unwrap_or(0);
-                let sessions = totals.and_then(|t| t.get("sessions")).and_then(Value::as_u64).unwrap_or(0);
+                let played = totals
+                    .and_then(|t| t.get("played_seconds"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let sessions = totals
+                    .and_then(|t| t.get("sessions"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let loot_open = self.tab == "loot";
-                self.loot.update(cx, |v, cx| v.on_snapshot(loot_open, played, sessions, cx));
+                self.loot
+                    .update(cx, |v, cx| v.on_snapshot(loot_open, played, sessions, cx));
                 // Every push, whichever tab is open, as renderSnapshot does.
-                let classes = s.get("classes").and_then(|c| serde_json::from_value(c.clone()).ok()).unwrap_or_default();
+                let classes = s
+                    .get("classes")
+                    .and_then(|c| serde_json::from_value(c.clone()).ok())
+                    .unwrap_or_default();
                 self.classes.update(cx, |v, cx| v.on_snapshot(classes, cx));
-                let totals = s.get("totals").and_then(|t| serde_json::from_value(t.clone()).ok());
+                let totals = s
+                    .get("totals")
+                    .and_then(|t| serde_json::from_value(t.clone()).ok());
                 self.character.update(cx, |v, cx| v.on_snapshot(totals, cx));
                 let experience_open = self.tab == "experience";
-                self.experience.update(cx, |v, cx| v.on_snapshot(experience_open, window, cx));
+                self.experience
+                    .update(cx, |v, cx| v.on_snapshot(experience_open, window, cx));
                 let tradeskills_open = self.tab == "tradeskills";
-                self.tradeskills.update(cx, |v, cx| v.on_snapshot(tradeskills_open, cx));
+                self.tradeskills
+                    .update(cx, |v, cx| v.on_snapshot(tradeskills_open, cx));
                 let forage_open = self.tab == "forage";
-                self.forage.update(cx, |v, cx| v.on_snapshot(forage_open, cx));
+                self.forage
+                    .update(cx, |v, cx| v.on_snapshot(forage_open, cx));
                 let sky_open = self.tab == "sky";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
-                let current = s.get("current").filter(|c| !c.is_null()).and_then(|c| serde_json::from_value(c.clone()).ok());
-                self.dashboard.update(cx, |v, cx| v.on_snapshot(current, cx));
+                let current = s
+                    .get("current")
+                    .filter(|c| !c.is_null())
+                    .and_then(|c| serde_json::from_value(c.clone()).ok());
+                self.dashboard
+                    .update(cx, |v, cx| v.on_snapshot(current, cx));
                 // Every snapshot, whichever tab is open: alerts are heard.
-                let fires = s.get("alerts").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
+                let fires = s
+                    .get("alerts")
+                    .and_then(|a| serde_json::from_value(a.clone()).ok())
+                    .unwrap_or_default();
                 let seq = s.get("alert_seq").and_then(Value::as_u64).unwrap_or(0);
                 self.alerts.update(cx, |v, cx| v.on_fires(fires, seq, cx));
                 let tells_open = self.tab == "tells";
@@ -289,7 +350,12 @@ impl Shell {
             WindowBounds::Windowed(b) => (b, false),
             WindowBounds::Maximized(b) | WindowBounds::Fullscreen(b) => (b, true),
         };
-        let r = Rect { x: b.origin.x.into(), y: b.origin.y.into(), w: b.size.width.into(), h: b.size.height.into() };
+        let r = Rect {
+            x: b.origin.x.into(),
+            y: b.origin.y.into(),
+            w: b.size.width.into(),
+            h: b.size.height.into(),
+        };
         if self.state.bounds != Some(r) || self.state.maximized != maximized {
             self.state.bounds = Some(r);
             self.state.maximized = maximized;
@@ -319,8 +385,10 @@ impl Shell {
         if tab == "forage" {
             self.forage.update(cx, |v, cx| v.load(cx));
         }
-        self.alerts.update(cx, |v, cx| v.set_visible(tab == "alerts", cx));
-        self.settings.update(cx, |v, cx| v.set_visible(tab == "settings", cx));
+        self.alerts
+            .update(cx, |v, cx| v.set_visible(tab == "alerts", cx));
+        self.settings
+            .update(cx, |v, cx| v.set_visible(tab == "settings", cx));
         if tab == "tells" {
             self.tells.update(cx, |v, cx| v.load(cx));
         }
@@ -343,7 +411,11 @@ impl Shell {
             }
             self.overlays.push((kind, h, v));
         }
-        let opened = self.overlays.iter().find(|(k, _, _)| *k == kind).map(|(_, _, v)| v.read(cx).saved.clone());
+        let opened = self
+            .overlays
+            .iter()
+            .find(|(k, _, _)| *k == kind)
+            .map(|(_, _, v)| v.read(cx).saved.clone());
         let controls = self.settings.read(cx).overlay.clone();
         controls.update(cx, |c, cx| c.set_open(kind, opened.is_some(), opened, cx));
         cx.notify();
@@ -351,10 +423,21 @@ impl Shell {
 
     /// New settings for an overlay. Options apply in place; a move, or a
     /// change to click-through, reopens the window, as Electron rebuilt it.
-    fn apply_overlay(&mut self, kind: crate::overlay::Kind, saved: crate::overlay::Saved, cx: &mut Context<Self>) {
-        let Some((_, _, v)) = self.overlays.iter().find(|(k, _, _)| *k == kind) else { return };
+    fn apply_overlay(
+        &mut self,
+        kind: crate::overlay::Kind,
+        saved: crate::overlay::Saved,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, _, v)) = self.overlays.iter().find(|(k, _, _)| *k == kind) else {
+            return;
+        };
         let was = v.read(cx).saved.clone();
-        if was.bounds.x != saved.bounds.x || was.bounds.y != saved.bounds.y || was.bounds.width != saved.bounds.width || was.click_through != saved.click_through {
+        if was.bounds.x != saved.bounds.x
+            || was.bounds.y != saved.bounds.y
+            || was.bounds.width != saved.bounds.width
+            || was.click_through != saved.click_through
+        {
             self.toggle_overlay(kind, cx);
             self.toggle_overlay(kind, cx);
         } else {
@@ -369,8 +452,15 @@ impl Shell {
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let s = self.snapshot.as_deref();
         let mut pills = div().flex().flex_row().items_center().gap_2().ml_auto();
-        let str_of = |k: &str| s.and_then(|s| s.get(k)).and_then(Value::as_str).unwrap_or("");
-        let character = match (str_of("player"), s.and_then(|s| s.get("level")).and_then(Value::as_i64)) {
+        let str_of = |k: &str| {
+            s.and_then(|s| s.get(k))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        };
+        let character = match (
+            str_of("player"),
+            s.and_then(|s| s.get("level")).and_then(Value::as_i64),
+        ) {
             ("", _) => "—".to_string(),
             (p, Some(l)) => format!("{p} · lvl {l}"),
             (p, None) => p.to_string(),
@@ -379,7 +469,11 @@ impl Shell {
         let classes: Vec<&str> = s
             .and_then(|s| s.get("classes"))
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|c| c.get("abbrev").and_then(Value::as_str)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|c| c.get("abbrev").and_then(Value::as_str))
+                    .collect()
+            })
             .unwrap_or_default();
         if !classes.is_empty() {
             pills = pills.child(pill(classes.join("/"), YOU, YOU));
@@ -387,7 +481,10 @@ impl Shell {
         if !str_of("zone").is_empty() {
             pills = pills.child(pill(str_of("zone").to_string(), TEXT, BORDER));
         }
-        let (status, color) = match (&self.link, s.and_then(|s| s.get("live")).and_then(Value::as_bool)) {
+        let (status, color) = match (
+            &self.link,
+            s.and_then(|s| s.get("live")).and_then(Value::as_bool),
+        ) {
             (Link::Attached { .. }, Some(true)) => ("following live", HEAL),
             (Link::Attached { .. }, Some(false)) => ("parsing…", MUTED),
             (Link::Attached { .. }, None) | (Link::Attaching, _) => ("connecting", ACCENT),
@@ -399,8 +496,14 @@ impl Shell {
             div()
                 .id("overlay-toggle")
                 .cursor_pointer()
-                .child(pill(if on { "overlay on" } else { "overlay" }, if on { ACCENT } else { MUTED }, if on { ACCENT } else { BORDER }))
-                .on_click(cx.listener(|v, _, _, cx| v.toggle_overlay(crate::overlay::Kind::Main, cx))),
+                .child(pill(
+                    if on { "overlay on" } else { "overlay" },
+                    if on { ACCENT } else { MUTED },
+                    if on { ACCENT } else { BORDER },
+                ))
+                .on_click(
+                    cx.listener(|v, _, _, cx| v.toggle_overlay(crate::overlay::Kind::Main, cx)),
+                ),
         );
 
         div()
@@ -420,21 +523,33 @@ impl Shell {
                     .items_baseline()
                     .gap_2()
                     .child(div().font_weight(FontWeight::BOLD).child("Norrlog"))
-                    .child(div().text_xs().text_color(hex(MUTED)).child(match &self.link {
-                        Link::Attached { hello, started } => format!(
-                            "norrlogd {} · port {}{}",
-                            hello.version,
-                            hello.port,
-                            if *started { " · started here" } else { "" }
-                        ),
-                        _ => String::new(),
-                    })),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(hex(MUTED))
+                            .child(match &self.link {
+                                Link::Attached { hello, started } => format!(
+                                    "norrlogd {} · port {}{}",
+                                    hello.version,
+                                    hello.port,
+                                    if *started { " · started here" } else { "" }
+                                ),
+                                _ => String::new(),
+                            }),
+                    ),
             )
             .child(pills)
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> Div {
-        let mut nav = div().flex().flex_row().flex_wrap().px_3().bg(hex(PANEL)).border_b_1().border_color(hex(BORDER));
+        let mut nav = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .px_3()
+            .bg(hex(PANEL))
+            .border_b_1()
+            .border_color(hex(BORDER));
         for &(id, label, _) in TABS {
             if crate::features::of_tab(id).is_some_and(|f| !crate::features::has(f)) {
                 continue;
@@ -467,27 +582,81 @@ impl Shell {
             return notice("The daemon is not answering", why.clone()).into_any_element();
         }
         match self.tab {
-            "dashboard" => self.dashboard.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "encounters" => self.encounters.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "procs" => self.procs.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "loot" => self.loot.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "experience" => self.experience.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "character" => self.character.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "classes" => self.classes.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "tradeskills" => self.tradeskills.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "forage" => self.forage.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "alerts" => self.alerts.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "tells" => self.tells.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "sky" => self.sky.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
-            "settings" => self.settings.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            "dashboard" => self
+                .dashboard
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "encounters" => self
+                .encounters
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "procs" => self
+                .procs
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "loot" => self
+                .loot
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "experience" => self
+                .experience
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "character" => self
+                .character
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "classes" => self
+                .classes
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "tradeskills" => self
+                .tradeskills
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "forage" => self
+                .forage
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "alerts" => self
+                .alerts
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "tells" => self
+                .tells
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "sky" => self
+                .sky
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            "settings" => self
+                .settings
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             id => {
                 let (_, label, _) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
-                notice(&format!("{label} is not ported yet"), "The Electron app still has it.".to_string())
+                notice(
+                    &format!("{label} is not ported yet"),
+                    "The Electron app still has it.".to_string(),
+                )
                 .into_any_element()
             }
         }
     }
-
 }
 
 impl Render for Shell {
@@ -500,13 +669,44 @@ impl Render for Shell {
             .child(crate::parts::scroll_watch())
             .child(self.render_header(cx))
             .child(self.render_nav(cx))
-            .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts" | "dashboard") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
-                // These scroll themselves, and are drawn cached: each redraws
-                // only when it notifies, not on every snapshot the shell takes.
-                div().id("main").flex_1().min_h_0().p_4().child(self.render_body()).into_any_element()
-            } else {
-                div().id("main").flex_1().min_h_0().overflow_y_scrollbar().p_4().child(self.render_body()).into_any_element()
-            })
+            .child(
+                if matches!(
+                    self.tab,
+                    "encounters"
+                        | "procs"
+                        | "loot"
+                        | "classes"
+                        | "character"
+                        | "experience"
+                        | "tradeskills"
+                        | "forage"
+                        | "sky"
+                        | "tells"
+                        | "alerts"
+                        | "dashboard"
+                ) && !matches!(self.link, Link::Lost(_))
+                    || self.tab == "settings"
+                {
+                    // These scroll themselves, and are drawn cached: each redraws
+                    // only when it notifies, not on every snapshot the shell takes.
+                    div()
+                        .id("main")
+                        .flex_1()
+                        .min_h_0()
+                        .p_4()
+                        .child(self.render_body())
+                        .into_any_element()
+                } else {
+                    div()
+                        .id("main")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .p_4()
+                        .child(self.render_body())
+                        .into_any_element()
+                },
+            )
     }
 }
 
@@ -532,6 +732,10 @@ fn notice(title: &str, body: String) -> Div {
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.to_string()),
+        )
         .child(div().text_color(hex(MUTED)).child(body))
 }

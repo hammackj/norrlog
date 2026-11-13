@@ -86,7 +86,9 @@ impl Hello {
     /// Whether this game has `feature`. All of them, when the daemon is too
     /// old to say.
     pub fn has(&self, feature: &str) -> bool {
-        self.features.as_ref().is_none_or(|f| f.iter().any(|x| x == feature))
+        self.features
+            .as_ref()
+            .is_none_or(|f| f.iter().any(|x| x == feature))
     }
 }
 
@@ -240,7 +242,10 @@ mod tests {
     /// `"type": "screenshot_taken"`, and a rename here would break it silently.
     #[test]
     fn events_are_tagged_in_snake_case() {
-        let e = Event::ScreenshotTaken { log_ts: 10, local_ts: 12 };
+        let e = Event::ScreenshotTaken {
+            log_ts: 10,
+            local_ts: 12,
+        };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["type"], "screenshot_taken");
         assert_eq!(v["local_ts"], 12);
@@ -253,12 +258,18 @@ mod tests {
             zone: None,
         });
         assert_eq!(serde_json::to_value(&p).unwrap()["type"], "pickup");
-        assert_eq!(serde_json::to_value(Event::BagsChanged).unwrap()["type"], "bags_changed");
+        assert_eq!(
+            serde_json::to_value(Event::BagsChanged).unwrap()["type"],
+            "bags_changed"
+        );
         // A hello from before `clock_offset` existed still reads.
         let old = r#"{"identity":"norrlogd","version":"0.1.0","api_version":1,"pid":1,"port":1,
             "started_at":0,"game":"g","log":"l","character":"","server":"","game_dir":null,
             "screenshots_dir":null,"clients":0,"idle_exit_secs":null}"#;
-        assert_eq!(serde_json::from_str::<Hello>(old).unwrap().clock_offset, None);
+        assert_eq!(
+            serde_json::from_str::<Hello>(old).unwrap().clock_offset,
+            None
+        );
         assert_eq!(serde_json::from_str::<Hello>(old).unwrap().zone, None);
         for e in [e, p, Event::BagsChanged] {
             let back: Event = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
@@ -484,13 +495,15 @@ pub struct MobRow {
 // detail through the same structs the daemon writes it with.
 
 pub use norrlog_core::encounter::{
-    AbilityStats, ActorStats, DeathRecord, Encounter, LootRecord, MobBreakdown, Outcome, ResistTally, TimelineEffect,
-    TimelineEvent, TimelineMark,
+    AbilityStats, ActorStats, DeathRecord, Encounter, LootRecord, MobBreakdown, Outcome,
+    ResistTally, TimelineEffect, TimelineEvent, TimelineMark,
 };
 
 /// `GET /api/procs`: how often each proc fired, per minute of combat.
 pub use norrlog_core::procs::{ProcKind, ProcReport, ProcRow};
-pub use norrlog_core::task::{Achievement, DialogueLine, StepCompletion, TaskDef, TaskRecord, TaskReport, TaskStepDef};
+pub use norrlog_core::task::{
+    Achievement, DialogueLine, StepCompletion, TaskDef, TaskRecord, TaskReport, TaskStepDef,
+};
 
 // ---------------------------------------------------------------------------
 // Two parts of the snapshot (`/ws`, `GET /api/snapshot`) that the Character
@@ -716,7 +729,6 @@ pub struct LootTally {
     pub transmuted_into: Vec<String>,
 }
 
-
 // ---------------------------------------------------------------------------
 // `GET /api/item?name=…`: an item's hover card. eqdb's answer and the copy
 // bundled in the daemon ride together, and a card prefers eqdb field by
@@ -775,7 +787,9 @@ impl EqdbItem {
                 return s.to_string();
             }
         }
-        v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
+        v.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| v.to_string())
     }
 }
 
@@ -817,7 +831,7 @@ pub struct WikiItem {
 }
 
 /// The 16 classes, in the order the spell file lists their levels.
-pub use norrlog_core::class::{CLASS_CANNOT_CAST, Class};
+pub use norrlog_core::class::{Class, CLASS_CANNOT_CAST};
 
 // ---------------------------------------------------------------------------
 // `GET /api/spell?name=…`: a spell's hover card. Read leniently: eqdb's reply
@@ -865,7 +879,11 @@ pub struct EqdbSpell {
 impl EqdbSpell {
     /// The spell itself, or the first match when this is a page of them.
     pub fn resolved(&self) -> Option<&EqdbSpell> {
-        if self.id.is_some() { Some(self) } else { self.matches.first() }
+        if self.id.is_some() {
+            Some(self)
+        } else {
+            self.matches.first()
+        }
     }
 }
 
@@ -1142,8 +1160,8 @@ pub struct GroupedAbility {
 pub use norrlog_core::drops::{DropReport, DropSighting, ItemDrops};
 pub use norrlog_core::game::Game;
 pub use norrlog_core::tradeskill::{
-    ComponentUse, CostBasis, CostComponent, CraftRecord, ItemPrice, LearnedRecipe, RecipeCost, RecipeSpend, SkillCost,
-    SkillProgress, SkillSegment, TradeskillReport, VendorPrice,
+    ComponentUse, CostBasis, CostComponent, CraftRecord, ItemPrice, LearnedRecipe, RecipeCost,
+    RecipeSpend, SkillCost, SkillProgress, SkillSegment, TradeskillReport, VendorPrice,
 };
 
 /// What forage has yielded, per zone.
@@ -1179,7 +1197,9 @@ pub struct ForagedItem {
 // account of the same quests merged in under `site`. `GET /api/item-brief`
 // answers the icons and links a row needs.
 
-pub use norrlog_core::skyquest::{BossKills, GiverLine, IslandProgress, SkyItemProgress, SkyQuestProgress, SkyReport};
+pub use norrlog_core::skyquest::{
+    BossKills, GiverLine, IslandProgress, SkyItemProgress, SkyQuestProgress, SkyReport,
+};
 
 /// The `/api/sky` reply: the report, and the site beside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]

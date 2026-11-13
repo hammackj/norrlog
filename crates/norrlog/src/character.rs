@@ -11,13 +11,13 @@ use crate::api::Api;
 use crate::format::{num, pp, when_short};
 use crate::parts::{ROW, ROW_YOU, band, bar_row, card, dim, empty, figure, fill, hint, note};
 use crate::table::tag;
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{TaskRecord, TaskReport, Totals};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::{TaskRecord, TaskReport, Totals};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -73,7 +73,9 @@ impl CharacterView {
         self.last_load = Some(Instant::now());
         self.loading = Some(cx.spawn(async move |this, cx| {
             // A failure is silent: what was shown stays.
-            let Ok(r) = api.get::<TaskReport>("/api/tasks".to_string()).await else { return };
+            let Ok(r) = api.get::<TaskReport>("/api/tasks".to_string()).await else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 v.report = Some(r);
                 cx.notify();
@@ -84,8 +86,18 @@ impl CharacterView {
     fn render_totals(&self) -> Div {
         let t = self.totals.as_ref();
         let n = |f: fn(&Totals) -> f64| num(t.map(f));
-        let big = |label: &str, value: String| totals_card(label, div().text_2xl().font_weight(FontWeight::BOLD).child(value));
-        let small = |label: &str, value: String| totals_card(label, div().text_xl().font_weight(FontWeight::BOLD).child(value));
+        let big = |label: &str, value: String| {
+            totals_card(
+                label,
+                div().text_2xl().font_weight(FontWeight::BOLD).child(value),
+            )
+        };
+        let small = |label: &str, value: String| {
+            totals_card(
+                label,
+                div().text_xl().font_weight(FontWeight::BOLD).child(value),
+            )
+        };
         let coin = match t {
             Some(t) => h_flex()
                 .items_baseline()
@@ -93,11 +105,17 @@ impl CharacterView {
                 .text_xl()
                 .font_weight(FontWeight::BOLD)
                 .child(pp(t.coin_total_copper))
-                .child(div().text_sm().font_weight(FontWeight::NORMAL).text_color(hex(MUTED)).child(format!(
-                    "{} looted · {} sold",
-                    pp(t.coin_copper),
-                    pp(t.coin_from_sales_copper)
-                ))),
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(hex(MUTED))
+                        .child(format!(
+                            "{} looted · {} sold",
+                            pp(t.coin_copper),
+                            pp(t.coin_from_sales_copper)
+                        )),
+                ),
             None => h_flex().text_xl().font_weight(FontWeight::BOLD).child("—"),
         };
         // app.css' `.grid`: as many 13 rem columns as fit, sharing the rest.
@@ -123,13 +141,22 @@ impl CharacterView {
         let title = h_flex()
             .gap_2()
             .items_baseline()
-            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child("TASKS"))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hex(MUTED))
+                    .child("TASKS"),
+            )
             .child(div().text_sm().text_color(hex(MUTED)).child(count));
         let mut body = v_flex().gap_1();
         if tasks.is_empty() {
             body = body.child(empty("No tasks assigned"));
         } else {
-            let shown: Vec<&TaskRecord> = tasks.iter().filter(|t| self.show_done || t.still_to_do).collect();
+            let shown: Vec<&TaskRecord> = tasks
+                .iter()
+                .filter(|t| self.show_done || t.still_to_do)
+                .collect();
             if shown.is_empty() {
                 body = body.child(empty("Nothing outstanding"));
             }
@@ -145,7 +172,10 @@ impl CharacterView {
                         .text_sm()
                         .text_color(hex(LINK))
                         .hover(|s| s.text_color(hex(LINK_HOVER)))
-                        .child(format!("{} {finished} completed", if self.show_done { "hide" } else { "show" }))
+                        .child(format!(
+                            "{} {finished} completed",
+                            if self.show_done { "hide" } else { "show" }
+                        ))
                         .on_click(cx.listener(|v, _, _, cx| {
                             v.show_done = !v.show_done;
                             cx.notify();
@@ -190,45 +220,69 @@ impl CharacterView {
         } else {
             0.
         };
-        let mut name = h_flex()
-            .min_w_0()
-            .gap(px(5.))
-            .child(div().min_w_0().overflow_hidden().text_ellipsis().child(t.name.clone()));
+        let mut name = h_flex().min_w_0().gap(px(5.)).child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(t.name.clone()),
+        );
         if t.weekly {
             name = name.child(tag("weekly", ACCENT).flex_none());
         }
         if !t.still_to_do {
-            name = name.child(tag(if t.weekly { "done this week" } else { "done" }, HEAL).flex_none());
+            name =
+                name.child(tag(if t.weekly { "done this week" } else { "done" }, HEAL).flex_none());
         }
-        let last = if done > 0 { when_short(t.last_progress()) } else { "no progress yet".into() };
+        let last = if done > 0 {
+            when_short(t.last_progress())
+        } else {
+            "no progress yet".into()
+        };
         let progress = if t.steps.is_empty() {
             format!("{done} step{}", if done == 1 { "" } else { "s" })
         } else {
             format!("{done_steps}/{}", t.steps.len())
         };
-        let mut out = v_flex()
-            .when(i > 0, |d| d.mt_3())
-            .child(bar_row(share, fill(if t.weekly { ROW_YOU } else { ROW }), name, h_flex().gap_3().child(dim(last)).child(figure(progress))));
+        let mut out = v_flex().when(i > 0, |d| d.mt_3()).child(bar_row(
+            share,
+            fill(if t.weekly { ROW_YOU } else { ROW }),
+            name,
+            h_flex().gap_3().child(dim(last)).child(figure(progress)),
+        ));
         if !t.steps.is_empty() {
-            out = out.child(v_flex().mt_1().pl(px(6.)).children(t.steps.iter().enumerate().map(|(n, st)| {
-                let ok = states.get(n).copied().unwrap_or(false);
-                let at = t.completions.iter().find(|c| c.step_index == Some(n)).map(|c| when_short(Some(c.at)));
-                h_flex()
-                    .justify_between()
-                    .gap_3()
-                    .px(px(6.))
-                    .py(px(2.))
-                    .border_l_2()
-                    .border_color(hex(if ok { HEAL } else { BORDER }))
-                    .text_color(hex(if ok { TEXT } else { MUTED }))
-                    .child(
+            out = out.child(
+                v_flex()
+                    .mt_1()
+                    .pl(px(6.))
+                    .children(t.steps.iter().enumerate().map(|(n, st)| {
+                        let ok = states.get(n).copied().unwrap_or(false);
+                        let at = t
+                            .completions
+                            .iter()
+                            .find(|c| c.step_index == Some(n))
+                            .map(|c| when_short(Some(c.at)));
                         h_flex()
-                            .gap(px(6.))
-                            .child(div().text_color(hex(if ok { HEAL } else { MUTED })).child(if ok { "●" } else { "○" }))
-                            .child(st.description.clone()),
-                    )
-                    .when_some(at, |d, at| d.child(dim(at)))
-            })));
+                            .justify_between()
+                            .gap_3()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .border_l_2()
+                            .border_color(hex(if ok { HEAL } else { BORDER }))
+                            .text_color(hex(if ok { TEXT } else { MUTED }))
+                            .child(
+                                h_flex()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_color(hex(if ok { HEAL } else { MUTED }))
+                                            .child(if ok { "●" } else { "○" }),
+                                    )
+                                    .child(st.description.clone()),
+                            )
+                            .when_some(at, |d, at| d.child(dim(at)))
+                    })),
+            );
         }
         let stray = t.unidentified();
         if stray > 0 && !t.steps.is_empty() {
@@ -253,7 +307,10 @@ impl CharacterView {
                             .text_color(hex(MUTED))
                             .hover(|s| s.text_color(hex(TEXT)))
                             .child(if open { "▾" } else { "▸" })
-                            .child(format!("{n} line{} of quest text", if n == 1 { "" } else { "s" }))
+                            .child(format!(
+                                "{n} line{} of quest text",
+                                if n == 1 { "" } else { "s" }
+                            ))
                             .on_click(cx.listener(move |v, _, _, cx| {
                                 if !v.dialogue_open.remove(&key) {
                                     v.dialogue_open.insert(key.clone());
@@ -281,11 +338,22 @@ impl CharacterView {
                                 .border_l_2()
                                 .border_color(hex(BORDER))
                                 .text_color(hex(MUTED))
-                                .child(StyledText::new(text).with_highlights([(0..head.len(), speaker)]))
+                                .child(
+                                    StyledText::new(text)
+                                        .with_highlights([(0..head.len(), speaker)]),
+                                )
                                 .when(!l.keywords.is_empty(), |d| {
-                                    d.child(h_flex().flex_wrap().gap_1().children(l.keywords.iter().map(|k| {
-                                        div().px(px(4.)).rounded(px(3.)).bg(wash(YOU, 0.18)).text_color(hex(YOU)).text_xs().child(k.clone())
-                                    })))
+                                    d.child(h_flex().flex_wrap().gap_1().children(
+                                        l.keywords.iter().map(|k| {
+                                            div()
+                                                .px(px(4.))
+                                                .rounded(px(3.))
+                                                .bg(wash(YOU, 0.18))
+                                                .text_color(hex(YOU))
+                                                .text_xs()
+                                                .child(k.clone())
+                                        }),
+                                    ))
                                 })
                         }))
                     }),
@@ -295,12 +363,17 @@ impl CharacterView {
     }
 
     fn render_achievements(&self) -> Div {
-        let list = self.report.as_ref().map_or(&[][..], |r| &r.achievements[..]);
+        let list = self
+            .report
+            .as_ref()
+            .map_or(&[][..], |r| &r.achievements[..]);
         let rows = if list.is_empty() {
             empty("None earned in this log")
         } else {
             v_flex().gap_1().children(
-                list.iter().take(10).map(|a| bar_row(0., fill(ROW), a.name.clone(), dim(when_short(Some(a.at))))),
+                list.iter()
+                    .take(10)
+                    .map(|a| bar_row(0., fill(ROW), a.name.clone(), dim(when_short(Some(a.at))))),
             )
         };
         card("Achievements").flex_1().min_w_0().child(rows)
@@ -313,9 +386,22 @@ impl Render for CharacterView {
             .gap_3()
             .child(band("Totals", "everything this log has recorded"))
             .child(self.render_totals())
-            .child(band("Character", "what this character is carrying and has earned"))
-            .child(h_flex().items_start().gap_3().child(self.render_tasks(cx)).child(self.render_achievements()));
-        div().id("character-scroll").size_full().overflow_y_scrollbar().child(page)
+            .child(band(
+                "Character",
+                "what this character is carrying and has earned",
+            ))
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap_3()
+                    .child(self.render_tasks(cx))
+                    .child(self.render_achievements()),
+            );
+        div()
+            .id("character-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(page)
     }
 }
 
@@ -330,7 +416,13 @@ fn totals_card(label: &str, value: impl IntoElement) -> Div {
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(label.to_uppercase()))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hex(MUTED))
+                .child(label.to_uppercase()),
+        )
         .child(value)
 }
 

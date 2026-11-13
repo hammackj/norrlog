@@ -33,7 +33,11 @@ pub struct ParserConfig {
 /// `~/.config`. Only an absolute base counts: a relative one would follow
 /// the working directory and save somewhere different each run.
 pub fn config_home() -> Option<PathBuf> {
-    let abs = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    let abs = |k: &str| {
+        std::env::var_os(k)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
     if cfg!(target_os = "windows") {
         return abs("APPDATA");
     }
@@ -56,21 +60,29 @@ pub fn save_patch(patch: serde_json::Map<String, serde_json::Value>) -> std::io:
     save_patch_at(&p, patch)
 }
 
-fn save_patch_at(p: &std::path::Path, patch: serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
+fn save_patch_at(
+    p: &std::path::Path,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> std::io::Result<()> {
     let mut v = match std::fs::read(p) {
         Ok(b) => serde_json::from_slice::<serde_json::Value>(&b)
             .map_err(|e| std::io::Error::other(format!("{} is not JSON: {e}", p.display())))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(e),
     };
-    let obj = v.as_object_mut().ok_or_else(|| std::io::Error::other(format!("{} is not an object", p.display())))?;
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| std::io::Error::other(format!("{} is not an object", p.display())))?;
     obj.extend(patch);
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = p.with_extension("json.norrlog-tmp");
     // Two-space indent, as `saveConfig` writes it.
-    std::fs::write(&tmp, serde_json::to_string_pretty(&v).map_err(std::io::Error::other)?)?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&v).map_err(std::io::Error::other)?,
+    )?;
     std::fs::rename(&tmp, p)
 }
 
@@ -98,7 +110,9 @@ impl ParserConfig {
     fn daemon_args_with(&self, guess: impl FnOnce() -> Option<PathBuf>) -> Vec<OsString> {
         let mut a: Vec<OsString> = Vec::new();
         let source = if !self.log_file.is_empty() {
-            std::path::Path::new(&self.log_file).parent().map(PathBuf::from)
+            std::path::Path::new(&self.log_file)
+                .parent()
+                .map(PathBuf::from)
         } else if !self.logs_dir.is_empty() {
             Some(PathBuf::from(&self.logs_dir))
         } else {
@@ -150,21 +164,39 @@ mod tests {
         std::fs::create_dir_all(live.join("Logs")).unwrap();
         let log = live.join("Logs/eqlog_Dorrak_drinal.txt");
         let legends = || Some(PathBuf::from("/somewhere/EverQuest Legends"));
-        let args = |c: &ParserConfig| c.daemon_args_with(legends).into_iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>();
-        let mut c = ParserConfig { log_file: log.display().to_string(), ..Default::default() };
+        let args = |c: &ParserConfig| {
+            c.daemon_args_with(legends)
+                .into_iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let mut c = ParserConfig {
+            log_file: log.display().to_string(),
+            ..Default::default()
+        };
 
         // No spell file beside the log: no game folder at all, not the guess.
-        assert!(!args(&c).iter().any(|a| a == "--game-dir"), "{:?}", args(&c));
+        assert!(
+            !args(&c).iter().any(|a| a == "--game-dir"),
+            "{:?}",
+            args(&c)
+        );
         // The install the log sits in, once it looks like one.
         std::fs::write(live.join("spells_us.txt"), "").unwrap();
         let a = args(&c);
-        assert_eq!(a[a.iter().position(|x| x == "--game-dir").unwrap() + 1], live.display().to_string());
+        assert_eq!(
+            a[a.iter().position(|x| x == "--game-dir").unwrap() + 1],
+            live.display().to_string()
+        );
         // A folder that was set still wins.
         c.game_dir = "/set/by/hand".into();
         assert!(args(&c).contains(&"/set/by/hand".to_string()));
         // Nothing chosen at all: the guess, and its Logs folder.
         let a = args(&ParserConfig::default());
-        assert!(a.contains(&"/somewhere/EverQuest Legends".to_string()), "{a:?}");
+        assert!(
+            a.contains(&"/somewhere/EverQuest Legends".to_string()),
+            "{a:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -175,11 +207,18 @@ mod tests {
         let mut patch = serde_json::Map::new();
         patch.insert("logFile".into(), "/a".into());
         save_patch_at(&p, patch.clone()).unwrap();
-        std::fs::write(&p, r#"{"logFile":"/b","theme":"spellbook","overlayOptions":"panels=meter"}"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"logFile":"/b","theme":"spellbook","overlayOptions":"panels=meter"}"#,
+        )
+        .unwrap();
         patch.insert("port".into(), 8800.into());
         save_patch_at(&p, patch).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-        assert_eq!(v, serde_json::json!({"logFile":"/a","port":8800,"theme":"spellbook","overlayOptions":"panels=meter"}));
+        assert_eq!(
+            v,
+            serde_json::json!({"logFile":"/a","port":8800,"theme":"spellbook","overlayOptions":"panels=meter"})
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -189,10 +228,43 @@ mod tests {
             r#"{"logFile":"/l/eqlog_A_b.txt","logsDir":"/l","gameDir":"/g","port":8777,"since":"all","eqdb":"off","uiScale":1}"#,
         )
         .unwrap();
-        let a: Vec<String> = c.daemon_args().iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        assert_eq!(a, ["--log", "/l/eqlog_A_b.txt", "--game-dir", "/g", "--eqdb", "off"]);
-        let c = ParserConfig { logs_dir: "/l".into(), game_dir: "/g".into(), since: "2026-09-01".into(), ..Default::default() };
-        let a: Vec<String> = c.daemon_args().iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        assert_eq!(a, ["--logs-dir", "/l", "--game-dir", "/g", "--since", "2026-09-01"]);
+        let a: Vec<String> = c
+            .daemon_args()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            a,
+            [
+                "--log",
+                "/l/eqlog_A_b.txt",
+                "--game-dir",
+                "/g",
+                "--eqdb",
+                "off"
+            ]
+        );
+        let c = ParserConfig {
+            logs_dir: "/l".into(),
+            game_dir: "/g".into(),
+            since: "2026-09-01".into(),
+            ..Default::default()
+        };
+        let a: Vec<String> = c
+            .daemon_args()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            a,
+            [
+                "--logs-dir",
+                "/l",
+                "--game-dir",
+                "/g",
+                "--since",
+                "2026-09-01"
+            ]
+        );
     }
 }

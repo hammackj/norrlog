@@ -19,7 +19,9 @@ pub fn set(features: Option<Vec<String>>) {
 
 /// Whether the followed game has `name` (`sky`, `lockouts`, `motes`).
 pub fn has(name: &str) -> bool {
-    FEATURES.read().map_or(true, |f| f.as_ref().is_none_or(|f| f.iter().any(|x| x == name)))
+    FEATURES.read().map_or(true, |f| {
+        f.as_ref().is_none_or(|f| f.iter().any(|x| x == name))
+    })
 }
 
 /// The feature a tab needs, if any.

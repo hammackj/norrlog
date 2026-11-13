@@ -455,7 +455,6 @@ pub const TABLE_SOURCES: &[(&str, &[&str])] = &[
     ("class_armor_slots", &["class_armor"]),
 ];
 
-
 impl Bundle {
     /// A bundle with nothing in it yet, and no `generator` on it.
     ///
@@ -675,7 +674,6 @@ pub struct LogSource {
     pub bytes: u64,
     pub last_seen: i64,
 }
-
 
 /// One item seen dropping from one creature.
 ///
@@ -1384,7 +1382,11 @@ pub struct ItemFacts {
     /// This records what the window actually said, because a disagreement
     /// between the two is evidence about one of them and discarding it means
     /// discovering it again later.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub tier_observed: Option<u8>,
     #[serde(default)]
     pub tier_note: String,
@@ -1401,22 +1403,46 @@ pub struct ItemFacts {
     /// interpreting it is not this struct's job.
     #[serde(default)]
     pub container: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub capacity: Option<u32>,
     #[serde(default)]
     pub size_capacity: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub weight_reduction: Option<u32>,
 
     /// Damage the window states separately from `base_dmg`.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub backstab_dmg: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub fire_dmg: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub cold_dmg: Option<u32>,
     /// A bow or thrown weapon's range.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub range: Option<u32>,
 
     /// Deities the item is restricted to, as `classes` and `races` are.
@@ -1547,7 +1573,6 @@ impl ItemFacts {
     }
 }
 
-
 /// An effect a slotted augment is granting to its host.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GrantedEffect {
@@ -1593,8 +1618,11 @@ pub struct ItemStat {
     /// "Strength: 42 +19", two numbers for one line. Legends has no such
     /// thing, so this is absent on every reading taken there rather than
     /// zero — a zero would claim the tooltip said "+0", which it did not.
-    #[serde(default, skip_serializing_if = "Option::is_none",
-            deserialize_with = "whole_opt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_opt"
+    )]
     pub heroic: Option<i64>,
 }
 
@@ -1621,9 +1649,9 @@ where
             if let Some(i) = n.as_i64() {
                 return Ok(i);
             }
-            let f = n.as_f64().ok_or_else(|| {
-                D::Error::custom(format!("{n} is not a number this can hold"))
-            })?;
+            let f = n
+                .as_f64()
+                .ok_or_else(|| D::Error::custom(format!("{n} is not a number this can hold")))?;
             if f.fract() != 0.0 {
                 return Err(D::Error::custom(format!(
                     "{f} is not a whole number, and a stat with a fraction in it is a misread rather than a value to round"
@@ -2355,7 +2383,12 @@ mod spawn_tests {
     /// cannot silently turn every raid target into a timed spawn.
     #[test]
     fn a_kind_travels_as_its_own_name() {
-        for k in [SpawnKind::Timed, SpawnKind::Instanced, SpawnKind::Static, SpawnKind::Unknown] {
+        for k in [
+            SpawnKind::Timed,
+            SpawnKind::Instanced,
+            SpawnKind::Static,
+            SpawnKind::Unknown,
+        ] {
             let json = serde_json::to_string(&k).unwrap();
             assert_eq!(json, format!("\"{}\"", k.as_str()));
             assert_eq!(serde_json::from_str::<SpawnKind>(&json).unwrap(), k);
@@ -2383,10 +2416,7 @@ mod spawn_tests {
     /// different, and both have to survive serialisation.
     #[test]
     fn a_timed_rule_may_carry_no_duration() {
-        let r: SpawnRule = serde_json::from_str(
-            r#"{"creature":"a rat","kind":"timed"}"#,
-        )
-        .unwrap();
+        let r: SpawnRule = serde_json::from_str(r#"{"creature":"a rat","kind":"timed"}"#).unwrap();
         assert_eq!(r.kind, SpawnKind::Timed);
         assert_eq!(r.seconds, None);
         assert!(r.lockout.is_none());
@@ -2454,7 +2484,10 @@ mod extra_tests {
             serde_json::from_str(r#"{"item":"Chitin Shell Shield","type":"Shield"}"#).unwrap();
         let out = serde_json::to_string(&f).unwrap();
         assert!(out.contains("Chitin Shell Shield"), "{out}");
-        assert!(!out.contains("\"type\""), "the unknown field must not be re-emitted: {out}");
+        assert!(
+            !out.contains("\"type\""),
+            "the unknown field must not be re-emitted: {out}"
+        );
     }
 }
 
@@ -2484,8 +2517,7 @@ pub fn bundle_id(bytes: &[u8]) -> String {
 /// both from one read makes that impossible rather than unlikely.
 pub fn read_identified(path: &std::path::Path) -> anyhow::Result<(Bundle, String)> {
     use anyhow::Context as _;
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let doc: Bundle = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as a contribution bundle", path.display()))?;
     let id = bundle_id(&bytes);
@@ -2535,10 +2567,8 @@ mod stat_value_tests {
 
     #[test]
     fn the_heroic_half_reads_the_same_way() {
-        let got = stats_of(
-            r#"{"item":"X","stats":[{"name":"STR","value":42.0,"heroic":19.0}]}"#,
-        )
-        .expect("the heroic half is a number in the same tooltip");
+        let got = stats_of(r#"{"item":"X","stats":[{"name":"STR","value":42.0,"heroic":19.0}]}"#)
+            .expect("the heroic half is a number in the same tooltip");
         assert_eq!((got[0].value, got[0].heroic), (42, Some(19)));
 
         // Absent and null both stay absent: a zero would claim the tooltip
@@ -2546,13 +2576,11 @@ mod stat_value_tests {
         let none = stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1}]}"#).unwrap();
         assert_eq!(none[0].heroic, None);
         let null =
-            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":null}]}"#)
-                .unwrap();
+            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":null}]}"#).unwrap();
         assert_eq!(null[0].heroic, None, "an explicit null is not a zero");
 
         assert!(
-            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":1.5}]}"#)
-                .is_err(),
+            stats_of(r#"{"item":"X","stats":[{"name":"STR","value":1,"heroic":1.5}]}"#).is_err(),
             "a fractional heroic is a misread like any other"
         );
     }
@@ -2573,7 +2601,10 @@ mod stat_value_tests {
             ("dmg_bon", r#"{"item":"X","dmg_bon":3.0}"#),
             ("value_copper", r#"{"item":"X","value_copper":1200.0}"#),
             ("capacity", r#"{"item":"X","capacity":10.0}"#),
-            ("weight_reduction", r#"{"item":"X","weight_reduction":25.0}"#),
+            (
+                "weight_reduction",
+                r#"{"item":"X","weight_reduction":25.0}"#,
+            ),
             ("backstab_dmg", r#"{"item":"X","backstab_dmg":9.0}"#),
             ("fire_dmg", r#"{"item":"X","fire_dmg":5.0}"#),
             ("cold_dmg", r#"{"item":"X","cold_dmg":5.0}"#),
@@ -2656,8 +2687,10 @@ mod lore_only_tests {
     #[test]
     fn the_readers_own_bookkeeping_does_not_make_it_a_reading_of_the_item() {
         let mut f = lore_window();
-        f.extra.insert("crops".into(), serde_json::json!(["eql_mote.png"]));
-        f.extra.insert("captured_first".into(), serde_json::json!("2026-08-19"));
+        f.extra
+            .insert("crops".into(), serde_json::json!(["eql_mote.png"]));
+        f.extra
+            .insert("captured_first".into(), serde_json::json!("2026-08-19"));
         assert!(
             f.lore_only(),
             "an unrecognised key turned a Lore tab into a reading of the item"
@@ -2668,20 +2701,36 @@ mod lore_only_tests {
     #[test]
     fn a_field_of_the_item_makes_it_a_reading_of_the_item() {
         for f in [
-            ItemFacts { slot: "Neck".into(), ..lore_window() },
-            ItemFacts { flags: vec!["Lore".into()], ..lore_window() },
             ItemFacts {
-                stats: vec![ItemStat { name: "AC".into(), value: 10, heroic: None }],
+                slot: "Neck".into(),
+                ..lore_window()
+            },
+            ItemFacts {
+                flags: vec!["Lore".into()],
+                ..lore_window()
+            },
+            ItemFacts {
+                stats: vec![ItemStat {
+                    name: "AC".into(),
+                    value: 10,
+                    heroic: None,
+                }],
                 ..lore_window()
             },
         ] {
-            assert!(!f.lore_only(), "a reading of the item was treated as one field");
+            assert!(
+                !f.lore_only(),
+                "a reading of the item was treated as one field"
+            );
         }
     }
 
     #[test]
     fn a_window_with_no_lore_is_not_a_lore_window() {
-        assert!(!ItemFacts { lore: "  ".into(), ..lore_window() }.lore_only());
+        assert!(!ItemFacts {
+            lore: "  ".into(),
+            ..lore_window()
+        }
+        .lore_only());
     }
 }
-

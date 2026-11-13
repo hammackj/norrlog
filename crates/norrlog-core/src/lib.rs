@@ -13,8 +13,8 @@ pub mod alert;
 pub mod bestiary;
 pub mod bundle;
 pub mod class;
-pub mod collect;
 pub mod classlevel;
+pub mod collect;
 pub mod drops;
 pub mod encounter;
 pub mod env;
@@ -27,8 +27,8 @@ pub mod lockout;
 pub mod npc;
 pub mod parser;
 pub mod preview;
-pub mod profile;
 pub mod procs;
+pub mod profile;
 pub mod recipe;
 pub mod skyquest;
 pub mod spell;
@@ -39,18 +39,19 @@ pub mod zone;
 
 pub use class::{Class, ClassDetector, ClassScore};
 pub use collect::{
-    ConsiderCollector, Considered, FactionCause, FactionCollector, FactionMoves, Player,
-    AaCollector, AaStep, CombatCollector, ForageCollector, Marker, MarkerCollector, MarkerKind, PlayerCollector, QuestCollector, SkillCollector, TradeCollector, ZoneForage,
+    AaCollector, AaStep, CombatCollector, ConsiderCollector, Considered, FactionCause,
+    FactionCollector, FactionMoves, ForageCollector, Marker, MarkerCollector, MarkerKind, Player,
+    PlayerCollector, QuestCollector, SkillCollector, TradeCollector, ZoneForage,
 };
 pub use encounter::{ActorStats, Encounter, EncounterTracker};
 pub use event::{
     Actor, Coin, DamageKind, Event, Flags, LogEntry, LootDisposition, SpellbookChangeKind,
 };
 pub use experience::{ExpSource, ExpTracker, LevelRecord};
-pub use procs::{ProcKind, ProcRegistry, ProcReport, ProcRow, ProcTracker};
 pub use feed::{Context, Feed, Observer};
 pub use lockout::{BossKill, LockoutReport, LockoutTracker};
 pub use parser::Parser;
+pub use procs::{ProcKind, ProcRegistry, ProcReport, ProcRow, ProcTracker};
 pub use spell::{ActiveBuff, Spell, SpellDb, SpellResolver};
 pub use task::{TaskReport, TaskTracker};
 pub use tradeskill::{TradeskillReport, TradeskillTracker};

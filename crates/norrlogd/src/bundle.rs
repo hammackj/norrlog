@@ -83,11 +83,9 @@
 //! corrected on the site by hand, not by a later bundle.
 
 use norrlog_core::bundle::{
-    Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropRow, FactionAmount,
-    DropPlaceRow, FactionHit, ItemIcon, ItemId, KillRow, LogSource, SkillObserved, TurnIn,
-    VendorRow,
-    ForagedItem as BundleForagedItem, ZoneForaged,
-    ZoneMarker, ZoneShortname,
+    Bundle, Consider, ConsiderLevel, CreatureSpotRow, DropPlaceRow, DropRow, FactionAmount,
+    FactionHit, ForagedItem as BundleForagedItem, ItemIcon, ItemId, KillRow, LogSource,
+    SkillObserved, TurnIn, VendorRow, ZoneForaged, ZoneMarker, ZoneShortname,
 };
 use norrlog_core::game::Game;
 
@@ -284,7 +282,17 @@ pub fn build(
         .map(
             // `left` is not sent: eqldb's import has no column for it yet,
             // and this is that site's wire format, not ours to widen alone.
-            |crate::store::StoredDrop { game, item, npc, zones, looted, quantity, first_seen, last_seen, .. }| {
+            |crate::store::StoredDrop {
+                 game,
+                 item,
+                 npc,
+                 zones,
+                 looted,
+                 quantity,
+                 first_seen,
+                 last_seen,
+                 ..
+             }| {
                 let key = (game, item.to_lowercase(), npc.to_lowercase());
                 let places = places
                     .remove(&key)

@@ -6,8 +6,8 @@
 
 use crate::overlay::{Geometry, Kind, Saved};
 use crate::parts::{card, hint};
-use crate::theme::*;
 use crate::theme::px;
+use crate::theme::*;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
@@ -69,7 +69,8 @@ impl OverlayControls {
             .into_iter()
             .map(|kind| {
                 let saved = Saved::load(kind);
-                let mut input = |v: String| cx.new(|cx| InputState::new(window, cx).default_value(v));
+                let mut input =
+                    |v: String| cx.new(|cx| InputState::new(window, cx).default_value(v));
                 Card {
                     kind,
                     options: input(saved.options.clone()),
@@ -82,7 +83,11 @@ impl OverlayControls {
                 }
             })
             .collect();
-        OverlayControls { cards, base: None, err: None }
+        OverlayControls {
+            cards,
+            base: None,
+            err: None,
+        }
     }
 
     pub fn set_base(&mut self, base: Option<String>, cx: &mut Context<Self>) {
@@ -92,7 +97,13 @@ impl OverlayControls {
 
     /// Whether the overlay is open, and the settings it opened with, which
     /// differ from the fields when it had to be moved onto a display.
-    pub fn set_open(&mut self, kind: Kind, open: bool, saved: Option<Saved>, cx: &mut Context<Self>) {
+    pub fn set_open(
+        &mut self,
+        kind: Kind,
+        open: bool,
+        saved: Option<Saved>,
+        cx: &mut Context<Self>,
+    ) {
         let c = self.card_mut(kind);
         c.open = open;
         if let Some(s) = saved
@@ -105,18 +116,31 @@ impl OverlayControls {
     }
 
     fn card_mut(&mut self, kind: Kind) -> &mut Card {
-        self.cards.iter_mut().find(|c| c.kind == kind).expect("a card for each kind")
+        self.cards
+            .iter_mut()
+            .find(|c| c.kind == kind)
+            .expect("a card for each kind")
     }
 
     /// Save, then tell the shell.
     fn apply(&mut self, kind: Kind, saved: Saved, cx: &mut Context<Self>) {
-        self.err = saved.save(kind).err().map(|e| format!("Could not save: {e}"));
+        self.err = saved
+            .save(kind)
+            .err()
+            .map(|e| format!("Could not save: {e}"));
         self.card_mut(kind).saved = saved.clone();
         cx.emit(OverlayRequest::Apply(kind, saved));
         cx.notify();
     }
 
-    fn tick(&mut self, kind: Kind, panel: &'static str, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn tick(
+        &mut self,
+        kind: Kind,
+        panel: &'static str,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let c = self.card_mut(kind);
         let now = c.options.read(cx).value().to_string();
         let mut picked = panels_of(&now);
@@ -126,9 +150,14 @@ impl OverlayControls {
         }
         // Rebuilt in the list's order, so the string does not depend on
         // which box was clicked first.
-        let ordered: Vec<&str> = PANELS.iter().map(|p| p.0).filter(|k| picked.iter().any(|p| p == k)).collect();
+        let ordered: Vec<&str> = PANELS
+            .iter()
+            .map(|p| p.0)
+            .filter(|k| picked.iter().any(|p| p == k))
+            .collect();
         let next = with_panels(&now, &ordered);
-        c.options.update(cx, |s, cx| s.set_value(next.clone(), window, cx));
+        c.options
+            .update(cx, |s, cx| s.set_value(next.clone(), window, cx));
         let mut saved = c.saved.clone();
         saved.options = next;
         self.apply(kind, saved, cx);
@@ -143,7 +172,14 @@ impl OverlayControls {
 
     fn apply_bounds(&mut self, kind: Kind, cx: &mut Context<Self>) {
         let c = self.card_mut(kind);
-        let num = |e: &Entity<InputState>, cx: &App| e.read(cx).value().trim().parse::<f32>().ok().filter(|n| n.is_finite());
+        let num = |e: &Entity<InputState>, cx: &App| {
+            e.read(cx)
+                .value()
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|n| n.is_finite())
+        };
         let b = c.saved.bounds;
         let bounds = Geometry {
             x: num(&c.x, cx).unwrap_or(b.x).round(),
@@ -160,7 +196,10 @@ impl OverlayControls {
     /// Back to the top left of the primary display, for an overlay that has
     /// ended up somewhere it cannot be seen.
     fn reset(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
-        let origin = cx.primary_display().map(|d| d.bounds().origin).unwrap_or_default();
+        let origin = cx
+            .primary_display()
+            .map(|d| d.bounds().origin)
+            .unwrap_or_default();
         let (x, y) = (f32::from(origin.x) + 40., f32::from(origin.y) + 40.);
         let c = self.card_mut(kind);
         c.x.update(cx, |s, cx| s.set_value(x.to_string(), window, cx));
@@ -177,20 +216,31 @@ impl OverlayControls {
 
 /// The `panels` parameter, as the overlay reads it (`panelsOf`).
 pub fn panels_of(options: &str) -> Vec<String> {
-    crate::overlay::Options::parse(options).panels.into_iter().fold(Vec::new(), |mut v, p| {
-        if !v.contains(&p) {
-            v.push(p);
-        }
-        v
-    })
+    crate::overlay::Options::parse(options)
+        .panels
+        .into_iter()
+        .fold(Vec::new(), |mut v, p| {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+            v
+        })
 }
 
 /// Rewrite only `panels`, keeping the rest of the string as it was
 /// (`withPanels`).
 pub fn with_panels(options: &str, panels: &[&str]) -> String {
     let joined = format!("panels={}", panels.join(","));
-    let mut parts: Vec<String> = options.trim_start_matches('?').split('&').filter(|p| !p.is_empty()).map(str::to_string).collect();
-    match parts.iter().position(|p| p == "panels" || p.starts_with("panels=")) {
+    let mut parts: Vec<String> = options
+        .trim_start_matches('?')
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    match parts
+        .iter()
+        .position(|p| p == "panels" || p.starts_with("panels="))
+    {
         Some(i) => parts[i] = joined,
         None => parts.insert(0, joined),
     }
@@ -201,7 +251,8 @@ const OPTIONS_HINT: &str = "The same settings as text, plus what the tickboxes d
     self=1, enemies=0, crit=0, idle=1, scope=session or scope=zone.";
 const BOUNDS_HINT: &str = "Where the overlay sits and how wide it is. Its height follows what it shows. A position \
     on no display is moved onto the one the app is on when the overlay opens.";
-const CLICK_HINT: &str = "With click-through on, clicks go to the game underneath. Off, the overlay takes them.";
+const CLICK_HINT: &str =
+    "With click-through on, clicks go to the game underneath. Off, the overlay takes them.";
 const CHARM_HINT: &str = "A second overlay, placed apart from the first. Its default, panels=charm, shows charm \
     uptime, what is charmed, and any charm that was resisted or refused. It hides itself when there is neither.";
 
@@ -218,7 +269,9 @@ impl Render for OverlayControls {
         for c in &self.cards {
             col = col.child(self.render_card(c, cx));
         }
-        col.when_some(self.err.clone(), |d, e| d.child(div().text_sm().text_color(hex(ERR)).child(e)))
+        col.when_some(self.err.clone(), |d, e| {
+            d.child(div().text_sm().text_color(hex(ERR)).child(e))
+        })
     }
 }
 
@@ -237,11 +290,17 @@ impl OverlayControls {
                 Checkbox::new(id(&format!("p-{key}")))
                     .label(label)
                     .checked(on.iter().any(|p| p == key))
-                    .on_click(cx.listener(move |v, checked: &bool, window, cx| v.tick(kind, key, *checked, window, cx))),
+                    .on_click(cx.listener(move |v, checked: &bool, window, cx| {
+                        v.tick(kind, key, *checked, window, cx)
+                    })),
             );
         }
         let geom = |label: &'static str, e: &Entity<InputState>| {
-            h_flex().gap_1().items_center().child(div().text_sm().text_color(hex(MUTED)).child(label)).child(div().w(px(72.)).child(Input::new(e).small()))
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().text_color(hex(MUTED)).child(label))
+                .child(div().w(px(72.)).child(Input::new(e).small()))
         };
         let title = match kind {
             Kind::Main => "Overlay",
@@ -297,7 +356,12 @@ impl OverlayControls {
 }
 
 fn field(label: &str) -> Div {
-    v_flex().gap_1().child(div().text_sm().text_color(hex(MUTED)).child(label.to_string()))
+    v_flex().gap_1().child(
+        div()
+            .text_sm()
+            .text_color(hex(MUTED))
+            .child(label.to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -307,16 +371,29 @@ mod tests {
 
     #[test]
     fn ticking_a_panel_rewrites_only_panels() {
-        assert_eq!(with_panels("panels=meter,buffs&rows=6", &["meter"]), "panels=meter&rows=6");
-        assert_eq!(with_panels("rows=5&buffs=5", &["meter", "xp"]), "panels=meter,xp&rows=5&buffs=5");
+        assert_eq!(
+            with_panels("panels=meter,buffs&rows=6", &["meter"]),
+            "panels=meter&rows=6"
+        );
+        assert_eq!(
+            with_panels("rows=5&buffs=5", &["meter", "xp"]),
+            "panels=meter,xp&rows=5&buffs=5"
+        );
         assert_eq!(with_panels("", &[]), "panels=");
-        assert_eq!(panels_of("panels=meter,wanted,apps"), ["meter", "apps"], "wanted ticks Other apps, once");
+        assert_eq!(
+            panels_of("panels=meter,wanted,apps"),
+            ["meter", "apps"],
+            "wanted ticks Other apps, once"
+        );
         assert_eq!(panels_of(""), ["meter", "buffs"]);
     }
 
     #[test]
     fn every_panel_the_overlay_draws_has_a_box() {
-        for p in ["meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras", "debuffs", "buffs", "charm", "apps", "sky"] {
+        for p in [
+            "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
+            "debuffs", "buffs", "charm", "apps", "sky",
+        ] {
             assert!(PANELS.iter().any(|(k, _)| *k == p), "{p}");
         }
     }

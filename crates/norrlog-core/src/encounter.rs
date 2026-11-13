@@ -429,7 +429,10 @@ impl ActorStats {
         merge_counts(&mut self.swings_stopped_by, &o.swings_stopped_by);
         merge_counts(&mut self.avoided_by, &o.avoided_by);
         merge_abilities(&mut self.by_ability, &o.by_ability);
-        merge_abilities(&mut self.damage_taken_by_ability, &o.damage_taken_by_ability);
+        merge_abilities(
+            &mut self.damage_taken_by_ability,
+            &o.damage_taken_by_ability,
+        );
         merge_abilities(&mut self.healing_by_spell, &o.healing_by_spell);
     }
 
@@ -999,14 +1002,7 @@ impl Encounter {
     }
 
     /// Record one of your actions on the timeline, if there is room.
-    fn note_timeline(
-        &mut self,
-        at: i64,
-        ability: &str,
-        outcome: Outcome,
-        amount: u64,
-        kind: &str,
-    ) {
+    fn note_timeline(&mut self, at: i64, ability: &str, outcome: Outcome, amount: u64, kind: &str) {
         if self.timeline.len() >= TIMELINE_MAX {
             self.timeline_dropped += 1;
             return;
@@ -1019,7 +1015,6 @@ impl Encounter {
             kind: kind.to_string(),
         });
     }
-
 
     /// Wall-clock length. Floored at one second so a burst fight that starts
     /// and ends within the same log second cannot divide by zero.
@@ -1322,7 +1317,11 @@ impl Encounter {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.resisted.cmp(&a.resisted).then_with(|| a.spell.cmp(&b.spell)));
+        out.sort_by(|a, b| {
+            b.resisted
+                .cmp(&a.resisted)
+                .then_with(|| a.spell.cmp(&b.spell))
+        });
         out
     }
 
@@ -1355,7 +1354,11 @@ impl Encounter {
                             .is_some_and(|src| src.eq_ignore_ascii_case(&s.name))
                     })
                     .count(),
-                resists: self.resists.get(&s.name).map(|m| m.values().sum()).unwrap_or(0),
+                resists: self
+                    .resists
+                    .get(&s.name)
+                    .map(|m| m.values().sum())
+                    .unwrap_or(0),
             })
             .collect();
         out.sort_by_key(|m| std::cmp::Reverse(m.damage_done_to_it));
@@ -1554,14 +1557,7 @@ impl EncounterTracker {
     /// already running on the same target extends the one span rather than
     /// stacking a second — the game refreshes, it does not stack, and two
     /// overlapping bars would read as two effects.
-    pub fn note_effect(
-        &mut self,
-        at: i64,
-        until: i64,
-        spell: &str,
-        target: &str,
-        category: &str,
-    ) {
+    pub fn note_effect(&mut self, at: i64, until: i64, spell: &str, target: &str, category: &str) {
         let Some(enc) = self.current.as_mut() else {
             return;
         };
@@ -1607,7 +1603,8 @@ impl EncounterTracker {
     pub fn set_charmed(&mut self, timestamp: i64, actor: &Actor, charmed: bool) {
         let key = actor.key();
         if charmed {
-            self.charmed.insert(key.clone(), actor.display(&self.player));
+            self.charmed
+                .insert(key.clone(), actor.display(&self.player));
             // Re-landing a charm that never broke must not restart the clock,
             // or a fight of constant refreshes would report almost no uptime.
             self.charm_since.entry(key).or_insert(timestamp);
@@ -1784,10 +1781,7 @@ impl EncounterTracker {
             // combatant.
             Event::CastStart { source, spell, .. } => {
                 let key = source.key();
-                let mine = self
-                    .pet_owners
-                    .get(&key)
-                    .is_some_and(|o| *o == self.player)
+                let mine = self.pet_owners.get(&key).is_some_and(|o| *o == self.player)
                     || self.charmed.contains_key(&key);
                 if !mine {
                     // `closed`, not `None`: the idle check at the top of this
@@ -2001,7 +1995,13 @@ impl EncounterTracker {
                 }
                 if src_is_you {
                     let outcome = if crit { Outcome::Crit } else { Outcome::Hit };
-                    enc.note_timeline(entry.timestamp, &ability_label, outcome, *amount, kind_label(*kind));
+                    enc.note_timeline(
+                        entry.timestamp,
+                        &ability_label,
+                        outcome,
+                        *amount,
+                        kind_label(*kind),
+                    );
                 }
                 let mut engaged_you = false;
                 {
@@ -2252,7 +2252,6 @@ impl EncounterTracker {
                 // creature casts no more spells to wear off, so without this
                 // the charm outlives the kill for the rest of the session.
                 self.end_charm(entry.timestamp, victim, false);
-
             }
             Event::Loot {
                 item,
@@ -2712,11 +2711,19 @@ mod tests {
             (100, "You slash a lesser mummy for 50 points of damage."),
             (105, "You have slain a lesser mummy!"),
         ]) {
-            assert!(t.push(&e).is_none(), "nothing closes while it is being fought");
+            assert!(
+                t.push(&e).is_none(),
+                "nothing closes while it is being fought"
+            );
         }
         // Inside the settle window the corpse is still being looted.
-        assert!(t.close_if_idle(108).is_none(), "too soon: loot is still arriving");
-        let done = t.close_if_idle(111).expect("the fight is over and should close");
+        assert!(
+            t.close_if_idle(108).is_none(),
+            "too soon: loot is still arriving"
+        );
+        let done = t
+            .close_if_idle(111)
+            .expect("the fight is over and should close");
         assert_eq!(done.total_damage(), 50);
     }
 
@@ -2729,8 +2736,14 @@ mod tests {
         let encs = run(&[
             (100, "You slash Lord Nagafen for 10 points of damage."),
             (101, "You have slain Lord Nagafen!"),
-            (103, "You receive 12 platinum, 3 silver and 4 copper from the corpse."),
-            (104, "--You have looted a Cloak of Flames +3 from Lord Nagafen's corpse.--"),
+            (
+                103,
+                "You receive 12 platinum, 3 silver and 4 copper from the corpse.",
+            ),
+            (
+                104,
+                "--You have looted a Cloak of Flames +3 from Lord Nagafen's corpse.--",
+            ),
         ]);
         assert_eq!(encs.len(), 1);
         assert_eq!(encs[0].coin_copper, 12_034);
@@ -2768,7 +2781,10 @@ mod tests {
             (100, "You slash a will pillager for 100 points of damage."),
             (102, "You have slain a will pillager!"),
             (103, "You receive 2 gold and 5 copper from the corpse."),
-            (104, "--You have looted a Rusty Dagger from a will pillager\'s corpse.--"),
+            (
+                104,
+                "--You have looted a Rusty Dagger from a will pillager\'s corpse.--",
+            ),
         ]);
         assert_eq!(encs.len(), 1, "loot and coin are not the next pull");
         assert_eq!(encs[0].coin_copper, 205, "2 gold and 5 copper");
@@ -2788,7 +2804,12 @@ mod tests {
         t.note_effect(100, 124, "Mesmerization", "a will pillager", "detrimental");
         t.note_effect(110, 134, "Mesmerization", "a will pillager", "detrimental");
         let enc = t.flush().expect("a fight");
-        assert_eq!(enc.effects.len(), 1, "refreshed, not stacked: {:?}", enc.effects);
+        assert_eq!(
+            enc.effects.len(),
+            1,
+            "refreshed, not stacked: {:?}",
+            enc.effects
+        );
         assert_eq!(enc.effects[0].at, 100, "still starts where it first landed");
         assert_eq!(enc.effects[0].until, 134, "and runs to the refreshed end");
     }
@@ -2801,7 +2822,13 @@ mod tests {
             t.push(&e);
         }
         t.note_effect(100, 124, "Mesmerization", "a will pillager", "detrimental");
-        t.note_effect(100, 124, "Mesmerization", "a jeering gargoyle", "detrimental");
+        t.note_effect(
+            100,
+            124,
+            "Mesmerization",
+            "a jeering gargoyle",
+            "detrimental",
+        );
         assert_eq!(t.flush().expect("a fight").effects.len(), 2);
     }
 
@@ -2820,17 +2847,34 @@ mod tests {
             t.push(&e);
         }
         t.note_effect(100, 400, "Mesmerization", "a will pillager", "detrimental");
-        t.note_effect(100, 400, "Mesmerization", "a jeering gargoyle", "detrimental");
+        t.note_effect(
+            100,
+            400,
+            "Mesmerization",
+            "a jeering gargoyle",
+            "detrimental",
+        );
         for e in entries(&[(105, "You have slain a will pillager!")]) {
             t.push(&e);
         }
         let enc = t.flush().expect("a fight");
-        let pillager = enc.effects.iter().find(|e| e.target.contains("pillager")).unwrap();
-        let gargoyle = enc.effects.iter().find(|e| e.target.contains("gargoyle")).unwrap();
+        let pillager = enc
+            .effects
+            .iter()
+            .find(|e| e.target.contains("pillager"))
+            .unwrap();
+        let gargoyle = enc
+            .effects
+            .iter()
+            .find(|e| e.target.contains("gargoyle"))
+            .unwrap();
         assert_eq!(pillager.ended, Some(105), "the corpse stopped it");
         assert!(!pillager.is_predicted());
         assert_eq!(gargoyle.ended, None, "the one still standing is unaffected");
-        assert!(gargoyle.is_predicted(), "and its end is still only expected");
+        assert!(
+            gargoyle.is_predicted(),
+            "and its end is still only expected"
+        );
     }
 
     /// A bar never runs past the end of the fight it is drawn on.
@@ -2844,7 +2888,11 @@ mod tests {
             target: "a will pillager".into(),
             category: "detrimental".into(),
         };
-        assert_eq!(fx.ends_by(150), 150, "clipped to the fight, not the spell file");
+        assert_eq!(
+            fx.ends_by(150),
+            150,
+            "clipped to the fight, not the spell file"
+        );
         assert_eq!(fx.ends_by(999), 400, "otherwise the expected end");
     }
 
@@ -2859,12 +2907,21 @@ mod tests {
         let encs = run(&[
             (100, "You slash a lesser mummy for 10 points of damage."),
             (101, "You begin casting Efflorescing Heal."),
-            (102, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
-            (108, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            (
+                102,
+                "You healed Tharn over time for 150 hit points by Efflorescing Heal.",
+            ),
+            (
+                108,
+                "You healed Tharn over time for 150 hit points by Efflorescing Heal.",
+            ),
             // Healing alone does not sustain a fight, by design, so the
             // fighting has to carry on for the third tick to fall inside it.
             (110, "You slash a lesser mummy for 10 points of damage."),
-            (114, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            (
+                114,
+                "You healed Tharn over time for 150 hit points by Efflorescing Heal.",
+            ),
         ]);
         let you = encs[0].actors.get("you").expect("you");
         let hot = you
@@ -2883,7 +2940,10 @@ mod tests {
         let encs = run(&[
             (100, "You slash a lesser mummy for 10 points of damage."),
             (101, "You begin casting Superior Healing."),
-            (102, "You healed Tharn for 600 hit points by Superior Healing."),
+            (
+                102,
+                "You healed Tharn for 600 hit points by Superior Healing.",
+            ),
         ]);
         let you = encs[0].actors.get("you").unwrap();
         let heal = you.healing_by_spell.get("Superior Healing").unwrap();
@@ -2898,10 +2958,19 @@ mod tests {
     fn your_healing_is_on_the_timeline() {
         let encs = run(&[
             (100, "You slash a lesser mummy for 10 points of damage."),
-            (102, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
-            (108, "You healed Tharn over time for 150 hit points by Efflorescing Heal."),
+            (
+                102,
+                "You healed Tharn over time for 150 hit points by Efflorescing Heal.",
+            ),
+            (
+                108,
+                "You healed Tharn over time for 150 hit points by Efflorescing Heal.",
+            ),
             // Somebody else's heal is not one of your actions.
-            (109, "a priest of Nagafen healed Tharn for 630 hit points by Superior Healing."),
+            (
+                109,
+                "a priest of Nagafen healed Tharn for 630 hit points by Superior Healing.",
+            ),
         ]);
         let hot: Vec<_> = encs[0]
             .timeline
@@ -2911,7 +2980,10 @@ mod tests {
         assert_eq!(hot.len(), 2, "both ticks: {:?}", encs[0].timeline);
         assert_eq!(hot[0].ability, "Efflorescing Heal");
         assert!(
-            !encs[0].timeline.iter().any(|t| t.ability == "Superior Healing"),
+            !encs[0]
+                .timeline
+                .iter()
+                .any(|t| t.ability == "Superior Healing"),
             "the timeline is your own actions only"
         );
     }
@@ -2927,8 +2999,14 @@ mod tests {
         for e in entries(&[(100, "You slash a lesser mummy for 50 points of damage.")]) {
             t.push(&e);
         }
-        assert!(t.close_if_idle(108).is_none(), "no kill, so the short window must not apply");
-        assert!(t.close_if_idle(113).is_some(), "the idle timeout still closes it");
+        assert!(
+            t.close_if_idle(108).is_none(),
+            "no kill, so the short window must not apply"
+        );
+        assert!(
+            t.close_if_idle(113).is_some(),
+            "the idle timeout still closes it"
+        );
     }
 
     /// A creature still on its feet holds the fight open, whoever else died.
@@ -3142,17 +3220,33 @@ mod tests {
             }
         };
         // You soften the imp up, then charm it.
-        push(&mut t, 100, "You slash An imp protector for 70 points of damage.");
+        push(
+            &mut t,
+            100,
+            "You slash An imp protector for 70 points of damage.",
+        );
         t.set_charmed(101, &imp, true);
         // Now it fights for you, and the boss turns on it.
-        push(&mut t, 102, "You slash a fire giant for 100 points of damage.");
+        push(
+            &mut t,
+            102,
+            "You slash a fire giant for 100 points of damage.",
+        );
         push(
             &mut t,
             103,
             "An imp protector slashes a fire giant for 400 points of damage.",
         );
-        push(&mut t, 104, "A fire giant hits An imp protector for 250 points of damage.");
-        push(&mut t, 105, "A fire giant hits YOU for 50 points of damage.");
+        push(
+            &mut t,
+            104,
+            "A fire giant hits An imp protector for 250 points of damage.",
+        );
+        push(
+            &mut t,
+            105,
+            "A fire giant hits YOU for 50 points of damage.",
+        );
         let enc = t.flush().expect("encounter");
 
         // The giant absorbed 500; the imp absorbed 70 while it was still an
@@ -3222,7 +3316,10 @@ mod tests {
             "Other",
             "a cost, not output"
         );
-        let slash = you.by_ability.get("slash").or_else(|| you.by_ability.get("melee"));
+        let slash = you
+            .by_ability
+            .get("slash")
+            .or_else(|| you.by_ability.get("melee"));
         if let Some(sl) = slash {
             assert!(!sl.self_inflicted);
             assert_eq!(ability_group(&sl.kind, sl.self_inflicted), "Melee");
@@ -3236,13 +3333,22 @@ mod tests {
     fn a_procs_casts_land_on_the_row_its_damage_did() {
         let encs = run(&[
             (100, "You begin casting Puma Maw II."),
-            (101, "You hit a giant for 154 points of prismatic damage by Puma Maw."),
+            (
+                101,
+                "You hit a giant for 154 points of prismatic damage by Puma Maw.",
+            ),
             (102, "You begin casting Puma Maw II."),
-            (103, "You hit a giant for 154 points of prismatic damage by Puma Maw."),
+            (
+                103,
+                "You hit a giant for 154 points of prismatic damage by Puma Maw.",
+            ),
             // A spell that lands under the name it was cast with must not be
             // folded — that would split one ability into two.
             (104, "You begin casting Envenomed Bolt X."),
-            (105, "You hit a giant for 400 points of poison damage by Envenomed Bolt X."),
+            (
+                105,
+                "You hit a giant for 400 points of poison damage by Envenomed Bolt X.",
+            ),
             (110, "You have slain a giant!"),
         ]);
         let you = encs[0].actors.get("you").unwrap();
@@ -3266,7 +3372,10 @@ mod tests {
             (100, "Venobtik says, 'My leader is Tharn.'"),
             (101, "Venobtik slashes a giant for 40 points of damage."),
             (102, "Venobtik begins casting Puma Maw II."),
-            (103, "Venobtik hit a giant for 154 points of prismatic damage by Puma Maw."),
+            (
+                103,
+                "Venobtik hit a giant for 154 points of prismatic damage by Puma Maw.",
+            ),
             (110, "You have slain a giant!"),
         ]);
         let pet = encs[0].actors.get("venobtik").expect("the pet");
@@ -3290,7 +3399,10 @@ mod tests {
     #[test]
     fn a_creature_fighting_its_own_name_marks_the_row_as_shared() {
         let encs = run(&[
-            (100, "You slash a fire giant warrior for 100 points of damage."),
+            (
+                100,
+                "You slash a fire giant warrior for 100 points of damage.",
+            ),
             // Your charmed one, fighting another of the same name. The log
             // writes both as the same actor.
             (
@@ -3355,7 +3467,11 @@ mod tests {
         let first = t.flush().expect("first fight");
         assert_eq!(first.duration(), 10);
         assert_eq!(
-            first.actors.get("an imp protector").unwrap().charmed_seconds,
+            first
+                .actors
+                .get("an imp protector")
+                .unwrap()
+                .charmed_seconds,
             10
         );
 
@@ -3373,7 +3489,11 @@ mod tests {
         hit(&mut t, 420);
         let second = t.flush().expect("second fight");
         assert_eq!(second.duration(), 10);
-        let held = second.actors.get("an imp protector").unwrap().charmed_seconds;
+        let held = second
+            .actors
+            .get("an imp protector")
+            .unwrap()
+            .charmed_seconds;
         assert_eq!(held, 10, "the five-minute lull is not charmed time");
         assert!(
             second.charm_uptime() <= 1.0,
@@ -3592,7 +3712,10 @@ mod tests {
                 101,
                 "Jabarab healed himself for 47 (241) hit points by Lay on Hands.",
             ),
-            (102, "Jabarab healed himself for 0 (6) hit points by Lifetap."),
+            (
+                102,
+                "Jabarab healed himself for 0 (6) hit points by Lifetap.",
+            ),
             // No pre-cap figure: it must not be assumed to have wasted nothing.
             (
                 103,
@@ -3615,7 +3738,10 @@ mod tests {
     fn crits_are_tallied_by_mechanism() {
         let encs = run(&[
             (100, "You slash a mob for 10 points of damage. (Critical)"),
-            (101, "You slash a mob for 900 points of damage. (Slay Undead)"),
+            (
+                101,
+                "You slash a mob for 900 points of damage. (Slay Undead)",
+            ),
             (
                 102,
                 "You slash a mob for 800 points of damage. (Riposte Slay Undead)",
@@ -4124,7 +4250,10 @@ mod tests {
             (112, "You slash a rat for 1 point of damage."),
         ]);
         let st = encs[0].actors.get("an imp protector").expect("pet");
-        assert_eq!(st.charmed_seconds, 11, "held from the first order, not the last");
+        assert_eq!(
+            st.charmed_seconds, 11,
+            "held from the first order, not the last"
+        );
     }
 
     /// A creature you hold does not attack you. When one does, that is the
@@ -4192,7 +4321,10 @@ mod tests {
         for e in &entries(&[
             (99, "A fire giant warrior hits YOU for 10 points of damage."),
             (100, "You slash a rat for 1 point of damage."),
-            (101, "A fire giant warrior told you, 'Attacking a rat Master.'"),
+            (
+                101,
+                "A fire giant warrior told you, 'Attacking a rat Master.'",
+            ),
             (102, "A fire giant warrior says, 'My leader is Tharn.'"),
         ]) {
             t.push(e);
@@ -4230,11 +4362,23 @@ mod tests {
     fn casts_are_counted_separately_from_what_they_landed() {
         let encs = run(&[
             (100, "You begin casting Envenomed Bolt VI."),
-            (101, "You hit a rat for 300 points of magic damage by Envenomed Bolt VI."),
+            (
+                101,
+                "You hit a rat for 300 points of magic damage by Envenomed Bolt VI.",
+            ),
             (104, "You begin casting Envenomed Bolt VI."),
-            (105, "You hit a rat for 280 points of magic damage by Envenomed Bolt VI."),
-            (106, "A rat has taken 40 damage from your Envenomed Bolt VI."),
-            (108, "A rat has taken 40 damage from your Envenomed Bolt VI."),
+            (
+                105,
+                "You hit a rat for 280 points of magic damage by Envenomed Bolt VI.",
+            ),
+            (
+                106,
+                "A rat has taken 40 damage from your Envenomed Bolt VI.",
+            ),
+            (
+                108,
+                "A rat has taken 40 damage from your Envenomed Bolt VI.",
+            ),
         ]);
         let you = encs[0].actors.get("you").expect("you");
         let a = you.by_ability.get("Envenomed Bolt VI").expect("the spell");
@@ -4370,7 +4514,10 @@ mod tests {
     fn a_summoned_pet_is_not_charmed() {
         let encs = run(&[
             (100, "Tharn`s warder told you, 'Attacking a giant Master.'"),
-            (101, "Tharn`s warder slashes a giant for 60 points of damage."),
+            (
+                101,
+                "Tharn`s warder slashes a giant for 60 points of damage.",
+            ),
             (102, "You slash a giant for 40 points of damage."),
             (110, "You have slain a giant!"),
         ]);
@@ -4397,14 +4544,20 @@ mod tests {
         let imp = Actor::parse("An imp protector");
         for e in entries(&[
             (100, "You slash a giant for 10 points of damage."),
-            (101, "An imp protector slashes a giant for 5 points of damage."),
+            (
+                101,
+                "An imp protector slashes a giant for 5 points of damage.",
+            ),
         ]) {
             t.push(&e);
         }
         // The resolver decides a charm of yours landed.
         t.set_charmed(102, &imp, true);
         for e in entries(&[
-            (103, "An imp protector slashes a giant for 70 points of damage."),
+            (
+                103,
+                "An imp protector slashes a giant for 70 points of damage.",
+            ),
             (110, "You have slain a giant!"),
         ]) {
             t.push(&e);
@@ -4473,13 +4626,19 @@ mod tests {
         let encs = run(&[
             // It announces itself while charmed, and fights for you.
             (100, "A flighty fiend told you, 'Attacking a giant Master.'"),
-            (101, "A flighty fiend slashes a giant for 40 points of damage."),
+            (
+                101,
+                "A flighty fiend slashes a giant for 40 points of damage.",
+            ),
             (110, "You have slain a giant!"),
             // A separate fight, weeks later in log time. The charm is long
             // gone and it is an enemy again.
             (9000, "You slash a flighty fiend for 30 points of damage."),
             (9001, "A flighty fiend hits YOU for 25 points of damage."),
-            (9002, "A flighty fiend slashes Master Yael for 10 points of damage."),
+            (
+                9002,
+                "A flighty fiend slashes Master Yael for 10 points of damage.",
+            ),
             (9010, "You have slain a flighty fiend!"),
         ]);
         assert_eq!(encs.len(), 2);
@@ -4492,7 +4651,10 @@ mod tests {
         assert!(!now.owned_by_you, "it turned on you; it is not your pet");
         assert_eq!(now.owner, None);
         assert!(
-            !encs[1].your_pets().iter().any(|p| p.name.to_lowercase() == "a flighty fiend"),
+            !encs[1]
+                .your_pets()
+                .iter()
+                .any(|p| p.name.to_lowercase() == "a flighty fiend"),
             "and it is not listed among your pets"
         );
         // Its swing at the boss is not your damage either.
@@ -4511,15 +4673,33 @@ mod tests {
         let encs = run(&[
             // Charmed, announced, then the charm lapses and `/pet leader` is
             // typed — which files it as summoned.
-            (100, "A fire giant warrior told you, 'Attacking a giant Master.'"),
-            (101, "A fire giant warrior slashes a giant for 40 points of damage."),
-            (150, "A fire giant warrior hits YOU for 10 points of damage."),
+            (
+                100,
+                "A fire giant warrior told you, 'Attacking a giant Master.'",
+            ),
+            (
+                101,
+                "A fire giant warrior slashes a giant for 40 points of damage.",
+            ),
+            (
+                150,
+                "A fire giant warrior hits YOU for 10 points of damage.",
+            ),
             (151, "A fire giant warrior says, 'My leader is Tharn.'"),
             (160, "You have slain a giant!"),
             // A later fight: it is an enemy, not a pet.
-            (9000, "You slash a fire giant warrior for 30 points of damage."),
-            (9001, "A fire giant warrior hits YOU for 25 points of damage."),
-            (9002, "A fire giant warrior slashes Warlord Skarlon for 15 points of damage."),
+            (
+                9000,
+                "You slash a fire giant warrior for 30 points of damage.",
+            ),
+            (
+                9001,
+                "A fire giant warrior hits YOU for 25 points of damage.",
+            ),
+            (
+                9002,
+                "A fire giant warrior slashes Warlord Skarlon for 15 points of damage.",
+            ),
             (9010, "You have slain a fire giant warrior!"),
         ]);
         // The idle gaps split this into three: the charmed pull, the one
@@ -4530,7 +4710,10 @@ mod tests {
         assert!(!now.summoned, "the brand was inferred, and it was wrong");
         assert_eq!(now.owner, None);
         assert!(
-            !last.your_pets().iter().any(|p| p.name.to_lowercase().contains("fire giant")),
+            !last
+                .your_pets()
+                .iter()
+                .any(|p| p.name.to_lowercase().contains("fire giant")),
             "and it is not listed among your pets"
         );
         assert_eq!(last.your_damage_with_pets(), 30, "only your own 30");
@@ -4628,7 +4811,10 @@ mod tests {
     fn timeline_caps_and_counts_what_it_dropped() {
         let mut lines: Vec<(i64, &str)> = Vec::new();
         for i in 0..(TIMELINE_MAX + 50) {
-            lines.push((100 + (i as i64 / 10), "You slash a giant for 10 points of damage."));
+            lines.push((
+                100 + (i as i64 / 10),
+                "You slash a giant for 10 points of damage.",
+            ));
         }
         let mut t = EncounterTracker::new("Tharn");
         for e in entries(&lines) {

@@ -219,7 +219,9 @@ impl AaCatalog {
                 AaAbility {
                     id: *id,
                     // Shown as the player knows it, not as the client files it.
-                    name: toggle.map(|(b, _)| b.to_string()).unwrap_or_else(|| name.clone()),
+                    name: toggle
+                        .map(|(b, _)| b.to_string())
+                        .unwrap_or_else(|| name.clone()),
                     is_toggle: toggle.is_some(),
                     real_owned_rank: real_rank(owned_rank, toggle.is_some()),
                     // Only meaningful when the dump showed at least as far as
@@ -388,7 +390,10 @@ mod tests {
     fn abilities_bought_but_never_described_are_listed() {
         let mut c = AaCatalog::new();
         feed(&mut c, &[(40, "Combat Fury", 2)]);
-        let r = c.report(&owned(&[("Combat Fury", 1, 2), ("Hastened Whatever", 3, 0)]));
+        let r = c.report(&owned(&[
+            ("Combat Fury", 1, 2),
+            ("Hastened Whatever", 3, 0),
+        ]));
         assert_eq!(r.undescribed, vec!["hastened whatever"]);
     }
 

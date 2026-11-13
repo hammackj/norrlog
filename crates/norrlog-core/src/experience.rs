@@ -509,17 +509,23 @@ impl ExpTracker {
             None => (ability.to_string(), None),
         };
         let key = name.to_lowercase();
-        let e = self.aa_spent.entry(key.clone()).or_insert_with(|| AaPurchase {
-            ability: name.clone(),
-            rank: 0,
-            client_rank: 0,
-            enabled: None,
-            spent: 0,
-            last_seen: timestamp,
-            unlogged_ranks: Vec::new(),
-            unlogged_cost_max: 0,
-        });
-        self.aa_ranks_seen.entry(key).or_default().insert(rank, cost);
+        let e = self
+            .aa_spent
+            .entry(key.clone())
+            .or_insert_with(|| AaPurchase {
+                ability: name.clone(),
+                rank: 0,
+                client_rank: 0,
+                enabled: None,
+                spent: 0,
+                last_seen: timestamp,
+                unlogged_ranks: Vec::new(),
+                unlogged_cost_max: 0,
+            });
+        self.aa_ranks_seen
+            .entry(key)
+            .or_default()
+            .insert(rank, cost);
         // The state is whichever half owns the highest rank seen: the last
         // rank bought is the one you are sitting on.
         if toggled_on.is_some() && rank >= e.client_rank {
@@ -944,7 +950,10 @@ mod tests {
         t.on_experience(110, 3.0, true);
         t.on_experience(120, 2.0, true);
         let cur = t.current_record();
-        assert!((cur.percent - 6.0).abs() < 1e-9, "the bonused gains were dropped");
+        assert!(
+            (cur.percent - 6.0).abs() < 1e-9,
+            "the bonused gains were dropped"
+        );
         assert_eq!(cur.events, 3);
         assert!((cur.bonus_percent - 5.0).abs() < 1e-9);
         assert_eq!(cur.bonus_events, 2);
@@ -1363,7 +1372,10 @@ mod tests {
         }
 
         let p = t.aa_purchases();
-        let aura: Vec<_> = p.iter().filter(|x| x.ability.contains("Symphonic")).collect();
+        let aura: Vec<_> = p
+            .iter()
+            .filter(|x| x.ability.contains("Symphonic"))
+            .collect();
         assert_eq!(aura.len(), 1, "one ability, not two halves");
         let a = aura[0];
         assert_eq!(a.ability, "Symphonic Aura");

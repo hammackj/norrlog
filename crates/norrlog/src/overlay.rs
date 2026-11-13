@@ -63,8 +63,18 @@ impl Kind {
     }
     fn default_bounds(self) -> Geometry {
         match self {
-            Kind::Main => Geometry { x: 40., y: 40., width: 380., height: 460. },
-            Kind::Charm => Geometry { x: 460., y: 40., width: 300., height: 220. },
+            Kind::Main => Geometry {
+                x: 40.,
+                y: 40.,
+                width: 380.,
+                height: 460.,
+            },
+            Kind::Charm => Geometry {
+                x: 460.,
+                y: 40.,
+                width: 300.,
+                height: 220.,
+            },
         }
     }
 }
@@ -94,20 +104,30 @@ impl Saved {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(Value::Null);
         Saved {
-            options: cfg.get(kind.options_key()).and_then(Value::as_str).unwrap_or(kind.default_options()).to_string(),
+            options: cfg
+                .get(kind.options_key())
+                .and_then(Value::as_str)
+                .unwrap_or(kind.default_options())
+                .to_string(),
             bounds: cfg
                 .get(kind.bounds_key())
                 .and_then(|b| serde_json::from_value::<Geometry>(b.clone()).ok())
                 .filter(|g| g.width >= 40. && g.height >= 40.)
                 .unwrap_or(kind.default_bounds()),
-            click_through: cfg.get(kind.click_key()).and_then(Value::as_bool).unwrap_or(true),
+            click_through: cfg
+                .get(kind.click_key())
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         }
     }
 
     pub fn save(&self, kind: Kind) -> std::io::Result<()> {
         let mut patch = serde_json::Map::new();
         patch.insert(kind.options_key().into(), self.options.clone().into());
-        patch.insert(kind.bounds_key().into(), serde_json::to_value(self.bounds).map_err(std::io::Error::other)?);
+        patch.insert(
+            kind.bounds_key().into(),
+            serde_json::to_value(self.bounds).map_err(std::io::Error::other)?,
+        );
         patch.insert(kind.click_key().into(), self.click_through.into());
         crate::config::save_patch(patch)
     }
@@ -134,7 +154,11 @@ impl Options {
     /// `panels=` is no panels, not the default (`??` in the page).
     pub fn parse(query: &str) -> Self {
         let mut get = std::collections::HashMap::new();
-        for pair in query.trim_start_matches('?').split('&').filter(|p| !p.is_empty()) {
+        for pair in query
+            .trim_start_matches('?')
+            .split('&')
+            .filter(|p| !p.is_empty())
+        {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
             get.insert(k.to_string(), decode(v));
         }
@@ -147,17 +171,30 @@ impl Options {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             // `wanted` is the old name for `apps`.
-            .map(|s| if s == "wanted" { "apps".to_string() } else { s.to_string() })
+            .map(|s| {
+                if s == "wanted" {
+                    "apps".to_string()
+                } else {
+                    s.to_string()
+                }
+            })
             .collect();
         Options {
             panels,
             rows: int("rows", 6),
             buffs: int("buffs", 8),
-            scale: get.get("scale").and_then(|v| v.parse().ok()).filter(|s: &f32| *s > 0.).unwrap_or(1.),
+            scale: get
+                .get("scale")
+                .and_then(|v| v.parse().ok())
+                .filter(|s: &f32| *s > 0.)
+                .unwrap_or(1.),
             self_only: get.get("self").is_some_and(|v| v == "1"),
             show_enemies: get.get("enemies").is_none_or(|v| v != "0"),
             show_crit: get.get("crit").is_none_or(|v| v != "0"),
-            scope: get.get("scope").filter(|v| *v == "session" || *v == "zone").cloned(),
+            scope: get
+                .get("scope")
+                .filter(|v| *v == "session" || *v == "zone")
+                .cloned(),
             keep_idle: get.get("idle").is_some_and(|v| v == "1"),
         }
     }
@@ -179,7 +216,9 @@ fn decode(v: &str) -> String {
         // that is not ASCII straight after a `%`.
         if b[i] == b'%'
             && i + 2 < b.len()
-            && let Some(n) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(n) = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             out.push(n);
             i += 3;
@@ -300,11 +339,16 @@ const DPS_SPARK: i64 = 60;
 
 impl Dps {
     fn on_snapshot(&mut self, now: Option<i64>, enc: Option<&Value>) {
-        let (Some(now), Some(enc)) = (now, enc) else { return };
+        let (Some(now), Some(enc)) = (now, enc) else {
+            return;
+        };
         let id = enc.get("id").and_then(Value::as_u64);
         // A new fight starts a new history.
         if id != self.fight {
-            *self = Dps { fight: id, ..Default::default() };
+            *self = Dps {
+                fight: id,
+                ..Default::default()
+            };
         }
         let total = f(enc, "your_damage");
         if let Some(prev) = self.prev
@@ -318,7 +362,9 @@ impl Dps {
 
     /// The last minute, a bucket a second, idle seconds as real zeroes.
     fn buckets(&self, now: i64) -> Vec<f64> {
-        (now - DPS_SPARK + 1..=now).map(|t| self.per_second.get(&t).copied().unwrap_or(0.)).collect()
+        (now - DPS_SPARK + 1..=now)
+            .map(|t| self.per_second.get(&t).copied().unwrap_or(0.))
+            .collect()
     }
 }
 
@@ -332,15 +378,17 @@ impl OverlayView {
     pub fn new(saved: Saved, cx: &mut Context<Self>) -> Self {
         let opts = Options::parse(&saved.options);
         // The page's one-second tick for buff timers, and the charm poll.
-        let tick = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let Ok(()) = this.update(cx, |v, cx| {
-                v.poll(cx);
-                v.ticks += 1;
-                cx.notify();
-            }) else {
-                break;
-            };
+        let tick = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let Ok(()) = this.update(cx, |v, cx| {
+                    v.poll(cx);
+                    v.ticks += 1;
+                    cx.notify();
+                }) else {
+                    break;
+                };
+            }
         });
         OverlayView {
             saved,
@@ -369,8 +417,13 @@ impl OverlayView {
     pub fn on_snapshot(&mut self, snap: Arc<Value>, cx: &mut Context<Self>) {
         if self.opts.has("dps") {
             // Not under a scope: a session has no "now".
-            let enc = if self.opts.scope.is_some() { None } else { snap.get("current").filter(|c| !c.is_null()) };
-            self.dps.on_snapshot(snap.get("log_time").and_then(Value::as_i64), enc);
+            let enc = if self.opts.scope.is_some() {
+                None
+            } else {
+                snap.get("current").filter(|c| !c.is_null())
+            };
+            self.dps
+                .on_snapshot(snap.get("log_time").and_then(Value::as_i64), enc);
         }
         self.snap = Some(snap);
         self.at = Instant::now();
@@ -399,19 +452,33 @@ impl OverlayView {
         if o.has("incoming") && n.is_multiple_of(2) {
             // The fight in progress, or nothing: between fights the panel
             // hides rather than show a dead one.
-            match self.snap.as_ref().and_then(|s| s.get("current")).and_then(|c| c.get("id")).and_then(Value::as_u64) {
-                Some(id) => self.fetch(format!("/api/incoming?encounter={id}"), cx, |me, v| me.incoming = Some(v)),
+            match self
+                .snap
+                .as_ref()
+                .and_then(|s| s.get("current"))
+                .and_then(|c| c.get("id"))
+                .and_then(Value::as_u64)
+            {
+                Some(id) => self.fetch(format!("/api/incoming?encounter={id}"), cx, |me, v| {
+                    me.incoming = Some(v)
+                }),
                 None => self.incoming = None,
             }
         }
         if let Some(scope) = o.scope.clone()
             && n.is_multiple_of(2)
         {
-            self.fetch(format!("/api/session?scope={scope}"), cx, |me, v| me.session = Some(v));
+            self.fetch(format!("/api/session?scope={scope}"), cx, |me, v| {
+                me.session = Some(v)
+            });
         }
         if o.has("apps") && n.is_multiple_of(5) {
             self.fetch("/api/panels".into(), cx, |me, v| {
-                me.apps = v.get("panels").and_then(Value::as_array).cloned().unwrap_or_default();
+                me.apps = v
+                    .get("panels")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
             });
         }
         if o.has("sky") && n.is_multiple_of(20) && crate::features::has("sky") {
@@ -421,7 +488,12 @@ impl OverlayView {
 
     /// A GET whose answer `put` keeps. A failure is silent, as in the page:
     /// the last answer stands until the next tick.
-    fn fetch(&self, path: String, cx: &mut Context<Self>, put: impl FnOnce(&mut Self, Value) + 'static) {
+    fn fetch(
+        &self,
+        path: String,
+        cx: &mut Context<Self>,
+        put: impl FnOnce(&mut Self, Value) + 'static,
+    ) {
         let Some(api) = self.api.clone() else { return };
         cx.spawn(async move |this, cx| {
             if let Ok(v) = api.get::<Value>(path).await {
@@ -461,8 +533,8 @@ impl Render for OverlayView {
         let snap = &*snap;
         // The page's fixed order, whatever order `panels=` names them in.
         for p in [
-            "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras", "debuffs", "buffs", "charm", "apps",
-            "sky",
+            "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
+            "debuffs", "buffs", "charm", "apps", "sky",
         ] {
             if !o.has(p) {
                 continue;
@@ -470,8 +542,22 @@ impl Render for OverlayView {
             let el = match p {
                 "meter" => Some(self.meter(snap)),
                 "xp" => self.xp(snap),
-                "heals" => Some(self.metric(snap, "Healing", "healing", Some("hps"), "heal_share", "No healing yet")),
-                "taken" => Some(self.metric(snap, "Damage taken", "damage_taken", None, "taken_share", "No damage taken")),
+                "heals" => Some(self.metric(
+                    snap,
+                    "Healing",
+                    "healing",
+                    Some("hps"),
+                    "heal_share",
+                    "No healing yet",
+                )),
+                "taken" => Some(self.metric(
+                    snap,
+                    "Damage taken",
+                    "damage_taken",
+                    None,
+                    "taken_share",
+                    "No damage taken",
+                )),
                 "motes" => Some(self.motes(snap)),
                 "auras" => Some(self.auras(snap)),
                 "debuffs" => Some(self.debuffs(snap)),
@@ -500,10 +586,15 @@ impl OverlayView {
     fn encounter<'a>(&'a self, snap: &'a Value) -> Option<&'a Value> {
         if self.opts.scope.is_some() {
             let s = self.session.as_ref()?;
-            return (s.get("fights").and_then(Value::as_u64).unwrap_or(0) > 0).then(|| s.get("summary")).flatten();
+            return (s.get("fights").and_then(Value::as_u64).unwrap_or(0) > 0)
+                .then(|| s.get("summary"))
+                .flatten();
         }
         snap.get("current").filter(|c| !c.is_null()).or_else(|| {
-            self.opts.keep_idle.then(|| snap.get("recent").and_then(|r| r.get(0))).flatten()
+            self.opts
+                .keep_idle
+                .then(|| snap.get("recent").and_then(|r| r.get(0)))
+                .flatten()
         })
     }
 
@@ -511,19 +602,41 @@ impl OverlayView {
     fn meter(&self, snap: &Value) -> Div {
         let scoped = self.opts.scope.is_some();
         let Some(enc) = self.encounter(snap) else {
-            let title = if scoped { "Nothing fought yet" } else { "Waiting for combat" };
+            let title = if scoped {
+                "Nothing fought yet"
+            } else {
+                "Waiting for combat"
+            };
             return panel(title.into(), None, true, vec![empty("No active encounter")]);
         };
         // A session total is never idle: it is not waiting on anything.
         let idle = !scoped && snap.get("current").is_none_or(Value::is_null);
         let meta = if scoped {
             // Combat time, said as such, so it does not read as time played.
-            let fights = self.session.as_ref().and_then(|s| s.get("fights")).and_then(Value::as_u64).unwrap_or(0);
-            format!("{} dps · {} fighting · {fights} fights", num(Some(f(enc, "your_dps"))), dur(f(enc, "duration")))
+            let fights = self
+                .session
+                .as_ref()
+                .and_then(|s| s.get("fights"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            format!(
+                "{} dps · {} fighting · {fights} fights",
+                num(Some(f(enc, "your_dps"))),
+                dur(f(enc, "duration"))
+            )
         } else {
-            format!("{} dps · {}", num(Some(f(enc, "your_dps"))), dur(f(enc, "duration")))
+            format!(
+                "{} dps · {}",
+                num(Some(f(enc, "your_dps"))),
+                dur(f(enc, "duration"))
+            )
         };
-        let mut rows: Vec<Value> = fold_pets(enc.get("meter").and_then(Value::as_array).cloned().unwrap_or_default());
+        let mut rows: Vec<Value> = fold_pets(
+            enc.get("meter")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
         if self.opts.self_only {
             rows.retain(|r| flag(r, "is_you"));
         }
@@ -538,7 +651,10 @@ impl OverlayView {
             rows.iter()
                 .map(|r| {
                     let side = Side::of(r);
-                    let quiet = r.get("last_action").and_then(Value::as_f64).map_or(0., |la| (end - la).max(0.));
+                    let quiet = r
+                        .get("last_action")
+                        .and_then(Value::as_f64)
+                        .map_or(0., |la| (end - la).max(0.));
                     let fade = if quiet <= STALE_AFTER {
                         1.
                     } else {
@@ -550,22 +666,49 @@ impl OverlayView {
                     }
                     nums.push((num(Some(f(r, "damage"))), TEXT));
                     nums.push((num(Some(f(r, "dps"))), DIM));
-                    bar_row(name_with_tag(r, side), nums, f(r, "share"), side.bar(), fade).into_any_element()
+                    bar_row(
+                        name_with_tag(r, side),
+                        nums,
+                        f(r, "share"),
+                        side.bar(),
+                        fade,
+                    )
+                    .into_any_element()
                 })
                 .collect()
         };
         out.push(sub_chips(snap, enc).into_any_element());
         let title = s(enc, "title");
-        panel(if title.is_empty() { "Encounter".into() } else { title.to_string() }, Some(meta), idle, out)
+        panel(
+            if title.is_empty() {
+                "Encounter".into()
+            } else {
+                title.to_string()
+            },
+            Some(meta),
+            idle,
+            out,
+        )
     }
 
     /// `renderMetric`: healing and damage taken.
-    fn metric(&self, snap: &Value, title: &str, value: &str, rate: Option<&str>, share: &str, empty_text: &str) -> Div {
+    fn metric(
+        &self,
+        snap: &Value,
+        title: &str,
+        value: &str,
+        rate: Option<&str>,
+        share: &str,
+        empty_text: &str,
+    ) -> Div {
         let Some(enc) = self.encounter(snap) else {
             return panel(title.into(), None, false, vec![empty("—")]);
         };
-        let mut rows: Vec<&Value> =
-            enc.get("meter").and_then(Value::as_array).map(|a| a.iter().filter(|r| f(r, value) > 0.).collect()).unwrap_or_default();
+        let mut rows: Vec<&Value> = enc
+            .get("meter")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter(|r| f(r, value) > 0.).collect())
+            .unwrap_or_default();
         rows.sort_by(|a, b| f(b, value).total_cmp(&f(a, value)));
         rows.truncate(self.opts.rows);
         if rows.is_empty() {
@@ -579,8 +722,16 @@ impl OverlayView {
                 if let Some(k) = rate {
                     nums.push((num(Some(f(r, k))), DIM));
                 }
-                bar_row(div().text_color(gpui::rgb(side.name())).child(s(r, "name").to_string()), nums, f(r, share), side.bar(), 1.)
-                    .into_any_element()
+                bar_row(
+                    div()
+                        .text_color(gpui::rgb(side.name()))
+                        .child(s(r, "name").to_string()),
+                    nums,
+                    f(r, share),
+                    side.bar(),
+                    1.,
+                )
+                .into_any_element()
             })
             .collect();
         panel(title.into(), None, false, out)
@@ -593,7 +744,11 @@ impl OverlayView {
         };
         let lvl = snap.get("level").and_then(Value::as_i64).unwrap_or(0);
         let levelling = s(snap, "levelling");
-        let title = if levelling.is_empty() { format!("Level {lvl}") } else { format!("Level {lvl} ({levelling})") };
+        let title = if levelling.is_empty() {
+            format!("Level {lvl}")
+        } else {
+            format!("Level {lvl} ({levelling})")
+        };
         let cap = snap.get("level_cap").and_then(Value::as_i64).unwrap_or(50);
         let capped = lvl >= cap;
         let rate = f(x, "rate_per_hour");
@@ -610,11 +765,16 @@ impl OverlayView {
         let mut rows = Vec::new();
         if !capped {
             let pct = f(x, "percent").clamp(0., 100.);
-            let eta = x.get("seconds_to_next_level").and_then(Value::as_f64).map_or("—".to_string(), |s| long_dur(s, false));
+            let eta = x
+                .get("seconds_to_next_level")
+                .and_then(Value::as_f64)
+                .map_or("—".to_string(), |s| long_dur(s, false));
             let kills = x.get("kills").and_then(Value::as_u64).unwrap_or(0);
             rows.push(
                 bar_row(
-                    div().text_color(gpui::rgb(YOU)).child(format!("{pct:.1}% → {}", lvl + 1)),
+                    div()
+                        .text_color(gpui::rgb(YOU))
+                        .child(format!("{pct:.1}% → {}", lvl + 1)),
                     vec![(format!("{kills} kills"), TEXT), (eta, DIM)],
                     pct / 100.,
                     Side::You.bar(),
@@ -626,7 +786,13 @@ impl OverlayView {
         rows.push(
             bar_row(
                 div().child("AA"),
-                vec![(format!("{} unspent", x.get("aa_unspent").and_then(Value::as_u64).unwrap_or(0)), DIM)],
+                vec![(
+                    format!(
+                        "{} unspent",
+                        x.get("aa_unspent").and_then(Value::as_u64).unwrap_or(0)
+                    ),
+                    DIM,
+                )],
                 0.,
                 Side::Plain.bar(),
                 1.,
@@ -634,15 +800,33 @@ impl OverlayView {
             .into_any_element(),
         );
         if flag(x, "aa_potion_active") {
-            let c = x.get("aa_potion_charges").and_then(Value::as_u64).unwrap_or(0);
+            let c = x
+                .get("aa_potion_charges")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             // Amber on the last charge, as a cue to drink another.
-            let bar = if c <= 1 { rgba_of(ACCENT, 0.4) } else { Side::Pet.bar() };
+            let bar = if c <= 1 {
+                rgba_of(ACCENT, 0.4)
+            } else {
+                Side::Pet.bar()
+            };
             rows.push(
-                bar_row(div().child("XP potion"), vec![(format!("{c} left"), DIM)], c.min(5) as f64 / 5., bar, 1.)
-                    .into_any_element(),
+                bar_row(
+                    div().child("XP potion"),
+                    vec![(format!("{c} left"), DIM)],
+                    c.min(5) as f64 / 5.,
+                    bar,
+                    1.,
+                )
+                .into_any_element(),
             );
         }
-        Some(panel(title, (!bits.is_empty()).then(|| bits.join(" · ")), false, rows))
+        Some(panel(
+            title,
+            (!bits.is_empty()).then(|| bits.join(" · ")),
+            false,
+            rows,
+        ))
     }
 
     /// `renderMotes`.
@@ -660,7 +844,11 @@ impl OverlayView {
         let hours = f(snap, "session_seconds") / 3600.;
         let meta = (total > 0.).then(|| {
             // A rate only once the sitting is long enough to mean one.
-            if hours >= 0.25 { format!("{total} this session · {:.1}/hr", total / hours) } else { format!("{total} this session") }
+            if hours >= 0.25 {
+                format!("{total} this session · {:.1}/hr", total / hours)
+            } else {
+                format!("{total} this session")
+            }
         });
         if rows.is_empty() {
             return panel("Motes".into(), meta, false, vec![empty("None yet")]);
@@ -669,9 +857,18 @@ impl OverlayView {
         let out = rows
             .iter()
             .map(|(name, n)| {
-                let short = name.strip_prefix("Mote of ").or_else(|| name.strip_prefix("mote of ")).unwrap_or(name);
-                bar_row(div().child(short.to_string()), vec![(format!("{n}"), TEXT)], n / max, Side::Plain.bar(), 1.)
-                    .into_any_element()
+                let short = name
+                    .strip_prefix("Mote of ")
+                    .or_else(|| name.strip_prefix("mote of "))
+                    .unwrap_or(name);
+                bar_row(
+                    div().child(short.to_string()),
+                    vec![(format!("{n}"), TEXT)],
+                    n / max,
+                    Side::Plain.bar(),
+                    1.,
+                )
+                .into_any_element()
             })
             .collect();
         panel("Motes".into(), meta, false, out)
@@ -679,16 +876,36 @@ impl OverlayView {
 
     /// `renderAuras`.
     fn auras(&self, snap: &Value) -> Div {
-        let auras = snap.get("auras").and_then(Value::as_array).cloned().unwrap_or_default();
+        let auras = snap
+            .get("auras")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if auras.is_empty() {
             return panel("Auras".into(), None, false, vec![empty("No auras")]);
         }
         let out = auras
             .iter()
             .take(5)
-            .map(|a| bar_row(div().text_color(gpui::rgb(PET)).child(s(a, "name").to_string()), vec![("up".into(), DIM)], 1., Side::Pet.bar(), 1.).into_any_element())
+            .map(|a| {
+                bar_row(
+                    div()
+                        .text_color(gpui::rgb(PET))
+                        .child(s(a, "name").to_string()),
+                    vec![("up".into(), DIM)],
+                    1.,
+                    Side::Pet.bar(),
+                    1.,
+                )
+                .into_any_element()
+            })
             .collect();
-        panel("Auras".into(), Some(format!("{}/5", auras.len())), false, out)
+        panel(
+            "Auras".into(),
+            Some(format!("{}/5", auras.len())),
+            false,
+            out,
+        )
     }
 
     /// `renderDebuffs`.
@@ -697,7 +914,12 @@ impl OverlayView {
         if list.is_empty() {
             return panel("Debuffs".into(), None, false, vec![empty("None")]);
         }
-        let out = list.into_iter().map(|(b, left, share)| timer_row(&b, left, share, rgba_of(ENEMY, 0.4), TEXT).into_any_element()).collect();
+        let out = list
+            .into_iter()
+            .map(|(b, left, share)| {
+                timer_row(&b, left, share, rgba_of(ENEMY, 0.4), TEXT).into_any_element()
+            })
+            .collect();
         panel("Debuffs".into(), None, false, out)
     }
 
@@ -745,8 +967,16 @@ impl OverlayView {
                         let rem = b.get("remaining").and_then(Value::as_f64)?;
                         let perm = flag(b, "permanent");
                         let left = if perm { rem } else { (rem - gone).max(0.) };
-                        let total = b.get("total").and_then(Value::as_f64).filter(|t| *t > 0.).unwrap_or(1.);
-                        let share = if perm { 1. } else { (left / total).clamp(0., 1.) };
+                        let total = b
+                            .get("total")
+                            .and_then(Value::as_f64)
+                            .filter(|t| *t > 0.)
+                            .unwrap_or(1.);
+                        let share = if perm {
+                            1.
+                        } else {
+                            (left / total).clamp(0., 1.)
+                        };
                         Some((b.clone(), left, share))
                     })
                     .take(self.opts.buffs)
@@ -759,21 +989,49 @@ impl OverlayView {
     /// when there is neither.
     fn charm_panel(&self) -> Option<Div> {
         let c = self.charm.as_ref()?;
-        let held: Vec<&str> = c.get("charmed").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        let fails: Vec<&Value> = c.get("failures").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+        let held: Vec<&str> = c
+            .get("charmed")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let fails: Vec<&Value> = c
+            .get("failures")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
         if held.is_empty() && fails.is_empty() {
             return None;
         }
         let now = crate::format::now_log();
         let mut rows: Vec<AnyElement> = held
             .iter()
-            .map(|n| bar_row(div().text_color(gpui::rgb(PET)).child(n.to_string()), vec![("charmed".into(), DIM)], 1., Side::Pet.bar(), 1.).into_any_element())
+            .map(|n| {
+                bar_row(
+                    div().text_color(gpui::rgb(PET)).child(n.to_string()),
+                    vec![("charmed".into(), DIM)],
+                    1.,
+                    Side::Pet.bar(),
+                    1.,
+                )
+                .into_any_element()
+            })
             .collect();
         for fl in fails.iter().take(self.opts.rows) {
-            let ago = fl.get("at").and_then(Value::as_i64).map_or(0, |at| (now - at).max(0));
+            let ago = fl
+                .get("at")
+                .and_then(Value::as_i64)
+                .map_or(0, |at| (now - at).max(0));
             rows.push(
                 bar_row(
-                    div().flex().gap_1().child(s(fl, "target").to_string()).child(div().text_color(gpui::rgb(ENEMY)).child(s(fl, "kind").to_string())),
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(s(fl, "target").to_string())
+                        .child(
+                            div()
+                                .text_color(gpui::rgb(ENEMY))
+                                .child(s(fl, "kind").to_string()),
+                        ),
                     vec![(format!("{ago}s ago"), DIM)],
                     1.,
                     Side::Enemy.bar(),
@@ -787,7 +1045,14 @@ impl OverlayView {
         } else {
             let breaks = c.get("breaks").and_then(Value::as_u64).unwrap_or(0);
             let up = format!("{:.0}% uptime", f(c, "uptime") * 100.);
-            if breaks == 0 { up } else { format!("{up} · {breaks} break{}", if breaks == 1 { "" } else { "s" }) }
+            if breaks == 0 {
+                up
+            } else {
+                format!(
+                    "{up} · {breaks} break{}",
+                    if breaks == 1 { "" } else { "s" }
+                )
+            }
         };
         Some(panel("Charm".into(), Some(meta), held.is_empty(), rows))
     }
@@ -797,7 +1062,9 @@ impl OverlayView {
     /// `renderDps`: damage over the last ten seconds, against the fight's
     /// average and the minute's peak, over a bar a second.
     fn dps_panel(&self, snap: &Value) -> Option<Div> {
-        let enc = snap.get("current").filter(|c| !c.is_null() && self.opts.scope.is_none())?;
+        let enc = snap
+            .get("current")
+            .filter(|c| !c.is_null() && self.opts.scope.is_none())?;
         let now = snap.get("log_time").and_then(Value::as_i64)?;
         let buckets = self.dps.buckets(now);
         let rolled: f64 = buckets[buckets.len() - DPS_ROLL as usize..].iter().sum();
@@ -805,11 +1072,30 @@ impl OverlayView {
         // old is not averaged over ten.
         let covered = f(enc, "duration").clamp(1., DPS_ROLL as f64);
         let peak = buckets.iter().copied().fold(1., f64::max);
-        let meta = format!("{} now · {} avg · peak {}", num(Some((rolled / covered).round())), num(Some(f(enc, "your_dps"))), num(Some(peak)));
-        let spark = div().w_full().flex().items_end().gap(px(1.)).h(px(24.)).children(buckets.into_iter().map(|v| {
-            div().flex_1().h(relative((v / peak) as f32)).bg(rgba_of(YOU, if v > 0. { 0.7 } else { 0. }))
-        }));
-        Some(panel("Damage".into(), Some(meta), false, vec![spark.into_any_element()]))
+        let meta = format!(
+            "{} now · {} avg · peak {}",
+            num(Some((rolled / covered).round())),
+            num(Some(f(enc, "your_dps"))),
+            num(Some(peak))
+        );
+        let spark = div()
+            .w_full()
+            .flex()
+            .items_end()
+            .gap(px(1.))
+            .h(px(24.))
+            .children(buckets.into_iter().map(|v| {
+                div()
+                    .flex_1()
+                    .h(relative((v / peak) as f32))
+                    .bg(rgba_of(YOU, if v > 0. { 0.7 } else { 0. }))
+            }));
+        Some(panel(
+            "Damage".into(),
+            Some(meta),
+            false,
+            vec![spark.into_any_element()],
+        ))
     }
 
     /// `renderOutgoing`: your abilities across their groups, ranked together,
@@ -834,7 +1120,17 @@ impl OverlayView {
             .map(|a| {
                 bar_row(
                     div().child(s(a, "name").to_string()),
-                    vec![(format!("{}× max {}", num(Some(f(a, "hits"))), num(Some(f(a, "max")))), DIM), (num(Some(f(a, "damage"))), TEXT)],
+                    vec![
+                        (
+                            format!(
+                                "{}× max {}",
+                                num(Some(f(a, "hits"))),
+                                num(Some(f(a, "max")))
+                            ),
+                            DIM,
+                        ),
+                        (num(Some(f(a, "damage"))), TEXT),
+                    ],
                     f(a, "damage") / total,
                     Side::You.bar(),
                     1.,
@@ -842,7 +1138,16 @@ impl OverlayView {
                 .into_any_element()
             })
             .collect();
-        Some(panel("Your damage".into(), Some(format!("{} dealt · {} dps", num(Some(total)), num(Some(f(enc, "your_dps"))))), false, rows))
+        Some(panel(
+            "Your damage".into(),
+            Some(format!(
+                "{} dealt · {} dps",
+                num(Some(total)),
+                num(Some(f(enc, "your_dps")))
+            )),
+            false,
+            rows,
+        ))
     }
 
     /// `pollIncoming`: what is landing on you in this fight.
@@ -861,7 +1166,17 @@ impl OverlayView {
             .map(|a| {
                 bar_row(
                     div().child(s(a, "name").to_string()),
-                    vec![(format!("{}× max {}", num(Some(f(a, "hits"))), num(Some(f(a, "max")))), DIM), (num(Some(f(a, "total"))), TEXT)],
+                    vec![
+                        (
+                            format!(
+                                "{}× max {}",
+                                num(Some(f(a, "hits"))),
+                                num(Some(f(a, "max")))
+                            ),
+                            DIM,
+                        ),
+                        (num(Some(f(a, "total"))), TEXT),
+                    ],
                     f(a, "share"),
                     Side::Enemy.bar(),
                     1.,
@@ -870,7 +1185,11 @@ impl OverlayView {
             })
             .collect();
         let worst = f(d, "biggest_hit");
-        let meta = if worst > 0. { format!("{} taken · worst {}", num(Some(total)), num(Some(worst))) } else { format!("{} taken", num(Some(total))) };
+        let meta = if worst > 0. {
+            format!("{} taken · worst {}", num(Some(total)), num(Some(worst)))
+        } else {
+            format!("{} taken", num(Some(total)))
+        };
         Some(panel("Hitting you".into(), Some(meta), false, rows))
     }
 
@@ -878,18 +1197,39 @@ impl OverlayView {
     /// say. Hidden while none is.
     fn sky_panel(&self) -> Option<Div> {
         let d = self.sky.as_ref()?;
-        let ready: Vec<&Value> =
-            d.get("quests").and_then(Value::as_array)?.iter().filter(|q| flag(q, "relevant") && flag(q, "complete")).collect();
+        let ready: Vec<&Value> = d
+            .get("quests")
+            .and_then(Value::as_array)?
+            .iter()
+            .filter(|q| flag(q, "relevant") && flag(q, "complete"))
+            .collect();
         if ready.is_empty() {
             return None;
         }
-        let meta = format!("{} of {}", ready.len(), d.get("relevant_count").and_then(Value::as_u64).unwrap_or(0));
+        let meta = format!(
+            "{} of {}",
+            ready.len(),
+            d.get("relevant_count").and_then(Value::as_u64).unwrap_or(0)
+        );
         let mut rows = Vec::new();
         for q in ready.iter().take(self.opts.rows) {
-            rows.push(bar_row(div().text_color(gpui::rgb(YOU)).child(s(q, "name").to_string()), vec![(s(q, "giver").to_string(), TEXT)], 1., Side::You.bar(), 1.).into_any_element());
             rows.push(
                 bar_row(
-                    div().text_color(gpui::rgb(DIM)).child(format!("→ {}", s(q, "reward"))),
+                    div()
+                        .text_color(gpui::rgb(YOU))
+                        .child(s(q, "name").to_string()),
+                    vec![(s(q, "giver").to_string(), TEXT)],
+                    1.,
+                    Side::You.bar(),
+                    1.,
+                )
+                .into_any_element(),
+            );
+            rows.push(
+                bar_row(
+                    div()
+                        .text_color(gpui::rgb(DIM))
+                        .child(format!("→ {}", s(q, "reward"))),
                     vec![(format!("say \"{}\"", s(q, "phrase")), TEXT)],
                     0.,
                     Side::Plain.bar(),
@@ -908,26 +1248,67 @@ impl OverlayView {
             .apps
             .iter()
             .map(|p| p.get("panel").unwrap_or(p))
-            .filter(|p| p.get("rows").and_then(Value::as_array).is_some_and(|r| !r.is_empty()))
+            .filter(|p| {
+                p.get("rows")
+                    .and_then(Value::as_array)
+                    .is_some_and(|r| !r.is_empty())
+            })
             .collect();
         if panels.is_empty() {
             return None;
         }
-        Some(div().flex().flex_col().gap(px(6.)).children(panels.into_iter().map(|p| {
-            let mut rows = Vec::new();
-            for r in p.get("rows").and_then(Value::as_array).into_iter().flatten() {
-                let side = if flag(r, "highlight") { Side::Enemy } else { Side::You };
-                rows.push(bar_row(div().child(s(r, "name").to_string()), vec![(s(r, "value").to_string(), TEXT)], 1., side.bar(), 1.).into_any_element());
-                if !s(r, "note").is_empty() || !s(r, "note_value").is_empty() {
-                    rows.push(
-                        bar_row(div().text_color(gpui::rgb(DIM)).child(s(r, "note").to_string()), vec![(s(r, "note_value").to_string(), TEXT)], 0., Side::Plain.bar(), 1.)
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .children(panels.into_iter().map(|p| {
+                    let mut rows = Vec::new();
+                    for r in p
+                        .get("rows")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let side = if flag(r, "highlight") {
+                            Side::Enemy
+                        } else {
+                            Side::You
+                        };
+                        rows.push(
+                            bar_row(
+                                div().child(s(r, "name").to_string()),
+                                vec![(s(r, "value").to_string(), TEXT)],
+                                1.,
+                                side.bar(),
+                                1.,
+                            )
                             .into_any_element(),
-                    );
-                }
-            }
-            let meta = s(p, "meta");
-            panel(s(p, "title").to_string(), (!meta.is_empty()).then(|| meta.to_string()), false, rows)
-        })))
+                        );
+                        if !s(r, "note").is_empty() || !s(r, "note_value").is_empty() {
+                            rows.push(
+                                bar_row(
+                                    div()
+                                        .text_color(gpui::rgb(DIM))
+                                        .child(s(r, "note").to_string()),
+                                    vec![(s(r, "note_value").to_string(), TEXT)],
+                                    0.,
+                                    Side::Plain.bar(),
+                                    1.,
+                                )
+                                .into_any_element(),
+                            );
+                        }
+                    }
+                    let meta = s(p, "meta");
+                    panel(
+                        s(p, "title").to_string(),
+                        (!meta.is_empty()).then(|| meta.to_string()),
+                        false,
+                        rows,
+                    )
+                })),
+        )
     }
 }
 
@@ -941,10 +1322,16 @@ fn fold_pets(rows: Vec<Value>) -> Vec<Value> {
     for i in 0..out.len() {
         let r = out[i].clone();
         let owner = s(&r, "pet_owner");
-        if owner.is_empty() || flag(&r, "is_you") || flag(&r, "is_pet") || s(&r, "pet_kind") != "summoned" {
+        if owner.is_empty()
+            || flag(&r, "is_you")
+            || flag(&r, "is_pet")
+            || s(&r, "pet_kind") != "summoned"
+        {
             continue;
         }
-        let Some(j) = names.iter().position(|n| n == owner).filter(|&j| j != i) else { continue };
+        let Some(j) = names.iter().position(|n| n == owner).filter(|&j| j != i) else {
+            continue;
+        };
         let o = out[j].as_object_mut().expect("a meter row is an object");
         for k in ["damage", "dps", "share"] {
             let sum = o.get(k).and_then(Value::as_f64).unwrap_or(0.) + f(&r, k);
@@ -954,27 +1341,50 @@ fn fold_pets(rows: Vec<Value>) -> Vec<Value> {
         o.insert("folded_pets".into(), n.into());
         absorbed[i] = true;
     }
-    out.into_iter().zip(absorbed).filter(|(_, a)| !a).map(|(r, _)| r).collect()
+    out.into_iter()
+        .zip(absorbed)
+        .filter(|(_, a)| !a)
+        .map(|(r, _)| r)
+        .collect()
 }
 
 /// A row's name and its tag: "+N pets", "charmed", "pet", or whose pet.
 fn name_with_tag(r: &Value, side: Side) -> Div {
-    let mut d = div().flex().items_center().gap_1().child(div().text_color(gpui::rgb(side.name())).child(s(r, "name").to_string()));
+    let mut d = div().flex().items_center().gap_1().child(
+        div()
+            .text_color(gpui::rgb(side.name()))
+            .child(s(r, "name").to_string()),
+    );
     let folded = r.get("folded_pets").and_then(Value::as_u64).unwrap_or(0);
     let tag = if folded > 0 {
-        Some(format!("+{folded} pet{}", if folded == 1 { "" } else { "s" }))
+        Some(format!(
+            "+{folded} pet{}",
+            if folded == 1 { "" } else { "s" }
+        ))
     } else {
         match s(r, "pet_kind") {
             "" => None,
             k => {
                 let what = if k == "charmed" { "charmed" } else { "pet" };
                 let owner = s(r, "pet_owner");
-                Some(if !flag(r, "is_pet") && !owner.is_empty() { format!("{what} {owner}") } else { what.to_string() })
+                Some(if !flag(r, "is_pet") && !owner.is_empty() {
+                    format!("{what} {owner}")
+                } else {
+                    what.to_string()
+                })
             }
         }
     };
     if let Some(t) = tag {
-        d = d.child(div().px(px(4.)).rounded(px(3.)).bg(rgba_of(PET, 0.25)).text_size(px(10.)).text_color(gpui::rgb(TEXT)).child(t));
+        d = d.child(
+            div()
+                .px(px(4.))
+                .rounded(px(3.))
+                .bg(rgba_of(PET, 0.25))
+                .text_size(px(10.))
+                .text_color(gpui::rgb(TEXT))
+                .child(t),
+        );
     }
     d
 }
@@ -986,7 +1396,10 @@ fn sub_chips(snap: &Value, enc: &Value) -> Div {
         bits.push(s(snap, "zone").to_string());
     }
     if f(enc, "damage_to_enemies") > 0. {
-        bits.push(format!("to enemy {}", num(Some(f(enc, "damage_to_enemies")))));
+        bits.push(format!(
+            "to enemy {}",
+            num(Some(f(enc, "damage_to_enemies")))
+        ));
     }
     if f(enc, "your_hps") > 1. {
         bits.push(format!("{} hps", num(Some(f(enc, "your_hps")))));
@@ -997,24 +1410,46 @@ fn sub_chips(snap: &Value, enc: &Value) -> Div {
     if f(enc, "your_deaths") > 0. {
         bits.push(format!("deaths {}", f(enc, "your_deaths")));
     }
-    div().flex().flex_wrap().gap_1().children(bits.into_iter().map(|b| {
-        div().px(px(6.)).rounded(px(8.)).bg(rgba_of(WASH, 0.08)).text_size(px(10.)).text_color(gpui::rgb(DIM)).child(b)
-    }))
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .children(bits.into_iter().map(|b| {
+            div()
+                .px(px(6.))
+                .rounded(px(8.))
+                .bg(rgba_of(WASH, 0.08))
+                .text_size(px(10.))
+                .text_color(gpui::rgb(DIM))
+                .child(b)
+        }))
 }
 
 /// `longDur`: hours and days past an hour, minutes for a coarse estimate.
 pub fn long_dur(sec: f64, coarse: bool) -> String {
     let sec = sec.max(0.).round() as i64;
     if sec < 3600 {
-        return if coarse { format!("{}m", (sec as f64 / 60.).round().max(1.)) } else { dur(sec as f64) };
+        return if coarse {
+            format!("{}m", (sec as f64 / 60.).round().max(1.))
+        } else {
+            dur(sec as f64)
+        };
     }
     let h = sec / 3600;
     if h < 24 {
         let m = ((sec % 3600) as f64 / 60.).round() as i64;
-        return if m > 0 { format!("{h}h {m}m") } else { format!("{h}h") };
+        return if m > 0 {
+            format!("{h}h {m}m")
+        } else {
+            format!("{h}h")
+        };
     }
     let (d, r) = (h / 24, h % 24);
-    if r > 0 { format!("{d}d {r}h") } else { format!("{d}d") }
+    if r > 0 {
+        format!("{d}d {r}h")
+    } else {
+        format!("{d}d")
+    }
 }
 
 /// Keep the window as tall as what it shows (`fitOverlayToContent`): the
@@ -1022,7 +1457,9 @@ pub fn long_dur(sec: f64, coarse: bool) -> String {
 /// Never past the bottom of the screen, and with a dead band so a rounding
 /// pixel does not resize it forever.
 fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) {
-    let Some(bottom) = children.iter().map(|b| b.bottom()).max() else { return };
+    let Some(bottom) = children.iter().map(|b| b.bottom()).max() else {
+        return;
+    };
     let have = window.viewport_size();
     let room = window
         .display(cx)
@@ -1055,8 +1492,15 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
                 .items_baseline()
                 .justify_between()
                 .gap_2()
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(gpui::rgb(if idle { DIM } else { TEXT })).child(title))
-                .children(meta.map(|m| div().text_size(px(11.)).text_color(gpui::rgb(DIM)).child(m))),
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(if idle { DIM } else { TEXT }))
+                        .child(title),
+                )
+                .children(
+                    meta.map(|m| div().text_size(px(11.)).text_color(gpui::rgb(DIM)).child(m)),
+                ),
         )
         .children(rows)
 }
@@ -1069,7 +1513,16 @@ fn bar_row(name: Div, nums: Vec<(String, u32)>, share: f64, bar: Rgba, opacity: 
         .rounded(px(3.))
         .bg(rgba_of(WASH, 0.05))
         .opacity(opacity as f32)
-        .child(div().absolute().top_0().bottom_0().left_0().rounded(px(3.)).w(relative(share.clamp(0., 1.) as f32)).bg(bar))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .rounded(px(3.))
+                .w(relative(share.clamp(0., 1.) as f32))
+                .bg(bar),
+        )
         .child(
             div()
                 .absolute()
@@ -1080,21 +1533,38 @@ fn bar_row(name: Div, nums: Vec<(String, u32)>, share: f64, bar: Rgba, opacity: 
                 .justify_between()
                 .gap_2()
                 .child(name.overflow_hidden().whitespace_nowrap())
-                .child(div().flex().gap(px(8.)).children(nums.into_iter().map(|(t, c)| div().text_color(gpui::rgb(c)).child(t)))),
+                .child(
+                    div().flex().gap(px(8.)).children(
+                        nums.into_iter()
+                            .map(|(t, c)| div().text_color(gpui::rgb(c)).child(t)),
+                    ),
+                ),
         )
 }
 
 /// A buff or debuff: the time left as the bar, "∞" for a permanent one, and
 /// a "?" on a name the resolver is not sure of.
 fn timer_row(b: &Value, left: f64, share: f64, bar: Rgba, time: u32) -> Div {
-    let unsure = b.get("confidence").and_then(Value::as_f64).is_some_and(|c| c < 0.8);
+    let unsure = b
+        .get("confidence")
+        .and_then(Value::as_f64)
+        .is_some_and(|c| c < 0.8);
     let name = format!("{}{}", s(b, "name"), if unsure { " ?" } else { "" });
-    let t = if flag(b, "permanent") { "∞".to_string() } else { dur(left) };
+    let t = if flag(b, "permanent") {
+        "∞".to_string()
+    } else {
+        dur(left)
+    };
     bar_row(div().child(name), vec![(t, time)], share, bar, 1.)
 }
 
 fn empty(text: &str) -> AnyElement {
-    div().px(px(6.)).text_size(px(12.)).text_color(gpui::rgb(DIM)).child(text.to_string()).into_any_element()
+    div()
+        .px(px(6.))
+        .text_size(px(12.))
+        .text_color(gpui::rgb(DIM))
+        .child(text.to_string())
+        .into_any_element()
 }
 
 /// "Reconnecting…", while the daemon is gone or still reading the backlog.
@@ -1103,7 +1573,13 @@ fn status(show: bool) -> Div {
     if !show {
         return d;
     }
-    d.px(px(6.)).py(px(2.)).rounded(px(4.)).bg(rgba_of(SCRIM, 0.74)).text_size(px(11.)).text_color(gpui::rgb(ACCENT)).child("Reconnecting…")
+    d.px(px(6.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .bg(rgba_of(SCRIM, 0.74))
+        .text_size(px(11.))
+        .text_color(gpui::rgb(ACCENT))
+        .child("Reconnecting…")
 }
 
 // ---- the window ------------------------------------------------------------
@@ -1111,18 +1587,34 @@ fn status(show: bool) -> Div {
 /// Open an overlay window. On Wayland it is a layer-shell surface on the
 /// overlay layer, placed by margins from the top left of the output; failing
 /// that, or under X11, an undecorated popup.
-pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(AnyWindowHandle, Entity<OverlayView>)> {
+pub fn open(
+    kind: Kind,
+    api: Option<crate::api::Api>,
+    cx: &mut App,
+) -> Option<(AnyWindowHandle, Entity<OverlayView>)> {
     let mut saved = Saved::load(kind);
-    let displays: Vec<(DisplayId, Bounds<Pixels>)> = cx.displays().iter().map(|d| (d.id(), d.bounds())).collect();
-    let (display, g) = place(saved.bounds, &displays, cx.primary_display().map(|d| d.id()));
+    let displays: Vec<(DisplayId, Bounds<Pixels>)> =
+        cx.displays().iter().map(|d| (d.id(), d.bounds())).collect();
+    let (display, g) = place(
+        saved.bounds,
+        &displays,
+        cx.primary_display().map(|d| d.id()),
+    );
     if g != saved.bounds {
-        eprintln!("[norrlog] overlay: saved position {},{} is on no display; moving to {},{}", saved.bounds.x, saved.bounds.y, g.x, g.y);
+        eprintln!(
+            "[norrlog] overlay: saved position {},{} is on no display; moving to {},{}",
+            saved.bounds.x, saved.bounds.y, g.x, g.y
+        );
         saved.bounds = g;
         let _ = saved.save(kind);
     }
     // A layer surface is placed on its output, by margins from that
     // output's corner; a popup by the desktop's coordinates.
-    let origin = displays.iter().find(|d| Some(d.0) == display).map(|d| d.1.origin).unwrap_or_default();
+    let origin = displays
+        .iter()
+        .find(|d| Some(d.0) == display)
+        .map(|d| d.1.origin)
+        .unwrap_or_default();
     let margin = (f32::from(origin.x), f32::from(origin.y));
     let click = saved.click_through;
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && cfg!(target_os = "linux");
@@ -1133,11 +1625,22 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
     attempts.push(false);
     for layer in attempts {
         let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(g.x), px(g.y)), size(px(g.width), px(g.height))))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                point(px(g.x), px(g.y)),
+                size(px(g.width), px(g.height)),
+            ))),
             titlebar: None,
             focus: false,
             show: true,
-            kind: window_kind(kind, layer, Geometry { x: g.x - margin.0, y: g.y - margin.1, ..g }),
+            kind: window_kind(
+                kind,
+                layer,
+                Geometry {
+                    x: g.x - margin.0,
+                    y: g.y - margin.1,
+                    ..g
+                },
+            ),
             display_id: display,
             is_movable: false,
             is_resizable: false,
@@ -1161,7 +1664,10 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
         });
         match (opened, view) {
             (Ok(h), Some(v)) => return Some((h.into(), v)),
-            (Err(e), _) => eprintln!("[norrlog] overlay window ({}): {e}", if layer { "layer shell" } else { "popup" }),
+            (Err(e), _) => eprintln!(
+                "[norrlog] overlay window ({}): {e}",
+                if layer { "layer shell" } else { "popup" }
+            ),
             _ => {}
         }
     }
@@ -1172,24 +1678,54 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
 /// some display, or else just inside the fallback display
 /// (`visibleOverlayBounds`). Monitors can be arranged with gaps, and a
 /// window placed in one is created and never seen.
-fn place(g: Geometry, displays: &[(DisplayId, Bounds<Pixels>)], fallback: Option<DisplayId>) -> (Option<DisplayId>, Geometry) {
+fn place(
+    g: Geometry,
+    displays: &[(DisplayId, Bounds<Pixels>)],
+    fallback: Option<DisplayId>,
+) -> (Option<DisplayId>, Geometry) {
     const MIN_VISIBLE: f32 = 40.;
     let overlap = |d: &Bounds<Pixels>| {
-        let (dx, dy, dw, dh) = (f32::from(d.origin.x), f32::from(d.origin.y), f32::from(d.size.width), f32::from(d.size.height));
+        let (dx, dy, dw, dh) = (
+            f32::from(d.origin.x),
+            f32::from(d.origin.y),
+            f32::from(d.size.width),
+            f32::from(d.size.height),
+        );
         let w = (g.x + g.width).min(dx + dw) - g.x.max(dx);
         let h = (g.y + g.height).min(dy + dh) - g.y.max(dy);
         (w >= MIN_VISIBLE && h >= MIN_VISIBLE).then_some(w * h)
     };
     // The display holding most of it.
-    if let Some((id, _)) = displays.iter().filter_map(|(id, b)| Some((*id, overlap(b)?))).max_by(|a, b| a.1.total_cmp(&b.1)) {
+    if let Some((id, _)) = displays
+        .iter()
+        .filter_map(|(id, b)| Some((*id, overlap(b)?)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+    {
         return (Some(id), g);
     }
-    let Some((id, d)) = displays.iter().find(|d| Some(d.0) == fallback).or(displays.first()) else {
+    let Some((id, d)) = displays
+        .iter()
+        .find(|d| Some(d.0) == fallback)
+        .or(displays.first())
+    else {
         // Nothing to check against; trust it.
         return (None, g);
     };
-    let (dx, dy, dw, dh) = (f32::from(d.origin.x), f32::from(d.origin.y), f32::from(d.size.width), f32::from(d.size.height));
-    (Some(*id), Geometry { x: dx + 40., y: dy + 40., width: g.width.min(dw), height: g.height.min(dh) })
+    let (dx, dy, dw, dh) = (
+        f32::from(d.origin.x),
+        f32::from(d.origin.y),
+        f32::from(d.size.width),
+        f32::from(d.size.height),
+    );
+    (
+        Some(*id),
+        Geometry {
+            x: dx + 40.,
+            y: dy + 40.,
+            width: g.width.min(dw),
+            height: g.height.min(dh),
+        },
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1226,7 +1762,9 @@ pub fn set_click_through(window: &mut Window, on: bool) {
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         match HasWindowHandle::window_handle(window).map(|h| h.as_raw()) {
-            Ok(RawWindowHandle::Wayland(_)) => window.set_input_region(if on { Some(&[]) } else { None }),
+            Ok(RawWindowHandle::Wayland(_)) => {
+                window.set_input_region(if on { Some(&[]) } else { None })
+            }
             Ok(RawWindowHandle::Xlib(h)) => x11_click_through(h.window as u32, on),
             Ok(RawWindowHandle::Xcb(h)) => x11_click_through(h.window.get(), on),
             _ => {}
@@ -1245,9 +1783,26 @@ fn x11_click_through(id: u32, on: bool) {
     use x11rb::protocol::xproto::{ClipOrdering, Rectangle};
     let r = (|| -> Result<(), String> {
         let (conn, _) = x11rb::connect(None).map_err(|e| e.to_string())?;
-        let rects: &[Rectangle] = if on { &[] } else { &[Rectangle { x: 0, y: 0, width: u16::MAX, height: u16::MAX }] };
-        conn.shape_rectangles(shape::SO::SET, shape::SK::INPUT, ClipOrdering::UNSORTED, id, 0, 0, rects)
-            .map_err(|e| e.to_string())?;
+        let rects: &[Rectangle] = if on {
+            &[]
+        } else {
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: u16::MAX,
+                height: u16::MAX,
+            }]
+        };
+        conn.shape_rectangles(
+            shape::SO::SET,
+            shape::SK::INPUT,
+            ClipOrdering::UNSORTED,
+            id,
+            0,
+            0,
+            rects,
+        )
+        .map_err(|e| e.to_string())?;
         conn.flush().map_err(|e| e.to_string())
     })();
     if let Err(e) = r {
@@ -1273,13 +1828,20 @@ mod tests {
         assert_eq!(d.panels, ["meter", "buffs"], "absent is the default");
         assert_eq!((d.rows, d.buffs, d.scale), (6, 8, 1.));
 
-        assert!(Options::parse("panels=").panels.is_empty(), "empty is no panels, not the default");
+        assert!(
+            Options::parse("panels=").panels.is_empty(),
+            "empty is no panels, not the default"
+        );
         let e = Options::parse("enemies=0&crit=0&self=1&idle=1&scope=zone&panels=meter%2Cbuffs");
         assert!(!e.show_enemies && !e.show_crit && e.self_only && e.keep_idle);
         assert_eq!(e.scope.as_deref(), Some("zone"));
         assert_eq!(e.panels, ["meter", "buffs"]);
         assert_eq!(Options::parse("scope=week").scope, None);
-        assert_eq!(decode("a%2Cb+c%é%"), "a,b c%é%", "a stray % is kept, and never panics");
+        assert_eq!(
+            decode("a%2Cb+c%é%"),
+            "a,b c%é%",
+            "a stray % is kept, and never panics"
+        );
     }
 
     #[test]
@@ -1294,7 +1856,10 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(f(&out[0], "damage"), 140.);
         assert_eq!(out[0]["folded_pets"], 1);
-        assert!(out.iter().any(|r| s(r, "name") == "Xabarn"), "your own pet is left alone");
+        assert!(
+            out.iter().any(|r| s(r, "name") == "Xabarn"),
+            "your own pet is left alone"
+        );
     }
 
     #[test]
@@ -1311,19 +1876,45 @@ mod tests {
         // add into one bucket; the idle second between is a zero.
         assert_eq!(&b[57..], &[50., 0., 60.]);
         d.on_snapshot(Some(200), Some(&enc(2, 10.)));
-        assert!(d.buckets(200).iter().all(|v| *v == 0.), "the last fight's burst is not carried over");
+        assert!(
+            d.buckets(200).iter().all(|v| *v == 0.),
+            "the last fight's burst is not carried over"
+        );
     }
 
     #[test]
     fn an_overlay_in_a_gap_between_monitors_is_brought_back() {
         let screen = |x: f32, w: f32| Bounds::new(point(px(x), px(0.)), size(px(w), px(1080.)));
         // Two monitors with a gap between them, at 1920..2560.
-        let ds = [(DisplayId::new(1), screen(0., 1920.)), (DisplayId::new(2), screen(2560., 1920.))];
-        let g = |x: f32, y: f32| Geometry { x, y, width: 380., height: 460. };
-        assert_eq!(place(g(100., 100.), &ds, Some(ds[0].0)), (Some(ds[0].0), g(100., 100.)));
-        assert_eq!(place(g(3000., 100.), &ds, Some(ds[0].0)), (Some(ds[1].0), g(3000., 100.)), "on the second, kept");
-        assert_eq!(place(g(2000., 100.), &ds, Some(ds[0].0)), (Some(ds[0].0), g(40., 40.)), "in the gap");
-        assert_eq!(place(g(1900., 100.), &ds, None).1, g(40., 40.), "20 px showing is not enough to find it by");
+        let ds = [
+            (DisplayId::new(1), screen(0., 1920.)),
+            (DisplayId::new(2), screen(2560., 1920.)),
+        ];
+        let g = |x: f32, y: f32| Geometry {
+            x,
+            y,
+            width: 380.,
+            height: 460.,
+        };
+        assert_eq!(
+            place(g(100., 100.), &ds, Some(ds[0].0)),
+            (Some(ds[0].0), g(100., 100.))
+        );
+        assert_eq!(
+            place(g(3000., 100.), &ds, Some(ds[0].0)),
+            (Some(ds[1].0), g(3000., 100.)),
+            "on the second, kept"
+        );
+        assert_eq!(
+            place(g(2000., 100.), &ds, Some(ds[0].0)),
+            (Some(ds[0].0), g(40., 40.)),
+            "in the gap"
+        );
+        assert_eq!(
+            place(g(1900., 100.), &ds, None).1,
+            g(40., 40.),
+            "20 px showing is not enough to find it by"
+        );
         assert_eq!(place(g(2000., 100.), &[], None), (None, g(2000., 100.)));
     }
 

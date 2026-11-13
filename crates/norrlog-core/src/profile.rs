@@ -71,17 +71,24 @@ pub fn profile(game: Game) -> Profile {
     match game {
         Game::EverQuest => EVERQUEST,
         Game::EverQuestLegends => LEGENDS,
-        Game::Unknown => Profile { game: Game::Unknown, ..LEGENDS },
+        Game::Unknown => Profile {
+            game: Game::Unknown,
+            ..LEGENDS
+        },
     }
 }
 
 impl Profile {
     /// The features this game has, by the names the API and the apps use.
     pub fn features(&self) -> Vec<&'static str> {
-        [("sky", self.sky), ("lockouts", self.lockouts), ("motes", self.motes)]
-            .into_iter()
-            .filter_map(|(name, on)| on.then_some(name))
-            .collect()
+        [
+            ("sky", self.sky),
+            ("lockouts", self.lockouts),
+            ("motes", self.motes),
+        ]
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect()
     }
 }
 

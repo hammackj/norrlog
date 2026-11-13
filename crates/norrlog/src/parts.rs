@@ -1,10 +1,10 @@
 //! The small pieces the tabs are built from: `app.css`' `.card`, `.stat`,
 //! `.hint`, `details.note` and `.rows .row`.
 
+use crate::theme::px;
 use crate::theme::*;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
 
 /// A titled card: `<div class="card"><h3>`.
@@ -16,7 +16,13 @@ pub fn card(title: &str) -> Div {
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hex(MUTED))
+                .child(title.to_uppercase()),
+        )
 }
 
 /// A card whose title carries a suffix in plain case, as the tradeskill
@@ -33,8 +39,16 @@ pub fn card_suffixed(title: &str, suffix: Option<String>) -> Div {
             h_flex()
                 .gap_1()
                 .items_baseline()
-                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
-                .when_some(suffix, |d, s| d.child(div().text_sm().text_color(hex(MUTED)).child(s))),
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(hex(MUTED))
+                        .child(title.to_uppercase()),
+                )
+                .when_some(suffix, |d, s| {
+                    d.child(div().text_sm().text_color(hex(MUTED)).child(s))
+                }),
         )
 }
 
@@ -47,7 +61,13 @@ pub fn rich(parts: &[(&str, bool)]) -> StyledText {
         let start = text.len();
         text.push_str(t);
         if *b {
-            bold.push((start..text.len(), HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
+            bold.push((
+                start..text.len(),
+                HighlightStyle {
+                    font_weight: Some(FontWeight::BOLD),
+                    ..Default::default()
+                },
+            ));
         }
     }
     StyledText::new(text).with_highlights(bold)
@@ -55,7 +75,11 @@ pub fn rich(parts: &[(&str, bool)]) -> StyledText {
 
 /// Two cards side by side, sharing the width: app.css' `.split`.
 pub fn split(a: Div, b: Div) -> Div {
-    h_flex().items_start().gap_3().child(a.flex_1().min_w_0()).child(b.flex_1().min_w_0())
+    h_flex()
+        .items_start()
+        .gap_3()
+        .child(a.flex_1().min_w_0())
+        .child(b.flex_1().min_w_0())
 }
 
 /// A stat card: label, big value, optional small line under it.
@@ -69,9 +93,21 @@ pub fn stat(label: &str, value: impl Into<SharedString>, note: Option<String>) -
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value.into()))
-        .when_some(note, |c, n| c.child(div().text_xs().text_color(hex(MUTED)).child(n)))
+        .child(
+            div()
+                .text_xs()
+                .text_color(hex(MUTED))
+                .child(label.to_uppercase()),
+        )
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value.into()),
+        )
+        .when_some(note, |c, n| {
+            c.child(div().text_xs().text_color(hex(MUTED)).child(n))
+        })
 }
 
 pub fn hint(text: impl Into<SharedString>) -> Div {
@@ -120,11 +156,25 @@ pub fn bar_row(share: f64, fill: Hsla, name: impl IntoElement, nums: impl IntoEl
         .rounded(px(5.))
         .bg(hex(PANEL_2))
         .overflow_hidden()
-        .child(div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(fill))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(relative(share.clamp(0., 1.) as f32))
+                .bg(fill),
+        )
         // A flex slot, so a name made of parts (text, then tags) can let its
         // text give way while the tags keep their size.
         .child(
-            h_flex().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(name),
+            h_flex()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_weight(FontWeight::MEDIUM)
+                .child(name),
         )
         .child(h_flex().gap_3().flex_none().child(nums))
 }
@@ -146,7 +196,12 @@ pub fn dim(text: impl Into<SharedString>) -> Div {
 
 /// A row's headline figure.
 pub fn figure(text: impl Into<SharedString>) -> Div {
-    div().min_w(px(60.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(text.into())
+    div()
+        .min_w(px(60.))
+        .flex()
+        .justify_end()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
 }
 
 /// `.band`: a heading, a quiet note beside it, and a hairline to the edge.
@@ -155,8 +210,18 @@ pub fn band(title: &str, note: &str) -> Div {
         .items_center()
         .gap(px(10.))
         .mt_2()
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
-        .child(div().text_sm().text_color(hex(MUTED)).child(note.to_string()))
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.to_string()),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(hex(MUTED))
+                .child(note.to_string()),
+        )
         .child(div().flex_1().h(px(1.)).bg(hex(BORDER)))
 }
 
@@ -254,7 +319,11 @@ pub fn scroll_watch() -> impl IntoElement {
             window.on_mouse_event(|e: &MouseMoveEvent, phase, window, _| {
                 // GPUI may send a move at the same spot after a scroll;
                 // only a real move counts.
-                if phase.capture() && SCROLLED_AT.with(|s| s.get()).is_some_and(|p| p != e.position) {
+                if phase.capture()
+                    && SCROLLED_AT
+                        .with(|s| s.get())
+                        .is_some_and(|p| p != e.position)
+                {
                     SCROLLED_AT.with(|s| s.set(None));
                     window.refresh();
                 }

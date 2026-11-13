@@ -18,10 +18,9 @@
 //! Plain requests count as activity but not as a client: a client that only
 //! polls keeps the daemon alive by polling more often than the idle timeout.
 
-
 pub mod install;
-use norrlog_api::{Bags, Event, Hello, Pickups, API_VERSION, IDENTITY, OLD_IDENTITY};
 use futures_util::{Stream, StreamExt};
+use norrlog_api::{Bags, Event, Hello, Pickups, API_VERSION, IDENTITY, OLD_IDENTITY};
 use serde::de::DeserializeOwned;
 use std::ffi::OsString;
 use std::fmt;
@@ -39,25 +38,46 @@ pub const EXIT_PORT_IN_USE: i32 = 3;
 #[derive(Debug)]
 pub enum Error {
     /// Nothing answered on the port.
-    Unreachable { port: u16, why: String },
+    Unreachable {
+        port: u16,
+        why: String,
+    },
     /// Something took the connection and said nothing before the wait ran
     /// out. An norrlogd binds its port before its initial parse and answers
     /// once that is done, so this is most often one still parsing.
-    Busy { port: u16 },
+    Busy {
+        port: u16,
+    },
     /// Something answered, and it is not an norrlogd.
-    NotOurs { port: u16, why: String },
+    NotOurs {
+        port: u16,
+        why: String,
+    },
     /// An norrlogd from before `/api/hello` existed.
-    Outdated { port: u16 },
+    Outdated {
+        port: u16,
+    },
     /// An norrlogd answered, speaking another version of the API.
-    Incompatible { port: u16, daemon: Box<Hello> },
+    Incompatible {
+        port: u16,
+        daemon: Box<Hello>,
+    },
     /// The daemon this started exited before it answered.
-    DaemonExited { status: Option<i32> },
+    DaemonExited {
+        status: Option<i32>,
+    },
     /// The daemon could not be started at all.
     Spawn(std::io::Error),
     /// Started, and still not answering when the wait ran out.
-    Timeout { port: u16, waited: Duration },
+    Timeout {
+        port: u16,
+        waited: Duration,
+    },
     /// The daemon answered a request with an error of its own.
-    Api { status: u16, error: String },
+    Api {
+        status: u16,
+        error: String,
+    },
     /// The answer did not have the shape this client expects.
     Decode(String),
     Http(String),
@@ -160,7 +180,12 @@ impl Client {
         let http = http()?;
         let hello = hello_at(&http, port).await?;
         check(port, &hello)?;
-        Ok(Client { port, http, hello, started: false })
+        Ok(Client {
+            port,
+            http,
+            hello,
+            started: false,
+        })
     }
 
     /// Attach to the daemon on `port`, starting one with `spawn` if nothing
@@ -170,7 +195,12 @@ impl Client {
         match hello_at(&http, port).await {
             Ok(hello) => {
                 check(port, &hello)?;
-                return Ok(Client { port, http, hello, started: false });
+                return Ok(Client {
+                    port,
+                    http,
+                    hello,
+                    started: false,
+                });
             }
             Err(Error::Unreachable { .. }) => {}
             Err(e) => return Err(e),
@@ -198,7 +228,12 @@ impl Client {
                     // Ours if ours is the one answering; a daemon that lost
                     // the race has already exited.
                     let started = !lost_race && hello.pid == child.id().unwrap_or(0);
-                    return Ok(Client { port, http, hello, started });
+                    return Ok(Client {
+                        port,
+                        http,
+                        hello,
+                        started,
+                    });
                 }
                 // Busy is the daemon just started, on its initial parse.
                 Err(Error::Unreachable { .. } | Error::Busy { .. }) => {}
@@ -212,12 +247,17 @@ impl Client {
                     if status.code() == Some(EXIT_PORT_IN_USE) {
                         lost_race = true;
                     } else {
-                        return Err(Error::DaemonExited { status: status.code() });
+                        return Err(Error::DaemonExited {
+                            status: status.code(),
+                        });
                     }
                 }
             }
             if started.elapsed() >= spawn.wait {
-                return Err(Error::Timeout { port, waited: spawn.wait });
+                return Err(Error::Timeout {
+                    port,
+                    waited: spawn.wait,
+                });
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -265,7 +305,13 @@ impl Client {
     /// [`norrlog_api::Panel`]: it lapses unless put again within its TTL.
     pub async fn put_panel(&self, id: &str, panel: &norrlog_api::Panel) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);
-        let resp = self.http.put(&url).json(panel).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = self
+            .http
+            .put(&url)
+            .json(panel)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
         Self::status_only(resp).await
     }
 
@@ -273,14 +319,25 @@ impl Client {
     /// (`/api/class-levels`). Only the status matters.
     pub async fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<()> {
         let url = format!("http://127.0.0.1:{}{path}", self.port);
-        let resp = self.http.post(&url).json(body).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
         Self::status_only(resp).await
     }
 
     /// Take a panel down.
     pub async fn delete_panel(&self, id: &str) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);
-        let resp = self.http.delete(&url).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
         Self::status_only(resp).await
     }
 
@@ -293,21 +350,32 @@ impl Client {
         let error = serde_json::from_slice::<norrlog_api::ApiError>(&body)
             .map(|e| e.error)
             .unwrap_or_else(|_| String::from_utf8_lossy(&body).into_owned());
-        Err(Error::Api { status: status.as_u16(), error })
+        Err(Error::Api {
+            status: status.as_u16(),
+            error,
+        })
     }
 
     /// Any GET, decoded as `T`. For endpoints not yet typed in
     /// [`norrlog_api`], `T` can be `serde_json::Value`.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("http://127.0.0.1:{}{path}", self.port);
-        let resp = self.http.get(&url).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
         let status = resp.status();
         let body = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
         if !status.is_success() {
             let error = serde_json::from_slice::<norrlog_api::ApiError>(&body)
                 .map(|e| e.error)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&body).into_owned());
-            return Err(Error::Api { status: status.as_u16(), error });
+            return Err(Error::Api {
+                status: status.as_u16(),
+                error,
+            });
         }
         serde_json::from_slice(&body).map_err(|e| Error::Decode(format!("{path}: {e}")))
     }
@@ -315,11 +383,19 @@ impl Client {
     /// Any GET, as the raw body: an image, say `/api/item-icon`.
     pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         let url = format!("http://127.0.0.1:{}{path}", self.port);
-        let resp = self.http.get(&url).send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
         let status = resp.status();
         let body = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
         if !status.is_success() {
-            return Err(Error::Api { status: status.as_u16(), error: String::from_utf8_lossy(&body).into_owned() });
+            return Err(Error::Api {
+                status: status.as_u16(),
+                error: String::from_utf8_lossy(&body).into_owned(),
+            });
         }
         Ok(body.to_vec())
     }
@@ -337,9 +413,10 @@ impl Client {
         use tokio_tungstenite::tungstenite::Message;
         Ok(Box::pin(ws.filter_map(|m| async move {
             match m {
-                Ok(Message::Text(t)) => {
-                    Some(serde_json::from_str::<Event>(&t).map_err(|e| Error::Decode(format!("{e}: {t}"))))
-                }
+                Ok(Message::Text(t)) => Some(
+                    serde_json::from_str::<Event>(&t)
+                        .map_err(|e| Error::Decode(format!("{e}: {t}"))),
+                ),
                 Ok(Message::Close(_)) => None,
                 Ok(_) => None,
                 Err(e) => Some(Err(Error::Socket(e.to_string()))),
@@ -353,7 +430,9 @@ impl Client {
     /// connect and again on every change. Untyped, because the snapshot is
     /// the engine's own and still moves with it; read the fields a view
     /// needs. Like [`Client::events`], holding it counts as a client.
-    pub async fn snapshots(&self) -> Result<impl Stream<Item = Result<serde_json::Value>> + Unpin + use<>> {
+    pub async fn snapshots(
+        &self,
+    ) -> Result<impl Stream<Item = Result<serde_json::Value>> + Unpin + use<>> {
         let url = format!("ws://127.0.0.1:{}/ws", self.port);
         let (ws, _) = tokio_tungstenite::connect_async(url)
             .await
@@ -361,7 +440,9 @@ impl Client {
         use tokio_tungstenite::tungstenite::Message;
         Ok(Box::pin(ws.filter_map(|m| async move {
             match m {
-                Ok(Message::Text(t)) => Some(serde_json::from_str(&t).map_err(|e| Error::Decode(format!("/ws: {e}")))),
+                Ok(Message::Text(t)) => {
+                    Some(serde_json::from_str(&t).map_err(|e| Error::Decode(format!("/ws: {e}"))))
+                }
                 Ok(Message::Close(_)) => None,
                 Ok(_) => None,
                 Err(e) => Some(Err(Error::Socket(e.to_string()))),
@@ -379,7 +460,11 @@ fn http() -> Result<reqwest::Client> {
 }
 
 /// How long `/api/hello` gets to answer before the port counts as busy.
-const HELLO_WAIT: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(5) };
+const HELLO_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(5)
+};
 
 /// How long a bare connection gets. Windows retries a refused connection to
 /// a closed local port for about two seconds before saying so.
@@ -391,43 +476,82 @@ async fn hello_at(http: &reqwest::Client, port: u16) -> Result<Hello> {
     // answer yet, which is what Busy means. Asked through the HTTP request
     // alone, Windows' slow refusal of a closed port outlasted the reply
     // deadline, and nothing at all read as a daemon starting up.
-    match tokio::time::timeout(CONNECT_WAIT, tokio::net::TcpStream::connect(("127.0.0.1", port))).await {
+    match tokio::time::timeout(
+        CONNECT_WAIT,
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => return Err(Error::Unreachable { port, why: e.to_string() }),
-        Err(_) => return Err(Error::Unreachable { port, why: "the connection was never accepted".into() }),
+        Ok(Err(e)) => {
+            return Err(Error::Unreachable {
+                port,
+                why: e.to_string(),
+            })
+        }
+        Err(_) => {
+            return Err(Error::Unreachable {
+                port,
+                why: "the connection was never accepted".into(),
+            })
+        }
     }
     let url = format!("http://127.0.0.1:{port}/api/hello");
     let resp = match http.get(&url).timeout(HELLO_WAIT).send().await {
         Ok(r) => r,
         Err(e) if e.is_connect() => {
-            return Err(Error::Unreachable { port, why: e.to_string() })
+            return Err(Error::Unreachable {
+                port,
+                why: e.to_string(),
+            })
         }
         Err(e) if e.is_timeout() => return Err(Error::Busy { port }),
-        Err(e) => return Err(Error::NotOurs { port, why: e.to_string() }),
+        Err(e) => {
+            return Err(Error::NotOurs {
+                port,
+                why: e.to_string(),
+            })
+        }
     };
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         // Every norrlogd answers `/api/snapshot`; one that predates the
         // shared daemon has no `/api/hello`. Most likely the parser app's own
         // daemon from before the rebuild, and it needs saying as that.
         let snap = format!("http://127.0.0.1:{port}/api/snapshot");
-        if http.get(&snap).timeout(Duration::from_secs(5)).send().await.is_ok_and(|r| r.status().is_success()) {
+        if http
+            .get(&snap)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+        {
             return Err(Error::Outdated { port });
         }
     }
     if !resp.status().is_success() {
-        return Err(Error::NotOurs { port, why: format!("/api/hello answered {}", resp.status()) });
+        return Err(Error::NotOurs {
+            port,
+            why: format!("/api/hello answered {}", resp.status()),
+        });
     }
-    resp.json::<Hello>()
-        .await
-        .map_err(|e| Error::NotOurs { port, why: format!("/api/hello: {e}") })
+    resp.json::<Hello>().await.map_err(|e| Error::NotOurs {
+        port,
+        why: format!("/api/hello: {e}"),
+    })
 }
 
 fn check(port: u16, hello: &Hello) -> Result<()> {
     if hello.identity != IDENTITY && hello.identity != OLD_IDENTITY {
-        return Err(Error::NotOurs { port, why: format!("it calls itself {:?}", hello.identity) });
+        return Err(Error::NotOurs {
+            port,
+            why: format!("it calls itself {:?}", hello.identity),
+        });
     }
     if hello.api_version != API_VERSION {
-        return Err(Error::Incompatible { port, daemon: Box::new(hello.clone()) });
+        return Err(Error::Incompatible {
+            port,
+            daemon: Box::new(hello.clone()),
+        });
     }
     Ok(())
 }
@@ -443,7 +567,10 @@ mod tests {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         let got = hello_at(&http().unwrap(), port).await;
-        assert!(matches!(got, Err(Error::Busy { port: p }) if p == port), "{got:?}");
+        assert!(
+            matches!(got, Err(Error::Busy { port: p }) if p == port),
+            "{got:?}"
+        );
         drop(l);
     }
 
@@ -483,7 +610,10 @@ mod tests {
     fn incompatible_names_the_side_to_update() {
         assert!(check(1, &hello(API_VERSION)).is_ok());
         let older = check(1, &hello(API_VERSION - 1)).unwrap_err().to_string();
-        assert!(older.contains("the daemon is older") && older.contains("pid 42"), "{older}");
+        assert!(
+            older.contains("the daemon is older") && older.contains("pid 42"),
+            "{older}"
+        );
         let newer = check(1, &hello(API_VERSION + 1)).unwrap_err().to_string();
         assert!(newer.contains("update this app"), "{newer}");
         let mut other = hello(API_VERSION);
@@ -494,6 +624,9 @@ mod tests {
     #[tokio::test]
     async fn nothing_listening_is_unreachable() {
         // Port 1 is privileged and never an norrlogd.
-        assert!(matches!(Client::attach(1).await, Err(Error::Unreachable { .. })));
+        assert!(matches!(
+            Client::attach(1).await,
+            Err(Error::Unreachable { .. })
+        ));
     }
 }

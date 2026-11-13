@@ -344,7 +344,10 @@ mod tests {
         // Empty brackets are punctuation, not a keyword.
         assert_eq!(bracketed_keywords("[] and [b]"), vec!["b"]);
         // Surrounding whitespace is not part of the word you say back.
-        assert_eq!(bracketed_keywords("[ much experience ]"), vec!["much experience"]);
+        assert_eq!(
+            bracketed_keywords("[ much experience ]"),
+            vec!["much experience"]
+        );
     }
 
     use super::*;

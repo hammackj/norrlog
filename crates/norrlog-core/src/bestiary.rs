@@ -351,18 +351,16 @@ impl Bestiary {
         // the article omitted rather than a creature without one.
         let article = crate::drops::npc_article(npc);
         if !article.is_empty() {
-            self.articles.entry(key.clone()).or_insert_with(|| article.to_string());
+            self.articles
+                .entry(key.clone())
+                .or_insert_with(|| article.to_string());
         }
         Some(key)
     }
 
     fn profile(&mut self, key: NpcKey, at: i64) -> &mut NpcProfile {
-        let (zone, mode, difficulty, name) = (
-            key.zone.clone(),
-            key.mode,
-            key.difficulty,
-            key.name.clone(),
-        );
+        let (zone, mode, difficulty, name) =
+            (key.zone.clone(), key.mode, key.difficulty, key.name.clone());
         let game = self.game;
         self.npcs.entry(key).or_insert_with(|| NpcProfile {
             // Both hold the canonical form while the log is being read.
@@ -471,7 +469,10 @@ impl Bestiary {
         // else killed it, or it died out of sight — so it counts as a kill but
         // not as a sample.
         if absorbed > 0 {
-            self.health.entry(key.clone()).or_default().push((at, absorbed));
+            self.health
+                .entry(key.clone())
+                .or_default()
+                .push((at, absorbed));
         }
         let p = self.profile(key, at);
         p.kills += 1;
@@ -594,13 +595,7 @@ pub fn merge(
         // name would file "a fire goblin" and "fire goblin" as two creatures
         // -- which is the bug `canonical_npc` was written to prevent, moved
         // one level up.
-        let key = (
-            p.game,
-            p.zone.clone(),
-            p.mode,
-            p.difficulty,
-            p.identity(),
-        );
+        let key = (p.game, p.zone.clone(), p.mode, p.difficulty, p.identity());
         // Melee always goes through the folding path below, even for the first
         // profile of a creature. Inserting one wholesale would trust it to
         // already hold one row per pairing, and a caller reading rows back out
@@ -631,9 +626,11 @@ pub fn merge(
         }
         let into = merged.get_mut(&key).expect("just inserted");
         for m in incoming {
-            match into.melee.iter_mut().find(|e| {
-                e.character == m.character && e.level == m.level && e.stance == m.stance
-            }) {
+            match into
+                .melee
+                .iter_mut()
+                .find(|e| e.character == m.character && e.level == m.level && e.stance == m.stance)
+            {
                 Some(e) => {
                     e.swings += m.swings;
                     e.hits += m.hits;
@@ -773,7 +770,10 @@ mod tests {
             .into_iter()
             .find(|n| n.difficulty == 2)
             .unwrap();
-        assert_eq!(p.health_median, 40, "the 5000 belonged to one that did not die");
+        assert_eq!(
+            p.health_median, 40,
+            "the 5000 belonged to one that did not die"
+        );
         assert_eq!(p.health_samples, 1);
     }
 
@@ -845,7 +845,10 @@ mod tests {
         assert_eq!(r.npcs.len(), 1, "one creature, two spellings");
         assert_eq!(r.npcs[0].kills, 2);
         assert_eq!(r.npcs[0].key, "fire goblin", "the identity has no article");
-        assert_eq!(r.npcs[0].name, "a fire goblin", "the name is what the game says");
+        assert_eq!(
+            r.npcs[0].name, "a fire goblin",
+            "the name is what the game says"
+        );
     }
 
     /// A creature the client never puts an article on keeps none.
@@ -923,11 +926,7 @@ mod tests {
 
         let health = [first.health_samples(), second.health_samples()].concat();
         let merged = merge(
-            first
-                .report()
-                .npcs
-                .into_iter()
-                .chain(second.report().npcs),
+            first.report().npcs.into_iter().chain(second.report().npcs),
             &health,
         );
 
@@ -940,7 +939,12 @@ mod tests {
         assert_eq!(p.melee[0].swings, 2);
         // Both samples, and a median over both rather than of two medians.
         assert_eq!(
-            (p.health_samples, p.health_min, p.health_median, p.health_max),
+            (
+                p.health_samples,
+                p.health_min,
+                p.health_median,
+                p.health_max
+            ),
             (2, 20000, 22000, 24000)
         );
     }
@@ -963,7 +967,10 @@ mod tests {
             clean.on_kill(at, "a skeleton");
         }
 
-        let per_log_medians = [skewed.report().npcs[0].health_median, clean.report().npcs[0].health_median];
+        let per_log_medians = [
+            skewed.report().npcs[0].health_median,
+            clean.report().npcs[0].health_median,
+        ];
         let health = [skewed.health_samples(), clean.health_samples()].concat();
         let merged = merge(
             skewed.report().npcs.into_iter().chain(clean.report().npcs),

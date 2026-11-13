@@ -95,7 +95,9 @@ impl Observer for ConsiderCollector {
 
     fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
         match &entry.event {
-            Event::Consider { name, level, rare, .. } => {
+            Event::Consider {
+                name, level, rare, ..
+            } => {
                 let display = strip_article(name);
                 if display.is_empty() {
                     return;
@@ -135,7 +137,8 @@ mod tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c
     }
@@ -389,8 +392,16 @@ impl FactionCollector {
         match &self.offer {
             Some((key, at)) if p.when - *at >= 0 && p.when - *at <= TURNIN_WINDOW => {
                 let cause = FactionCause::TurnIn {
-                    npc: self.display.get(&key.0).cloned().unwrap_or_else(|| key.0.clone()),
-                    item: self.display.get(&key.1).cloned().unwrap_or_else(|| key.1.clone()),
+                    npc: self
+                        .display
+                        .get(&key.0)
+                        .cloned()
+                        .unwrap_or_else(|| key.0.clone()),
+                    item: self
+                        .display
+                        .get(&key.1)
+                        .cloned()
+                        .unwrap_or_else(|| key.1.clone()),
                 };
                 self.to_turnin += 1;
                 self.record(cause, &p.lines);
@@ -441,7 +452,11 @@ impl Observer for FactionCollector {
         self.last_at = entry.timestamp;
 
         // A faction line either opens a burst or extends the one being read.
-        if let Event::Faction { faction, adjustment } = &entry.event {
+        if let Event::Faction {
+            faction,
+            adjustment,
+        } = &entry.event
+        {
             // A capped standing states no number. It says the faction did not
             // move, which is not an adjustment and would be recorded as one.
             //
@@ -484,7 +499,11 @@ impl Observer for FactionCollector {
                 self.offer = None;
                 return;
             }
-            Event::TradeOffer { item, quantity, npc } => {
+            Event::TradeOffer {
+                item,
+                quantity,
+                npc,
+            } => {
                 let key = (npc.trim().to_lowercase(), item.trim().to_lowercase());
                 // The key is folded and the name is not, the same split the
                 // kill above already makes. Without this a turn-in reached
@@ -535,7 +554,8 @@ mod faction_tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c
     }
@@ -563,7 +583,9 @@ mod faction_tests {
             c.moves()[&(cause.clone(), "Ashen Order".to_string())].amounts[&5],
             1
         );
-        assert!(c.moves().contains_key(&(cause, "Guardians of the Vale".to_string())));
+        assert!(c
+            .moves()
+            .contains_key(&(cause, "Guardians of the Vale".to_string())));
     }
 
     /// The zone is part of the creature's key, not decoration.
@@ -610,8 +632,17 @@ mod faction_tests {
             item: "Small Piece of High Quality Ore".into(),
         };
         assert_eq!(c.to_turnin, 1);
-        assert_eq!(c.moves()[&(cause, "New Sebilisian Expedition".into())].amounts[&10], 1);
-        assert_eq!(c.offered[&("crusader iktra".into(), "small piece of high quality ore".into())], 200);
+        assert_eq!(
+            c.moves()[&(cause, "New Sebilisian Expedition".into())].amounts[&10],
+            1
+        );
+        assert_eq!(
+            c.offered[&(
+                "crusader iktra".into(),
+                "small piece of high quality ore".into()
+            )],
+            200
+        );
     }
 
     /// A kill in the middle of a hand-in does not feed the hand-in.
@@ -697,7 +728,8 @@ mod faction_capped_tests {
 ";
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         assert_eq!(c.bursts, 1, "one kill is one burst");
         assert_eq!(c.to_kill, 1);
@@ -762,7 +794,14 @@ impl Observer for PlayerCollector {
     }
 
     fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
-        let Event::WhoEntry { level, classes, name, race, .. } = &entry.event else {
+        let Event::WhoEntry {
+            level,
+            classes,
+            name,
+            race,
+            ..
+        } = &entry.event
+        else {
             return;
         };
         if name.is_empty() {
@@ -843,7 +882,8 @@ mod roster_tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c
     }
@@ -851,7 +891,9 @@ mod roster_tests {
     /// The ordinary line, with everything stated.
     #[test]
     fn a_who_line_names_a_player() {
-        let c = players("[Tue Jul 28 18:26:30 2026] [5 MNK/MAG] Ostrin (Iksar)  ZONE: Befallen (befallen)  \n");
+        let c = players(
+            "[Tue Jul 28 18:26:30 2026] [5 MNK/MAG] Ostrin (Iksar)  ZONE: Befallen (befallen)  \n",
+        );
         let p = &c.seen()["Ostrin"];
         assert_eq!(p.level, 5);
         assert_eq!(p.classes, vec!["MNK", "MAG"]);
@@ -908,7 +950,8 @@ mod skill_tests {
 ";
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         assert_eq!(c.best()["Baking"], 35);
         assert_eq!(c.best()["Brewing"], 12);
@@ -1266,7 +1309,10 @@ impl Observer for MarkerCollector {
     fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
         // A tag closes whatever was open and opens the next, so two blocks
         // can never merge however short the second one is.
-        if let Event::Chat { speaker, message, .. } = &entry.event {
+        if let Event::Chat {
+            speaker, message, ..
+        } = &entry.event
+        {
             if speaker.is_you() {
                 let text = message.trim();
                 // Two conventions, one block. `--EQLCartographer--` names a
@@ -1309,7 +1355,9 @@ impl Observer for MarkerCollector {
             // the tag already named it — `-- EQLDB -- Object : Loom` gives
             // `Loom` in the player's own casing and the payload below gives
             // `LOOM` in the macro's.
-            Event::Chat { speaker, message, .. } if speaker.is_you() && o.name.is_none() => {
+            Event::Chat {
+                speaker, message, ..
+            } if speaker.is_you() && o.name.is_none() => {
                 let (name, kind) = payload(message.trim());
                 o.name = Some(name);
                 if let Some(k) = kind {
@@ -1361,7 +1409,8 @@ mod marker_tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c
     }
@@ -1433,8 +1482,11 @@ mod marker_tests {
     #[test]
     fn the_eqldb_macros_are_markers_too() {
         let c = markers(EQLDB);
-        let got: Vec<(&str, MarkerKind)> =
-            c.markers().iter().map(|m| (m.name.as_str(), m.kind)).collect();
+        let got: Vec<(&str, MarkerKind)> = c
+            .markers()
+            .iter()
+            .map(|m| (m.name.as_str(), m.kind))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -1452,7 +1504,10 @@ mod marker_tests {
         assert_eq!(c.markers()[0].zone_short, "newsebexp");
         assert_eq!(c.markers()[0].zone, "New Sebilis Expedition");
         assert_eq!(c.markers()[0].level, Some(70));
-        assert!((c.markers()[2].x - 101.45).abs() < 1e-9, "an unrelated tell moved the position");
+        assert!(
+            (c.markers()[2].x - 101.45).abs() < 1e-9,
+            "an unrelated tell moved the position"
+        );
     }
 
     /// This convention states a kind and has no room for a role.
@@ -1632,13 +1687,19 @@ impl Observer for CombatCollector {
         use crate::bestiary::Swing;
 
         match &entry.event {
-            Event::Damage { source, target, amount, .. } => {
+            Event::Damage {
+                source,
+                target,
+                amount,
+                ..
+            } => {
                 if let Actor::Named(npc) = target {
                     self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
                 }
                 if target.is_you() {
                     if let Actor::Named(npc) = source {
-                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Hit(*amount));
+                        self.bestiary
+                            .on_swing(entry.timestamp, npc, Swing::Hit(*amount));
                     }
                 }
             }
@@ -1656,19 +1717,19 @@ impl Observer for CombatCollector {
                     }
                 }
             }
-            Event::Loot { item, quantity, source, .. } => {
+            Event::Loot {
+                item,
+                quantity,
+                source,
+                ..
+            } => {
                 // A named corpse that is not your own is a creature, and what
                 // came off it is a drop. Your own corpse is items going back
                 // where they came from, which says nothing about any creature.
                 if let Some(Actor::Named(npc)) = source {
                     if !npc.eq_ignore_ascii_case(&self.player) {
-                        self.drops.on_drop(
-                            entry.timestamp,
-                            item,
-                            *quantity,
-                            npc,
-                            cx.zone,
-                        );
+                        self.drops
+                            .on_drop(entry.timestamp, item, *quantity, npc, cx.zone);
                     }
                 }
             }
@@ -1753,10 +1814,19 @@ impl Observer for TradeCollector {
         let at = entry.timestamp;
         match &entry.event {
             Event::Craft { item, success } => self.trades.on_craft(at, item, *success),
-            Event::ComponentConsumed { item, quantity, remaining } => {
-                self.trades.on_component(at, item, *quantity, Some(*remaining))
-            }
-            Event::ItemPurchased { item, quantity, coin, merchant } => self.trades.on_purchase_from(
+            Event::ComponentConsumed {
+                item,
+                quantity,
+                remaining,
+            } => self
+                .trades
+                .on_component(at, item, *quantity, Some(*remaining)),
+            Event::ItemPurchased {
+                item,
+                quantity,
+                coin,
+                merchant,
+            } => self.trades.on_purchase_from(
                 at,
                 item,
                 *quantity,
@@ -1764,7 +1834,11 @@ impl Observer for TradeCollector {
                 Some(merchant.as_str()),
                 cx.zone,
             ),
-            Event::ItemQuoted { item, merchant, coin } => self.trades.on_quote_from(
+            Event::ItemQuoted {
+                item,
+                merchant,
+                coin,
+            } => self.trades.on_quote_from(
                 at,
                 item,
                 coin.as_copper(),
@@ -1858,7 +1932,11 @@ impl Observer for QuestCollector {
     fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
         let at = entry.timestamp;
         match &entry.event {
-            Event::Chat { speaker, channel, message } => {
+            Event::Chat {
+                speaker,
+                channel,
+                message,
+            } => {
                 if !(channel.eq_ignore_ascii_case("say") || channel.eq_ignore_ascii_case("says")) {
                     return;
                 }
@@ -2003,9 +2081,14 @@ impl Observer for AaCollector {
     fn on_entry(&mut self, entry: &LogEntry, _cx: &Context<'_>) {
         match &entry.event {
             Event::AbilityPointsGained { points, unspent } => {
-                self.exp.on_ability_points(entry.timestamp, *points, *unspent)
+                self.exp
+                    .on_ability_points(entry.timestamp, *points, *unspent)
             }
-            Event::AbilityPointsSpent { ability, rank, cost } => {
+            Event::AbilityPointsSpent {
+                ability,
+                rank,
+                cost,
+            } => {
                 // Folded to the one ability the player bought, the same way
                 // the tracker folds it, so a toggle's two halves do not read
                 // as two ladders.
@@ -2022,7 +2105,8 @@ impl Observer for AaCollector {
                     spent_so_far: *run,
                     at: entry.timestamp,
                 });
-                self.exp.on_ability_spent(entry.timestamp, ability, *rank, *cost)
+                self.exp
+                    .on_ability_spent(entry.timestamp, ability, *rank, *cost)
             }
             _ => {}
         }
@@ -2129,7 +2213,9 @@ impl Observer for SpotCollector {
                 }
             }
             Event::Location { x, y, z } => {
-                let Some((name, at)) = self.pending.clone() else { return };
+                let Some((name, at)) = self.pending.clone() else {
+                    return;
+                };
                 let gap = entry.timestamp - at;
                 if !(0..=SPOT_WINDOW).contains(&gap) {
                     return;
@@ -2168,7 +2254,8 @@ mod spot_tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c.spots().to_vec()
     }
@@ -2176,44 +2263,59 @@ mod spot_tests {
     /// A kill you stood over and measured, and the transform on the way in.
     #[test]
     fn a_loc_after_your_kill_places_the_creature() {
-        let got = spots("\
+        let got = spots(
+            "\
 [Wed Aug 19 10:00:00 2026] You have entered Befallen.
 [Wed Aug 19 10:00:01 2026] Players in EverQuest Legends:
 [Wed Aug 19 10:00:01 2026] [50 WAR] Tharn (Ogre) ZONE: Befallen (befallen)
 [Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
 [Wed Aug 19 10:00:12 2026] Your Location is 179.17, -144.70, -20.17
-");
+",
+        );
         assert_eq!(got.len(), 1, "{got:?}");
         let s = &got[0];
-        assert_eq!(s.name, "decaying skeleton", "the article goes, as everywhere else");
+        assert_eq!(
+            s.name, "decaying skeleton",
+            "the article goes, as everywhere else"
+        );
         assert_eq!(s.zone, "Befallen");
         assert_eq!(s.zone_short, "befallen");
         // map(x, y, z) = (-loc2, -loc1, loc3). Same rule a marker gets, and
         // getting it wrong is what once put 16 of 45 markers outside their
         // own zone's geometry.
         assert_eq!((s.x, s.y, s.z), (144.70, -179.17, -20.17));
-        assert_eq!(s.gap, 2, "and it says how far the reading is from the death");
+        assert_eq!(
+            s.gap, 2,
+            "and it says how far the reading is from the death"
+        );
     }
 
     /// The window is the whole reliability of the row.
     #[test]
     fn a_loc_long_after_the_kill_describes_somewhere_else() {
-        let got = spots("\
+        let got = spots(
+            "\
 [Wed Aug 19 10:00:00 2026] You have entered Befallen.
 [Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
 [Wed Aug 19 10:01:30 2026] Your Location is 179.17, -144.70, -20.17
-");
-        assert!(got.is_empty(), "eighty seconds of walking is not a position, {got:?}");
+",
+        );
+        assert!(
+            got.is_empty(),
+            "eighty seconds of walking is not a position, {got:?}"
+        );
     }
 
     /// Only what you killed. A groupmate's kill happened where *they* stood.
     #[test]
     fn somebody_elses_kill_is_not_your_position() {
-        let got = spots("\
+        let got = spots(
+            "\
 [Wed Aug 19 10:00:00 2026] You have entered Befallen.
 [Wed Aug 19 10:00:10 2026] Daveynub has slain a decaying skeleton!
 [Wed Aug 19 10:00:12 2026] Your Location is 179.17, -144.70, -20.17
-");
+",
+        );
         assert!(got.is_empty(), "{got:?}");
     }
 
@@ -2221,13 +2323,15 @@ mod spot_tests {
     /// clusters, and nothing here averages them into one wrong answer.
     #[test]
     fn one_creature_can_stand_in_several_places() {
-        let got = spots("\
+        let got = spots(
+            "\
 [Wed Aug 19 10:00:00 2026] You have entered Befallen.
 [Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
 [Wed Aug 19 10:00:11 2026] Your Location is 100.00, 100.00, 0.00
 [Wed Aug 19 10:05:10 2026] You have slain a decaying skeleton!
 [Wed Aug 19 10:05:11 2026] Your Location is 900.00, 900.00, 0.00
-");
+",
+        );
         assert_eq!(got.len(), 2, "{got:?}");
         assert_ne!((got[0].x, got[0].y), (got[1].x, got[1].y));
     }
@@ -2235,12 +2339,14 @@ mod spot_tests {
     /// A second `/loc` describes the same corpse, not a second sighting.
     #[test]
     fn one_death_gives_one_spot() {
-        let got = spots("\
+        let got = spots(
+            "\
 [Wed Aug 19 10:00:00 2026] You have entered Befallen.
 [Wed Aug 19 10:00:10 2026] You have slain a decaying skeleton!
 [Wed Aug 19 10:00:11 2026] Your Location is 100.00, 100.00, 0.00
 [Wed Aug 19 10:00:13 2026] Your Location is 100.00, 100.00, 0.00
-");
+",
+        );
         assert_eq!(got.len(), 1, "{got:?}");
     }
 }
@@ -2365,15 +2471,18 @@ mod forage_tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         c
     }
 
     #[test]
     fn a_forage_is_filed_under_the_zone_last_announced() {
-        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
-                     [Mon Aug 03 00:37:12 2026] You have scrounged up Pod of Water.\n");
+        let c = run(
+            "[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+                     [Mon Aug 03 00:37:12 2026] You have scrounged up Pod of Water.\n",
+        );
         let z = &c.zones()["Everfrost Peaks"];
         assert_eq!(z.found.get("Pod of Water"), Some(&1));
         assert_eq!(z.attempts(), 1);
@@ -2381,10 +2490,12 @@ mod forage_tests {
 
     #[test]
     fn a_failure_is_an_attempt_and_not_an_item() {
-        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+        let c = run(
+            "[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
                      [Mon Aug 03 00:37:12 2026] You have scrounged up Roots.\n\
                      [Mon Aug 03 00:37:20 2026] You fail to locate any food nearby.\n\
-                     [Mon Aug 03 00:37:28 2026] You fail to locate any food nearby.\n");
+                     [Mon Aug 03 00:37:28 2026] You fail to locate any food nearby.\n",
+        );
         let z = &c.zones()["Everfrost Peaks"];
         assert_eq!((z.hits(), z.empty, z.attempts()), (1, 2, 3));
         assert_eq!(z.found.len(), 1);
@@ -2392,10 +2503,12 @@ mod forage_tests {
 
     #[test]
     fn a_mode_suffix_is_the_same_place_to_forage_in() {
-        let c = run("[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
+        let c = run(
+            "[Mon Aug 03 00:37:10 2026] You have entered Everfrost Peaks.\n\
                      [Mon Aug 03 00:37:12 2026] You have scrounged up Roots.\n\
                      [Mon Aug 03 00:40:00 2026] You have entered Everfrost Peaks - Group.\n\
-                     [Mon Aug 03 00:40:12 2026] You have scrounged up Roots.\n");
+                     [Mon Aug 03 00:40:12 2026] You have scrounged up Roots.\n",
+        );
         assert_eq!(c.zones().len(), 1);
         assert_eq!(c.zones()["Everfrost Peaks"].found["Roots"], 2);
     }
@@ -2409,11 +2522,13 @@ mod forage_tests {
 
     #[test]
     fn the_item_tally_pools_every_zone() {
-        let c = run("[Mon Aug 03 00:00:00 2026] You have entered Everfrost Peaks.\n\
+        let c = run(
+            "[Mon Aug 03 00:00:00 2026] You have entered Everfrost Peaks.\n\
                      [Mon Aug 03 00:00:02 2026] You have scrounged up Berries.\n\
                      [Mon Aug 03 01:00:00 2026] You have entered Misty Thicket.\n\
                      [Mon Aug 03 01:00:02 2026] You have scrounged up Berries.\n\
-                     [Mon Aug 03 01:00:04 2026] You have scrounged up Fruit.\n");
+                     [Mon Aug 03 01:00:04 2026] You have scrounged up Fruit.\n",
+        );
         let items = c.items();
         assert_eq!(items["Berries"], 2);
         assert_eq!(items["Fruit"], 1);

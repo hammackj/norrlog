@@ -12,17 +12,20 @@
 //! port keeps the renderer's arithmetic until it is decided.
 
 use crate::api::Api;
-use crate::parts::{ROW, ROW_PET, ROW_YOU, bar_row, card_suffixed, dim, empty, figure, fill, hint, note, rich, split};
+use crate::parts::{
+    ROW, ROW_PET, ROW_YOU, bar_row, card_suffixed, dim, empty, figure, fill, hint, note, rich,
+    split,
+};
 use crate::table::tag;
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::Button;
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Sizable, h_flex, v_flex};
+use norrlog_api::{CostBasis, DropReport, DropSighting, Game, ItemPrice, TradeskillReport};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -78,7 +81,9 @@ impl TradeskillsView {
         let Some(api) = self.api.clone() else { return };
         self.last_load = Some(Instant::now());
         self.loading = Some(cx.spawn(async move |this, cx| {
-            let got = api.get::<TradeskillReport>("/api/tradeskills".to_string()).await;
+            let got = api
+                .get::<TradeskillReport>("/api/tradeskills".to_string())
+                .await;
             let report = match got {
                 Ok(r) => r,
                 Err(e) => {
@@ -90,13 +95,27 @@ impl TradeskillsView {
                 }
             };
             // Sources are a nicety, not the page: a failure leaves no drops.
-            let drops = api.get::<DropReport>("/api/drops".to_string()).await.map(|d| d.items).unwrap_or_default();
+            let drops = api
+                .get::<DropReport>("/api/drops".to_string())
+                .await
+                .map(|d| d.items)
+                .unwrap_or_default();
             let _ = this.update(cx, |v, cx| {
-                v.drops = drops.into_iter().map(|i| (i.item.to_lowercase(), i.sources)).collect();
-                v.prices = report.prices.iter().map(|p| (p.item.to_lowercase(), p.clone())).collect();
+                v.drops = drops
+                    .into_iter()
+                    .map(|i| (i.item.to_lowercase(), i.sources))
+                    .collect();
+                v.prices = report
+                    .prices
+                    .iter()
+                    .map(|p| (p.item.to_lowercase(), p.clone()))
+                    .collect();
                 // A skill gone from the report must not leave the page
                 // filtered to nothing.
-                if v.open.as_ref().is_some_and(|o| !report.skills.iter().any(|s| &s.skill == o)) {
+                if v.open
+                    .as_ref()
+                    .is_some_and(|o| !report.skills.iter().any(|s| &s.skill == o))
+                {
                     v.open = None;
                 }
                 v.report = Some(report);
@@ -173,17 +192,21 @@ impl Render for TradeskillsView {
                         .on_click(cx.listener(|v, _, _, cx| v.select(None, cx))),
                 )
         });
-        div().id("ts-scroll").size_full().overflow_y_scrollbar().child(
-            v_flex()
-                .gap_3()
-                .child(self.render_skills(cx))
-                .children(filter)
-                .child(self.render_history(cx))
-                .child(split(self.render_crafts(cx), self.render_components(cx)))
-                .child(self.render_spend())
-                .child(self.render_costs(cx))
-                .child(self.render_recipes()),
-        )
+        div()
+            .id("ts-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(self.render_skills(cx))
+                    .children(filter)
+                    .child(self.render_history(cx))
+                    .child(split(self.render_crafts(cx), self.render_components(cx)))
+                    .child(self.render_spend())
+                    .child(self.render_costs(cx))
+                    .child(self.render_recipes()),
+            )
     }
 }
 
@@ -200,41 +223,62 @@ impl TradeskillsView {
                 .child(empty("No tradeskill activity yet"));
         }
         // app.css' `.grid`: rows stretch, so cards in a row share a height.
-        div().flex().flex_row().flex_wrap().gap_3().children(r.skills.iter().enumerate().map(|(i, s)| {
-            let on = self.open.as_deref() == Some(s.skill.as_str());
-            let practice = s.from_practice().to_string();
-            let trained = format!("{} bought from a trainer", s.trained);
-            let ups = format!("{} skill-ups", s.ups);
-            let from = format!(", from {}", s.first_seen_at);
-            let how = if s.trained > 0 {
-                rich(&[(&practice, false), (" by practice, ", false), (&trained, true), (&from, false)])
-            } else {
-                rich(&[(&ups, false), (&from, false)])
-            };
-            let skill = s.skill.clone();
-            v_flex()
-                .id(SharedString::from(format!("ts-skill-{i}")))
-                .min_w(px(208.))
-                .flex_1()
-                .gap_1()
-                .p_3()
-                .rounded(px(8.))
-                .border_1()
-                .border_color(hex(if on { ACCENT } else { BORDER }))
-                .when(!on, |d| d.hover(|d| d.border_color(hex(MUTED))))
-                .bg(hex(PANEL))
-                .cursor_pointer()
-                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(s.skill.to_uppercase()))
-                .child(
-                    h_flex()
-                        .gap(px(5.))
-                        .items_baseline()
-                        .child(div().text_2xl().font_weight(FontWeight::BOLD).child(s.current.to_string()))
-                        .child(dim(format!("+{} this log", s.gained())).text_sm()),
-                )
-                .child(div().text_sm().text_color(hex(MUTED)).child(how))
-                .on_click(cx.listener(move |v, _, _, cx| v.select(Some(skill.clone()), cx)))
-        }))
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_3()
+            .children(r.skills.iter().enumerate().map(|(i, s)| {
+                let on = self.open.as_deref() == Some(s.skill.as_str());
+                let practice = s.from_practice().to_string();
+                let trained = format!("{} bought from a trainer", s.trained);
+                let ups = format!("{} skill-ups", s.ups);
+                let from = format!(", from {}", s.first_seen_at);
+                let how = if s.trained > 0 {
+                    rich(&[
+                        (&practice, false),
+                        (" by practice, ", false),
+                        (&trained, true),
+                        (&from, false),
+                    ])
+                } else {
+                    rich(&[(&ups, false), (&from, false)])
+                };
+                let skill = s.skill.clone();
+                v_flex()
+                    .id(SharedString::from(format!("ts-skill-{i}")))
+                    .min_w(px(208.))
+                    .flex_1()
+                    .gap_1()
+                    .p_3()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(hex(if on { ACCENT } else { BORDER }))
+                    .when(!on, |d| d.hover(|d| d.border_color(hex(MUTED))))
+                    .bg(hex(PANEL))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hex(MUTED))
+                            .child(s.skill.to_uppercase()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(5.))
+                            .items_baseline()
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(s.current.to_string()),
+                            )
+                            .child(dim(format!("+{} this log", s.gained())).text_sm()),
+                    )
+                    .child(div().text_sm().text_color(hex(MUTED)).child(how))
+                    .on_click(cx.listener(move |v, _, _, cx| v.select(Some(skill.clone()), cx)))
+            }))
     }
 
     fn render_history(&self, cx: &mut Context<Self>) -> Div {
@@ -270,7 +314,9 @@ impl TradeskillsView {
                             what,
                             h_flex()
                                 .gap_3()
-                                .when(x.copper > 0, |d| d.child(dim(format!("≥ {}", plat(x.copper)))))
+                                .when(x.copper > 0, |d| {
+                                    d.child(dim(format!("≥ {}", plat(x.copper))))
+                                })
                                 .child(dim(effort))
                                 .child(dim(format!("{} → {}", x.from, x.to)))
                                 .child(figure(format!("+{}", x.ups))),
@@ -278,14 +324,19 @@ impl TradeskillsView {
                     }))
                 }
             }
-            (Some(_), None) => {
-                empty("Click a skill above to see how it was raised, and to show only that tradeskill below")
-            }
+            (Some(_), None) => empty(
+                "Click a skill above to see how it was raised, and to show only that tradeskill below",
+            ),
             (None, _) => div(),
         };
         card_suffixed("How it was raised", self.suffix())
             .child(body)
-            .child(note("ts-history-note", self.notes[0], HISTORY_NOTE, cx.listener(Self::toggle(0))))
+            .child(note(
+                "ts-history-note",
+                self.notes[0],
+                HISTORY_NOTE,
+                cx.listener(Self::toggle(0)),
+            ))
     }
 
     fn render_crafts(&self, cx: &mut Context<Self>) -> Div {
@@ -294,8 +345,18 @@ impl TradeskillsView {
             card.child(empty(e.clone()))
         } else if let Some(r) = &self.report {
             let only = self.open.as_deref();
-            let crafts: Vec<_> = r.crafts.iter().filter(|c| self.matches(c.skill.as_deref())).collect();
-            let hidden = self.hidden_note(r.crafts.iter().filter(|c| c.skill.is_none()).map(|c| c.item.as_str()), "combined recipe");
+            let crafts: Vec<_> = r
+                .crafts
+                .iter()
+                .filter(|c| self.matches(c.skill.as_deref()))
+                .collect();
+            let hidden = self.hidden_note(
+                r.crafts
+                    .iter()
+                    .filter(|c| c.skill.is_none())
+                    .map(|c| c.item.as_str()),
+                "combined recipe",
+            );
             if crafts.is_empty() {
                 card.child(empty(match only {
                     Some(o) => format!("No combines attributed to {o}"),
@@ -303,19 +364,33 @@ impl TradeskillsView {
                 }))
                 .children(hidden)
             } else {
-                let max = crafts.iter().map(|c| c.attempts()).max().unwrap_or(1).max(1) as f64;
+                let max = crafts
+                    .iter()
+                    .map(|c| c.attempts())
+                    .max()
+                    .unwrap_or(1)
+                    .max(1) as f64;
                 let made: u32 = crafts.iter().map(|c| c.successes).sum();
                 let failed: u32 = crafts.iter().map(|c| c.failures).sum();
                 card.child(v_flex().gap_1().children(crafts.iter().map(|c| {
                     let att = c.attempts();
-                    let rate = if att > 0 { c.successes as f64 / att as f64 * 100. } else { 0. };
+                    let rate = if att > 0 {
+                        c.successes as f64 / att as f64 * 100.
+                    } else {
+                        0.
+                    };
                     bar_row(
                         att as f64 / max,
                         fill(ROW),
                         h_flex()
                             .child(c.item.clone())
-                            .when_some(c.skill.as_ref().filter(|_| only.is_none()), |d, s| d.child(dim(format!(" · {s}")))),
-                        h_flex().gap_3().child(dim(format!("{}/{att}", c.successes))).child(figure(format!("{rate:.0}%"))),
+                            .when_some(c.skill.as_ref().filter(|_| only.is_none()), |d, s| {
+                                d.child(dim(format!(" · {s}")))
+                            }),
+                        h_flex()
+                            .gap_3()
+                            .child(dim(format!("{}/{att}", c.successes)))
+                            .child(figure(format!("{rate:.0}%"))),
                     )
                 })))
                 .child(hint(format!(
@@ -328,7 +403,12 @@ impl TradeskillsView {
         } else {
             card
         };
-        card.child(note("ts-crafts-note", self.notes[1], COMBINES_NOTE, cx.listener(Self::toggle(1))))
+        card.child(note(
+            "ts-crafts-note",
+            self.notes[1],
+            COMBINES_NOTE,
+            cx.listener(Self::toggle(1)),
+        ))
     }
 
     fn render_components(&self, cx: &mut Context<Self>) -> Div {
@@ -347,32 +427,48 @@ impl TradeskillsView {
                 }))
             } else {
                 let max = comps.iter().map(|c| c.used).max().unwrap_or(1).max(1) as f64;
-                card.child(v_flex().gap_1().children(comps.iter().enumerate().map(|(i, c)| {
-                    let name = v_flex()
-                        .min_w_0()
-                        .child(c.item.clone())
-                        .children(self.vendor_line(i, &c.item))
-                        .children(self.drop_line(i, &c.item));
-                    bar_row(
-                        c.used as f64 / max,
-                        fill(ROW_PET),
-                        name,
-                        h_flex()
-                            .gap_3()
-                            .when_some(c.remaining, |d, n| d.child(dim(format!("{n} left"))))
-                            .child(figure(c.used.to_string())),
-                    )
-                })))
-                .children(self.hidden_note(
-                    r.components.iter().filter(|c| c.skills.is_empty()).map(|c| c.item.as_str()),
-                    "consumed component",
-                ))
+                card.child(
+                    v_flex()
+                        .gap_1()
+                        .children(comps.iter().enumerate().map(|(i, c)| {
+                            let name = v_flex()
+                                .min_w_0()
+                                .child(c.item.clone())
+                                .children(self.vendor_line(i, &c.item))
+                                .children(self.drop_line(i, &c.item));
+                            bar_row(
+                                c.used as f64 / max,
+                                fill(ROW_PET),
+                                name,
+                                h_flex()
+                                    .gap_3()
+                                    .when_some(c.remaining, |d, n| {
+                                        d.child(dim(format!("{n} left")))
+                                    })
+                                    .child(figure(c.used.to_string())),
+                            )
+                        })),
+                )
+                .children(
+                    self.hidden_note(
+                        r.components
+                            .iter()
+                            .filter(|c| c.skills.is_empty())
+                            .map(|c| c.item.as_str()),
+                        "consumed component",
+                    ),
+                )
             }
         } else {
             card
         };
         card.when(self.open.is_some(), |d| d.child(hint(COMPONENTS_HINT)))
-            .child(note("ts-components-note", self.notes[2], COMPONENTS_NOTE, cx.listener(Self::toggle(2))))
+            .child(note(
+                "ts-components-note",
+                self.notes[2],
+                COMPONENTS_NOTE,
+                cx.listener(Self::toggle(2)),
+            ))
     }
 
     /// Who sells a component: the cheapest vendor, the rest on hover.
@@ -385,38 +481,68 @@ impl TradeskillsView {
         };
         let all: SharedString = v
             .iter()
-            .map(|x| format!("{} — {} each, {} bought", one(x), plat(x.unit_copper), x.bought))
+            .map(|x| {
+                format!(
+                    "{} — {} each, {} bought",
+                    one(x),
+                    plat(x.unit_copper),
+                    x.bought
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
             .into();
-        let more = if v.len() > 1 { format!(" +{} more", v.len() - 1) } else { String::new() };
+        let more = if v.len() > 1 {
+            format!(" +{} more", v.len() - 1)
+        } else {
+            String::new()
+        };
         Some(
-            dim(format!("buy: {} at {}{more}", one(cheapest), plat(cheapest.unit_copper)))
-                .text_sm()
-                .id(SharedString::from(format!("ts-buy-{i}")))
-                .tooltip(move |window, cx| Tooltip::new(all.clone()).build(window, cx)),
+            dim(format!(
+                "buy: {} at {}{more}",
+                one(cheapest),
+                plat(cheapest.unit_copper)
+            ))
+            .text_sm()
+            .id(SharedString::from(format!("ts-buy-{i}")))
+            .tooltip(move |window, cx| Tooltip::new(all.clone()).build(window, cx)),
         )
     }
 
     /// Where a component drops: two creatures, the rest on hover.
     fn drop_line(&self, i: usize, item: &str) -> Option<Stateful<Div>> {
-        let sources = self.drops.get(&item.to_lowercase()).filter(|s| !s.is_empty())?;
+        let sources = self
+            .drops
+            .get(&item.to_lowercase())
+            .filter(|s| !s.is_empty())?;
         let one = |s: &DropSighting| {
-            let kills = if s.kills > 0 { s.kills.to_string() } else { "?".into() };
+            let kills = if s.kills > 0 {
+                s.kills.to_string()
+            } else {
+                "?".into()
+            };
             // Sightings over kills: an item left on the corpse dropped just the same.
             format!("{} {}/{kills}", s.npc, s.looted + s.left)
         };
         let all: SharedString = sources
             .iter()
             .map(|s| {
-                let zones = if s.zones.is_empty() { String::new() } else { format!(" — {}", s.zones.join(", ")) };
+                let zones = if s.zones.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", s.zones.join(", "))
+                };
                 format!("{} killed{zones}", one(s))
             })
             .collect::<Vec<_>>()
             .join("\n")
             .into();
         let shown: Vec<String> = sources.iter().take(2).map(one).collect();
-        let more = if sources.len() > 2 { format!(" +{} more", sources.len() - 2) } else { String::new() };
+        let more = if sources.len() > 2 {
+            format!(" +{} more", sources.len() - 2)
+        } else {
+            String::new()
+        };
         Some(
             dim(format!("drops: {}{more}", shown.join(", ")))
                 .text_sm()
@@ -429,7 +555,11 @@ impl TradeskillsView {
         let card = card_suffixed("What it cost to raise", self.suffix());
         let Some(r) = &self.report else { return card };
         let only = self.open.as_deref();
-        let shown: Vec<_> = r.skill_costs.iter().filter(|s| self.matches(Some(&s.skill))).collect();
+        let shown: Vec<_> = r
+            .skill_costs
+            .iter()
+            .filter(|s| self.matches(Some(&s.skill)))
+            .collect();
         if shown.is_empty() {
             return card.child(empty(match only {
                 Some(o) => format!("Nothing priced for {o} yet"),
@@ -438,9 +568,32 @@ impl TradeskillsView {
         }
         // (name, from the book, copper, attempts, no price)
         let rows: Vec<(&str, bool, u64, u64, bool)> = if only.is_some() {
-            shown[0].recipes.iter().map(|x| (x.item.as_str(), x.from_book, x.copper, x.attempts, x.unit_copper.is_none())).collect()
+            shown[0]
+                .recipes
+                .iter()
+                .map(|x| {
+                    (
+                        x.item.as_str(),
+                        x.from_book,
+                        x.copper,
+                        x.attempts,
+                        x.unit_copper.is_none(),
+                    )
+                })
+                .collect()
         } else {
-            shown.iter().map(|s| (s.skill.as_str(), false, s.copper, s.attempts, s.priced_attempts == 0)).collect()
+            shown
+                .iter()
+                .map(|s| {
+                    (
+                        s.skill.as_str(),
+                        false,
+                        s.copper,
+                        s.attempts,
+                        s.priced_attempts == 0,
+                    )
+                })
+                .collect()
         };
         let max = rows.iter().map(|r| r.2).max().unwrap_or(1).max(1) as f64;
         let copper: u64 = shown.iter().map(|s| s.copper).sum();
@@ -448,34 +601,72 @@ impl TradeskillsView {
         let priced: u64 = shown.iter().map(|s| s.priced_attempts).sum();
         let book: u64 = shown.iter().map(|s| s.book_priced_attempts).sum();
         let how = if book > 0 {
-            format!("{} of them priced from components the log announced, and {book} from the recipe book", priced - book)
+            format!(
+                "{} of them priced from components the log announced, and {book} from the recipe book",
+                priced - book
+            )
         } else {
             format!("{priced} of them priced from components the log announced")
         };
         let at_least = format!("at least {}", plat(copper));
         let rest = format!(" to raise, over {attempts} combines — {how}.");
         let who = format!("{} cost ", only.unwrap_or("Every tradeskill"));
-        card.child(v_flex().gap_1().children(rows.iter().map(|&(name, from_book, copper, attempts, unknown)| {
-            bar_row(
-                copper as f64 / max,
-                fill(ROW_YOU),
-                h_flex().gap_1().child(name.to_string()).when(from_book, |d| d.child(tag("from the recipe", ACCENT).flex_none())),
-                h_flex()
-                    .gap_3()
-                    .child(dim(format!("{attempts} combine{}", if attempts == 1 { "" } else { "s" })))
-                    .child(if unknown { figure("").child(dim("no price")) } else { figure(format!("≥ {}", plat(copper))) }),
-            )
-        })))
-        .child(div().text_sm().text_color(hex(MUTED)).child(rich(&[(&who, false), (&at_least, true), (&rest, false)])))
-        .child(div().text_sm().text_color(hex(MUTED)).child(cost_note(r.game)))
+        card.child(
+            v_flex().gap_1().children(rows.iter().map(
+                |&(name, from_book, copper, attempts, unknown)| {
+                    bar_row(
+                        copper as f64 / max,
+                        fill(ROW_YOU),
+                        h_flex()
+                            .gap_1()
+                            .child(name.to_string())
+                            .when(from_book, |d| {
+                                d.child(tag("from the recipe", ACCENT).flex_none())
+                            }),
+                        h_flex()
+                            .gap_3()
+                            .child(dim(format!(
+                                "{attempts} combine{}",
+                                if attempts == 1 { "" } else { "s" }
+                            )))
+                            .child(if unknown {
+                                figure("").child(dim("no price"))
+                            } else {
+                                figure(format!("≥ {}", plat(copper)))
+                            }),
+                    )
+                },
+            )),
+        )
+        .child(div().text_sm().text_color(hex(MUTED)).child(rich(&[
+            (&who, false),
+            (&at_least, true),
+            (&rest, false),
+        ])))
+        .child(
+            div()
+                .text_sm()
+                .text_color(hex(MUTED))
+                .child(cost_note(r.game)),
+        )
     }
 
     fn render_costs(&self, cx: &mut Context<Self>) -> Div {
         let card = card_suffixed("What a combine cost", self.suffix());
         let card = if let Some(r) = &self.report {
             let only = self.open.as_deref();
-            let costs: Vec<_> = r.costs.iter().filter(|c| self.matches(c.skill.as_deref())).collect();
-            let hidden = self.hidden_note(r.costs.iter().filter(|c| c.skill.is_none()).map(|c| c.item.as_str()), "costed recipe");
+            let costs: Vec<_> = r
+                .costs
+                .iter()
+                .filter(|c| self.matches(c.skill.as_deref()))
+                .collect();
+            let hidden = self.hidden_note(
+                r.costs
+                    .iter()
+                    .filter(|c| c.skill.is_none())
+                    .map(|c| c.item.as_str()),
+                "costed recipe",
+            );
             if costs.is_empty() {
                 card.child(empty(match only {
                     Some(o) => format!("No {o} combine announced its components yet"),
@@ -483,54 +674,88 @@ impl TradeskillsView {
                 }))
                 .children(hidden)
             } else {
-                let max = costs.iter().map(|c| c.unit_copper).max().unwrap_or(1).max(1) as f64;
-                card.child(v_flex().gap_1().children(costs.iter().enumerate().map(|(i, c)| {
-                    let parts: Vec<String> = c
-                        .components
-                        .iter()
-                        .map(|p| if p.per_combine > 1. { format!("{} ×{}", p.item, trim2(p.per_combine)) } else { p.item.clone() })
-                        .collect();
-                    let missing = if c.unpriced.is_empty() { String::new() } else { format!(" · no price for {}", c.unpriced.join(", ")) };
-                    let evidence = if c.basis == CostBasis::Recipe {
-                        tag("from the recipe", ACCENT)
-                            .id(SharedString::from(format!("ts-book-{i}")))
-                            .tooltip(|window, cx| Tooltip::new(FROM_BOOK).build(window, cx))
-                            .into_any_element()
-                    } else {
-                        dim(format!("{} of {} combines", c.costed, c.combines)).into_any_element()
-                    };
-                    bar_row(
-                        c.unit_copper as f64 / max,
-                        fill(ROW_YOU),
-                        v_flex()
-                            .min_w_0()
-                            .child(
+                let max = costs
+                    .iter()
+                    .map(|c| c.unit_copper)
+                    .max()
+                    .unwrap_or(1)
+                    .max(1) as f64;
+                card.child(
+                    v_flex()
+                        .gap_1()
+                        .children(costs.iter().enumerate().map(|(i, c)| {
+                            let parts: Vec<String> = c
+                                .components
+                                .iter()
+                                .map(|p| {
+                                    if p.per_combine > 1. {
+                                        format!("{} ×{}", p.item, trim2(p.per_combine))
+                                    } else {
+                                        p.item.clone()
+                                    }
+                                })
+                                .collect();
+                            let missing = if c.unpriced.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" · no price for {}", c.unpriced.join(", "))
+                            };
+                            let evidence = if c.basis == CostBasis::Recipe {
+                                tag("from the recipe", ACCENT)
+                                    .id(SharedString::from(format!("ts-book-{i}")))
+                                    .tooltip(|window, cx| Tooltip::new(FROM_BOOK).build(window, cx))
+                                    .into_any_element()
+                            } else {
+                                dim(format!("{} of {} combines", c.costed, c.combines))
+                                    .into_any_element()
+                            };
+                            bar_row(
+                                c.unit_copper as f64 / max,
+                                fill(ROW_YOU),
+                                v_flex()
+                                    .min_w_0()
+                                    .child(h_flex().child(c.item.clone()).when_some(
+                                        c.skill.as_ref().filter(|_| only.is_none()),
+                                        |d, s| d.child(dim(format!(" · {s}"))),
+                                    ))
+                                    .child(dim(format!("{}{missing}", parts.join(", "))).text_sm()),
                                 h_flex()
-                                    .child(c.item.clone())
-                                    .when_some(c.skill.as_ref().filter(|_| only.is_none()), |d, s| d.child(dim(format!(" · {s}")))),
+                                    .gap_3()
+                                    .child(evidence)
+                                    .child(dim(format!("≥ {} all told", plat(c.total_copper))))
+                                    .child(figure(format!("≥ {}", plat(c.unit_copper)))),
                             )
-                            .child(dim(format!("{}{missing}", parts.join(", "))).text_sm()),
-                        h_flex()
-                            .gap_3()
-                            .child(evidence)
-                            .child(dim(format!("≥ {} all told", plat(c.total_copper))))
-                            .child(figure(format!("≥ {}", plat(c.unit_copper)))),
-                    )
-                })))
+                        })),
+                )
                 .children(hidden)
             }
         } else {
             card
         };
-        card.child(note("ts-costs-note", self.notes[3], COSTS_NOTE, cx.listener(Self::toggle(3))))
+        card.child(note(
+            "ts-costs-note",
+            self.notes[3],
+            COSTS_NOTE,
+            cx.listener(Self::toggle(3)),
+        ))
     }
 
     fn render_recipes(&self) -> Div {
         let card = card_suffixed("Recipes learned", self.suffix());
         let Some(r) = &self.report else { return card };
         let only = self.open.as_deref();
-        let recipes: Vec<_> = r.recipes_learned.iter().filter(|x| self.matches(x.skill.as_deref())).collect();
-        let hidden = self.hidden_note(r.recipes_learned.iter().filter(|x| x.skill.is_none()).map(|x| x.recipe.as_str()), "learned recipe");
+        let recipes: Vec<_> = r
+            .recipes_learned
+            .iter()
+            .filter(|x| self.matches(x.skill.as_deref()))
+            .collect();
+        let hidden = self.hidden_note(
+            r.recipes_learned
+                .iter()
+                .filter(|x| x.skill.is_none())
+                .map(|x| x.recipe.as_str()),
+            "learned recipe",
+        );
         if recipes.is_empty() {
             return card
                 .child(empty(match only {
@@ -545,7 +770,9 @@ impl TradeskillsView {
                 fill(ROW),
                 h_flex()
                     .child(x.recipe.clone())
-                    .when_some(x.skill.as_ref().filter(|_| only.is_none()), |d, s| d.child(dim(format!(" · {s}")))),
+                    .when_some(x.skill.as_ref().filter(|_| only.is_none()), |d, s| {
+                        d.child(dim(format!(" · {s}")))
+                    }),
                 div(),
             )
         })))
@@ -566,7 +793,11 @@ fn hidden_text(names: &[&str], noun: &str) -> Option<String> {
     if n == 0 {
         return None;
     }
-    let (subject, verb) = if n == 1 { (noun.to_string(), "is") } else { (format!("{noun}s"), "are") };
+    let (subject, verb) = if n == 1 {
+        (noun.to_string(), "is")
+    } else {
+        (format!("{noun}s"), "are")
+    };
     let listed = names.iter().take(6).copied().collect::<Vec<_>>().join(", ");
     let more = if n > 6 { ", …" } else { "" };
     Some(format!(
@@ -580,7 +811,10 @@ fn hidden_text(names: &[&str], noun: &str) -> Option<String> {
 fn cost_note(game: Game) -> StyledText {
     match game {
         Game::EverQuest => rich(&[
-            ("Every attempt is charged in full, including failures. Classic EverQuest's ", false),
+            (
+                "Every attempt is charged in full, including failures. Classic EverQuest's ",
+                false,
+            ),
             ("Salvage", true),
             (
                 " AA returns some of a failed combine's components at random and no log line announces it, so the real \
@@ -637,7 +871,11 @@ mod tests {
     #[test]
     fn the_hidden_note_counts_names_six_and_agrees_in_number() {
         assert_eq!(hidden_text(&[], "learned recipe"), None);
-        assert!(hidden_text(&["A"], "learned recipe").unwrap().starts_with("1 learned recipe is not attributed"));
+        assert!(
+            hidden_text(&["A"], "learned recipe")
+                .unwrap()
+                .starts_with("1 learned recipe is not attributed")
+        );
         let many: Vec<String> = (1..=8).map(|n| format!("r{n}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         let t = hidden_text(&many, "costed recipe").unwrap();

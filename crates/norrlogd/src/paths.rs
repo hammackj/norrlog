@@ -94,8 +94,14 @@ fn migrate_once() {
     }
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let mut bases: Vec<PathBuf> =
-            [home().map(|h| h.join(".config")), config_base(), data_base()].into_iter().flatten().collect();
+        let mut bases: Vec<PathBuf> = [
+            home().map(|h| h.join(".config")),
+            config_base(),
+            data_base(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         bases.dedup();
         for base in bases {
             if let Some(note) = migrate(&base) {
@@ -115,7 +121,11 @@ fn migrate(base: &Path) -> Option<String> {
     }
     let new = base.join(APP);
     if let Err(e) = std::fs::create_dir_all(&new) {
-        return Some(format!("could not create {}: {e}; still using {}", new.display(), old.display()));
+        return Some(format!(
+            "could not create {}: {e}; still using {}",
+            new.display(),
+            old.display()
+        ));
     }
     let mut stayed = Vec::new();
     for entry in std::fs::read_dir(&old).ok()?.flatten() {
@@ -175,9 +185,14 @@ mod tests {
     /// follows the working directory, and does it silently.
     #[test]
     fn a_path_is_absolute_or_it_is_nothing() {
-        for p in [config_dir(), data_dir(), config_file("x.json"), data_file("x.db")]
-            .into_iter()
-            .flatten()
+        for p in [
+            config_dir(),
+            data_dir(),
+            config_file("x.json"),
+            data_file("x.db"),
+        ]
+        .into_iter()
+        .flatten()
         {
             assert!(p.is_absolute(), "{} is relative", p.display());
         }
@@ -211,13 +226,28 @@ mod tests {
         std::fs::write(base.join("norrlog/state.json"), "{}").unwrap();
 
         assert!(migrate(&base).is_some());
-        assert_eq!(std::fs::read_to_string(base.join("norrlog/history.db")).unwrap(), "db");
-        assert_eq!(std::fs::read_to_string(base.join("norrlog/crops/a.png")).unwrap(), "png");
-        assert_eq!(std::fs::read_to_string(base.join("norrlog/state.json")).unwrap(), "{}");
+        assert_eq!(
+            std::fs::read_to_string(base.join("norrlog/history.db")).unwrap(),
+            "db"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("norrlog/crops/a.png")).unwrap(),
+            "png"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("norrlog/state.json")).unwrap(),
+            "{}"
+        );
         #[cfg(unix)]
         {
-            assert!(std::fs::symlink_metadata(base.join("eqlparser")).unwrap().file_type().is_symlink());
-            assert_eq!(std::fs::read_to_string(base.join("eqlparser/history.db")).unwrap(), "db");
+            assert!(std::fs::symlink_metadata(base.join("eqlparser"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(base.join("eqlparser/history.db")).unwrap(),
+                "db"
+            );
         }
         assert_eq!(migrate(&base), None, "a second run finds nothing to do");
         std::fs::remove_dir_all(base).unwrap();
@@ -236,9 +266,18 @@ mod tests {
 
         let note = migrate(&base).unwrap();
         assert!(note.contains("tasks.json"), "{note}");
-        assert_eq!(std::fs::read_to_string(base.join("norrlog/tasks.json")).unwrap(), "new");
-        assert_eq!(std::fs::read_to_string(base.join("eqlparser/tasks.json")).unwrap(), "old");
-        assert_eq!(std::fs::read_to_string(base.join("norrlog/item-ids.json")).unwrap(), "ids");
+        assert_eq!(
+            std::fs::read_to_string(base.join("norrlog/tasks.json")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("eqlparser/tasks.json")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("norrlog/item-ids.json")).unwrap(),
+            "ids"
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 

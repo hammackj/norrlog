@@ -457,8 +457,10 @@ impl Registry {
         sha: &str,
         today: &str,
     ) -> FoldStats {
-        let mut by_id: BTreeMap<u32, Entry> =
-            std::mem::take(&mut self.items).into_iter().map(|e| (e.item_id, e)).collect();
+        let mut by_id: BTreeMap<u32, Entry> = std::mem::take(&mut self.items)
+            .into_iter()
+            .map(|e| (e.item_id, e))
+            .collect();
         let mut stats = FoldStats {
             rows: rows.len(),
             ..Default::default()
@@ -651,7 +653,10 @@ mod tests {
 
     #[test]
     fn empty_bag_slots_are_not_items() {
-        assert!(read_inventory(DUMP).unwrap().iter().all(|r| r.item != "Empty"));
+        assert!(read_inventory(DUMP)
+            .unwrap()
+            .iter()
+            .all(|r| r.item != "Empty"));
     }
 
     #[test]
@@ -737,16 +742,34 @@ mod tests {
             "Tharn_freeport-Inventory.txt",
             Source::Inventory,
             &[
-                Reading { item: "Bixie Stinger".into(), item_id: 14029, grade: 0, icon_id: None },
-                Reading { item: "Bixie Stinger".into(), item_id: 20994, grade: 0, icon_id: None },
-                Reading { item: "Rat Meat".into(), item_id: 13408, grade: 0, icon_id: None },
+                Reading {
+                    item: "Bixie Stinger".into(),
+                    item_id: 14029,
+                    grade: 0,
+                    icon_id: None,
+                },
+                Reading {
+                    item: "Bixie Stinger".into(),
+                    item_id: 20994,
+                    grade: 0,
+                    icon_id: None,
+                },
+                Reading {
+                    item: "Rat Meat".into(),
+                    item_id: 13408,
+                    grade: 0,
+                    icon_id: None,
+                },
             ],
             "x",
             "2026-09-06",
         );
         assert_eq!(reg.by_name.get("Rat Meat"), Some(&13408));
         assert!(!reg.by_name.contains_key("Bixie Stinger"));
-        assert_eq!(reg.ambiguous_names.get("Bixie Stinger"), Some(&vec![14029, 20994]));
+        assert_eq!(
+            reg.ambiguous_names.get("Bixie Stinger"),
+            Some(&vec![14029, 20994])
+        );
     }
 
     #[test]
@@ -756,8 +779,18 @@ mod tests {
             "Tharn_freeport-Inventory.txt",
             Source::Inventory,
             &[
-                Reading { item: "Fangol".into(), item_id: 11675, grade: 0, icon_id: None },
-                Reading { item: "Fangol (Exaltation)".into(), item_id: 11675, grade: 0, icon_id: None },
+                Reading {
+                    item: "Fangol".into(),
+                    item_id: 11675,
+                    grade: 0,
+                    icon_id: None,
+                },
+                Reading {
+                    item: "Fangol (Exaltation)".into(),
+                    item_id: 11675,
+                    grade: 0,
+                    icon_id: None,
+                },
             ],
             "x",
             "2026-09-06",
@@ -797,30 +830,69 @@ mod tests {
     fn two_names_on_one_id_are_both_kept() {
         let mut reg = Registry::default();
         let rows = [
-            Reading { item: "Fangol".into(), item_id: 11675, grade: 10, icon_id: None },
-            Reading { item: "Fangol (Exaltation)".into(), item_id: 11675, grade: 0, icon_id: None },
+            Reading {
+                item: "Fangol".into(),
+                item_id: 11675,
+                grade: 10,
+                icon_id: None,
+            },
+            Reading {
+                item: "Fangol (Exaltation)".into(),
+                item_id: 11675,
+                grade: 0,
+                icon_id: None,
+            },
         ];
-        let stats = reg.fold("Tharn_freeport-Inventory.txt", Source::Inventory, &rows, "x", "2026-09-06");
+        let stats = reg.fold(
+            "Tharn_freeport-Inventory.txt",
+            Source::Inventory,
+            &rows,
+            "x",
+            "2026-09-06",
+        );
         assert_eq!(reg.items.len(), 1);
         assert_eq!(stats.renamed, 1);
         let e = &reg.items[0];
         assert_eq!(e.item, "Fangol");
         assert_eq!(e.also_known_as, vec!["Fangol (Exaltation)"]);
-        assert_eq!(e.names().collect::<Vec<_>>(), ["Fangol", "Fangol (Exaltation)"]);
+        assert_eq!(
+            e.names().collect::<Vec<_>>(),
+            ["Fangol", "Fangol (Exaltation)"]
+        );
     }
 
     #[test]
     fn a_version_already_folded_is_not_folded_again() {
         let mut reg = Registry::default();
         let rows = read_inventory(DUMP).unwrap();
-        reg.fold("Tharn_halas-Inventory.txt", Source::Inventory, &rows, "sha1", "2026-09-06");
-        assert_eq!(reg.change("Tharn_halas-Inventory.txt", rows.len(), "sha1"), Change::Unchanged);
-        assert_eq!(reg.change("Tharn_halas-Inventory.txt", rows.len(), "sha2"),
-                   Change::Changed("same row count, contents edited".into()));
-        assert_eq!(reg.change("Mirela_freeport-Inventory.txt", 3, "sha3"), Change::New);
+        reg.fold(
+            "Tharn_halas-Inventory.txt",
+            Source::Inventory,
+            &rows,
+            "sha1",
+            "2026-09-06",
+        );
+        assert_eq!(
+            reg.change("Tharn_halas-Inventory.txt", rows.len(), "sha1"),
+            Change::Unchanged
+        );
+        assert_eq!(
+            reg.change("Tharn_halas-Inventory.txt", rows.len(), "sha2"),
+            Change::Changed("same row count, contents edited".into())
+        );
+        assert_eq!(
+            reg.change("Mirela_freeport-Inventory.txt", 3, "sha3"),
+            Change::New
+        );
 
         // Re-folding the same version appends no history and no ids.
-        reg.fold("Tharn_halas-Inventory.txt", Source::Inventory, &rows, "sha1", "2026-09-07");
+        reg.fold(
+            "Tharn_halas-Inventory.txt",
+            Source::Inventory,
+            &rows,
+            "sha1",
+            "2026-09-07",
+        );
         let src = &reg.sources[0];
         assert_eq!(src.folds.len(), 1);
         assert_eq!(src.new_ids, 2);

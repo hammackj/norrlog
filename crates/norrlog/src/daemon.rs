@@ -9,9 +9,9 @@
 //! old port is stopped, whoever started it, as `restartDaemon` in
 //! `gui/main.js` does, and the new one is attached to or started.
 
+use futures_util::StreamExt;
 use norrlog_api::Hello;
 use norrlog_client::{Client, Error, Spawn};
-use futures_util::StreamExt;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,7 +26,11 @@ pub struct Setup {
 
 pub enum Msg {
     Attaching,
-    Attached { hello: Box<Hello>, started: bool, client: Box<Client> },
+    Attached {
+        hello: Box<Hello>,
+        started: bool,
+        client: Box<Client>,
+    },
     Snapshot(Arc<serde_json::Value>),
     Lost(String),
 }
@@ -74,7 +78,8 @@ impl Latest {
 
     fn take(&self) -> Option<(u64, Arc<serde_json::Value>)> {
         // Cleared first, so a snapshot put after the take sends a notice.
-        self.noticed.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.noticed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
@@ -107,7 +112,19 @@ pub fn mailbox() -> (Outbox, Inbox) {
     // waiting, so this never fills in practice; when it does the sender waits.
     let (tx, rx) = async_channel::bounded(16);
     let latest = Arc::new(Latest::default());
-    (Outbox { tx, latest: latest.clone() }, Inbox { rx, latest, generation: None, early: None, after: None })
+    (
+        Outbox {
+            tx,
+            latest: latest.clone(),
+        },
+        Inbox {
+            rx,
+            latest,
+            generation: None,
+            early: None,
+            after: None,
+        },
+    )
 }
 
 impl Outbox {
@@ -115,10 +132,24 @@ impl Outbox {
         self.tx.send(w).await.map_err(|_| ())
     }
 
-    async fn attached(&self, hello: Box<Hello>, started: bool, client: Box<Client>, generation: u64) -> Result<(), ()> {
+    async fn attached(
+        &self,
+        hello: Box<Hello>,
+        started: bool,
+        client: Box<Client>,
+        generation: u64,
+    ) -> Result<(), ()> {
         // A snapshot from the attachment before is not this one's.
         self.latest.clear();
-        self.send(Wire::Life(Msg::Attached { hello, started, client }, Generation::Set(generation))).await
+        self.send(Wire::Life(
+            Msg::Attached {
+                hello,
+                started,
+                client,
+            },
+            Generation::Set(generation),
+        ))
+        .await
     }
 
     async fn snapshot(&self, generation: u64, v: Arc<serde_json::Value>) -> Result<(), ()> {
@@ -175,8 +206,16 @@ const IDLE_EXIT: Duration = Duration::from_secs(60);
 /// Starts the daemon thread and its runtime; the handle is for views'
 /// requests (see `api`), which run on the same runtime. A [`Setup`] sent on
 /// `ctl` restarts the daemon with it.
-pub fn spawn(setup: Setup, tx: Outbox, ctl: async_channel::Receiver<Setup>) -> tokio::runtime::Handle {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime");
+pub fn spawn(
+    setup: Setup,
+    tx: Outbox,
+    ctl: async_channel::Receiver<Setup>,
+) -> tokio::runtime::Handle {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a tokio runtime");
     let handle = rt.handle().clone();
     std::thread::Builder::new()
         .name("daemon".into())
@@ -198,7 +237,11 @@ async fn run(mut setup: Setup, tx: Outbox, ctl: async_channel::Receiver<Setup>) 
     let mut retry: u64 = 0;
     let mut generation: u64 = 0;
     loop {
-        if tx.send(Wire::Life(Msg::Attaching, Generation::Keep)).await.is_err() {
+        if tx
+            .send(Wire::Life(Msg::Attaching, Generation::Keep))
+            .await
+            .is_err()
+        {
             return;
         }
         generation += 1;
@@ -206,7 +249,11 @@ async fn run(mut setup: Setup, tx: Outbox, ctl: async_channel::Receiver<Setup>) 
             End::Closed => return,
             End::Restart(next) => Some(next),
             End::Lost(why) => {
-                if tx.send(Wire::Life(Msg::Lost(why), Generation::Clear)).await.is_err() {
+                if tx
+                    .send(Wire::Life(Msg::Lost(why), Generation::Clear))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
                 retry = (retry + 1).min(10);
@@ -244,7 +291,11 @@ async fn session(
     };
     let hello = Box::new(client.hello().clone());
     let started = client.started_daemon();
-    if tx.attached(hello, started, Box::new(client.clone()), generation).await.is_err() {
+    if tx
+        .attached(hello, started, Box::new(client.clone()), generation)
+        .await
+        .is_err()
+    {
         return End::Closed;
     }
     let mut snaps = match client.snapshots().await {
@@ -276,7 +327,9 @@ async fn session(
 /// for the port to come free. Whoever started it: every app attached to it
 /// reconnects to the new one, as they do after Electron's restart.
 async fn stop(port: u16) {
-    let Ok(old) = Client::attach(port).await else { return };
+    let Ok(old) = Client::attach(port).await else {
+        return;
+    };
     terminate(old.hello().pid).await;
     for _ in 0..50 {
         if matches!(Client::attach(port).await, Err(Error::Unreachable { .. })) {
@@ -315,18 +368,32 @@ fn describe(e: &Error, setup: &Setup) -> String {
 /// Where `norrlogd` is: `--daemon`, `$NORRLOG_DAEMON`, beside this
 /// executable, this checkout's `target/`, then whatever is on `PATH`.
 pub fn find_daemon(given: Option<PathBuf>) -> PathBuf {
-    let exe = if cfg!(windows) { "norrlogd.exe" } else { "norrlogd" };
-    if let Some(p) = given.or_else(|| std::env::var_os("NORRLOG_DAEMON").or_else(|| std::env::var_os("EQLPARSER_DAEMON")).map(PathBuf::from)) {
+    let exe = if cfg!(windows) {
+        "norrlogd.exe"
+    } else {
+        "norrlogd"
+    };
+    if let Some(p) = given.or_else(|| {
+        std::env::var_os("NORRLOG_DAEMON")
+            .or_else(|| std::env::var_os("EQLPARSER_DAEMON"))
+            .map(PathBuf::from)
+    }) {
         return p;
     }
     let mut candidates = Vec::new();
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
         candidates.push(dir.join(exe));
     }
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
     candidates.push(target.join("release").join(exe));
     candidates.push(target.join("debug").join(exe));
-    candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(exe))
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(exe))
 }
 
 #[cfg(test)]
@@ -336,7 +403,8 @@ mod mailbox_tests {
     /// What the window was handed, in a form a test can compare.
     async fn drain(inbox: &mut Inbox) -> Vec<String> {
         let mut got = Vec::new();
-        while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(50), inbox.recv()).await {
+        while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(50), inbox.recv()).await
+        {
             got.push(match m {
                 Msg::Attaching => "attaching".to_string(),
                 Msg::Attached { .. } => "attached".to_string(),
@@ -351,28 +419,47 @@ mod mailbox_tests {
     /// `Attached`, whose client needs a daemon to make.
     async fn attach(out: &Outbox, generation: u64) {
         out.latest.clear();
-        out.send(Wire::Life(Msg::Attaching, Generation::Set(generation))).await.unwrap();
+        out.send(Wire::Life(Msg::Attaching, Generation::Set(generation)))
+            .await
+            .unwrap();
     }
 
     #[test]
     fn a_window_far_behind_hears_every_lifecycle_message_and_the_newest_snapshot() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let (out, mut inbox) = mailbox();
             // The window is stalled: nothing is read until all of this is sent.
             attach(&out, 1).await;
             for i in 0..40 {
-                out.snapshot(1, Arc::new(serde_json::json!(i))).await.unwrap();
+                out.snapshot(1, Arc::new(serde_json::json!(i)))
+                    .await
+                    .unwrap();
             }
-            assert_eq!(drain(&mut inbox).await, ["attaching", "39"], "the attach was pushed out, or not the newest");
+            assert_eq!(
+                drain(&mut inbox).await,
+                ["attaching", "39"],
+                "the attach was pushed out, or not the newest"
+            );
 
-            out.snapshot(1, Arc::new(serde_json::json!(1000))).await.unwrap();
-            out.send(Wire::Life(Msg::Lost("gone".into()), Generation::Clear)).await.unwrap();
+            out.snapshot(1, Arc::new(serde_json::json!(1000)))
+                .await
+                .unwrap();
+            out.send(Wire::Life(Msg::Lost("gone".into()), Generation::Clear))
+                .await
+                .unwrap();
             for i in 0..40 {
-                out.snapshot(1, Arc::new(serde_json::json!(i))).await.unwrap();
+                out.snapshot(1, Arc::new(serde_json::json!(i)))
+                    .await
+                    .unwrap();
             }
             attach(&out, 2).await;
-            out.snapshot(2, Arc::new(serde_json::json!(2000))).await.unwrap();
+            out.snapshot(2, Arc::new(serde_json::json!(2000)))
+                .await
+                .unwrap();
             // The old attachment's snapshot waiting when Lost was sent is
             // taken late and dropped; nothing of attachment 1 follows Lost.
             assert_eq!(drain(&mut inbox).await, ["lost", "attaching", "2000"]);

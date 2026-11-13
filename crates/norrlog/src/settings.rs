@@ -22,15 +22,15 @@ use crate::config::{self, ParserConfig};
 use crate::daemon::Setup;
 use crate::parts::{card, hint, split};
 use crate::theme::*;
-use norrlog_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
+use crate::theme::{self, px};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::{self, px};
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
+use norrlog_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -110,7 +110,12 @@ pub struct SettingsView {
     pub overlay: Entity<crate::overlay_settings::OverlayControls>,
 }
 
-fn input(window: &mut Window, cx: &mut Context<SettingsView>, placeholder: &str, value: &str) -> Entity<InputState> {
+fn input(
+    window: &mut Window,
+    cx: &mut Context<SettingsView>,
+    placeholder: &str,
+    value: &str,
+) -> Entity<InputState> {
     let (p, v) = (placeholder.to_string(), value.to_string());
     cx.new(|cx| InputState::new(window, cx).placeholder(p).default_value(v))
 }
@@ -132,13 +137,27 @@ impl SettingsView {
         let logs_guess = guess.as_ref().map(|g| g.join("Logs").display().to_string());
         let inputs = Inputs {
             log_file: input(window, cx, "…/Logs/eqlog_Tharn_freeport.txt", &cfg.log_file),
-            logs_dir: input(window, cx, logs_guess.as_deref().unwrap_or(""), &cfg.logs_dir),
-            game_dir: input(window, cx, &guess.map(|g| g.display().to_string()).unwrap_or_default(), &cfg.game_dir),
+            logs_dir: input(
+                window,
+                cx,
+                logs_guess.as_deref().unwrap_or(""),
+                &cfg.logs_dir,
+            ),
+            game_dir: input(
+                window,
+                cx,
+                &guess.map(|g| g.display().to_string()).unwrap_or_default(),
+                &cfg.game_dir,
+            ),
             eqdb_url: input(
                 window,
                 cx,
                 "https://your-eqldb.example",
-                if eqdb_mode_of(&cfg.eqdb) == "url" { &cfg.eqdb } else { "" },
+                if eqdb_mode_of(&cfg.eqdb) == "url" {
+                    &cfg.eqdb
+                } else {
+                    ""
+                },
             ),
             port: input(window, cx, "", &port),
         };
@@ -148,7 +167,11 @@ impl SettingsView {
             restart,
             inputs,
             eqdb_mode: eqdb_mode_of(&cfg.eqdb),
-            since: if cfg.since.is_empty() { "all".into() } else { cfg.since },
+            since: if cfg.since.is_empty() {
+                "all".into()
+            } else {
+                cfg.since
+            },
             logs: None,
             pick: None,
             status: None,
@@ -174,8 +197,15 @@ impl SettingsView {
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
         if let Some(a) = &api {
             let h = a.client.hello();
-            let what = if a.client.started_daemon() { "started" } else { "attached to" };
-            self.append_log(&format!("[norrlog] {what} norrlogd {} (pid {}), following {}\n", h.version, h.pid, h.log));
+            let what = if a.client.started_daemon() {
+                "started"
+            } else {
+                "attached to"
+            };
+            self.append_log(&format!(
+                "[norrlog] {what} norrlogd {} (pid {}), following {}\n",
+                h.version, h.pid, h.log
+            ));
             // A different daemon numbers its lines from zero again.
             if self.log_pid != Some(h.pid) {
                 self.log_pid = Some(h.pid);
@@ -231,7 +261,11 @@ impl SettingsView {
                 if let Ok(r) = &got {
                     // Keep a choice still on the list; otherwise the log
                     // being followed, as `selected` does.
-                    if !v.pick.as_ref().is_some_and(|p| r.logs.iter().any(|l| &l.path == p)) {
+                    if !v
+                        .pick
+                        .as_ref()
+                        .is_some_and(|p| r.logs.iter().any(|l| &l.path == p))
+                    {
                         v.pick = r.logs.iter().find(|l| l.current).map(|l| l.path.clone());
                     }
                 }
@@ -280,7 +314,12 @@ impl SettingsView {
         let Some(api) = self.api.clone() else { return };
         let since = self.log_next;
         self.track(cx.spawn(async move |this, cx| {
-            let Ok(d) = api.get::<DaemonLog>(format!("/api/daemon-log?since={since}")).await else { return };
+            let Ok(d) = api
+                .get::<DaemonLog>(format!("/api/daemon-log?since={since}"))
+                .await
+            else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 // A different daemon (restarted, or replaced by another
                 // app's) numbers its lines from zero again.
@@ -305,7 +344,11 @@ impl SettingsView {
         self.daemon_log.push_str(text);
         let n = self.daemon_log.chars().count();
         if n > LOG_KEEP {
-            let cut = self.daemon_log.char_indices().nth(n - LOG_KEEP).map_or(0, |(i, _)| i);
+            let cut = self
+                .daemon_log
+                .char_indices()
+                .nth(n - LOG_KEEP)
+                .map_or(0, |(i, _)| i);
             self.daemon_log.drain(..cut);
         }
         self.log_scroll.scroll_to_bottom();
@@ -316,7 +359,9 @@ impl SettingsView {
         self.cfg_gen += 1;
         let gen_ = self.cfg_gen;
         self.track(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(secs)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(secs))
+                .await;
             let _ = this.update(cx, |v, cx| {
                 if v.cfg_gen == gen_ {
                     v.cfg_status.clear();
@@ -345,7 +390,11 @@ impl SettingsView {
 
     /// Write `patch` and, when `restart`, start the daemon again from the
     /// whole config as it now stands. `Err` is what to say.
-    fn apply(&mut self, patch: serde_json::Map<String, serde_json::Value>, restart: bool) -> Result<bool, String> {
+    fn apply(
+        &mut self,
+        patch: serde_json::Map<String, serde_json::Value>,
+        restart: bool,
+    ) -> Result<bool, String> {
         config::save_patch(patch).map_err(|e| format!("Could not save: {e}"))?;
         if restart {
             let cfg = ParserConfig::load();
@@ -354,7 +403,10 @@ impl SettingsView {
                 daemon: self.restart.daemon.clone(),
                 args: cfg.daemon_args(),
             };
-            self.restart.ctl.try_send(setup).map_err(|e| format!("Saved, but the restart was not sent: {e}"))?;
+            self.restart
+                .ctl
+                .try_send(setup)
+                .map_err(|e| format!("Saved, but the restart was not sent: {e}"))?;
             self.logs = None;
         }
         Ok(restart)
@@ -370,11 +422,16 @@ impl SettingsView {
         };
         // "" is the default site, "off" none, anything else a site of your own.
         let eqdb = match self.eqdb_mode {
-            "url" => text(&self.inputs.eqdb_url).trim_end_matches('/').to_string(),
+            "url" => text(&self.inputs.eqdb_url)
+                .trim_end_matches('/')
+                .to_string(),
             m => m.to_string(),
         };
-        let (log_file, logs_dir, game_dir) =
-            (text(&self.inputs.log_file), text(&self.inputs.logs_dir), text(&self.inputs.game_dir));
+        let (log_file, logs_dir, game_dir) = (
+            text(&self.inputs.log_file),
+            text(&self.inputs.logs_dir),
+            text(&self.inputs.game_dir),
+        );
         let old = ParserConfig::load();
         let restart = log_file != old.log_file
             || logs_dir != old.logs_dir
@@ -416,7 +473,9 @@ impl SettingsView {
         if path == self.inputs.log_file.read(cx).value().trim() {
             return self.say("Already following that log.", 3, cx);
         }
-        self.inputs.log_file.update(cx, |s, cx| s.set_value(path.clone(), window, cx));
+        self.inputs
+            .log_file
+            .update(cx, |s, cx| s.set_value(path.clone(), window, cx));
         let restart = path != ParserConfig::load().log_file;
         let mut patch = serde_json::Map::new();
         patch.insert("logFile".into(), path.into());
@@ -434,18 +493,33 @@ impl SettingsView {
             files: what == Pick::LogFile,
             directories: what != Pick::LogFile,
             multiple: false,
-            prompt: Some(if what == Pick::LogFile { "Follow this log" } else { "Choose" }.into()),
+            prompt: Some(
+                if what == Pick::LogFile {
+                    "Follow this log"
+                } else {
+                    "Choose"
+                }
+                .into(),
+            ),
         });
         self.track(cx.spawn_in(window, async move |this, cx| {
             let got = rx.await;
             let _ = this.update_in(cx, |v, window, cx| match got {
                 Ok(Ok(Some(paths))) => {
-                    let Some(p) = paths.into_iter().next() else { return };
+                    let Some(p) = paths.into_iter().next() else {
+                        return;
+                    };
                     let p = p.display().to_string();
                     match what {
                         Pick::LogFile => v.switch_to_log(p, window, cx),
-                        Pick::LogsDir => v.inputs.logs_dir.update(cx, |s, cx| s.set_value(p, window, cx)),
-                        Pick::GameDir => v.inputs.game_dir.update(cx, |s, cx| s.set_value(p, window, cx)),
+                        Pick::LogsDir => v
+                            .inputs
+                            .logs_dir
+                            .update(cx, |s, cx| s.set_value(p, window, cx)),
+                        Pick::GameDir => v
+                            .inputs
+                            .game_dir
+                            .update(cx, |s, cx| s.set_value(p, window, cx)),
                     }
                 }
                 Ok(Ok(None)) => {}
@@ -495,8 +569,16 @@ impl SettingsView {
 
 /// Every loadout with a kill on file, sorted; a kill with none is `unknown`.
 fn builds(h: &HistoryBrief) -> Vec<String> {
-    let mut b: Vec<String> =
-        h.kills.iter().map(|k| k.build.clone().filter(|b| !b.is_empty()).unwrap_or_else(|| "unknown".into())).collect();
+    let mut b: Vec<String> = h
+        .kills
+        .iter()
+        .map(|k| {
+            k.build
+                .clone()
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| "unknown".into())
+        })
+        .collect();
     b.sort();
     b.dedup();
     b
@@ -504,7 +586,10 @@ fn builds(h: &HistoryBrief) -> Vec<String> {
 
 /// Table rows in an export: every `|` line less the header and its rule.
 fn markdown_rows(text: &str) -> usize {
-    text.lines().filter(|l| l.starts_with('|')).count().saturating_sub(2)
+    text.lines()
+        .filter(|l| l.starts_with('|'))
+        .count()
+        .saturating_sub(2)
 }
 
 /// Bytes at the scale a log is read at: `0`, `N B`, `N KB`, `N.N MB`.
@@ -529,7 +614,11 @@ fn log_option(l: &LogFile) -> String {
 /// Chicago as 17:17.
 fn file_time(secs: i64) -> String {
     use chrono::TimeZone;
-    match chrono::Local.timestamp_opt(secs, 0).single().filter(|_| secs != 0) {
+    match chrono::Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .filter(|_| secs != 0)
+    {
         Some(d) => d.format("%Y-%m-%d %H:%M").to_string(),
         None => "—".into(),
     }
@@ -575,26 +664,36 @@ fn scale_json(v: f32) -> f64 {
 
 const THEME_HINT: &str = "The default matches eqldb and hammackj.com, so the tools read as one family. Applies to \
     this window; the overlay keeps its own palette, tuned against game footage rather than a desktop.";
-const SCALE_HINT: &str = "Scales the whole window, text and spacing alike, to taste. Applies immediately.";
+const SCALE_HINT: &str =
+    "Scales the whole window, text and spacing alike, to taste. Applies immediately.";
 fn field(label: &str) -> Div {
-    v_flex().gap_1().child(div().text_sm().text_color(hex(MUTED)).child(label.to_string()))
+    v_flex().gap_1().child(
+        div()
+            .text_sm()
+            .text_color(hex(MUTED))
+            .child(label.to_string()),
+    )
 }
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("settings-scroll").size_full().overflow_y_scrollbar().child(
-            v_flex()
-                .gap_3()
-                .child(split(
-                    self.render_paths(cx),
-                    v_flex()
-                        .gap_3()
-                        .child(self.render_display(cx))
-                        .child(self.render_export(cx))
-                        .child(self.overlay.clone()),
-                ))
-                .child(self.render_daemon_log(cx)),
-        )
+        div()
+            .id("settings-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(split(
+                        self.render_paths(cx),
+                        v_flex()
+                            .gap_3()
+                            .child(self.render_display(cx))
+                            .child(self.render_export(cx))
+                            .child(self.overlay.clone()),
+                    ))
+                    .child(self.render_daemon_log(cx)),
+            )
     }
 }
 
@@ -606,54 +705,79 @@ impl SettingsView {
         let current = theme::palette();
         let w = this.clone();
         let theme_menu = Button::new("set-theme")
-            .label(theme::THEMES.iter().find(|t| t.0 == current).map_or("", |t| t.1))
+            .label(
+                theme::THEMES
+                    .iter()
+                    .find(|t| t.0 == current)
+                    .map_or("", |t| t.1),
+            )
             .small()
             .w_full()
             .dropdown_menu(move |mut menu, _, _| {
                 for &(val, label) in &theme::THEMES {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(current == val).on_click(move |_, _, cx| {
-                        theme::set_palette(val);
-                        theme::apply(cx);
-                        let _ = w.update(cx, |v, cx| v.save_display("theme", serde_json::json!(val), cx));
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(current == val).on_click(
+                        move |_, _, cx| {
+                            theme::set_palette(val);
+                            theme::apply(cx);
+                            let _ = w.update(cx, |v, cx| {
+                                v.save_display("theme", serde_json::json!(val), cx)
+                            });
+                        },
+                    ));
                 }
                 menu
             });
         let scale = theme::scale();
         let w = this;
         let scale_menu = Button::new("set-scale")
-            .label(theme::SCALES.iter().find(|t| t.0 == scale).map_or_else(|| format!("{:.0}%", scale * 100.), |t| t.1.to_string()))
+            .label(
+                theme::SCALES
+                    .iter()
+                    .find(|t| t.0 == scale)
+                    .map_or_else(|| format!("{:.0}%", scale * 100.), |t| t.1.to_string()),
+            )
             .small()
             .w_full()
             .dropdown_menu(move |mut menu, _, _| {
                 for &(val, label) in &theme::SCALES {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(scale == val).on_click(move |_, _, cx| {
-                        theme::set_scale(val);
-                        theme::apply(cx);
-                        let _ = w.update(cx, |v, cx| v.save_display("uiScale", serde_json::json!(scale_json(val)), cx));
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(scale == val).on_click(
+                        move |_, _, cx| {
+                            theme::set_scale(val);
+                            theme::apply(cx);
+                            let _ = w.update(cx, |v, cx| {
+                                v.save_display("uiScale", serde_json::json!(scale_json(val)), cx)
+                            });
+                        },
+                    ));
                 }
                 menu
             });
         card("Display")
             .child(field("Theme").child(theme_menu).child(hint(THEME_HINT)))
             .child(field("UI scale").child(scale_menu).child(hint(SCALE_HINT)))
-            .when_some(self.display_err.clone(), |d, e| d.child(div().text_sm().text_color(hex(ERR)).child(e)))
+            .when_some(self.display_err.clone(), |d, e| {
+                d.child(div().text_sm().text_color(hex(ERR)).child(e))
+            })
     }
 
     fn save_display(&mut self, key: &str, value: serde_json::Value, cx: &mut Context<Self>) {
         let mut patch = serde_json::Map::new();
         patch.insert(key.to_string(), value);
-        self.display_err = config::save_patch(patch).err().map(|e| format!("Could not save: {e}"));
+        self.display_err = config::save_patch(patch)
+            .err()
+            .map(|e| format!("Could not save: {e}"));
         cx.notify();
     }
 
     fn render_paths(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
         let browse = |id: &'static str, what: Pick| {
-            Button::new(id).label("Browse").small().on_click(cx.listener(move |v, _, window, cx| v.browse(what, window, cx)))
+            Button::new(id)
+                .label("Browse")
+                .small()
+                .on_click(cx.listener(move |v, _, window, cx| v.browse(what, window, cx)))
         };
 
         // The log dropdown.
@@ -672,33 +796,47 @@ impl SettingsView {
         };
         let picked = self.pick.clone();
         let w = this.clone();
-        let log_menu = Button::new("set-logpick").label(pick_label).small().w_full().dropdown_menu(move |mut menu, _, _| {
-            for l in &logs {
-                let (w, path) = (w.clone(), l.path.clone());
-                menu = menu.item(PopupMenuItem::new(log_option(l)).checked(picked.as_ref() == Some(&l.path)).on_click(
-                    move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.pick = Some(path.clone());
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            menu
-        });
+        let log_menu = Button::new("set-logpick")
+            .label(pick_label)
+            .small()
+            .w_full()
+            .dropdown_menu(move |mut menu, _, _| {
+                for l in &logs {
+                    let (w, path) = (w.clone(), l.path.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(log_option(l))
+                            .checked(picked.as_ref() == Some(&l.path))
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |v, cx| {
+                                    v.pick = Some(path.clone());
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            });
 
         let since = self.since.clone();
         let w = this.clone();
         let since_menu = Button::new("set-since")
-            .label(SINCE.iter().find(|s| s.0 == since).map_or(since.as_str(), |s| s.1).to_string())
+            .label(
+                SINCE
+                    .iter()
+                    .find(|s| s.0 == since)
+                    .map_or(since.as_str(), |s| s.1)
+                    .to_string(),
+            )
             .small()
             .w_full()
             .dropdown_menu(move |mut menu, _, _| {
                 for &(val, label) in SINCE {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(since == val).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| v.set_since(val, cx));
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(since == val).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| v.set_since(val, cx));
+                        },
+                    ));
                 }
                 menu
             });
@@ -712,12 +850,14 @@ impl SettingsView {
             .dropdown_menu(move |mut menu, _, _| {
                 for &(val, label) in EQDB {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(mode == val).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.eqdb_mode = val;
-                            cx.notify();
-                        });
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(mode == val).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.eqdb_mode = val;
+                                cx.notify();
+                            });
+                        },
+                    ));
                 }
                 menu
             });
@@ -726,18 +866,28 @@ impl SettingsView {
             .child(
                 field("Log file")
                     .child(
-                        h_flex().gap_2().child(div().flex_1().min_w_0().child(log_menu)).child(
-                            Button::new("set-switch").label("Switch to it").small().on_click(cx.listener(|v, _, window, cx| {
-                                if let Some(p) = v.pick.clone() {
-                                    v.switch_to_log(p, window, cx);
-                                }
-                            })),
-                        ),
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().child(log_menu))
+                            .child(
+                                Button::new("set-switch")
+                                    .label("Switch to it")
+                                    .small()
+                                    .on_click(cx.listener(|v, _, window, cx| {
+                                        if let Some(p) = v.pick.clone() {
+                                            v.switch_to_log(p, window, cx);
+                                        }
+                                    })),
+                            ),
                     )
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().child(Input::new(&self.inputs.log_file).small()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&self.inputs.log_file).small()),
+                            )
                             .child(browse("set-browse-log", Pick::LogFile)),
                     )
                     .child(hint(LOG_HINT))
@@ -748,7 +898,11 @@ impl SettingsView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().child(Input::new(&self.inputs.logs_dir).small()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&self.inputs.logs_dir).small()),
+                            )
                             .child(browse("set-browse-logs", Pick::LogsDir)),
                     )
                     .child(hint(DIR_HINT))
@@ -759,19 +913,35 @@ impl SettingsView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().child(Input::new(&self.inputs.game_dir).small()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&self.inputs.game_dir).small()),
+                            )
                             .child(browse("set-browse-game", Pick::GameDir)),
                     )
                     .child(hint(GAME_HINT)),
             )
-            .child(field("Read on startup").child(since_menu).child(hint(SINCE_HINT)))
+            .child(
+                field("Read on startup")
+                    .child(since_menu)
+                    .child(hint(SINCE_HINT)),
+            )
             .child(
                 field("Item info from eqldb")
                     .child(eqdb_menu)
-                    .when(mode == "url", |d| d.child(Input::new(&self.inputs.eqdb_url).small()))
+                    .when(mode == "url", |d| {
+                        d.child(Input::new(&self.inputs.eqdb_url).small())
+                    })
                     .child(hint(EQDB_HINT)),
             )
-            .child(field("Daemon port").child(div().w(px(120.)).child(Input::new(&self.inputs.port).small())))
+            .child(
+                field("Daemon port").child(
+                    div()
+                        .w(px(120.))
+                        .child(Input::new(&self.inputs.port).small()),
+                ),
+            )
             .child(
                 h_flex()
                     .gap_3()
@@ -782,7 +952,12 @@ impl SettingsView {
                             .primary()
                             .on_click(cx.listener(|v, _, _, cx| v.save(cx))),
                     )
-                    .child(div().text_sm().text_color(hex(MUTED)).child(self.cfg_status.clone())),
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(hex(MUTED))
+                            .child(self.cfg_status.clone()),
+                    ),
             )
     }
 
@@ -792,11 +967,18 @@ impl SettingsView {
         let Some(Ok(r)) = &self.logs else { return None };
         let now = r.following.as_ref()?;
         let me = now.character.as_deref().filter(|c| !c.is_empty())?;
-        let server = now.server.as_deref().filter(|s| !s.is_empty()).unwrap_or("?");
+        let server = now
+            .server
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?");
         let others: Vec<String> = r
             .characters
             .iter()
-            .filter(|c| c.character != me || c.server.as_deref().unwrap_or("") != now.server.as_deref().unwrap_or(""))
+            .filter(|c| {
+                c.character != me
+                    || c.server.as_deref().unwrap_or("") != now.server.as_deref().unwrap_or("")
+            })
             .map(|c| {
                 format!(
                     "{} on {} ({} boss {})",
@@ -807,16 +989,34 @@ impl SettingsView {
                 )
             })
             .collect();
-        let tail = if others.is_empty() { String::new() } else { format!(" Also on file, kept separately: {}.", others.join(", ")) };
-        let parts = [("Recording history as ", false), (me, true), (" on ", false), (server, true), (".", false), (&tail, false)];
-        Some(div().text_sm().text_color(hex(MUTED)).child(crate::parts::rich(&parts)))
+        let tail = if others.is_empty() {
+            String::new()
+        } else {
+            format!(" Also on file, kept separately: {}.", others.join(", "))
+        };
+        let parts = [
+            ("Recording history as ", false),
+            (me, true),
+            (" on ", false),
+            (server, true),
+            (".", false),
+            (&tail, false),
+        ];
+        Some(
+            div()
+                .text_sm()
+                .text_color(hex(MUTED))
+                .child(crate::parts::rich(&parts)),
+        )
     }
 
     /// Every log in the folder and how far behind each is, worst first.
     fn render_status(&self) -> Div {
         let r = match &self.status {
             None => return div(),
-            Some(Err(_)) => return hint("The daemon is not answering, so how far it has read is unknown."),
+            Some(Err(_)) => {
+                return hint("The daemon is not answering, so how far it has read is unknown.");
+            }
             Some(Ok(r)) => r,
         };
         if r.logs.is_empty() {
@@ -825,7 +1025,11 @@ impl SettingsView {
                 None => "No logs found in that folder.".into(),
             });
         }
-        let every = r.every.filter(|&e| e > 0).map(|e| format!(" Others are swept every {} min.", (e as f64 / 60.).round())).unwrap_or_default();
+        let every = r
+            .every
+            .filter(|&e| e > 0)
+            .map(|e| format!(" Others are swept every {} min.", (e as f64 / 60.).round()))
+            .unwrap_or_default();
         let n = r.logs.len();
         v_flex()
             .gap_1()
@@ -833,7 +1037,11 @@ impl SettingsView {
                 // A log with nothing left to read says so in a word rather
                 // than a zero, which would read as a smaller version of the
                 // others and not as "done".
-                let behind = if l.behind > 0 { format!("{} behind", bytes(l.behind)) } else { "read".into() };
+                let behind = if l.behind > 0 {
+                    format!("{} behind", bytes(l.behind))
+                } else {
+                    "read".into()
+                };
                 h_flex()
                     .gap_3()
                     .text_sm()
@@ -846,12 +1054,33 @@ impl SettingsView {
                             .flex_1()
                             .min_w_0()
                             .gap_2()
-                            .child(if l.player.is_empty() { l.name.clone() } else { l.player.clone() })
-                            .when(!l.server.is_empty(), |d| d.child(div().text_color(hex(MUTED)).child(l.server.clone()))),
+                            .child(if l.player.is_empty() {
+                                l.name.clone()
+                            } else {
+                                l.player.clone()
+                            })
+                            .when(!l.server.is_empty(), |d| {
+                                d.child(div().text_color(hex(MUTED)).child(l.server.clone()))
+                            }),
                     )
-                    .child(div().w(px(110.)).text_color(hex(if l.behind > 0 { ACCENT } else { HEAL })).child(behind))
-                    .child(div().w(px(90.)).text_color(hex(MUTED)).child(if l.followed { "followed live" } else { "swept" }))
-                    .child(div().w(px(70.)).text_color(hex(MUTED)).child(bytes(l.bytes)))
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .text_color(hex(if l.behind > 0 { ACCENT } else { HEAL }))
+                            .child(behind),
+                    )
+                    .child(
+                        div()
+                            .w(px(90.))
+                            .text_color(hex(MUTED))
+                            .child(if l.followed { "followed live" } else { "swept" }),
+                    )
+                    .child(
+                        div()
+                            .w(px(70.))
+                            .text_color(hex(MUTED))
+                            .child(bytes(l.bytes)),
+                    )
             }))
             .child(hint(format!(
                 "{n} log{} in {}.{every}",
@@ -862,23 +1091,33 @@ impl SettingsView {
 
     fn render_export(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
-        let all = format!("All loadouts ({} kills)", self.history.as_ref().map_or(0, |h| h.counts.kills));
+        let all = format!(
+            "All loadouts ({} kills)",
+            self.history.as_ref().map_or(0, |h| h.counts.kills)
+        );
         let options = self.history.as_ref().map(builds).unwrap_or_default();
         let build = self.build.clone();
         let label = build.clone().unwrap_or_else(|| all.clone());
-        let menu = Button::new("set-exp-build").label(label).small().w_full().dropdown_menu(move |mut menu, _, _| {
-            let choices = std::iter::once((None, all.clone())).chain(options.iter().map(|b| (Some(b.clone()), b.clone())));
-            for (val, label) in choices {
-                let w = this.clone();
-                menu = menu.item(PopupMenuItem::new(label).checked(build == val).on_click(move |_, _, cx| {
-                    let _ = w.update(cx, |v, cx| {
-                        v.build = val.clone();
-                        cx.notify();
-                    });
-                }));
-            }
-            menu
-        });
+        let menu = Button::new("set-exp-build")
+            .label(label)
+            .small()
+            .w_full()
+            .dropdown_menu(move |mut menu, _, _| {
+                let choices = std::iter::once((None, all.clone()))
+                    .chain(options.iter().map(|b| (Some(b.clone()), b.clone())));
+                for (val, label) in choices {
+                    let w = this.clone();
+                    menu = menu.item(PopupMenuItem::new(label).checked(build == val).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.build = val.clone();
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                menu
+            });
         card("Export")
             .child(
                 field("Raid history for build guides")
@@ -886,12 +1125,27 @@ impl SettingsView {
                         h_flex()
                             .gap_2()
                             .child(div().flex_1().min_w_0().child(menu))
-                            .child(Button::new("set-exp-md").label("Copy Markdown").small().on_click(cx.listener(|v, _, _, cx| v.copy_markdown(cx))))
-                            .child(Button::new("set-exp-csv").label("Save CSV").small().on_click(cx.listener(|v, _, _, cx| v.save_csv(cx)))),
+                            .child(
+                                Button::new("set-exp-md")
+                                    .label("Copy Markdown")
+                                    .small()
+                                    .on_click(cx.listener(|v, _, _, cx| v.copy_markdown(cx))),
+                            )
+                            .child(
+                                Button::new("set-exp-csv")
+                                    .label("Save CSV")
+                                    .small()
+                                    .on_click(cx.listener(|v, _, _, cx| v.save_csv(cx))),
+                            ),
                     )
                     .child(hint(EXPORT_HINT)),
             )
-            .child(div().text_sm().text_color(hex(MUTED)).child(self.exp_status.clone()))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(hex(MUTED))
+                    .child(self.exp_status.clone()),
+            )
     }
 
     fn render_daemon_log(&self, cx: &mut Context<Self>) -> Div {
@@ -916,7 +1170,10 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings in `gpui::test`, which shadows `#[test]`.
-    use super::{scale_json, HistoryBrief, LogFile, builds, bytes, eqdb_mode_of, file_time, log_option_at, markdown_rows};
+    use super::{
+        HistoryBrief, LogFile, builds, bytes, eqdb_mode_of, file_time, log_option_at,
+        markdown_rows, scale_json,
+    };
 
     #[test]
     fn formats_follow_settings_js() {
@@ -924,7 +1181,10 @@ mod tests {
         assert_eq!(bytes(900), "900 B");
         assert_eq!(bytes(412 * 1024 + 300), "412 KB");
         assert_eq!(bytes(5 * 1024 * 1024 + 400 * 1024), "5.4 MB");
-        assert_eq!(markdown_rows("# t\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"), 2);
+        assert_eq!(
+            markdown_rows("# t\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"),
+            2
+        );
         assert_eq!(markdown_rows("no table"), 0);
         let l = LogFile {
             path: "/l/eqlog_Tharn_freeport.txt".into(),
@@ -935,14 +1195,21 @@ mod tests {
             modified: 1_789_000_000,
             current: true,
         };
-        assert_eq!(log_option_at(&l, "2026-09-09 19:26"), "● Tharn (freeport) — eqlog_Tharn_freeport.txt (3.2 MB, 2026-09-09 19:26)");
+        assert_eq!(
+            log_option_at(&l, "2026-09-09 19:26"),
+            "● Tharn (freeport) — eqlog_Tharn_freeport.txt (3.2 MB, 2026-09-09 19:26)"
+        );
         assert_eq!(file_time(0), "—");
         let h = HistoryBrief {
             available: true,
             kills: vec![
-                norrlog_api::KillBuild { build: Some("SHD/BRD".into()) },
+                norrlog_api::KillBuild {
+                    build: Some("SHD/BRD".into()),
+                },
                 norrlog_api::KillBuild { build: None },
-                norrlog_api::KillBuild { build: Some("SHD/BRD".into()) },
+                norrlog_api::KillBuild {
+                    build: Some("SHD/BRD".into()),
+                },
             ],
             ..Default::default()
         };

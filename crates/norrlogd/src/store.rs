@@ -251,7 +251,9 @@ pub struct PlayedOnly<'a> {
 impl Drop for PlayedOnly<'_> {
     fn drop(&mut self) {
         for v in &self.views {
-            let _ = self.conn.execute_batch(&format!("DROP VIEW IF EXISTS temp.\"{v}\""));
+            let _ = self
+                .conn
+                .execute_batch(&format!("DROP VIEW IF EXISTS temp.\"{v}\""));
         }
     }
 }
@@ -1172,14 +1174,26 @@ impl Store {
     /// attributed. Cheap and idempotent, so it runs on every open.
     fn retag_live_record(&self) -> Result<()> {
         const SOURCED: &[&str] = &[
-            "considers", "faction_bursts", "faction_hits", "faction_offers", "faction_turnins", "forage", "markers",
-            "players", "spots",
+            "considers",
+            "faction_bursts",
+            "faction_hits",
+            "faction_offers",
+            "faction_turnins",
+            "forage",
+            "markers",
+            "players",
+            "spots",
         ];
-        let (from, to) = (crate::record::tag(Game::EverQuestLegends), crate::record::tag(Game::EverQuest));
+        let (from, to) = (
+            crate::record::tag(Game::EverQuestLegends),
+            crate::record::tag(Game::EverQuest),
+        );
         for table in SOURCED {
             let sources: Vec<String> = self
                 .conn
-                .prepare(&format!("SELECT DISTINCT source FROM {table} WHERE game = ?1"))?
+                .prepare(&format!(
+                    "SELECT DISTINCT source FROM {table} WHERE game = ?1"
+                ))?
                 .query_map(params![from], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for source in sources {
@@ -1607,8 +1621,15 @@ impl Store {
                 if con.levels.is_empty() {
                     if con.rare || con.raid {
                         stmt.execute(params![
-                            tag, c, sv, source, con.name, -1i64, 0i64,
-                            con.rare as i64, con.raid as i64
+                            tag,
+                            c,
+                            sv,
+                            source,
+                            con.name,
+                            -1i64,
+                            0i64,
+                            con.rare as i64,
+                            con.raid as i64
                         ])?;
                         n += 1;
                     }
@@ -1616,8 +1637,15 @@ impl Store {
                 }
                 for (level, times) in &con.levels {
                     stmt.execute(params![
-                        tag, c, sv, source, con.name, *level as i64, *times as i64,
-                        con.rare as i64, con.raid as i64
+                        tag,
+                        c,
+                        sv,
+                        source,
+                        con.name,
+                        *level as i64,
+                        *times as i64,
+                        con.rare as i64,
+                        con.raid as i64
                     ])?;
                     n += 1;
                 }
@@ -1639,13 +1667,29 @@ impl Store {
             for (zone, z) in r.forage.zones() {
                 for (item, times) in &z.found {
                     stmt.execute(params![
-                        tag, c, sv, source, zone, item, *times as i64, z.first, z.last
+                        tag,
+                        c,
+                        sv,
+                        source,
+                        zone,
+                        item,
+                        *times as i64,
+                        z.first,
+                        z.last
                     ])?;
                     n += 1;
                 }
                 if z.empty > 0 {
                     stmt.execute(params![
-                        tag, c, sv, source, zone, "", z.empty as i64, z.first, z.last
+                        tag,
+                        c,
+                        sv,
+                        source,
+                        zone,
+                        "",
+                        z.empty as i64,
+                        z.first,
+                        z.last
                     ])?;
                     n += 1;
                 }
@@ -1654,7 +1698,12 @@ impl Store {
         {
             // Faction. Three tables; see the schema for why the offer counts
             // are not columns on the adjustments.
-            for t in ["faction_hits", "faction_turnins", "faction_offers", "faction_bursts"] {
+            for t in [
+                "faction_hits",
+                "faction_turnins",
+                "faction_offers",
+                "faction_bursts",
+            ] {
                 tx.execute(
                     &format!(
                         "DELETE FROM {t} WHERE game=?1 AND character=?2 AND server=?3 AND source=?4"
@@ -1678,15 +1727,28 @@ impl Store {
                     match cause {
                         norrlog_core::collect::FactionCause::Kill { creature, zone } => {
                             hit.execute(params![
-                                tag, c, sv, source,
+                                tag,
+                                c,
+                                sv,
+                                source,
                                 f.creature_display(creature).unwrap_or(creature),
                                 f.zone_display(zone).unwrap_or(zone),
-                                faction, *amount, *times as i64
+                                faction,
+                                *amount,
+                                *times as i64
                             ])?;
                         }
                         norrlog_core::collect::FactionCause::TurnIn { npc, item } => {
                             turn.execute(params![
-                                tag, c, sv, source, npc, item, faction, *amount, *times as i64
+                                tag,
+                                c,
+                                sv,
+                                source,
+                                npc,
+                                item,
+                                faction,
+                                *amount,
+                                *times as i64
                             ])?;
                         }
                     }
@@ -1703,9 +1765,20 @@ impl Store {
             pairs.extend(f.handins.keys().cloned());
             for (npc, item) in pairs {
                 offer.execute(params![
-                    tag, c, sv, source, npc, item,
-                    f.offered.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64,
-                    f.handins.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64
+                    tag,
+                    c,
+                    sv,
+                    source,
+                    npc,
+                    item,
+                    f.offered
+                        .get(&(npc.clone(), item.clone()))
+                        .copied()
+                        .unwrap_or(0) as i64,
+                    f.handins
+                        .get(&(npc.clone(), item.clone()))
+                        .copied()
+                        .unwrap_or(0) as i64
                 ])?;
                 n += 1;
             }
@@ -1714,8 +1787,13 @@ impl Store {
                  (game, character, server, source, seen, attributed, to_turnins)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
-                    tag, c, sv, source,
-                    f.bursts as i64, f.to_kill as i64, f.to_turnin as i64
+                    tag,
+                    c,
+                    sv,
+                    source,
+                    f.bursts as i64,
+                    f.to_kill as i64,
+                    f.to_turnin as i64
                 ],
             )?;
         }
@@ -1731,8 +1809,14 @@ impl Store {
             )?;
             for p in r.players.seen().values() {
                 stmt.execute(params![
-                    tag, c, sv, source, p.name, p.level as i64,
-                    p.classes.join("|"), p.race
+                    tag,
+                    c,
+                    sv,
+                    source,
+                    p.name,
+                    p.level as i64,
+                    p.classes.join("|"),
+                    p.race
                 ])?;
                 n += 1;
             }
@@ -1765,9 +1849,18 @@ impl Store {
             )?;
             for m in r.markers.spawn_points(crate::record::SPAWN_RADIUS) {
                 stmt.execute(params![
-                    tag, c, sv, source, m.name,
+                    tag,
+                    c,
+                    sv,
+                    source,
+                    m.name,
                     crate::record::marker_kind(m.kind),
-                    m.role, m.zone, m.zone_short, m.x, m.y, m.z,
+                    m.role,
+                    m.zone,
+                    m.zone_short,
+                    m.x,
+                    m.y,
+                    m.z,
                     m.level.map(|l| l as i64)
                 ])?;
                 n += 1;
@@ -1792,8 +1885,18 @@ impl Store {
             )?;
             for sp in r.spots.spots() {
                 stmt.execute(params![
-                    tag, c, sv, source, sp.name, sp.zone, sp.zone_short,
-                    sp.x, sp.y, sp.z, sp.at, sp.gap
+                    tag,
+                    c,
+                    sv,
+                    source,
+                    sp.name,
+                    sp.zone,
+                    sp.zone_short,
+                    sp.x,
+                    sp.y,
+                    sp.z,
+                    sp.at,
+                    sp.gap
                 ])?;
                 n += 1;
             }
@@ -1857,7 +1960,10 @@ impl Store {
                     row.empty += times as u64;
                 } else {
                     row.hits += times as u64;
-                    row.items.push(ForagedItem { item, times: times as u64 });
+                    row.items.push(ForagedItem {
+                        item,
+                        times: times as u64,
+                    });
                 }
                 row.attempts = row.hits + row.empty;
                 if first != 0 && (row.first_seen == 0 || first < row.first_seen) {
@@ -1937,7 +2043,9 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (creature, zone, faction, amount, times) in rows {
                 let row = match hits.last_mut() {
-                    Some(h) if h.creature == creature && h.zone == zone && h.faction == faction => h,
+                    Some(h) if h.creature == creature && h.zone == zone && h.faction == faction => {
+                        h
+                    }
                     _ => {
                         hits.push(FactionHit {
                             creature,
@@ -2022,7 +2130,13 @@ impl Store {
             "SELECT COALESCE(SUM(seen),0), COALESCE(SUM(attributed),0),
                     COALESCE(SUM(to_turnins),0) FROM faction_bursts WHERE game = ?1",
             params![tag],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
         )?;
 
         let players = {
@@ -2066,14 +2180,15 @@ impl Store {
                 "SELECT skill, MAX(at_least) FROM skills WHERE game = ?1
                  GROUP BY skill ORDER BY skill",
             )?;
-            let rows = stmt.query_map(params![tag], |r| {
-                Ok(SkillRow {
-                    skill: r.get(0)?,
-                    at_least: r.get::<_, i64>(1)? as u32,
-                    game: tag,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map(params![tag], |r| {
+                    Ok(SkillRow {
+                        skill: r.get(0)?,
+                        at_least: r.get::<_, i64>(1)? as u32,
+                        game: tag,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
 
@@ -2082,21 +2197,22 @@ impl Store {
                 "SELECT DISTINCT name, kind, role, zone, zone_short, x, y, z, level
                  FROM markers WHERE game = ?1 ORDER BY zone, name, x, y",
             )?;
-            let rows = stmt.query_map(params![tag], |r| {
-                Ok(MarkerRow {
-                    name: r.get(0)?,
-                    kind: crate::record::kind_of(&r.get::<_, String>(1)?),
-                    role: r.get(2)?,
-                    zone: r.get(3)?,
-                    zone_short: r.get(4)?,
-                    x: r.get(5)?,
-                    y: r.get(6)?,
-                    z: r.get(7)?,
-                    level: r.get::<_, Option<i64>>(8)?.map(|l| l as u32),
-                    game: tag,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map(params![tag], |r| {
+                    Ok(MarkerRow {
+                        name: r.get(0)?,
+                        kind: crate::record::kind_of(&r.get::<_, String>(1)?),
+                        role: r.get(2)?,
+                        zone: r.get(3)?,
+                        zone_short: r.get(4)?,
+                        x: r.get(5)?,
+                        y: r.get(6)?,
+                        z: r.get(7)?,
+                        level: r.get::<_, Option<i64>>(8)?.map(|l| l as u32),
+                        game: tag,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
 
@@ -2104,14 +2220,15 @@ impl Store {
             let mut stmt = self
                 .conn
                 .prepare("SELECT zone, zone_short FROM map_zones WHERE game = ?1 ORDER BY zone")?;
-            let rows = stmt.query_map(params![tag], |r| {
-                Ok(ZoneRow {
-                    zone: r.get(0)?,
-                    zone_short: r.get(1)?,
-                    game: tag,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map(params![tag], |r| {
+                    Ok(ZoneRow {
+                        zone: r.get(0)?,
+                        zone_short: r.get(1)?,
+                        game: tag,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
 
@@ -2120,20 +2237,21 @@ impl Store {
                 "SELECT name, zone, zone_short, x, y, z, at, gap FROM spots
                  WHERE game = ?1 ORDER BY name, at",
             )?;
-            let rows = stmt.query_map(params![tag], |r| {
-                Ok(SpotRow {
-                    name: r.get(0)?,
-                    zone: r.get(1)?,
-                    zone_short: r.get(2)?,
-                    x: r.get(3)?,
-                    y: r.get(4)?,
-                    z: r.get(5)?,
-                    at: r.get(6)?,
-                    gap: r.get(7)?,
-                    game: tag,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = stmt
+                .query_map(params![tag], |r| {
+                    Ok(SpotRow {
+                        name: r.get(0)?,
+                        zone: r.get(1)?,
+                        zone_short: r.get(2)?,
+                        x: r.get(3)?,
+                        y: r.get(4)?,
+                        z: r.get(5)?,
+                        at: r.get(6)?,
+                        gap: r.get(7)?,
+                        game: tag,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
 
@@ -2234,7 +2352,11 @@ impl Store {
         let mut out: Vec<StoredDrop> = Vec::new();
         for row in rows {
             let base = norrlog_core::drops::canonical_item(&row.item).to_string();
-            let key = (row.game.clone(), base.to_lowercase(), row.npc.to_lowercase());
+            let key = (
+                row.game.clone(),
+                base.to_lowercase(),
+                row.npc.to_lowercase(),
+            );
             match folded.get(&key) {
                 Some(&idx) => {
                     let e = &mut out[idx];
@@ -2274,8 +2396,9 @@ impl Store {
     #[allow(clippy::type_complexity)]
     pub fn all_drop_places(
         &self,
-    ) -> Result<std::collections::HashMap<(String, String, String), Vec<(String, String, u8, u64, u64)>>>
-    {
+    ) -> Result<
+        std::collections::HashMap<(String, String, String), Vec<(String, String, u8, u64, u64)>>,
+    > {
         let mut stmt = self.conn.prepare(
             "SELECT game, item, npc, zone, mode, difficulty,
                     SUM(looted), SUM(quantity)
@@ -2812,9 +2935,16 @@ impl Store {
             )?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        let mut guard = PlayedOnly { conn: &self.conn, views: Vec::new() };
+        let mut guard = PlayedOnly {
+            conn: &self.conn,
+            views: Vec::new(),
+        };
         for (table, has_source) in tables {
-            let scratch = if has_source { " AND source NOT LIKE '/tmp/%'" } else { "" };
+            let scratch = if has_source {
+                " AND source NOT LIKE '/tmp/%'"
+            } else {
+                ""
+            };
             self.conn.execute_batch(&format!(
                 "DROP VIEW IF EXISTS temp.\"{table}\";
                  CREATE TEMP VIEW \"{table}\" AS SELECT * FROM main.\"{table}\"
@@ -3101,9 +3231,24 @@ mod tests {
     fn a_bundle_leaves_out_the_test_server_and_scratch_logs() {
         let s = Store::in_memory().unwrap();
         for (server, source, item, n) in [
-            ("freeport", "/mnt/Logs/eqlog_Tharn_freeport.txt", "Rusty Dagger", 3),
-            ("test", "/mnt/Logs/eqlog_Brennagh_test.txt", "Rusty Dagger", 5),
-            ("freeport", "/tmp/scratch/eqlog_Capped_freeport.txt", "Bone Chips", 7),
+            (
+                "freeport",
+                "/mnt/Logs/eqlog_Tharn_freeport.txt",
+                "Rusty Dagger",
+                3,
+            ),
+            (
+                "test",
+                "/mnt/Logs/eqlog_Brennagh_test.txt",
+                "Rusty Dagger",
+                5,
+            ),
+            (
+                "freeport",
+                "/tmp/scratch/eqlog_Capped_freeport.txt",
+                "Bone Chips",
+                7,
+            ),
         ] {
             s.conn
                 .execute(
@@ -3128,7 +3273,8 @@ mod tests {
                 .unwrap();
         }
         let b = crate::bundle::build(&s, None, "operator", 10).unwrap();
-        let drops: Vec<(String, u64)> = b.drops.iter().map(|d| (d.item.clone(), d.looted)).collect();
+        let drops: Vec<(String, u64)> =
+            b.drops.iter().map(|d| (d.item.clone(), d.looted)).collect();
         assert_eq!(drops, [("Rusty Dagger".to_string(), 3)]);
         assert_eq!(b.kills.iter().map(|k| k.kills).sum::<u64>(), 3);
         let logs: Vec<&str> = b.logs.iter().map(|l| l.id.as_str()).collect();
@@ -3158,12 +3304,23 @@ mod tests {
         }
         {
             let _played = s.played_only().unwrap();
-            let kills: Vec<String> =
-                s.exported_kills().unwrap().into_iter().map(|k| k.character).collect();
+            let kills: Vec<String> = s
+                .exported_kills()
+                .unwrap()
+                .into_iter()
+                .map(|k| k.character)
+                .collect();
             assert_eq!(kills, ["Tharn"]);
-            assert_eq!(s.kill_scopes().unwrap(), [("Tharn".to_string(), "freeport".to_string())]);
+            assert_eq!(
+                s.kill_scopes().unwrap(),
+                [("Tharn".to_string(), "freeport".to_string())]
+            );
         }
-        assert_eq!(s.exported_kills().unwrap().len(), 2, "unguarded, the daemon sees both");
+        assert_eq!(
+            s.exported_kills().unwrap().len(),
+            2,
+            "unguarded, the daemon sees both"
+        );
     }
 
     /// A record built the way the engine builds one, so these exercise the
@@ -3206,14 +3363,20 @@ mod tests {
             let mut st = Store::open_as(&db, "Dorrak", "drinal").unwrap();
             let rec = record_over(RIVERVALE);
             st.put_record(Game::EverQuest, live, &rec).unwrap();
-            st.put_record(Game::EverQuestLegends, legends, &rec).unwrap();
+            st.put_record(Game::EverQuestLegends, legends, &rec)
+                .unwrap();
             let n = |g| st.record_reports(g).unwrap().consider.considers.len();
             assert!(n(Game::EverQuest) > 0);
-            assert_eq!(n(Game::EverQuest), n(Game::EverQuestLegends), "the same inputs, kept apart");
+            assert_eq!(
+                n(Game::EverQuest),
+                n(Game::EverQuestLegends),
+                "the same inputs, kept apart"
+            );
             assert_eq!(n(Game::Unknown), 0, "neither game's rows read as unknown");
             // Rows filed before the games were told apart: all `eql`.
             st.put_record(Game::EverQuestLegends, live, &rec).unwrap();
-            st.put_record(Game::EverQuestLegends, nameless, &rec).unwrap();
+            st.put_record(Game::EverQuestLegends, nameless, &rec)
+                .unwrap();
         }
         let st = Store::open_as(&db, "Dorrak", "drinal").unwrap();
         let sources = |g: &str| -> Vec<String> {
@@ -3225,8 +3388,16 @@ mod tests {
                 .map(|r| r.unwrap())
                 .collect()
         };
-        assert_eq!(sources("eq"), [live], "the live install's rows moved off eql");
-        assert_eq!(sources("eql"), [legends, nameless], "a path naming neither game is not guessed at");
+        assert_eq!(
+            sources("eq"),
+            [live],
+            "the live install's rows moved off eql"
+        );
+        assert_eq!(
+            sources("eql"),
+            [legends, nameless],
+            "a path naming neither game is not guessed at"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3234,18 +3405,31 @@ mod tests {
     #[test]
     fn the_record_survives_a_round_trip() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         assert_eq!(r.players.source, "history");
         assert!(r.players.players.iter().any(|p| p.name == "Tharn"));
-        assert!(r.consider.considers.iter().any(|c| c.creature.contains("Megosh")));
+        assert!(r
+            .consider
+            .considers
+            .iter()
+            .any(|c| c.creature.contains("Megosh")));
         assert_eq!(
-            r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
+            r.skills
+                .skills
+                .iter()
+                .find(|s| s.skill == "Baking")
+                .map(|s| s.at_least),
             Some(42)
         );
         assert_eq!(
-            r.carto.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            r.carto
+                .markers
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Megosh Thistlethorn"]
         );
         assert_eq!(r.carto.zones.len(), 1);
@@ -3257,9 +3441,11 @@ mod tests {
     fn re_reading_one_log_replaces_only_its_own_rows() {
         let mut st = Store::in_memory().unwrap();
         let rec = record_over(RIVERVALE);
-        st.put_record(Game::EverQuestLegends, "log-a", &rec).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &rec)
+            .unwrap();
         let once = st.record_reports(Game::EverQuestLegends).unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &rec).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &rec)
+            .unwrap();
         let twice = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
             once.consider.considers[0].considers, twice.consider.considers[0].considers,
@@ -3268,7 +3454,8 @@ mod tests {
         assert_eq!(once.carto.markers.len(), twice.carto.markers.len());
 
         // A second log adds to it.
-        st.put_record(Game::EverQuestLegends, "log-b", &rec).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-b", &rec)
+            .unwrap();
         let both = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
             both.consider.considers[0].considers,
@@ -3346,7 +3533,9 @@ mod tests {
             "woven skull cap".to_string(),
             "a black wolf".to_string(),
         );
-        let got = places.get(&key).expect("both names fold onto the base item");
+        let got = places
+            .get(&key)
+            .expect("both names fold onto the base item");
         assert_eq!(got.len(), 2, "two places, not four: {got:?}");
         assert_eq!(
             got.iter().map(|p| p.3).sum::<u64>(),
@@ -3401,8 +3590,10 @@ mod tests {
         };
 
         let mut st = Store::in_memory().unwrap();
-        st.put_drops("everquest-legends", "log-a", &report("rivervale")).unwrap();
-        st.put_drops("everquest-legends", "log-a", &report("misty thicket")).unwrap();
+        st.put_drops("everquest-legends", "log-a", &report("rivervale"))
+            .unwrap();
+        st.put_drops("everquest-legends", "log-a", &report("misty thicket"))
+            .unwrap();
         let places = st.all_drop_places().unwrap();
         let got = places
             .get(&(
@@ -3423,12 +3614,18 @@ mod tests {
     #[test]
     fn a_skill_ceiling_never_falls() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE))
+            .unwrap();
         let lower = "[Tue Jul 28 15:03:16 2026] You have become better at Baking! (7)\n";
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(lower)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(lower))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
-            r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
+            r.skills
+                .skills
+                .iter()
+                .find(|s| s.skill == "Baking")
+                .map(|s| s.at_least),
             Some(42),
             "a lower reading is an older one"
         );
@@ -3450,13 +3647,17 @@ mod tests {
 ";
         let settled = record_over(log);
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &settled).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &settled)
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let row = r.consider.considers.first().expect("the rat");
         assert_eq!(row.creature, "rat");
         assert_eq!(
-            row.levels.iter().map(|l| (l.level, l.times)).collect::<Vec<_>>(),
+            row.levels
+                .iter()
+                .map(|l| (l.level, l.times))
+                .collect::<Vec<_>>(),
             vec![(12, 2), (13, 1)],
             "two levels, each with its own count"
         );
@@ -3556,10 +3757,7 @@ mod tests {
             "a second flush of the same log must not double it"
         );
         assert_eq!(p.zone, "Nagafen's Lair");
-        assert_eq!(
-            (p.mode, p.difficulty),
-            (norrlog_core::zone::Mode::Solo, 4)
-        );
+        assert_eq!((p.mode, p.difficulty), (norrlog_core::zone::Mode::Solo, 4));
         assert_eq!((p.first_seen, p.last_seen), (100, 900));
         assert_eq!(
             (
@@ -4044,7 +4242,8 @@ mod tests {
             .prepare("SELECT game FROM aa_purchases WHERE character = ?1")
             .unwrap();
         let mut game_of = |who: &str| -> String {
-            stmt.query_row(params![who], |r| r.get::<_, String>(0)).unwrap()
+            stmt.query_row(params![who], |r| r.get::<_, String>(0))
+                .unwrap()
         };
         assert_eq!(game_of("Tharn"), "everquest-legends");
         assert_eq!(game_of("Orrin"), "everquest");
@@ -4261,10 +4460,16 @@ mod forage_tests {
     #[test]
     fn the_forage_record_survives_a_round_trip() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
-        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        let ef = r
+            .forage
+            .zones
+            .iter()
+            .find(|z| z.zone == "Everfrost Peaks")
+            .unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
         assert_eq!(ef.items.len(), 1);
         assert_eq!(ef.items[0].item, "Pod of Water");
@@ -4276,10 +4481,16 @@ mod forage_tests {
     #[test]
     fn a_zone_that_yielded_nothing_still_comes_back() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
-        let nl = r.forage.zones.iter().find(|z| z.zone == "Nagafen's Lair").unwrap();
+        let nl = r
+            .forage
+            .zones
+            .iter()
+            .find(|z| z.zone == "Nagafen's Lair")
+            .unwrap();
         assert_eq!((nl.hits, nl.empty, nl.attempts), (0, 2, 2));
         assert!(nl.items.is_empty());
     }
@@ -4288,11 +4499,18 @@ mod forage_tests {
     #[test]
     fn two_logs_pool_into_one_zone() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
-        st.put_record(Game::EverQuestLegends, "log-b", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING))
+            .unwrap();
+        st.put_record(Game::EverQuestLegends, "log-b", &record_over(FORAGING))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
-        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        let ef = r
+            .forage
+            .zones
+            .iter()
+            .find(|z| z.zone == "Everfrost Peaks")
+            .unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (4, 2, 6));
         assert_eq!(ef.items.len(), 1, "the same item from two logs is one row");
         assert_eq!(ef.items[0].times, 4);
@@ -4302,11 +4520,18 @@ mod forage_tests {
     #[test]
     fn a_second_pass_over_the_same_log_does_not_double_it() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
-        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING))
+            .unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING))
+            .unwrap();
         let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
-        let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
+        let ef = r
+            .forage
+            .zones
+            .iter()
+            .find(|z| z.zone == "Everfrost Peaks")
+            .unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
     }
 }

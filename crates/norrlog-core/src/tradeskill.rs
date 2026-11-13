@@ -1040,7 +1040,11 @@ impl TradeskillTracker {
         // process. A report written to a file therefore produced a spurious
         // diff on every rebuild, and a comparison against an older copy could
         // not tell a change from a reshuffle.
-        skills.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.skill.cmp(&b.skill)));
+        skills.sort_by(|a, b| {
+            b.current
+                .cmp(&a.current)
+                .then_with(|| a.skill.cmp(&b.skill))
+        });
 
         let mut crafts: Vec<CraftRecord> = self
             .crafts
@@ -1054,7 +1058,11 @@ impl TradeskillTracker {
                 c
             })
             .collect();
-        crafts.sort_by(|a, b| b.attempts().cmp(&a.attempts()).then_with(|| a.item.cmp(&b.item)));
+        crafts.sort_by(|a, b| {
+            b.attempts()
+                .cmp(&a.attempts())
+                .then_with(|| a.item.cmp(&b.item))
+        });
 
         // Which tradeskills each component serves, from the recipes seen
         // consuming it. A component whose recipes are all unattributed carries
@@ -1205,7 +1213,11 @@ impl TradeskillTracker {
                 unpriced,
             });
         }
-        costs.sort_by(|a, b| b.unit_copper.cmp(&a.unit_copper).then_with(|| a.item.cmp(&b.item)));
+        costs.sort_by(|a, b| {
+            b.unit_copper
+                .cmp(&a.unit_copper)
+                .then_with(|| a.item.cmp(&b.item))
+        });
 
         let mut prices: Vec<ItemPrice> = self
             .prices
@@ -1237,7 +1249,11 @@ impl TradeskillTracker {
                 }
             })
             .collect();
-        prices.sort_by(|a, b| b.unit_copper.cmp(&a.unit_copper).then_with(|| a.item.cmp(&b.item)));
+        prices.sort_by(|a, b| {
+            b.unit_copper
+                .cmp(&a.unit_copper)
+                .then_with(|| a.item.cmp(&b.item))
+        });
 
         // Per-combine price by recipe, so effort can be turned into spend
         // wherever attempts are counted.
@@ -1395,7 +1411,10 @@ mod tests {
 
         let c = t.report().costs;
         let sheet = c.iter().find(|c| c.item == "Sheet Metal").unwrap();
-        assert_eq!(sheet.costed, 1, "the flask belongs to the combine it preceded");
+        assert_eq!(
+            sheet.costed, 1,
+            "the flask belongs to the combine it preceded"
+        );
         assert_eq!(sheet.unit_copper, 200);
         assert!(
             !c.iter().any(|c| c.item == "Metal Bits" && c.costed > 0),
@@ -1431,8 +1450,15 @@ mod tests {
         }
 
         let c = &t.report().costs[0];
-        assert_eq!(c.unit_copper, 200, "still one flask per combine, not a quarter");
-        assert_eq!((c.costed, c.combines), (1, 4), "one of four revealed itself");
+        assert_eq!(
+            c.unit_copper, 200,
+            "still one flask per combine, not a quarter"
+        );
+        assert_eq!(
+            (c.costed, c.combines),
+            (1, 4),
+            "one of four revealed itself"
+        );
     }
 
     /// What a skill cost to raise is what every attempt cost — a failed
@@ -1501,9 +1527,30 @@ mod tests {
     #[test]
     fn a_purchase_records_who_sold_it_and_where() {
         let mut t = TradeskillTracker::new();
-        t.on_purchase_from(100, "Duskglow Vine", 100, 65_400, Some("Sithgok"), Some("Innothule Swamp"));
-        t.on_purchase_from(200, "Duskglow Vine", 100, 70_000, Some("Someone Else"), Some("Grobb"));
-        t.on_purchase_from(300, "Duskglow Vine", 100, 65_400, Some("Sithgok"), Some("Innothule Swamp"));
+        t.on_purchase_from(
+            100,
+            "Duskglow Vine",
+            100,
+            65_400,
+            Some("Sithgok"),
+            Some("Innothule Swamp"),
+        );
+        t.on_purchase_from(
+            200,
+            "Duskglow Vine",
+            100,
+            70_000,
+            Some("Someone Else"),
+            Some("Grobb"),
+        );
+        t.on_purchase_from(
+            300,
+            "Duskglow Vine",
+            100,
+            65_400,
+            Some("Sithgok"),
+            Some("Innothule Swamp"),
+        );
 
         let p = t
             .report()
@@ -1528,7 +1575,14 @@ mod tests {
     fn a_zone_learned_later_corrects_an_earlier_purchase() {
         let mut t = TradeskillTracker::new();
         t.on_purchase_from(100, "Water Flask", 10, 2000, Some("Clork"), None);
-        t.on_purchase_from(200, "Water Flask", 10, 2000, Some("Clork"), Some("Innothule Swamp"));
+        t.on_purchase_from(
+            200,
+            "Water Flask",
+            10,
+            2000,
+            Some("Clork"),
+            Some("Innothule Swamp"),
+        );
         let p = &t.report().prices[0];
         assert_eq!(p.vendors[0].zone.as_deref(), Some("Innothule Swamp"));
     }
@@ -1546,7 +1600,10 @@ mod tests {
             .costs
             .into_iter()
             .any(|c| c.item == "Small Brick of High Quality Ore");
-        assert!(!priced, "the book lists many recipes for it; none can be assumed");
+        assert!(
+            !priced,
+            "the book lists many recipes for it; none can be assumed"
+        );
     }
 
     /// A tool is handed back, so it is not part of what a combine costs even

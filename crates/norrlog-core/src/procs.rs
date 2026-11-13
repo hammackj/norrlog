@@ -119,7 +119,9 @@ impl ProcRegistry {
         // buff was cast it was counted as the proc firing (41 "procs" in the
         // Mirela log, all of them casts).
         for sp in db.all() {
-            let Some(e) = by_name.get_mut(&base_spell_name(&sp.name).to_lowercase()) else { continue };
+            let Some(e) = by_name.get_mut(&base_spell_name(&sp.name).to_lowercase()) else {
+                continue;
+            };
             for (slot, lv) in e.class_levels.iter_mut().zip(sp.class_levels) {
                 if lv != CLASS_CANNOT_CAST && (*slot == CLASS_CANNOT_CAST || lv < *slot) {
                     *slot = lv;
@@ -377,7 +379,10 @@ mod tests {
     /// Spirit of the Puma grants Puma Maw, which is cast as `Puma Maw II`.
     fn db() -> SpellDb {
         let mut buff = spell(6906, "Spirit of the Puma");
-        buff.procs = vec![crate::spell::ProcGrant { spell: 6908, on_melee: true }];
+        buff.procs = vec![crate::spell::ProcGrant {
+            spell: 6908,
+            on_melee: true,
+        }];
         let proc = spell(6908, "Puma Maw");
         let mut m = HashMap::new();
         m.insert(buff.id, buff);
@@ -443,7 +448,10 @@ mod tests {
     #[test]
     fn a_castable_buff_named_like_its_proc_makes_the_proc_ambiguous() {
         let mut buff = spell(1, "Vampiric Embrace");
-        buff.procs = vec![crate::spell::ProcGrant { spell: 2, on_melee: true }];
+        buff.procs = vec![crate::spell::ProcGrant {
+            spell: 2,
+            on_melee: true,
+        }];
         buff.class_levels[Class::ShadowKnight.index()] = 17;
         let proc = spell(2, "Vampiric Embrace");
         let mut m = HashMap::new();
@@ -464,7 +472,10 @@ mod tests {
     #[test]
     fn a_proc_the_character_can_cast_is_reported_apart() {
         let mut buff = spell(1, "Vampiric Embrace");
-        buff.procs = vec![crate::spell::ProcGrant { spell: 2, on_melee: true }];
+        buff.procs = vec![crate::spell::ProcGrant {
+            spell: 2,
+            on_melee: true,
+        }];
         let mut proc = spell(2, "Vampiric Embrace");
         proc.class_levels[Class::Necromancer.index()] = 34;
         let mut m = HashMap::new();

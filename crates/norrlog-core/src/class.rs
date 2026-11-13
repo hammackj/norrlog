@@ -221,7 +221,12 @@ const SKILL_SIGNALS: &[(&str, Class, f32)] = &[
 /// it: case and spaces ignored, so the channel's "Shadowknight" is a Shadow
 /// Knight. Abbreviations do not count here, where "WAR" could be anything.
 pub fn parse_class_name(name: &str) -> Option<Class> {
-    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+    let squash = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_lowercase()
+    };
     let want = squash(name);
     Class::ALL.into_iter().find(|c| squash(c.name()) == want)
 }
@@ -342,7 +347,10 @@ impl ClassDetector {
     /// evidence and cannot outscore the real one), and what the game states
     /// (a `/who` row, the class channel) holds until it states otherwise.
     pub fn with_slots(slots: usize) -> Self {
-        ClassDetector { slots, ..Self::default() }
+        ClassDetector {
+            slots,
+            ..Self::default()
+        }
     }
 
     /// Note a class the game stated, keeping the timeline in order. A repeat
@@ -368,11 +376,19 @@ impl ClassDetector {
     /// declared trio may be a spell set the player typed, and when nothing
     /// was ever stated. What the apps show as "stated" rather than a share.
     pub fn stated_class(&self, at: i64) -> Option<Class> {
-        if self.slots() == 1 { self.stated_at(at) } else { None }
+        if self.slots() == 1 {
+            self.stated_at(at)
+        } else {
+            None
+        }
     }
 
     fn slots(&self) -> usize {
-        if self.slots == 0 { 3 } else { self.slots }
+        if self.slots == 0 {
+            3
+        } else {
+            self.slots
+        }
     }
 
     /// Record the chat channels the client says you are in.
@@ -383,7 +399,10 @@ impl ClassDetector {
     /// "General", "Kunark" and zone channels name nothing. From the eqparser
     /// fork (a2d76c4).
     pub fn observe_channels(&mut self, timestamp: i64, channels: &[String]) {
-        let named: Vec<Class> = channels.iter().filter_map(|n| parse_class_name(n)).collect();
+        let named: Vec<Class> = channels
+            .iter()
+            .filter_map(|n| parse_class_name(n))
+            .collect();
         // One class channel is the game saying which class you are on: it
         // re-joins you to the new one when you switch. Two say nothing for
         // certain, since one of them was joined by hand.
@@ -1143,12 +1162,24 @@ mod tests {
     fn one_slot_reads_one_class_and_who_settles_the_log() {
         let mut d = ClassDetector::with_slots(1);
         for t in 0..20 {
-            d.observe_spell(t, "Grim Aura", &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]));
+            d.observe_spell(
+                t,
+                "Grim Aura",
+                &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]),
+            );
         }
-        let now: Vec<Class> = d.current_trio(100, 3600).into_iter().map(|c| c.class).collect();
+        let now: Vec<Class> = d
+            .current_trio(100, 3600)
+            .into_iter()
+            .map(|c| c.class)
+            .collect();
         assert_eq!(now.len(), 1, "one class, not a trio: {now:?}");
         d.observe_who(10_000_000, &[Class::ShadowKnight]);
-        assert_eq!(d.declared_trio(0, 60), Some(vec![Class::ShadowKnight]), "back to the start, not a window");
+        assert_eq!(
+            d.declared_trio(0, 60),
+            Some(vec![Class::ShadowKnight]),
+            "back to the start, not a window"
+        );
     }
 
     /// The class channel is evidence a one-class log usually has; zone and
@@ -1157,15 +1188,26 @@ mod tests {
     fn the_class_channel_names_the_class_and_loses_to_who() {
         let mut d = ClassDetector::with_slots(1);
         for t in 0..20 {
-            d.observe_spell(t, "Grim Aura", &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]));
+            d.observe_spell(
+                t,
+                "Grim Aura",
+                &levels(&[(Class::Necromancer, 4), (Class::ShadowKnight, 9)]),
+            );
         }
-        d.observe_channels(100, &["General".into(), "Necromancer".into(), "Antonica".into()]);
+        d.observe_channels(
+            100,
+            &["General".into(), "Necromancer".into(), "Antonica".into()],
+        );
         assert_eq!(d.current_trio(200, 3600)[0].class, Class::Necromancer);
         let mut q = ClassDetector::with_slots(1);
         q.observe_channels(0, &["General1".into(), "Kunark".into(), "Housing".into()]);
         assert_eq!(q.evidence_count(), 0);
         assert_eq!(parse_class_name("Shadowknight"), Some(Class::ShadowKnight));
-        assert_eq!(parse_class_name("WAR"), None, "abbreviations are not channel names");
+        assert_eq!(
+            parse_class_name("WAR"),
+            None,
+            "abbreviations are not channel names"
+        );
         d.observe_who(300, &[Class::Wizard]);
         assert_eq!(d.declared_trio(400, 60), Some(vec![Class::Wizard]));
     }
@@ -1183,10 +1225,22 @@ mod tests {
         d.observe_channels(300, &["General".into(), "Warrior".into()]);
         d.observe_channels(400, &["General".into(), "Warrior".into(), "Shaman".into()]);
         let at = |t| d.declared_trio(t, 60).unwrap()[0];
-        assert_eq!(at(0), Class::Warrior, "before anything is stated, the first statement");
+        assert_eq!(
+            at(0),
+            Class::Warrior,
+            "before anything is stated, the first statement"
+        );
         assert_eq!(at(150), Class::Warrior);
-        assert_eq!(at(250), Class::Shaman, "long after any window, still the Shaman");
-        assert_eq!(at(10_000), Class::Warrior, "two class channels state nothing");
+        assert_eq!(
+            at(250),
+            Class::Shaman,
+            "long after any window, still the Shaman"
+        );
+        assert_eq!(
+            at(10_000),
+            Class::Warrior,
+            "two class channels state nothing"
+        );
     }
 
     /// Legends keeps three slots and its window: one `/who` does not settle

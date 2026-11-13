@@ -15,18 +15,20 @@ use crate::api::Api;
 use crate::format::when_short;
 use crate::parts::{ROW, ROW_YOU, bar_row, card_suffixed, dim, empty, fill, hint, note, split};
 use crate::table::tag;
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
+use norrlog_api::{
+    AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -110,7 +112,10 @@ struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { mute: false, volume: 70 }
+        Prefs {
+            mute: false,
+            volume: 70,
+        }
     }
 }
 
@@ -120,7 +125,9 @@ impl Prefs {
     }
 
     fn load() -> Self {
-        let Some(p) = Self::path() else { return Prefs::default() };
+        let Some(p) = Self::path() else {
+            return Prefs::default();
+        };
         Self::load_from(&p, crate::config::path().as_deref())
     }
 
@@ -134,14 +141,18 @@ impl Prefs {
     /// overwritten.
     fn load_from(path: &std::path::Path, legacy: Option<&std::path::Path>) -> Self {
         let old = || -> Option<Prefs> {
-            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(legacy?).ok()?).ok()?;
+            let v: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(legacy?).ok()?).ok()?;
             let mute = v.get("alertMute").and_then(serde_json::Value::as_bool);
             let volume = v.get("alertVolume").and_then(serde_json::Value::as_f64);
             if mute.is_none() && volume.is_none() {
                 return None;
             }
             let d = Prefs::default();
-            Some(Prefs { mute: mute.unwrap_or(d.mute), volume: volume.map_or(d.volume, |v| v.clamp(0., 100.).round() as u32) })
+            Some(Prefs {
+                mute: mute.unwrap_or(d.mute),
+                volume: volume.map_or(d.volume, |v| v.clamp(0., 100.).round() as u32),
+            })
         };
         match std::fs::read(path) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
@@ -178,7 +189,11 @@ impl Prefs {
 
     /// The playing gain: nothing when muted.
     fn gain(&self) -> f32 {
-        if self.mute { 0. } else { self.volume.min(100) as f32 / 100. }
+        if self.mute {
+            0.
+        } else {
+            self.volume.min(100) as f32 / 100.
+        }
     }
 }
 
@@ -224,7 +239,12 @@ pub struct AlertsView {
     _subs: Vec<Subscription>,
 }
 
-fn input(window: &mut Window, cx: &mut Context<AlertsView>, placeholder: &str, value: &str) -> Entity<InputState> {
+fn input(
+    window: &mut Window,
+    cx: &mut Context<AlertsView>,
+    placeholder: &str,
+    value: &str,
+) -> Entity<InputState> {
     let (p, v) = (placeholder.to_string(), value.to_string());
     cx.new(|cx| InputState::new(window, cx).placeholder(p).default_value(v))
 }
@@ -232,15 +252,23 @@ fn input(window: &mut Window, cx: &mut Context<AlertsView>, placeholder: &str, v
 impl AlertsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefs = Prefs::load();
-        let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(prefs.volume as f32));
+        let volume = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(1.)
+                .default_value(prefs.volume as f32)
+        });
         // Saved on release, not while dragging.
-        let subs = vec![cx.subscribe(&volume, |v: &mut Self, _, ev: &SliderEvent, cx| {
-            if let SliderEvent::Release(val) = ev {
-                v.prefs.volume = val.start().round().clamp(0., 100.) as u32;
-                v.prefs.save();
-                cx.notify();
-            }
-        })];
+        let subs = vec![
+            cx.subscribe(&volume, |v: &mut Self, _, ev: &SliderEvent, cx| {
+                if let SliderEvent::Release(val) = ev {
+                    v.prefs.volume = val.start().round().clamp(0., 100.) as u32;
+                    v.prefs.save();
+                    cx.notify();
+                }
+            }),
+        ];
         let inputs = Inputs {
             name: input(window, cx, "Charm broke", ""),
             text: input(window, cx, "Your charm spell has worn off", ""),
@@ -252,7 +280,9 @@ impl AlertsView {
         };
         // Whether speech can be heard, asked once and off the UI thread.
         let voices = cx.spawn(async move |this, cx| {
-            let ok = cx.background_spawn(async { crate::sound::voices_available() }).await;
+            let ok = cx
+                .background_spawn(async { crate::sound::voices_available() })
+                .await;
             let _ = this.update(cx, |v, cx| {
                 v.voices = Some(ok);
                 cx.notify();
@@ -354,7 +384,12 @@ impl AlertsView {
         let since = self.cursors.line_seq;
         let asked = self.cursors.daemon;
         self.track(cx.spawn(async move |this, cx| {
-            let Ok(r) = api.get::<LinesReply>(format!("/api/lines?since={since}")).await else { return };
+            let Ok(r) = api
+                .get::<LinesReply>(format!("/api/lines?since={since}"))
+                .await
+            else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 // An answer from a daemon since replaced is not this one's.
                 if v.cursors.daemon != asked {
@@ -428,19 +463,47 @@ impl AlertsView {
     }
 
     fn edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(r) = self.rules.iter().find(|r| r.id == id).cloned() else { return };
+        let Some(r) = self.rules.iter().find(|r| r.id == id).cloned() else {
+            return;
+        };
         self.editing = Some(r.id.clone());
         self.editing_label = match &r.error {
             Some(e) => format!("— will never fire: {}", e.lines().next().unwrap_or("")),
             None => String::new(),
         };
         let (kind, text, pattern, signal, seconds, subject) = match &r.trigger {
-            Trigger::Contains { text } => (Kind::Contains, text.clone(), String::new(), SignalKind::CharmBroken, 30, None),
-            Trigger::Pattern { pattern } => (Kind::Pattern, String::new(), pattern.clone(), SignalKind::CharmBroken, 30, None),
-            Trigger::Signal { kind, name } => (Kind::Signal, String::new(), String::new(), *kind, 30, name.clone()),
-            Trigger::BuffExpiring { seconds, name } => {
-                (Kind::BuffExpiring, String::new(), String::new(), SignalKind::CharmBroken, *seconds, name.clone())
-            }
+            Trigger::Contains { text } => (
+                Kind::Contains,
+                text.clone(),
+                String::new(),
+                SignalKind::CharmBroken,
+                30,
+                None,
+            ),
+            Trigger::Pattern { pattern } => (
+                Kind::Pattern,
+                String::new(),
+                pattern.clone(),
+                SignalKind::CharmBroken,
+                30,
+                None,
+            ),
+            Trigger::Signal { kind, name } => (
+                Kind::Signal,
+                String::new(),
+                String::new(),
+                *kind,
+                30,
+                name.clone(),
+            ),
+            Trigger::BuffExpiring { seconds, name } => (
+                Kind::BuffExpiring,
+                String::new(),
+                String::new(),
+                SignalKind::CharmBroken,
+                *seconds,
+                name.clone(),
+            ),
         };
         self.kind = kind;
         self.signal = signal;
@@ -479,13 +542,24 @@ impl AlertsView {
     }
 
     fn trigger(&self, cx: &App) -> Trigger {
-        let name = Some(self.value(&self.inputs.subject, cx).trim().to_string()).filter(|s| !s.is_empty());
+        let name =
+            Some(self.value(&self.inputs.subject, cx).trim().to_string()).filter(|s| !s.is_empty());
         match self.kind {
-            Kind::Contains => Trigger::Contains { text: self.value(&self.inputs.text, cx) },
-            Kind::Pattern => Trigger::Pattern { pattern: self.value(&self.inputs.pattern, cx) },
-            Kind::Signal => Trigger::Signal { kind: self.signal, name },
+            Kind::Contains => Trigger::Contains {
+                text: self.value(&self.inputs.text, cx),
+            },
+            Kind::Pattern => Trigger::Pattern {
+                pattern: self.value(&self.inputs.pattern, cx),
+            },
+            Kind::Signal => Trigger::Signal {
+                kind: self.signal,
+                name,
+            },
             Kind::BuffExpiring => Trigger::BuffExpiring {
-                seconds: parse_int(&self.value(&self.inputs.seconds, cx)).filter(|&n| n != 0).unwrap_or(30).max(1),
+                seconds: parse_int(&self.value(&self.inputs.seconds, cx))
+                    .filter(|&n| n != 0)
+                    .unwrap_or(30)
+                    .max(1),
                 name,
             },
         }
@@ -514,7 +588,11 @@ impl AlertsView {
         }
         // Minted here and never reused, so a renamed rule keeps its place.
         let id = self.editing.clone().unwrap_or_else(new_id);
-        let enabled = self.rules.iter().find(|r| r.id == id).is_none_or(|r| r.enabled);
+        let enabled = self
+            .rules
+            .iter()
+            .find(|r| r.id == id)
+            .is_none_or(|r| r.enabled);
         let rule = AlertRule {
             id: id.clone(),
             name,
@@ -522,15 +600,24 @@ impl AlertsView {
             trigger,
             sound: self.sound,
             speak: self.speak,
-            say: Some(self.value(&self.inputs.say, cx).trim().to_string()).filter(|s| !s.is_empty()),
-            cooldown: parse_int(&self.value(&self.inputs.cooldown, cx)).unwrap_or(0).max(0),
+            say: Some(self.value(&self.inputs.say, cx).trim().to_string())
+                .filter(|s| !s.is_empty()),
+            cooldown: parse_int(&self.value(&self.inputs.cooldown, cx))
+                .unwrap_or(0)
+                .max(0),
             error: None,
         };
         self.put(rule, Some(id), window, cx);
     }
 
     /// POST a rule, reload, and (when `then_edit`) open it in the editor.
-    fn put(&mut self, rule: AlertRule, then_edit: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn put(
+        &mut self,
+        rule: AlertRule,
+        then_edit: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(api) = self.api.clone() else { return };
         let body = serde_json::to_value(&rule).unwrap_or_default();
         self.track(cx.spawn_in(window, async move |this, cx| {
@@ -547,7 +634,8 @@ impl AlertsView {
                         if let Some(r) = reloaded {
                             v.rules = r.rules;
                             if !r.persisted {
-                                v.status = "no database — alerts will be lost when the app closes".into();
+                                v.status =
+                                    "no database — alerts will be lost when the app closes".into();
                             }
                         }
                         if let Some(id) = then_edit {
@@ -568,7 +656,12 @@ impl AlertsView {
         let Some(api) = self.api.clone() else { return };
         self.blank(window, cx);
         self.track(cx.spawn(async move |this, cx| {
-            let _ = api.post_json("/api/alerts/delete".to_string(), serde_json::json!({ "id": id })).await;
+            let _ = api
+                .post_json(
+                    "/api/alerts/delete".to_string(),
+                    serde_json::json!({ "id": id }),
+                )
+                .await;
             let _ = this.update(cx, |v, cx| v.load(cx));
         }));
     }
@@ -580,7 +673,11 @@ impl AlertsView {
         crate::sound::play(self.sound, gain);
         if self.speak {
             let say = self.value(&self.inputs.say, cx);
-            let text = if say.is_empty() { self.value(&self.inputs.name, cx) } else { say };
+            let text = if say.is_empty() {
+                self.value(&self.inputs.name, cx)
+            } else {
+                say
+            };
             if let Err(e) = crate::sound::speak(&text, gain) {
                 self.status = format!("speech: {e}");
                 cx.notify();
@@ -602,30 +699,54 @@ impl Render for AlertsView {
         let toolbar = h_flex()
             .gap_3()
             .flex_wrap()
-            .child(Button::new("al-new").label("New alert").small().on_click(cx.listener(|v, _, window, cx| v.blank(window, cx))))
-            .child(Checkbox::new("al-mute").label("Mute everything").checked(self.prefs.mute).on_click(cx.listener(
-                |v, checked: &bool, _, cx| {
-                    v.prefs.mute = *checked;
-                    v.prefs.save();
-                    cx.notify();
-                },
-            )))
-            .child(h_flex().gap_2().child("Volume").child(div().w(px(110.)).child(Slider::new(&self.volume))))
+            .child(
+                Button::new("al-new")
+                    .label("New alert")
+                    .small()
+                    .on_click(cx.listener(|v, _, window, cx| v.blank(window, cx))),
+            )
+            .child(
+                Checkbox::new("al-mute")
+                    .label("Mute everything")
+                    .checked(self.prefs.mute)
+                    .on_click(cx.listener(|v, checked: &bool, _, cx| {
+                        v.prefs.mute = *checked;
+                        v.prefs.save();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child("Volume")
+                    .child(div().w(px(110.)).child(Slider::new(&self.volume))),
+            )
             .child(dim(self.status.clone()));
         let count = (!self.rules.is_empty()).then(|| format!("— {}", self.rules.len()));
         let fired = (!self.fires.is_empty()).then(|| format!("— {}", self.fires.len()));
         let left = card_suffixed("Alerts", count)
             .child(self.render_rules(cx))
-            .child(note("al-note", self.notes[0], RULES_NOTE, cx.listener(|v, _, _, cx| {
-                v.notes[0] = !v.notes[0];
-                cx.notify();
-            })))
+            .child(note(
+                "al-note",
+                self.notes[0],
+                RULES_NOTE,
+                cx.listener(|v, _, _, cx| {
+                    v.notes[0] = !v.notes[0];
+                    cx.notify();
+                }),
+            ))
             .child(
                 h_flex()
                     .mt_2()
                     .gap_1()
                     .items_baseline()
-                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child("WENT OFF"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hex(MUTED))
+                            .child("WENT OFF"),
+                    )
                     .when_some(fired, |d, f| d.child(dim(f).text_sm())),
             )
             .child(if self.fires.is_empty() {
@@ -635,25 +756,40 @@ impl Render for AlertsView {
                     bar_row(
                         0.,
                         fill(ROW),
-                        h_flex().gap_2().child(f.name.clone()).child(dim(f.detail.clone())),
+                        h_flex()
+                            .gap_2()
+                            .child(f.name.clone())
+                            .child(dim(f.detail.clone())),
                         dim(when_short(Some(f.at))),
                     )
                 }))
             });
         let label = (!self.editing_label.is_empty()).then(|| self.editing_label.clone());
         let right = card_suffixed("Alert", label).child(self.render_form(cx));
-        let feed_state = (!self.feed_live).then(|| "— still reading the log; lines appear once it is following live".to_string());
+        let feed_state = (!self.feed_live)
+            .then(|| "— still reading the log; lines appear once it is following live".to_string());
         let feed = card_suffixed("Log", feed_state)
             .child(self.render_feed(cx))
-            .child(note("al-feed-note", self.notes[1], FEED_NOTE, cx.listener(|v, _, _, cx| {
-                v.notes[1] = !v.notes[1];
-                cx.notify();
-            })));
+            .child(note(
+                "al-feed-note",
+                self.notes[1],
+                FEED_NOTE,
+                cx.listener(|v, _, _, cx| {
+                    v.notes[1] = !v.notes[1];
+                    cx.notify();
+                }),
+            ));
         div()
             .id("alerts-scroll")
             .size_full()
             .overflow_y_scrollbar()
-            .child(v_flex().gap_3().child(toolbar).child(split(left, right)).child(feed))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(toolbar)
+                    .child(split(left, right))
+                    .child(feed),
+            )
     }
 }
 
@@ -665,41 +801,68 @@ impl AlertsView {
         if self.rules.is_empty() {
             return empty("No alerts yet. Click a log line below to make one.");
         }
-        v_flex().gap_1().children(self.rules.iter().enumerate().map(|(i, r)| {
-            let on = self.editing.as_deref() == Some(r.id.as_str());
-            let (id, id2, rule) = (r.id.clone(), r.id.clone(), r.clone());
-            let name = h_flex()
-                .gap_2()
-                .child(Checkbox::new(SharedString::from(format!("al-en-{i}"))).checked(r.enabled).on_click(cx.listener(
-                    move |v, checked: &bool, window, cx| {
-                        cx.stop_propagation();
-                        let mut r = rule.clone();
-                        r.enabled = *checked;
-                        let _ = &id2;
-                        v.put(r, None, window, cx);
-                    },
-                )))
-                .child(r.name.clone())
-                .when(r.error.is_some(), |d| d.child(tag("broken", ENEMY).flex_none()))
-                .when(r.sound == Sound::None && !r.speak, |d| d.child(tag("silent", PET).flex_none()))
-                .child(dim(summary(&r.trigger)).min_w_0().overflow_hidden().text_ellipsis());
-            div()
-                .id(SharedString::from(format!("al-rule-{i}")))
-                .cursor_pointer()
-                .when(!r.enabled, |d| d.opacity(0.5))
-                .child(bar_row(
-                    if on { 1. } else { 0. },
-                    fill(if on { ROW_YOU } else { ROW }),
-                    name,
-                    dim(if r.speak { "spoken" } else { sound_name(r.sound) }),
-                ))
-                .on_click(cx.listener(move |v, _, window, cx| v.edit(&id, window, cx)))
-        }))
+        v_flex()
+            .gap_1()
+            .children(self.rules.iter().enumerate().map(|(i, r)| {
+                let on = self.editing.as_deref() == Some(r.id.as_str());
+                let (id, id2, rule) = (r.id.clone(), r.id.clone(), r.clone());
+                let name = h_flex()
+                    .gap_2()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("al-en-{i}")))
+                            .checked(r.enabled)
+                            .on_click(cx.listener(move |v, checked: &bool, window, cx| {
+                                cx.stop_propagation();
+                                let mut r = rule.clone();
+                                r.enabled = *checked;
+                                let _ = &id2;
+                                v.put(r, None, window, cx);
+                            })),
+                    )
+                    .child(r.name.clone())
+                    .when(r.error.is_some(), |d| {
+                        d.child(tag("broken", ENEMY).flex_none())
+                    })
+                    .when(r.sound == Sound::None && !r.speak, |d| {
+                        d.child(tag("silent", PET).flex_none())
+                    })
+                    .child(
+                        dim(summary(&r.trigger))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis(),
+                    );
+                div()
+                    .id(SharedString::from(format!("al-rule-{i}")))
+                    .cursor_pointer()
+                    .when(!r.enabled, |d| d.opacity(0.5))
+                    .child(bar_row(
+                        if on { 1. } else { 0. },
+                        fill(if on { ROW_YOU } else { ROW }),
+                        name,
+                        dim(if r.speak {
+                            "spoken"
+                        } else {
+                            sound_name(r.sound)
+                        }),
+                    ))
+                    .on_click(cx.listener(move |v, _, window, cx| v.edit(&id, window, cx)))
+            }))
     }
 
     fn render_form(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
-        let field = |label: &str, el: AnyElement| v_flex().gap_1().child(div().text_sm().text_color(hex(MUTED)).child(label.to_string())).child(el);
+        let field = |label: &str, el: AnyElement| {
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(hex(MUTED))
+                        .child(label.to_string()),
+                )
+                .child(el)
+        };
         let kind = self.kind;
         let w = this.clone();
         let kind_menu = Button::new("al-kind")
@@ -709,12 +872,14 @@ impl AlertsView {
             .dropdown_menu(move |mut menu, _, _| {
                 for &(k, label) in KINDS {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(kind == k).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.kind = k;
-                            cx.notify();
-                        });
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(kind == k).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.kind = k;
+                                cx.notify();
+                            });
+                        },
+                    ));
                 }
                 menu
             });
@@ -727,29 +892,36 @@ impl AlertsView {
             .dropdown_menu(move |mut menu, _, _| {
                 for &(s, label) in SIGNALS {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(signal == s).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.signal = s;
-                            cx.notify();
-                        });
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(signal == s).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.signal = s;
+                                cx.notify();
+                            });
+                        },
+                    ));
                 }
                 menu
             });
         let sound = self.sound;
         let w = this.clone();
         let sound_menu = Button::new("al-sound")
-            .label(format!("Sound: {}", SOUNDS.iter().find(|s| s.0 == sound).map_or("", |s| s.1)))
+            .label(format!(
+                "Sound: {}",
+                SOUNDS.iter().find(|s| s.0 == sound).map_or("", |s| s.1)
+            ))
             .small()
             .dropdown_menu(move |mut menu, _, _| {
                 for &(s, label) in SOUNDS {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(sound == s).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.sound = s;
-                            cx.notify();
-                        });
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(sound == s).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.sound = s;
+                                cx.notify();
+                            });
+                        },
+                    ));
                 }
                 menu
             });
@@ -829,22 +1001,28 @@ impl AlertsView {
             .overflow_y_scrollbar()
             .font_family(mono)
             .text_sm()
-            .child(v_flex().gap(px(2.)).children(self.feed.iter().enumerate().map(|(i, l)| {
-                let text = l.text.clone();
-                h_flex()
-                    .id(SharedString::from(format!("al-line-{i}")))
-                    .justify_between()
-                    .gap_3()
-                    .px(px(7.))
-                    .py(px(3.))
-                    .rounded(px(4.))
-                    .bg(hex(PANEL_2))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(wash(ACCENT, 0.12)))
-                    .child(div().min_w_0().child(l.text.clone()))
-                    .child(dim(when_short(Some(l.at))).flex_none())
-                    .on_click(cx.listener(move |v, _, window, cx| v.from_line(text.clone(), window, cx)))
-            })))
+            .child(
+                v_flex()
+                    .gap(px(2.))
+                    .children(self.feed.iter().enumerate().map(|(i, l)| {
+                        let text = l.text.clone();
+                        h_flex()
+                            .id(SharedString::from(format!("al-line-{i}")))
+                            .justify_between()
+                            .gap_3()
+                            .px(px(7.))
+                            .py(px(3.))
+                            .rounded(px(4.))
+                            .bg(hex(PANEL_2))
+                            .cursor_pointer()
+                            .hover(|d| d.bg(wash(ACCENT, 0.12)))
+                            .child(div().min_w_0().child(l.text.clone()))
+                            .child(dim(when_short(Some(l.at))).flex_none())
+                            .on_click(cx.listener(move |v, _, window, cx| {
+                                v.from_line(text.clone(), window, cx)
+                            }))
+                    })),
+            )
             .into_any_element()
     }
 }
@@ -858,7 +1036,9 @@ fn summary(t: &Trigger) -> String {
             Some(n) => format!("{} · {n}", signal_label(*kind)),
             None => signal_label(*kind).to_string(),
         },
-        Trigger::BuffExpiring { seconds, name } => format!("{} under {seconds}s", name.as_deref().unwrap_or("any buff")),
+        Trigger::BuffExpiring { seconds, name } => {
+            format!("{} under {seconds}s", name.as_deref().unwrap_or("any buff"))
+        }
     }
 }
 
@@ -886,7 +1066,10 @@ fn parse_int(s: &str) -> Option<i64> {
 
 /// `a` and the time in base 36, as the renderer mints ids.
 fn new_id() -> String {
-    let mut n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let mut n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let mut out = Vec::new();
     while n > 0 {
         out.push(std::char::from_digit((n % 36) as u32, 36).unwrap());
@@ -918,7 +1101,10 @@ impl Cursors {
         if self.daemon == Some(pid) {
             return false;
         }
-        *self = Cursors { daemon: Some(pid), ..Default::default() };
+        *self = Cursors {
+            daemon: Some(pid),
+            ..Default::default()
+        };
         true
     }
 
@@ -936,7 +1122,7 @@ impl Cursors {
 
 #[cfg(test)]
 mod tests {
-    use super::{line_name, new_id, parse_int, summary, Cursors};
+    use super::{Cursors, line_name, new_id, parse_int, summary};
 
     #[test]
     fn electrons_mute_and_volume_carry_over_once() {
@@ -947,7 +1133,10 @@ mod tests {
         let (new, old) = (d.join("alerts.json"), d.join("config.json"));
         let load = || Prefs::load_from(&new, Some(&old));
 
-        assert!(!load().mute && load().volume == 70, "neither file: the defaults");
+        assert!(
+            !load().mute && load().volume == 70,
+            "neither file: the defaults"
+        );
         std::fs::write(&old, r#"{"alertMute":true,"alertVolume":12}"#).unwrap();
         let p = load();
         assert!(p.mute && p.volume == 12);
@@ -961,8 +1150,15 @@ mod tests {
         assert_eq!(load().volume, 100, "clamped");
         std::fs::write(&new, "{not json").unwrap();
         std::fs::write(&old, "{}").unwrap();
-        assert!(load().mute, "an unreadable file is not taken as permission to ring");
-        assert_eq!(std::fs::read_to_string(&new).unwrap(), "{not json", "and is not overwritten");
+        assert!(
+            load().mute,
+            "an unreadable file is not taken as permission to ring"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&new).unwrap(),
+            "{not json",
+            "and is not overwritten"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -977,11 +1173,20 @@ mod tests {
     fn a_new_daemons_alerts_play_though_its_numbers_start_again() {
         let mut c = Cursors::default();
         assert!(c.attach(10));
-        assert!(c.fresh(vec![fire(100)], 100).is_empty(), "the first snapshot is the baseline");
+        assert!(
+            c.fresh(vec![fire(100)], 100).is_empty(),
+            "the first snapshot is the baseline"
+        );
         assert_eq!(c.fresh(vec![fire(100), fire(101)], 101).len(), 1);
         c.line_seq = 5_000_000;
-        assert!(!c.attach(10), "a reconnect to the same daemon keeps its place");
-        assert!(c.fresh(vec![fire(101)], 101).is_empty(), "and does not replay");
+        assert!(
+            !c.attach(10),
+            "a reconnect to the same daemon keeps its place"
+        );
+        assert!(
+            c.fresh(vec![fire(101)], 101).is_empty(),
+            "and does not replay"
+        );
         assert!(c.attach(11), "a restarted daemon");
         assert_eq!(c.line_seq, 0, "the feed starts from its first line");
         assert!(c.fresh(vec![], 0).is_empty());
@@ -992,11 +1197,31 @@ mod tests {
 
     #[test]
     fn summaries_names_and_numbers_read_as_the_renderer_writes_them() {
-        assert_eq!(summary(&Trigger::Contains { text: "worn off".into() }), "line contains “worn off”");
-        assert_eq!(summary(&Trigger::Signal { kind: SignalKind::Tell, name: Some("Bob".into()) }), "someone tells you · Bob");
-        assert_eq!(summary(&Trigger::BuffExpiring { seconds: 30, name: None }), "any buff under 30s");
+        assert_eq!(
+            summary(&Trigger::Contains {
+                text: "worn off".into()
+            }),
+            "line contains “worn off”"
+        );
+        assert_eq!(
+            summary(&Trigger::Signal {
+                kind: SignalKind::Tell,
+                name: Some("Bob".into())
+            }),
+            "someone tells you · Bob"
+        );
+        assert_eq!(
+            summary(&Trigger::BuffExpiring {
+                seconds: 30,
+                name: None
+            }),
+            "any buff under 30s"
+        );
         assert_eq!(line_name("short"), "short");
-        assert_eq!(line_name("Your charm spell has worn off, and it was a very long line"), "Your charm spell has worn off, and it wa…");
+        assert_eq!(
+            line_name("Your charm spell has worn off, and it was a very long line"),
+            "Your charm spell has worn off, and it wa…"
+        );
         assert_eq!(parse_int(" 12s"), Some(12));
         assert_eq!(parse_int("-3"), Some(-3));
         assert_eq!(parse_int("x"), None);

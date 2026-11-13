@@ -40,7 +40,9 @@ fn recipe(s: Sound) -> Option<(f32, f32, Wave, f32)> {
 /// to its end, and the level rises over 12 ms to `gain × 0.35` and decays
 /// exponentially to nothing, so the tone never stops on a click.
 pub fn synth(s: Sound, gain: f32) -> Vec<f32> {
-    let Some((f0, len, wave, f1)) = recipe(s) else { return Vec::new() };
+    let Some((f0, len, wave, f1)) = recipe(s) else {
+        return Vec::new();
+    };
     if gain <= 0. {
         return Vec::new();
     }
@@ -100,7 +102,11 @@ fn player() -> &'static Sender<Vec<f32>> {
                         }
                     }
                     if let Some(s) = &sink {
-                        let buf = rodio::buffer::SamplesBuffer::new(NonZero::new(1u16).unwrap(), NonZero::new(RATE).unwrap(), samples);
+                        let buf = rodio::buffer::SamplesBuffer::new(
+                            NonZero::new(1u16).unwrap(),
+                            NonZero::new(RATE).unwrap(),
+                            samples,
+                        );
                         s.mixer().add(buf);
                     }
                 }
@@ -148,7 +154,12 @@ fn speech(os: &str, text: &str, gain: f32) -> Option<Speech> {
         // per-utterance volume, 0..1.
         "macos" => Speech {
             program: "say",
-            args: vec!["-r".into(), "200".into(), "--".into(), format!("[[volm {gain:.2}]] {text}")],
+            args: vec![
+                "-r".into(),
+                "200".into(),
+                "--".into(),
+                format!("[[volm {gain:.2}]] {text}"),
+            ],
             env: None,
         },
         "windows" => Speech {
@@ -156,14 +167,23 @@ fn speech(os: &str, text: &str, gain: f32) -> Option<Speech> {
             args: ["-NoProfile", "-NonInteractive", "-Command"]
                 .into_iter()
                 .map(String::from)
-                .chain([SAPI_SPEAK.replace("{volume}", &((gain * 100.).round() as u32).to_string())])
+                .chain(
+                    [SAPI_SPEAK.replace("{volume}", &((gain * 100.).round() as u32).to_string())],
+                )
                 .collect(),
             env: Some(("NORRLOG_SAY", text.to_string())),
         },
         // speech-dispatcher: volume runs -100..100 with 0 as the default.
         _ => Speech {
             program: "spd-say",
-            args: vec!["-r".into(), "10".into(), "-i".into(), (((gain * 200.) - 100.).round() as i32).to_string(), "--".into(), text.to_string()],
+            args: vec![
+                "-r".into(),
+                "10".into(),
+                "-i".into(),
+                (((gain * 200.) - 100.).round() as i32).to_string(),
+                "--".into(),
+                text.to_string(),
+            ],
             env: None,
         },
     })
@@ -185,7 +205,9 @@ fn command(program: &str) -> std::process::Command {
 /// own, so none is left behind, and a failure to start it is said rather
 /// than swallowed.
 pub fn speak(text: &str, gain: f32) -> Result<(), String> {
-    let Some(s) = speech(std::env::consts::OS, text, gain) else { return Ok(()) };
+    let Some(s) = speech(std::env::consts::OS, text, gain) else {
+        return Ok(());
+    };
     let mut c = command(s.program);
     c.args(&s.args);
     if let Some((k, v)) = &s.env {
@@ -218,14 +240,24 @@ pub fn voices_available() -> bool {
             .args(["-NoProfile", "-NonInteractive", "-Command", SAPI_VOICES])
             .output()
             .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            })
             .is_some_and(|n| n > 0),
         _ => {
-            let Ok(out) = command("spd-say").arg("-L").output() else { return false };
-            String::from_utf8_lossy(&out.stdout).lines().skip(1).any(|l| {
-                let name = l.split_whitespace().next().unwrap_or("");
-                !name.is_empty() && name != "dummy"
-            })
+            let Ok(out) = command("spd-say").arg("-L").output() else {
+                return false;
+            };
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .skip(1)
+                .any(|l| {
+                    let name = l.split_whitespace().next().unwrap_or("");
+                    !name.is_empty() && name != "dummy"
+                })
         }
     }
 }
@@ -237,7 +269,11 @@ mod tests {
     #[test]
     fn each_system_is_asked_to_speak_at_the_gain_given() {
         for os in ["linux", "macos", "windows"] {
-            assert_eq!(speech(os, "charm broke", 0.), None, "{os}: no gain is silence");
+            assert_eq!(
+                speech(os, "charm broke", 0.),
+                None,
+                "{os}: no gain is silence"
+            );
             assert_eq!(speech(os, "  ", 1.), None);
         }
         let mac = |g| speech("macos", "charm broke", g).unwrap().args[3].clone();
@@ -246,8 +282,14 @@ mod tests {
         let win = speech("windows", "it's \"$(rm -rf)\"", 0.25).unwrap();
         assert_eq!(win.program, "powershell");
         assert!(win.args.last().unwrap().contains("$s.Volume = 25;"));
-        assert!(!win.args.iter().any(|a| a.contains("rm -rf")), "the text is never part of the script");
-        assert_eq!(win.env, Some(("NORRLOG_SAY", "it's \"$(rm -rf)\"".to_string())));
+        assert!(
+            !win.args.iter().any(|a| a.contains("rm -rf")),
+            "the text is never part of the script"
+        );
+        assert_eq!(
+            win.env,
+            Some(("NORRLOG_SAY", "it's \"$(rm -rf)\"".to_string()))
+        );
         let lin = speech("linux", "charm broke", 0.5).unwrap();
         assert_eq!((lin.program, lin.args[3].as_str()), ("spd-say", "0"));
     }

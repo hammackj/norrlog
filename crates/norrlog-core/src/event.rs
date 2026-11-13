@@ -536,7 +536,11 @@ pub enum Event {
     /// overlay, the resist alert) were written knowing the client only told
     /// you about your own, and would otherwise count a groupmate's Root as
     /// yours. Classified, and read by nothing yet.
-    ResistedOther { target: Actor, caster: Actor, spell: String },
+    ResistedOther {
+        target: Actor,
+        caster: Actor,
+        spell: String,
+    },
     /// A corpse rotted away.
     ///
     /// Not a death — the creature died earlier, and counting this as one

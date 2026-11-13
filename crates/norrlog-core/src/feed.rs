@@ -179,7 +179,9 @@ impl Feed {
         for line in reader.lines() {
             let line = line?;
             lines += 1;
-            let Some(entry) = self.parser.parse_line(&line) else { continue };
+            let Some(entry) = self.parser.parse_line(&line) else {
+                continue;
+            };
             self.dispatch(&entry, to);
         }
         // The last fight ends because the file did, not because anything in
@@ -295,7 +297,8 @@ mod tests {
         let mut feed = Feed::new("Tharn", Game::EverQuestLegends);
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut spy];
-            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs).unwrap();
+            feed.read(std::io::BufReader::new(text.as_bytes()), &mut subs)
+                .unwrap();
         }
         spy
     }
@@ -340,7 +343,10 @@ mod tests {
         feed.resume_in(Some("Befallen".into()));
         {
             let mut subs: Vec<&mut dyn Observer> = vec![&mut spy];
-            feed.push("[Tue Jul 28 15:03:11 2026] Your Location is 1.00, 2.00, 3.00", &mut subs);
+            feed.push(
+                "[Tue Jul 28 15:03:11 2026] Your Location is 1.00, 2.00, 3.00",
+                &mut subs,
+            );
         }
         assert_eq!(spy.zones, vec![Some("Befallen".into())]);
     }
@@ -368,7 +374,8 @@ mod encounter_end_tests {
         }
         fn on_entry(&mut self, _e: &LogEntry, _cx: &Context<'_>) {}
         fn on_encounter_end(&mut self, enc: &crate::encounter::Encounter, _cx: &Context<'_>) {
-            self.ended.push((enc.id, enc.timeline.len(), enc.end - enc.start));
+            self.ended
+                .push((enc.id, enc.timeline.len(), enc.end - enc.start));
         }
     }
 
@@ -392,7 +399,11 @@ mod encounter_end_tests {
             feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
         }
         assert_eq!(f.ended.len(), 1, "one fight, closed by the log ending");
-        assert!(f.ended[0].1 > 0, "and it carries its timeline: {:?}", f.ended[0]);
+        assert!(
+            f.ended[0].1 > 0,
+            "and it carries its timeline: {:?}",
+            f.ended[0]
+        );
     }
 
     /// The last fight is not lost when the file simply stops.

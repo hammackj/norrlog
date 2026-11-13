@@ -7,13 +7,13 @@
 
 use crate::api::Api;
 use crate::format::{dur, num};
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{ProcKind, ProcReport, ProcRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::{ProcKind, ProcReport, ProcRow};
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(10);
@@ -32,7 +32,14 @@ pub struct ProcsView {
 
 impl ProcsView {
     pub fn new() -> Self {
-        ProcsView { api: None, report: None, error: None, last_load: None, loading: None, note_open: false }
+        ProcsView {
+            api: None,
+            report: None,
+            error: None,
+            last_load: None,
+            loading: None,
+            note_open: false,
+        }
     }
 
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
@@ -76,11 +83,21 @@ impl Render for ProcsView {
             .flex_row()
             .flex_wrap()
             .gap_3()
-            .child(stat("Procs", r.map_or_else(dash, |r| num(Some(r.total as f64))), r.map(known)))
+            .child(stat(
+                "Procs",
+                r.map_or_else(dash, |r| num(Some(r.total as f64))),
+                r.map(known),
+            ))
             .child(stat(
                 "Per minute of combat",
                 r.map_or_else(dash, |r| format!("{:.2}/min", r.per_minute)),
-                r.map(|r| format!("over {} of combat, out of {} played", dur(r.combat_seconds as f64), dur(r.logged_seconds as f64))),
+                r.map(|r| {
+                    format!(
+                        "over {} of combat, out of {} played",
+                        dur(r.combat_seconds as f64),
+                        dur(r.logged_seconds as f64)
+                    )
+                }),
             ))
             .child(stat(
                 "Damage from procs",
@@ -88,12 +105,20 @@ impl Render for ProcsView {
                 Some("Across every creature they hit.".into()),
             ));
 
-        let (weapon, items): (Vec<&ProcRow>, Vec<&ProcRow>) =
-            r.map(|r| r.rows.iter().partition(|p| p.kind != ProcKind::Item)).unwrap_or_default();
+        let (weapon, items): (Vec<&ProcRow>, Vec<&ProcRow>) = r
+            .map(|r| r.rows.iter().partition(|p| p.kind != ProcKind::Item))
+            .unwrap_or_default();
         let have_spells = r.is_none_or(|r| r.have_spell_data);
         let weapon_body = match &self.error {
             Some(e) => empty(e.clone()),
-            None => rows(&weapon, if have_spells { "Nothing has procced yet" } else { "Needs the spell database" }),
+            None => rows(
+                &weapon,
+                if have_spells {
+                    "Nothing has procced yet"
+                } else {
+                    "Needs the spell database"
+                },
+            ),
         };
 
         let mut out = v_flex().gap_3().child(cards);
@@ -104,7 +129,11 @@ impl Render for ProcsView {
             ));
         }
         out = out
-            .child(card("Weapon and buff procs").child(weapon_body).when(!weapon.is_empty(), |d| d.child(hint(subtotal(&weapon)))))
+            .child(
+                card("Weapon and buff procs")
+                    .child(weapon_body)
+                    .when(!weapon.is_empty(), |d| d.child(hint(subtotal(&weapon)))),
+            )
             .child(
                 card("Worn item procs")
                     .child(rows(&items, "No worn item has procced yet"))
@@ -149,12 +178,23 @@ impl Render for ProcsView {
                     ))
                 }),
         );
-        div().id("procs-scroll").size_full().overflow_y_scrollbar().child(out)
+        div()
+            .id("procs-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(out)
     }
 }
 
 fn known(r: &ProcReport) -> String {
-    if r.have_spell_data { format!("{} procs known from the spell file", num(Some(r.known_procs as f64))) } else { "item procs only".into() }
+    if r.have_spell_data {
+        format!(
+            "{} procs known from the spell file",
+            num(Some(r.known_procs as f64))
+        )
+    } else {
+        "item procs only".into()
+    }
 }
 
 /// A list's rows, at most 30, bars scaled to the list's own fastest: the two
@@ -175,21 +215,47 @@ fn rows(list: &[&ProcRow], empty_text: &'static str) -> Div {
             .rounded(px(5.))
             .bg(hex(PANEL_2))
             .overflow_hidden()
-            .child(div().absolute().top_0().bottom_0().left_0().w(relative((r.per_minute / max) as f32)).bg(wash(TEXT, 0.1)))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .w(relative((r.per_minute / max) as f32))
+                    .bg(wash(TEXT, 0.1)),
+            )
             .child(
                 h_flex()
                     .gap_2()
                     .min_w_0()
                     .overflow_hidden()
-                    .child(div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child(r.name.clone()))
-                    .child(div().text_color(hex(MUTED)).whitespace_nowrap().text_ellipsis().child(r.sources.join(", "))),
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .whitespace_nowrap()
+                            .child(r.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(hex(MUTED))
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(r.sources.join(", ")),
+                    ),
             )
             .child(
                 h_flex()
                     .gap_3()
                     .flex_none()
                     .child(div().text_color(hex(MUTED)).child(counts(r)))
-                    .child(div().min_w(px(80.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(rate(r.per_minute))),
+                    .child(
+                        div()
+                            .min_w(px(80.))
+                            .flex()
+                            .justify_end()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(rate(r.per_minute)),
+                    ),
             )
     }))
 }
@@ -200,7 +266,11 @@ fn rows(list: &[&ProcRow], empty_text: &'static str) -> Div {
 fn counts(r: &ProcRow) -> String {
     let mut s = format!("{}×", num(Some(r.count as f64)));
     if r.hits > 0 && r.hits != r.count {
-        s.push_str(&format!(" · {} hit{}", num(Some(r.hits as f64)), if r.hits == 1 { "" } else { "s" }));
+        s.push_str(&format!(
+            " · {} hit{}",
+            num(Some(r.hits as f64)),
+            if r.hits == 1 { "" } else { "s" }
+        ));
     }
     if r.damage > 0 {
         s.push_str(&format!(" · {} dmg", num(Some(r.damage as f64))));
@@ -211,7 +281,11 @@ fn counts(r: &ProcRow) -> String {
 /// Per minute to two places, or per hour for anything rarer than one every
 /// hundred minutes, which "0.00 /min" would round away.
 fn rate(per_min: f64) -> String {
-    if per_min >= 0.01 { format!("{per_min:.2} /min") } else { format!("{:.2} /hr", per_min * 60.) }
+    if per_min >= 0.01 {
+        format!("{per_min:.2} /min")
+    } else {
+        format!("{:.2} /hr", per_min * 60.)
+    }
 }
 
 fn subtotal(list: &[&ProcRow]) -> String {
@@ -229,11 +303,23 @@ fn subtotal(list: &[&ProcRow]) -> String {
 }
 
 fn panel() -> Div {
-    v_flex().gap_2().p_3().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL))
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(hex(BORDER))
+        .bg(hex(PANEL))
 }
 
 fn card(title: &str) -> Div {
-    panel().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase()))
+    panel().child(
+        div()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(hex(MUTED))
+            .child(title.to_uppercase()),
+    )
 }
 
 fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
@@ -246,8 +332,18 @@ fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value));
+        .child(
+            div()
+                .text_xs()
+                .text_color(hex(MUTED))
+                .child(label.to_uppercase()),
+        )
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value),
+        );
     if let Some(note) = note {
         c = c.child(div().text_xs().text_color(hex(MUTED)).child(note));
     }
@@ -268,7 +364,17 @@ mod tests {
     use norrlog_api::ProcKind;
 
     fn row(count: u64, hits: u64, damage: u64, per_minute: f64) -> ProcRow {
-        ProcRow { name: "x".into(), kind: ProcKind::Melee, sources: vec![], count, per_minute, damage, hits, first: 0, last: 0 }
+        ProcRow {
+            name: "x".into(),
+            kind: ProcKind::Melee,
+            sources: vec![],
+            count,
+            per_minute,
+            damage,
+            hits,
+            first: 0,
+            last: 0,
+        }
     }
 
     #[test]
@@ -280,7 +386,10 @@ mod tests {
 
     #[test]
     fn hits_show_only_when_they_differ_from_the_count() {
-        assert_eq!(counts(&row(21, 2825, 40000, 1.)), "21× · 2,825 hits · 40.0k dmg");
+        assert_eq!(
+            counts(&row(21, 2825, 40000, 1.)),
+            "21× · 2,825 hits · 40.0k dmg"
+        );
         assert_eq!(counts(&row(5, 5, 0, 1.)), "5×");
         assert_eq!(counts(&row(5, 1, 0, 1.)), "5× · 1 hit");
     }
@@ -289,7 +398,10 @@ mod tests {
     fn the_subtotal_names_its_sources() {
         let a = row(3, 0, 0, 0.25);
         let b = row(4, 0, 0, 0.5);
-        assert_eq!(subtotal(&[&a, &b]), "7 in total, 0.75 a minute across 2 sources");
+        assert_eq!(
+            subtotal(&[&a, &b]),
+            "7 in total, 0.75 a minute across 2 sources"
+        );
         assert_eq!(subtotal(&[&a]), "3 in total, 0.25 a minute across 1 source");
         assert_eq!(subtotal(&[]), "");
     }

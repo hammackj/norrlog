@@ -204,7 +204,10 @@ pub fn catch_up_one(
         .locked("catch-up")
         .note_source(&path.to_string_lossy(), len, now)
     {
-        eprintln!("[norrlogd] catch-up: could not mark {}: {e}", path.display());
+        eprintln!(
+            "[norrlogd] catch-up: could not mark {}: {e}",
+            path.display()
+        );
     }
     Some(Caught {
         path: path.to_string_lossy().to_string(),
@@ -231,13 +234,12 @@ pub fn sweep(
     marks: &dyn Fn(&str) -> u64,
     now: i64,
 ) -> Vec<Caught> {
-    let followed = followed.canonicalize().unwrap_or_else(|_| followed.to_path_buf());
+    let followed = followed
+        .canonicalize()
+        .unwrap_or_else(|_| followed.to_path_buf());
     let mut out = Vec::new();
     for path in crate::tail::logs_in(dir) {
-        let same = path
-            .canonicalize()
-            .map(|p| p == followed)
-            .unwrap_or(false);
+        let same = path.canonicalize().map(|p| p == followed).unwrap_or(false);
         if same {
             continue;
         }
@@ -272,7 +274,9 @@ pub struct LogStatus {
 }
 
 pub fn status(dir: &Path, followed: &Path, marks: &dyn Fn(&str) -> (u64, i64)) -> Vec<LogStatus> {
-    let canon = followed.canonicalize().unwrap_or_else(|_| followed.to_path_buf());
+    let canon = followed
+        .canonicalize()
+        .unwrap_or_else(|_| followed.to_path_buf());
     let mut out = Vec::new();
     for path in crate::tail::logs_in(dir) {
         let name = path
@@ -336,7 +340,10 @@ mod tests {
         write(&p, &format!("{A}{B}"));
         let mut f = std::fs::File::open(&p).unwrap();
         let len = f.metadata().unwrap().len();
-        assert_eq!(resume_at(&mut f, A.len() as u64, len).unwrap(), A.len() as u64);
+        assert_eq!(
+            resume_at(&mut f, A.len() as u64, len).unwrap(),
+            A.len() as u64
+        );
     }
 
     /// A watermark that landed mid-line winds forward rather than feeding the
@@ -366,7 +373,11 @@ mod tests {
         write(&p, A);
         let mut f = std::fs::File::open(&p).unwrap();
         let len = f.metadata().unwrap().len();
-        assert_eq!(resume_at(&mut f, 9_000, len).unwrap(), 0, "a rotated log was resumed mid-file");
+        assert_eq!(
+            resume_at(&mut f, 9_000, len).unwrap(),
+            0,
+            "a rotated log was resumed mid-file"
+        );
     }
 
     /// Nothing new is nothing done — no engine, no store, no write.
@@ -378,7 +389,10 @@ mod tests {
         let db = d.join("history.db");
         let len = std::fs::metadata(&p).unwrap().len();
         assert!(catch_up_one(&p, &db, None, Game::Unknown, len, 0).is_none());
-        assert!(!db.exists(), "a log with nothing new still opened a database");
+        assert!(
+            !db.exists(),
+            "a log with nothing new still opened a database"
+        );
     }
 
     /// A name the client did not write is skipped rather than guessed at.
@@ -402,9 +416,21 @@ mod tests {
         let other = d.join("eqlog_Mirela_freeport.txt");
         write(&followed, &format!("{A}{B}"));
         write(&other, &format!("{A}{B}"));
-        let caught = sweep(&d, &followed, &d.join("history.db"), None, Game::Unknown, &|_| 0, 0);
+        let caught = sweep(
+            &d,
+            &followed,
+            &d.join("history.db"),
+            None,
+            Game::Unknown,
+            &|_| 0,
+            0,
+        );
         let names: Vec<&str> = caught.iter().map(|c| c.player.as_str()).collect();
-        assert_eq!(names, vec!["Mirela"], "the sweep re-read the log the follower owns");
+        assert_eq!(
+            names,
+            vec!["Mirela"],
+            "the sweep re-read the log the follower owns"
+        );
         assert_eq!(caught[0].from, 0);
         assert_eq!(caught[0].to, (A.len() + B.len()) as u64);
         assert_eq!(caught[0].lines, 2);
@@ -417,8 +443,15 @@ mod tests {
         let d = scratch("tail");
         let p = d.join("eqlog_Mirela_freeport.txt");
         write(&p, &format!("{A}{B}"));
-        let c = catch_up_one(&p, &d.join("history.db"), None, Game::Unknown, A.len() as u64, 0)
-            .expect("something to read");
+        let c = catch_up_one(
+            &p,
+            &d.join("history.db"),
+            None,
+            Game::Unknown,
+            A.len() as u64,
+            0,
+        )
+        .expect("something to read");
         assert_eq!(c.lines, 2);
         assert_eq!(c.from, A.len() as u64, "where the new bytes began");
     }
@@ -430,19 +463,35 @@ mod tests {
         let d = scratch("keeps");
         let p = d.join("eqlog_Mirela_freeport.txt");
         let db = d.join("history.db");
-        let loot = |s: u32| format!("[Tue Jul 28 14:00:{s:02} 2026] --You have looted a Stale Bread from a rat's corpse.--\n");
+        let loot = |s: u32| {
+            format!("[Tue Jul 28 14:00:{s:02} 2026] --You have looted a Stale Bread from a rat's corpse.--\n")
+        };
         let zone = "[Tue Jul 28 13:59:00 2026] You have entered West Commonlands.\n";
         write(&p, &format!("{zone}{}{}", loot(1), loot(2)));
         let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
         let looted = || {
             let st = store::Store::open_as(&db, "Mirela", "freeport").unwrap();
-            st.all_drops().unwrap().iter().filter(|r| r.item == "Stale Bread").map(|r| r.looted).sum::<u64>()
+            st.all_drops()
+                .unwrap()
+                .iter()
+                .filter(|r| r.item == "Stale Bread")
+                .map(|r| r.looted)
+                .sum::<u64>()
         };
         assert_eq!(looted(), 2);
 
-        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(loot(3).as_bytes()).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&p)
+            .unwrap()
+            .write_all(loot(3).as_bytes())
+            .unwrap();
         catch_up_one(&p, &db, None, Game::Unknown, first.to, 0).expect("the appended line");
-        assert_eq!(looted(), 3, "the catch-up replaced the log's totals with the tail's");
+        assert_eq!(
+            looted(),
+            3,
+            "the catch-up replaced the log's totals with the tail's"
+        );
 
         let len = std::fs::metadata(&p).unwrap().len();
         assert!(catch_up_one(&p, &db, None, Game::Unknown, len, 0).is_none());
@@ -459,7 +508,11 @@ mod tests {
         write(&behind, &format!("{A}{B}"));
         // The followed log is fully read; the other has never been touched.
         let rows = status(&d, &followed, &|p| {
-            if p.contains("Tharn") { ((A.len() + B.len()) as u64, 99) } else { (0, 0) }
+            if p.contains("Tharn") {
+                ((A.len() + B.len()) as u64, 99)
+            } else {
+                (0, 0)
+            }
         });
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].player, "Mirela", "the worst gap is not first");
@@ -467,7 +520,10 @@ mod tests {
         assert!(!rows[0].followed);
         assert_eq!(rows[1].player, "Tharn");
         assert_eq!(rows[1].behind, 0, "the followed log reads as behind");
-        assert!(rows[1].followed, "the followed log is not marked as followed");
+        assert!(
+            rows[1].followed,
+            "the followed log is not marked as followed"
+        );
     }
 
     /// A watermark larger than the file does not report a negative gap.
@@ -477,6 +533,9 @@ mod tests {
         let p = d.join("eqlog_Mirela_freeport.txt");
         write(&p, A);
         let rows = status(&d, &d.join("eqlog_Tharn_freeport.txt"), &|_| (9_000, 5));
-        assert_eq!(rows[0].behind, 0, "a rotated log reported a gap it does not have");
+        assert_eq!(
+            rows[0].behind, 0,
+            "a rotated log reported a gap it does not have"
+        );
     }
 }

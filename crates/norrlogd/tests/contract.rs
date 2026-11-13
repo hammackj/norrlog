@@ -11,8 +11,8 @@
 //! directories pointed into a scratch folder, so nothing here reads or writes
 //! anybody's history, item ids or screenshots.
 
-use norrlog_client::{api::Event, Client, Spawn};
 use futures_util::StreamExt;
+use norrlog_client::{api::Event, Client, Spawn};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,7 +29,8 @@ struct Scratch {
 }
 
 fn scratch(name: &str) -> Scratch {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("contract-{name}-{}", std::process::id()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("contract-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let game = dir.join("game");
     std::fs::create_dir_all(game.join("Logs")).unwrap();
@@ -50,10 +51,15 @@ fn scratch(name: &str) -> Scratch {
 fn spawn(s: &Scratch) -> Spawn {
     let home = s.dir.join("home");
     let mut sp = Spawn::new(env!("CARGO_BIN_EXE_norrlogd"));
-    sp.args = ["--log".into(), s.log.clone().into_os_string(), "--game-dir".into(), s.game.clone().into_os_string()]
-        .into_iter()
-        .chain(["--no-shots", "--no-tray", "--eqdb", "http://127.0.0.1:1"].map(Into::into))
-        .collect();
+    sp.args = [
+        "--log".into(),
+        s.log.clone().into_os_string(),
+        "--game-dir".into(),
+        s.game.clone().into_os_string(),
+    ]
+    .into_iter()
+    .chain(["--no-shots", "--no-tray", "--eqdb", "http://127.0.0.1:1"].map(Into::into))
+    .collect();
     sp.env = vec![
         ("HOME".into(), home.clone().into()),
         ("XDG_CONFIG_HOME".into(), home.join(".config").into()),
@@ -69,7 +75,11 @@ fn spawn(s: &Scratch) -> Spawn {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Wait for a condition, failing the test after `secs`.
@@ -91,7 +101,9 @@ async fn eventually<F: AsyncFnMut() -> bool>(secs: u64, what: &str, mut f: F) {
 /// which is what the first version of this test did.
 async fn gone(port: u16) {
     eventually(15, "the daemon exiting once idle", async || {
-        tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err()
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
     })
     .await;
 }
@@ -109,11 +121,17 @@ async fn typed_endpoints_and_events() {
     // The backlog is parsed, and the stream counted as a client.
     let mut c2 = c.clone();
     eventually(10, "the event socket counting as a client", async || {
-        c2.refresh_hello().await.map(|h| h.clients == 1).unwrap_or(false)
+        c2.refresh_hello()
+            .await
+            .map(|h| h.clients == 1)
+            .unwrap_or(false)
     })
     .await;
     eventually(10, "the backlog being parsed", async || {
-        c.pickups(Some(0)).await.map(|p| !p.pickups.is_empty()).unwrap_or(false)
+        c.pickups(Some(0))
+            .await
+            .map(|p| !p.pickups.is_empty())
+            .unwrap_or(false)
     })
     .await;
 
@@ -126,17 +144,35 @@ async fn typed_endpoints_and_events() {
     })
     .await;
     let b = c.bags().await.unwrap();
-    assert_eq!((b.character.as_str(), b.server.as_str()), ("Tharn", "freeport"));
+    assert_eq!(
+        (b.character.as_str(), b.server.as_str()),
+        ("Tharn", "freeport")
+    );
     assert_eq!(b.sources.len(), 1);
-    let dagger = b.items.iter().find(|i| i.name == "Rusty Dagger").expect("dagger");
+    let dagger = b
+        .items
+        .iter()
+        .find(|i| i.name == "Rusty Dagger")
+        .expect("dagger");
     assert_eq!(dagger.grades, vec![0, 2]);
 
     // Decodes as the core `Bundle`, which is the point.
     c.bundle().await.unwrap();
 
-    let mut f = std::fs::OpenOptions::new().append(true).open(&s.log).unwrap();
-    writeln!(f, "[Tue Jul 28 12:01:00 2026] You have entered East Commonlands.").unwrap();
-    writeln!(f, "[Tue Jul 28 12:01:05 2026] --You have looted a Rusty Dagger from a rat's corpse.--").unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&s.log)
+        .unwrap();
+    writeln!(
+        f,
+        "[Tue Jul 28 12:01:00 2026] You have entered East Commonlands."
+    )
+    .unwrap();
+    writeln!(
+        f,
+        "[Tue Jul 28 12:01:05 2026] --You have looted a Rusty Dagger from a rat's corpse.--"
+    )
+    .unwrap();
     writeln!(f, "[Tue Jul 28 12:01:06 2026] Taking a screenshot...").unwrap();
     drop(f);
 
@@ -149,30 +185,60 @@ async fn typed_endpoints_and_events() {
             .expect("an event that decodes");
         got.push(e);
     }
-    assert!(matches!(&got[0], Event::ZoneChanged { zone: Some(z), .. } if z == "East Commonlands"), "{got:?}");
-    assert!(matches!(&got[1], Event::Pickup(p) if p.item == "Rusty Dagger" && p.held), "{got:?}");
+    assert!(
+        matches!(&got[0], Event::ZoneChanged { zone: Some(z), .. } if z == "East Commonlands"),
+        "{got:?}"
+    );
+    assert!(
+        matches!(&got[1], Event::Pickup(p) if p.item == "Rusty Dagger" && p.held),
+        "{got:?}"
+    );
     assert!(matches!(got[2], Event::ScreenshotTaken { .. }), "{got:?}");
 
     // The zone, now that the log has said one.
     let mut c3 = c.clone();
     eventually(10, "hello naming the zone", async || {
-        c3.refresh_hello().await.map(|h| h.zone.as_deref() == Some("East Commonlands")).unwrap_or(false)
+        c3.refresh_hello()
+            .await
+            .map(|h| h.zone.as_deref() == Some("East Commonlands"))
+            .unwrap_or(false)
     })
     .await;
 
     // The overlay's panel slot: put, list, refresh in place, refuse, take down.
     use norrlog_client::api::{Panel, PanelRow, Panels};
-    let row = |n: &str| PanelRow { name: n.into(), value: "icon".into(), note: None, note_value: None, highlight: false };
-    let panel = |rows: Vec<PanelRow>| Panel { title: "Worth a picture".into(), meta: String::new(), rows, ttl_secs: 30 };
-    c.put_panel("eqldb", &panel(vec![row("Rusty Dagger")])).await.unwrap();
+    let row = |n: &str| PanelRow {
+        name: n.into(),
+        value: "icon".into(),
+        note: None,
+        note_value: None,
+        highlight: false,
+    };
+    let panel = |rows: Vec<PanelRow>| Panel {
+        title: "Worth a picture".into(),
+        meta: String::new(),
+        rows,
+        ttl_secs: 30,
+    };
+    c.put_panel("eqldb", &panel(vec![row("Rusty Dagger")]))
+        .await
+        .unwrap();
     c.put_panel("other", &panel(vec![])).await.unwrap();
-    c.put_panel("eqldb", &panel(vec![row("Bone Chips")])).await.unwrap();
+    c.put_panel("eqldb", &panel(vec![row("Bone Chips")]))
+        .await
+        .unwrap();
     let up: Panels = c.get("/api/panels").await.unwrap();
     let ids: Vec<&str> = up.panels.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["eqldb", "other"], "a refresh keeps its place");
     assert_eq!(up.panels[0].panel.rows[0].name, "Bone Chips");
     assert!(c.put_panel("no/slash", &panel(vec![])).await.is_err());
-    assert!(c.put_panel("long", &panel((0..9).map(|i| row(&i.to_string())).collect())).await.is_err());
+    assert!(c
+        .put_panel(
+            "long",
+            &panel((0..9).map(|i| row(&i.to_string())).collect())
+        )
+        .await
+        .is_err());
     c.delete_panel("other").await.unwrap();
     c.delete_panel("never-was").await.unwrap();
     let up: Panels = c.get("/api/panels").await.unwrap();
@@ -191,11 +257,17 @@ async fn two_apps_starting_at_once_share_one_daemon() {
     let s = scratch("race");
     let port = free_port();
     let sp = spawn(&s);
-    let (a, b) = tokio::join!(Client::attach_or_spawn(port, &sp), Client::attach_or_spawn(port, &sp));
+    let (a, b) = tokio::join!(
+        Client::attach_or_spawn(port, &sp),
+        Client::attach_or_spawn(port, &sp)
+    );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert_eq!(a.hello().pid, b.hello().pid, "one daemon");
     assert_eq!(
-        [a.started_daemon(), b.started_daemon()].iter().filter(|x| **x).count(),
+        [a.started_daemon(), b.started_daemon()]
+            .iter()
+            .filter(|x| **x)
+            .count(),
         1,
         "exactly one of them started it"
     );
@@ -211,9 +283,14 @@ async fn two_apps_starting_at_once_share_one_daemon() {
 /// A raw request's status line, with the headers given.
 async fn status_of(port: u16, path: &str, headers: &[(&str, String)]) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     let mut req = format!("GET {path} HTTP/1.1\r\n");
-    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("connection")) {
+    if !headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("connection"))
+    {
         req.push_str("Connection: close\r\n");
     }
     for (k, v) in headers {
@@ -222,8 +299,15 @@ async fn status_of(port: u16, path: &str, headers: &[(&str, String)]) -> String 
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     let mut buf = vec![0u8; 512];
-    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf)).await.unwrap().unwrap();
-    String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string()
+    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    String::from_utf8_lossy(&buf[..n])
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Another website, through the user's browser, gets nothing: not the live
@@ -241,18 +325,46 @@ async fn a_page_from_another_site_is_refused() {
         ("Sec-WebSocket-Version", "13".to_string()),
         ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
     ];
-    let with = |extra: &[(&'static str, String)]| -> Vec<(&'static str, String)> { [&[host.clone()][..], &ws[..], extra].concat() };
+    let with = |extra: &[(&'static str, String)]| -> Vec<(&'static str, String)> {
+        [&[host.clone()][..], &ws[..], extra].concat()
+    };
     for path in ["/ws", "/api/events"] {
-        let foreign = status_of(port, path, &with(&[("Origin", "http://untrusted.example".into())])).await;
-        assert!(foreign.contains(" 403 "), "{path} from a foreign site: {foreign}");
-        let own = status_of(port, path, &with(&[("Origin", format!("http://127.0.0.1:{port}"))])).await;
+        let foreign = status_of(
+            port,
+            path,
+            &with(&[("Origin", "http://untrusted.example".into())]),
+        )
+        .await;
+        assert!(
+            foreign.contains(" 403 "),
+            "{path} from a foreign site: {foreign}"
+        );
+        let own = status_of(
+            port,
+            path,
+            &with(&[("Origin", format!("http://127.0.0.1:{port}"))]),
+        )
+        .await;
         assert!(own.contains(" 101 "), "{path} from the overlay page: {own}");
         let native = status_of(port, path, &with(&[])).await;
-        assert!(native.contains(" 101 "), "{path} from a native client: {native}");
+        assert!(
+            native.contains(" 101 "),
+            "{path} from a native client: {native}"
+        );
     }
-    let api = status_of(port, "/api/snapshot", &[host.clone(), ("Origin", "http://untrusted.example".into())]).await;
+    let api = status_of(
+        port,
+        "/api/snapshot",
+        &[host.clone(), ("Origin", "http://untrusted.example".into())],
+    )
+    .await;
     assert!(api.contains(" 403 "), "the API from a foreign site: {api}");
-    let rebound = status_of(port, "/api/snapshot", &[("Host", format!("rebound.example:{port}"))]).await;
+    let rebound = status_of(
+        port,
+        "/api/snapshot",
+        &[("Host", format!("rebound.example:{port}"))],
+    )
+    .await;
     assert!(rebound.contains(" 403 "), "a rebound host name: {rebound}");
     // The client the apps use still attaches.
     c.bags().await.unwrap();

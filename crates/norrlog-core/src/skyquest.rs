@@ -407,11 +407,7 @@ impl SkyTracker {
                         let turned_in = *self.turned_in.get(&key).unwrap_or(&0);
                         let held = looted.saturating_sub(turned_in);
                         SkyItemProgress {
-                            island: i
-                                .source
-                                .as_deref()
-                                .and_then(island_of)
-                                .map(str::to_string),
+                            island: i.source.as_deref().and_then(island_of).map(str::to_string),
                             name: i.name,
                             source: i.source,
                             looted,
@@ -599,7 +595,6 @@ fn island_of(source: &str) -> Option<&'static str> {
 fn item_key(name: &str) -> String {
     crate::drops::canonical_item(name).to_lowercase()
 }
-
 
 /// The transcribed quest tables, shipped so a fresh install is useful.
 ///
@@ -1745,7 +1740,11 @@ mod tests {
             .iter()
             .find(|i| i.name == "Gem of Invigoration")
             .unwrap();
-        assert_eq!(gem.source.as_deref(), Some("7-Trash"), "note kept as written");
+        assert_eq!(
+            gem.source.as_deref(),
+            Some("7-Trash"),
+            "note kept as written"
+        );
         assert_eq!(gem.island.as_deref(), Some("7-SotS"), "but tallied there");
 
         let drake = r.islands.iter().find(|i| i.code == "7-SotS").unwrap();

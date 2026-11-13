@@ -207,15 +207,16 @@ impl Ids {
         };
         for c in found.into_iter().filter(|c| c.change.worth_folding()) {
             let Ok(bytes) = std::fs::read(&c.path) else {
-                sweep.failures.push(format!("{}: vanished mid-sweep", c.name));
+                sweep
+                    .failures
+                    .push(format!("{}: vanished mid-sweep", c.name));
                 continue;
             };
             // Re-read rather than carried from the survey: the file may have
             // been rewritten between the two, and folding rows under a digest
             // they did not come from would mark the new version as read.
             let sha = digest(&bytes);
-            let rows = match norrlog_core::itemids::read(c.kind, &String::from_utf8_lossy(&bytes))
-            {
+            let rows = match norrlog_core::itemids::read(c.kind, &String::from_utf8_lossy(&bytes)) {
                 Ok(rows) => rows,
                 Err(e) => {
                     sweep.failures.push(format!("{}: {e}", c.name));
@@ -244,9 +245,7 @@ impl Ids {
         }
         if sweep.changed_anything() {
             if let Err(e) = self.save() {
-                sweep
-                    .failures
-                    .push(format!("{}: {e}", self.path.display()));
+                sweep.failures.push(format!("{}: {e}", self.path.display()));
             }
         }
         sweep
@@ -436,7 +435,10 @@ mod tests {
         let second = ids.sweep("2026-09-07");
         assert_eq!(second.added, 1);
         let held: Vec<u32> = ids.registry().items.iter().map(|e| e.item_id).collect();
-        assert!(held.contains(&177708), "the sold item kept its id: {held:?}");
+        assert!(
+            held.contains(&177708),
+            "the sold item kept its id: {held:?}"
+        );
         assert!(held.contains(&9001));
     }
 
@@ -444,7 +446,11 @@ mod tests {
     fn a_file_of_the_wrong_shape_is_reported_and_the_rest_still_fold() {
         let game = a_game_folder("bad");
         let dir = tmpdir("bad-cfg");
-        std::fs::write(game.join("Broken_halas-Inventory.txt"), "not a dump at all\r\n").unwrap();
+        std::fs::write(
+            game.join("Broken_halas-Inventory.txt"),
+            "not a dump at all\r\n",
+        )
+        .unwrap();
         let mut ids = ids_at(&dir, &game);
         let s = ids.sweep("2026-09-06");
         assert_eq!(s.failures.len(), 1, "{:?}", s.failures);
@@ -460,7 +466,10 @@ mod tests {
         ids.sweep("2026-09-06");
         let text = std::fs::read_to_string(ids.path()).unwrap();
         serde_json::from_str::<Registry>(&text).expect("a saved registry parses");
-        assert!(!dir.join("item-ids.json.new").exists(), "no leftover temp file");
+        assert!(
+            !dir.join("item-ids.json.new").exists(),
+            "no leftover temp file"
+        );
     }
 
     /// Adoption is the one place a grade moves between the two lists.
@@ -482,12 +491,29 @@ mod tests {
         let (taken, corrected) = ids.adopt(&legacy).unwrap();
         assert_eq!((taken, corrected), (2, 1));
 
-        let veil = ids.registry().items.iter().find(|e| e.item_id == 1002).unwrap();
-        assert!(veil.grades_held.is_empty(), "never held, only seen on a corpse");
+        let veil = ids
+            .registry()
+            .items
+            .iter()
+            .find(|e| e.item_id == 1002)
+            .unwrap();
+        assert!(
+            veil.grades_held.is_empty(),
+            "never held, only seen on a corpse"
+        );
         assert_eq!(veil.grades_seen, vec![0, 1, 2]);
 
-        let star = ids.registry().items.iter().find(|e| e.item_id == 5214).unwrap();
-        assert_eq!(star.grades_held, vec![0, 4], "an inventory row is behind these");
+        let star = ids
+            .registry()
+            .items
+            .iter()
+            .find(|e| e.item_id == 5214)
+            .unwrap();
+        assert_eq!(
+            star.grades_held,
+            vec![0, 4],
+            "an inventory row is behind these"
+        );
     }
 
     #[test]
@@ -506,7 +532,12 @@ mod tests {
         .unwrap();
         let (taken, _) = ids.adopt(&legacy).unwrap();
         assert_eq!(taken, 0);
-        let boots = ids.registry().items.iter().find(|e| e.item_id == 177708).unwrap();
+        let boots = ids
+            .registry()
+            .items
+            .iter()
+            .find(|e| e.item_id == 177708)
+            .unwrap();
         assert_eq!(boots.item, "Boots of the Long Road");
     }
 }

@@ -54,7 +54,9 @@ impl DaemonTray {
         };
         use norrlog_core::game::Game;
         match Game::parse(&h.game) {
-            Some(g @ (Game::EverQuest | Game::EverQuestLegends)) => format!("Following {who} ({})", g.label()),
+            Some(g @ (Game::EverQuest | Game::EverQuestLegends)) => {
+                format!("Following {who} ({})", g.label())
+            }
             _ => format!("Following {who}"),
         }
     }
@@ -84,7 +86,11 @@ impl ksni::Tray for DaemonTray {
     }
 
     fn status(&self) -> ksni::Status {
-        if self.log_ok() { ksni::Status::Active } else { ksni::Status::NeedsAttention }
+        if self.log_ok() {
+            ksni::Status::Active
+        } else {
+            ksni::Status::NeedsAttention
+        }
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -96,13 +102,22 @@ impl ksni::Tray for DaemonTray {
             lines.push(format!("Log not found: {}", self.life.hello().log));
         }
         lines.push(format!("{} client(s) · port {}", self.clients, self.port()));
-        ksni::ToolTip { title: "norrlogd".into(), description: lines.join("\n"), ..Default::default() }
+        ksni::ToolTip {
+            title: "norrlogd".into(),
+            description: lines.join("\n"),
+            ..Default::default()
+        }
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         let info = |text: String| -> MenuItem<Self> {
-            StandardItem { label: label(text), enabled: false, ..Default::default() }.into()
+            StandardItem {
+                label: label(text),
+                enabled: false,
+                ..Default::default()
+            }
+            .into()
         };
         let h = self.life.hello();
         let log = std::path::Path::new(&h.log)
@@ -111,7 +126,10 @@ impl ksni::Tray for DaemonTray {
             .unwrap_or_else(|| h.log.clone());
         let mut m: Vec<MenuItem<Self>> = vec![
             info(self.following()),
-            info(format!("Log: {log}{}", if self.log_ok() { "" } else { " (not found)" })),
+            info(format!(
+                "Log: {log}{}",
+                if self.log_ok() { "" } else { " (not found)" }
+            )),
         ];
         if let Some(z) = &self.here {
             m.push(info(format!("In {z}")));
@@ -228,7 +246,9 @@ fn restart() {
         return;
     };
     eprintln!("[norrlogd] restarting from the tray");
-    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
+    let err = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .exec();
     eprintln!("[norrlogd] tray: restart failed: {err}");
 }
 
@@ -240,7 +260,8 @@ fn application_dirs() -> Vec<PathBuf> {
     } else if let Some(h) = std::env::var_os("HOME").map(PathBuf::from) {
         dirs.push(h.join(".local/share"));
     }
-    let sys = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    let sys =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
     dirs.extend(sys.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
     dirs.into_iter().map(|d| d.join("applications")).collect()
 }
@@ -271,7 +292,10 @@ fn find_parser() -> Option<Launch> {
 /// else whatever its installed desktop entry runs. Run as a program rather
 /// than through `gtk-launch` so it can be told which port this daemon is on.
 fn find_collector() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("EQLDB_COLLECTOR").map(PathBuf::from).filter(|p| p.is_file()) {
+    if let Some(p) = std::env::var_os("EQLDB_COLLECTOR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
         return Some(p);
     }
     let on_path = std::env::var_os("PATH").and_then(|path| {
@@ -331,12 +355,18 @@ mod tests {
     fn the_program_a_desktop_entry_runs() {
         let e = "[Desktop Entry]\nName=x\nExec=/opt/x/launch.sh %U\nIcon=x\n";
         assert_eq!(super::exec_of(e), Some("/opt/x/launch.sh".into()));
-        assert_eq!(super::exec_of("Exec=\"/opt/y/run\" --flag"), Some("/opt/y/run".into()));
+        assert_eq!(
+            super::exec_of("Exec=\"/opt/y/run\" --flag"),
+            Some("/opt/y/run".into())
+        );
         assert_eq!(super::exec_of("Name=nothing to run"), None);
     }
 
     #[test]
     fn underscores_survive_a_menu_label() {
-        assert_eq!(super::label("eqlog_Tharn_freeport.txt"), "eqlog__Tharn__freeport.txt");
+        assert_eq!(
+            super::label("eqlog_Tharn_freeport.txt"),
+            "eqlog__Tharn__freeport.txt"
+        );
     }
 }

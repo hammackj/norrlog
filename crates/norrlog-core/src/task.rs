@@ -439,7 +439,6 @@ fn match_step(steps: &[TaskStepDef], killed: &str) -> Option<usize> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,8 +484,14 @@ mod tests {
     #[test]
     fn a_weekly_done_this_week_is_not_still_to_do() {
         let mut t = TaskTracker::new();
-        t.on_assigned(1_786_527_029, "Potential of the Void - Lord Nagafen - Weekly");
-        t.on_updated(1_786_527_545, "Potential of the Void - Lord Nagafen - Weekly");
+        t.on_assigned(
+            1_786_527_029,
+            "Potential of the Void - Lord Nagafen - Weekly",
+        );
+        t.on_updated(
+            1_786_527_545,
+            "Potential of the Void - Lord Nagafen - Weekly",
+        );
         let r = t.report();
         let rec = &r.tasks[0];
         assert!(rec.weekly, "the boss tasks are weekly");
@@ -738,13 +743,23 @@ mod tests {
         t.on_updated(this_week + 60, "Potential of the Void - Innoruuk - Weekly");
 
         // Taken this week, boss still standing.
-        t.on_assigned(this_week + 100, "Potential of the Void - Master Yael - Weekly");
+        t.on_assigned(
+            this_week + 100,
+            "Potential of the Void - Master Yael - Weekly",
+        );
 
         let by = |r: &TaskReport, n: &str| {
-            r.tasks.iter().find(|t| t.name.contains(n)).unwrap().still_to_do
+            r.tasks
+                .iter()
+                .find(|t| t.name.contains(n))
+                .unwrap()
+                .still_to_do
         };
         let r = t.report();
-        assert!(!by(&r, "Lady Vox"), "an old week's task is done, not pending");
+        assert!(
+            !by(&r, "Lady Vox"),
+            "an old week's task is done, not pending"
+        );
         assert!(!by(&r, "Innoruuk"), "finished this week");
         assert!(by(&r, "Master Yael"), "taken this week and unfinished");
     }

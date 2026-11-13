@@ -12,9 +12,9 @@
 mod alerts;
 mod api;
 mod character;
+mod charts;
 mod classes;
 mod config;
-mod charts;
 mod daemon;
 mod dashboard;
 mod encounters;
@@ -31,8 +31,8 @@ mod overlay;
 mod overlay_settings;
 mod parts;
 mod procs;
-mod sky;
 mod settings;
+mod sky;
 mod sound;
 mod spell_tip;
 mod state;
@@ -54,7 +54,10 @@ fn main() {
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         match a.to_str() {
-            Some("--port") => match args.next().and_then(|v| v.to_str().and_then(|v| v.parse().ok())) {
+            Some("--port") => match args
+                .next()
+                .and_then(|v| v.to_str().and_then(|v| v.parse().ok()))
+            {
                 Some(p) => port = p,
                 None => die("--port takes a number"),
             },
@@ -68,7 +71,11 @@ fn main() {
     }
 
     let daemon_bin = daemon::find_daemon(daemon_bin);
-    let setup = daemon::Setup { port, daemon: daemon_bin.clone(), args: cfg.daemon_args() };
+    let setup = daemon::Setup {
+        port,
+        daemon: daemon_bin.clone(),
+        args: cfg.daemon_args(),
+    };
     // A window that falls behind gets the newest snapshot, and every
     // lifecycle message; see `daemon::Inbox`.
     let (tx, rx) = daemon::mailbox();
@@ -85,12 +92,19 @@ fn main() {
         let bounds = match state.bounds {
             Some(r) => {
                 let b = Bounds::new(point(px(r.x), px(r.y)), size(px(r.w), px(r.h)));
-                if state.maximized { WindowBounds::Maximized(b) } else { WindowBounds::Windowed(b) }
+                if state.maximized {
+                    WindowBounds::Maximized(b)
+                } else {
+                    WindowBounds::Windowed(b)
+                }
             }
             None => WindowBounds::centered(size(px(1180.), px(800.)), cx),
         };
         let options = WindowOptions {
-            titlebar: Some(TitlebarOptions { title: Some("Norrlog".into()), ..Default::default() }),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Norrlog".into()),
+                ..Default::default()
+            }),
             window_bounds: Some(bounds),
             window_min_size: Some(size(px(900.), px(600.))),
             app_id: Some("norrlog".into()),
@@ -98,7 +112,10 @@ fn main() {
         };
         let main = cx
             .open_window(options, move |window, cx| {
-                let restart = settings::Restart { ctl: ctl_tx, daemon: daemon_bin };
+                let restart = settings::Restart {
+                    ctl: ctl_tx,
+                    daemon: daemon_bin,
+                };
                 let view = cx.new(|cx| view::Shell::new(rx, rt, state, restart, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })

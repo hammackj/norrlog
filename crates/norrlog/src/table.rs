@@ -2,9 +2,9 @@
 //! that highlight on hover, numbers right-aligned. Columns are either fixed
 //! width or share what is left.
 
+use crate::theme::px;
 use crate::theme::*;
 use gpui::*;
-use crate::theme::px;
 
 #[derive(Clone, Copy)]
 pub struct Col {
@@ -34,9 +34,17 @@ pub fn fit(cols: &[Col], rows: &[Vec<String>]) -> Vec<Col> {
         .enumerate()
         .map(|(i, c)| match c.width {
             Some(w) if c.num => {
-                let longest = rows.iter().filter_map(|r| r.get(i)).map(|t| t.chars().count()).max().unwrap_or(0);
+                let longest = rows
+                    .iter()
+                    .filter_map(|r| r.get(i))
+                    .map(|t| t.chars().count())
+                    .max()
+                    .unwrap_or(0);
                 let head = c.label.chars().count() as f32 * HEAD_CHAR_W;
-                Col { width: Some(w.max(longest as f32 * CHAR_W).max(head)), ..*c }
+                Col {
+                    width: Some(w.max(longest as f32 * CHAR_W).max(head)),
+                    ..*c
+                }
             }
             _ => *c,
         })
@@ -95,7 +103,12 @@ pub fn row_dense(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>)
     row_spaced(id, cols, cells, px(8.))
 }
 
-fn row_spaced(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>, gap: Pixels) -> Stateful<Div> {
+fn row_spaced(
+    id: impl Into<ElementId>,
+    cols: &[Col],
+    cells: Vec<AnyElement>,
+    gap: Pixels,
+) -> Stateful<Div> {
     let mut r = div()
         .id(id)
         .flex()
@@ -115,7 +128,11 @@ fn row_spaced(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>, ga
 
 /// A row with nothing but a message, spanning the table.
 pub fn empty_row(text: impl Into<SharedString>) -> Div {
-    div().px_3().py_4().text_color(hex(MUTED)).child(text.into())
+    div()
+        .px_3()
+        .py_4()
+        .text_color(hex(MUTED))
+        .child(text.into())
 }
 
 /// Dim text, for the quieter columns.
@@ -140,9 +157,17 @@ mod tests {
 
     #[test]
     fn a_number_column_widens_to_its_longest_text_and_no_further_down() {
-        let cols = [col("Ability", None, false), col("Crit", Some(32.), true), col("Kind", Some(40.), false)];
+        let cols = [
+            col("Ability", None, false),
+            col("Crit", Some(32.), true),
+            col("Kind", Some(40.), false),
+        ];
         let rows = vec![
-            vec!["kick".to_string(), "100%".to_string(), "a long kind".to_string()],
+            vec![
+                "kick".to_string(),
+                "100%".to_string(),
+                "a long kind".to_string(),
+            ],
             vec!["shoot".to_string(), "40%".to_string(), "x".to_string()],
         ];
         let w: Vec<Option<f32>> = fit(&cols, &rows).iter().map(|c| c.width).collect();

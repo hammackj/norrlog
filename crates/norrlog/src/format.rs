@@ -41,7 +41,10 @@ pub fn dur(sec: f64) -> String {
 /// time and the daemon reads it as UTC, so formatting it as UTC gives back
 /// the time the player saw. `—` for none.
 pub fn when(ts: Option<i64>) -> String {
-    match ts.filter(|&t| t != 0).and_then(|t| chrono::DateTime::from_timestamp(t, 0)) {
+    match ts
+        .filter(|&t| t != 0)
+        .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+    {
         Some(d) => d.format("%Y-%m-%d %H:%M").to_string(),
         None => "—".into(),
     }
@@ -68,7 +71,11 @@ pub fn until(ts: i64, now_log: i64) -> String {
         return "due".into();
     }
     let (h, m) = (left / 3600, left % 3600 / 60);
-    if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 /// JavaScript's `Math.round`: halves go up, also below zero.

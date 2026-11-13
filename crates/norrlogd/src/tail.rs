@@ -34,12 +34,19 @@ fn ident(file: &File) -> Ident {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: the handle is open for as long as `file` is borrowed, and
         // `info` is a valid out-pointer of the right type.
         let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
-        (ok != 0).then(|| (info.dwVolumeSerialNumber as u64, ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64))
+        (ok != 0).then(|| {
+            (
+                info.dwVolumeSerialNumber as u64,
+                ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+            )
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -117,7 +124,9 @@ impl Follower {
         // A read that fails part-way falls back to the whole file, as the
         // window's promise says, rather than leaving nothing followed.
         let start = find(f.reader.get_mut()).unwrap_or_else(|e| {
-            eprintln!("[norrlogd] could not find where the window starts ({e}); reading the whole log");
+            eprintln!(
+                "[norrlogd] could not find where the window starts ({e}); reading the whole log"
+            );
             0
         });
         f.reader.get_mut().seek(SeekFrom::Start(start))?;
@@ -325,14 +334,20 @@ mod tests {
         // Every offset, so some land inside an é.
         let mut file = File::open(&path).unwrap();
         for off in 0..text.len() as u64 {
-            Follower::first_timestamp_at(&mut file, off).unwrap_or_else(|e| panic!("offset {off}: {e}"));
+            Follower::first_timestamp_at(&mut file, off)
+                .unwrap_or_else(|e| panic!("offset {off}: {e}"));
         }
-        let cutoff = norrlog_core::parser::split_timestamp("[Tue Jul 28 12:00:05 2026] done").unwrap().0;
+        let cutoff = norrlog_core::parser::split_timestamp("[Tue Jul 28 12:00:05 2026] done")
+            .unwrap()
+            .0;
         let mut f = Follower::open_since(&path, cutoff).unwrap();
         let mut got = Vec::new();
         f.read_available(|l| got.push(l.to_string())).unwrap();
         assert_eq!(got, ["[Tue Jul 28 12:00:05 2026] done"]);
-        let mut w = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut w = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(w, "[Tue Jul 28 12:00:09 2026] after").unwrap();
         got.clear();
         f.read_available(|l| got.push(l.to_string())).unwrap();
@@ -344,7 +359,9 @@ mod tests {
     fn a_window_over_crlf_lines_starts_at_the_right_line() {
         let dir = tmpdir();
         let path = dir.join("crlf.txt");
-        let lines: Vec<String> = (0..50).map(|i| format!("[Tue Jul 28 12:{:02}:00 2026] line {i}", i)).collect();
+        let lines: Vec<String> = (0..50)
+            .map(|i| format!("[Tue Jul 28 12:{:02}:00 2026] line {i}", i))
+            .collect();
         std::fs::write(&path, lines.join("\r\n") + "\r\n").unwrap();
         let cutoff = norrlog_core::parser::split_timestamp(&lines[30]).unwrap().0;
         let mut f = Follower::open_since(&path, cutoff).unwrap();
@@ -374,7 +391,10 @@ mod tests {
             f.read_available(|l| got.push(l.to_string())).unwrap();
             assert_eq!(got, [new.trim_end()], "the replacement, once");
         }
-        let mut w = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut w = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(w, "more").unwrap();
         got.clear();
         f.read_available(|l| got.push(l.to_string())).unwrap();

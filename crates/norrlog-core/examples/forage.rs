@@ -16,18 +16,29 @@ fn main() -> anyhow::Result<()> {
     let mut feed = Feed::new(&who, Game::EverQuestLegends);
     {
         let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
-        feed.read(std::io::BufReader::new(std::fs::File::open(&path)?), &mut subs)?;
+        feed.read(
+            std::io::BufReader::new(std::fs::File::open(&path)?),
+            &mut subs,
+        )?;
     }
     let mut zones: Vec<_> = c.zones().iter().collect();
     zones.sort_by_key(|(_, z)| std::cmp::Reverse(z.attempts()));
     for (name, z) in &zones {
-        println!("{name}  {} of {} attempt(s) yielded something", z.hits(), z.attempts());
+        println!(
+            "{name}  {} of {} attempt(s) yielded something",
+            z.hits(),
+            z.attempts()
+        );
         let mut found: Vec<_> = z.found.iter().collect();
         found.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
         for (item, n) in found {
             println!("    {n:3}  {item}");
         }
     }
-    println!("\n{} zone(s); {} attempt(s) before any zone was announced", zones.len(), c.homeless);
+    println!(
+        "\n{} zone(s); {} attempt(s) before any zone was announced",
+        zones.len(),
+        c.homeless
+    );
     Ok(())
 }

@@ -30,10 +30,15 @@ pub fn guess_game_dir() -> Option<PathBuf> {
 fn guess_game_dir_in(home: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = home.map(prefix_candidates).unwrap_or_default();
     // The client's default, under `%PUBLIC%` where Windows has moved it.
-    if let Some(public) = std::env::var_os("PUBLIC").map(PathBuf::from).filter(|p| p.is_absolute()) {
+    if let Some(public) = std::env::var_os("PUBLIC")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
         candidates.push(public.join(r"Daybreak Game Company\Installed Games\EverQuest Legends"));
     }
-    candidates.push(PathBuf::from(r"C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest Legends"));
+    candidates.push(PathBuf::from(
+        r"C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest Legends",
+    ));
     candidates
         .into_iter()
         .filter_map(|d| {
@@ -47,15 +52,21 @@ fn guess_game_dir_in(home: Option<&Path>) -> Option<PathBuf> {
 /// Every place under `home` an install can be: inside each Wine prefix the
 /// usual tools make, then a plain ~/Games folder.
 fn prefix_candidates(home: &Path) -> Vec<PathBuf> {
-    let tail = Path::new("drive_c/users/Public/Daybreak Game Company/Installed Games/EverQuest Legends");
+    let tail =
+        Path::new("drive_c/users/Public/Daybreak Game Company/Installed Games/EverQuest Legends");
     let subdirs = |dir: PathBuf| -> Vec<PathBuf> {
         std::fs::read_dir(dir)
             .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
             .unwrap_or_default()
     };
     let mut prefixes = subdirs(home.join(".cxoffice"));
-    prefixes.extend(subdirs(home.join("Library/Application Support/CrossOver/Bottles")));
-    for steam in [".local/share/Steam/steamapps/compatdata", ".steam/steam/steamapps/compatdata"] {
+    prefixes.extend(subdirs(
+        home.join("Library/Application Support/CrossOver/Bottles"),
+    ));
+    for steam in [
+        ".local/share/Steam/steamapps/compatdata",
+        ".steam/steam/steamapps/compatdata",
+    ] {
         prefixes.extend(subdirs(home.join(steam)).into_iter().map(|d| d.join("pfx")));
     }
     prefixes.extend(subdirs(home.join("Games")));

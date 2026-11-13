@@ -404,7 +404,9 @@ fn parse_args() -> Config {
             }
             "--no-shots" => {}
             "--no-archive" | "--archive-dry-run" | "--backlog" => {
-                eprintln!("[norrlogd] {a} is ignored: the eqldb collector reads and files screenshots");
+                eprintln!(
+                    "[norrlogd] {a} is ignored: the eqldb collector reads and files screenshots"
+                );
             }
             "--send" => {
                 eprintln!(
@@ -482,7 +484,11 @@ fn main() -> anyhow::Result<()> {
 /// the app's own profile. None of it is the daemon's, so none of it is kept.
 #[cfg(unix)]
 fn close_inherited_fds() {
-    let dir = if cfg!(target_os = "linux") { "/proc/self/fd" } else { "/dev/fd" };
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -603,9 +609,7 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
         Arc::new(Mutex::new(ids))
     });
     if ids.is_none() {
-        eprintln!(
-            "[norrlogd] item ids: not recorded — no config directory to keep the record in"
-        );
+        eprintln!("[norrlogd] item ids: not recorded — no config directory to keep the record in");
     } else if cfg.game_dir.is_none() {
         eprintln!(
             "[norrlogd] item ids: nothing to read — pass --game-dir to find the client's \
@@ -624,11 +628,7 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     // directory, so a daemon started from elsewhere found an empty history and
     // accumulated nothing — which reads as a parsing fault, not a path one.
     let history = match history_path()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no absolute home directory; set HOME, or XDG_DATA_HOME"
-            )
-        })
+        .ok_or_else(|| anyhow::anyhow!("no absolute home directory; set HOME, or XDG_DATA_HOME"))
         .and_then(|db| store::Store::open_as(&db, &player, &server))
     {
         Ok(s) => {
@@ -645,10 +645,7 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
                         .map(|(c, sv, n)| format!("{c} on {sv} ({n} kills)"))
                         .collect();
                     if !others.is_empty() {
-                        eprintln!(
-                            "[norrlogd] other characters on file: {}",
-                            others.join(", ")
-                        );
+                        eprintln!("[norrlogd] other characters on file: {}", others.join(", "));
                     }
                 }
             }
@@ -755,9 +752,16 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
         started_at: crate::server::unix_now(),
         game: game.slug().into(),
         log: log_path.to_string_lossy().into_owned(),
-        character: if player == "You" { String::new() } else { player.clone() },
+        character: if player == "You" {
+            String::new()
+        } else {
+            player.clone()
+        },
         server: server.clone(),
-        game_dir: cfg.game_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
+        game_dir: cfg
+            .game_dir
+            .as_ref()
+            .map(|d| d.to_string_lossy().into_owned()),
         screenshots_dir: screenshots_dir.map(|d| d.to_string_lossy().into_owned()),
         clients: 0,
         idle_exit_secs: cfg.idle_exit,
@@ -765,7 +769,11 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
         clock_offset: None,
         zone: None,
         features: Some(
-            norrlog_core::profile::profile(game).features().into_iter().map(String::from).collect(),
+            norrlog_core::profile::profile(game)
+                .features()
+                .into_iter()
+                .map(String::from)
+                .collect(),
         ),
     }));
     if let Some(secs) = cfg.idle_exit {
@@ -774,7 +782,10 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     if !cfg.no_tray {
         let engine = Arc::clone(&engine);
-        crate::tray::spawn(Arc::clone(&life), Box::new(move || engine.locked("engine").zone_place()));
+        crate::tray::spawn(
+            Arc::clone(&life),
+            Box::new(move || engine.locked("engine").zone_place()),
+        );
     }
 
     let state = AppState {
@@ -860,9 +871,8 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
         );
     };
 
-    let db = history_path().ok_or_else(|| {
-        anyhow::anyhow!("no absolute home directory; set HOME, or XDG_DATA_HOME")
-    })?;
+    let db = history_path()
+        .ok_or_else(|| anyhow::anyhow!("no absolute home directory; set HOME, or XDG_DATA_HOME"))?;
     let game = cfg.game.unwrap_or_else(|| {
         Game::detect(
             [cfg.game_dir.as_deref(), logs.first().map(|p| p.as_path())]
@@ -876,9 +886,7 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
     // so an alt keeps its own. One log, one identity, one flush.
     let mut identity = None;
     for path in &logs {
-        let Some((player, server)) =
-            Parser::identity_from_filename(&path.to_string_lossy())
-        else {
+        let Some((player, server)) = Parser::identity_from_filename(&path.to_string_lossy()) else {
             eprintln!(
                 "[norrlogd] skipping {}: the client names a log \
                  eqlog_<Character>_<server>.txt and nothing inside states either",
@@ -893,13 +901,9 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
             bytes / 1_048_576
         );
         let spells = Engine::load_spell_db(cfg.game_dir.as_deref());
-        let engine = Arc::new(Mutex::new(Engine::with_game(
-            player.clone(),
-            spells,
-            game,
-        )));
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("opening {}", path.display()))?;
+        let engine = Arc::new(Mutex::new(Engine::with_game(player.clone(), spells, game)));
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let started = std::time::Instant::now();
         let mut lines = 0u64;
         {
@@ -1028,8 +1032,7 @@ fn print_verdicts(p: &crate::bundle::Preview) {
 fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<()> {
     use std::io::BufRead;
 
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let (player, _server) = Parser::identity_from_filename(&log_path.to_string_lossy())
         .with_context(|| {
             format!(
@@ -1052,8 +1055,8 @@ fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<
     // different question from the daemon's.
     let spells = Engine::load_spell_db(cfg.game_dir.as_deref());
     let mut engine = Engine::with_game(player, spells, game);
-    let file = std::fs::File::open(log_path)
-        .with_context(|| format!("opening {}", log_path.display()))?;
+    let file =
+        std::fs::File::open(log_path).with_context(|| format!("opening {}", log_path.display()))?;
     let start = std::time::Instant::now();
     let mut lines = 0u64;
     for line in std::io::BufReader::new(file).lines() {
@@ -1082,16 +1085,21 @@ fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<
         // always had them — and are written here so the same one command
         // covers everything a log gives up.
         ("sky", serde_json::to_string_pretty(&engine.sky_report())?),
-        ("tasks", serde_json::to_string_pretty(&engine.task_report())?),
-        ("quests", serde_json::to_string_pretty(&engine.task_report())?),
+        (
+            "tasks",
+            serde_json::to_string_pretty(&engine.task_report())?,
+        ),
+        (
+            "quests",
+            serde_json::to_string_pretty(&engine.task_report())?,
+        ),
         (
             "tradeskills",
             serde_json::to_string_pretty(&engine.tradeskill_report())?,
         ),
     ] {
         let p = dir.join(format!("{what}.{tag}.json"));
-        std::fs::write(&p, json + "\n")
-            .with_context(|| format!("writing {}", p.display()))?;
+        std::fs::write(&p, json + "\n").with_context(|| format!("writing {}", p.display()))?;
     }
     // A ceiling is the highest anybody has reached, so it has no log's stem
     // in its name and is folded into whatever is already there — the same
@@ -1135,11 +1143,8 @@ fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<
             })
             .collect(),
     };
-    std::fs::write(
-        &skills_path,
-        serde_json::to_string_pretty(&skills)? + "\n",
-    )
-    .with_context(|| format!("writing {}", skills_path.display()))?;
+    std::fs::write(&skills_path, serde_json::to_string_pretty(&skills)? + "\n")
+        .with_context(|| format!("writing {}", skills_path.display()))?;
 
     eprintln!(
         "[norrlogd] record: {tag} — {lines} lines in {:.2}s; {} consider(s), \
@@ -1330,7 +1335,12 @@ fn history_path() -> Option<PathBuf> {
 ///
 /// An error means nothing after the failed write was stored, and the caller
 /// must not record the source as read.
-pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path, whole: bool) -> Result<(), String> {
+pub(crate) fn flush_history(
+    engine: &Arc<Mutex<Engine>>,
+    store: &Arc<Mutex<store::Store>>,
+    path: &Path,
+    whole: bool,
+) -> Result<(), String> {
     let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
     let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
     let grants = { engine.locked("engine").grants_to_persist() };
@@ -1374,7 +1384,8 @@ pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    st.note_source(&path.to_string_lossy(), bytes, now).map_err(|e| e.to_string())?;
+    st.note_source(&path.to_string_lossy(), bytes, now)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1497,12 +1508,12 @@ mod tests {
             exit_with_parent: false,
             idle_exit: None,
             shots: None,
-                no_tray: false,
+            no_tray: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
             bundle_out: None,
-                contributor: None,
+            contributor: None,
         };
         assert_eq!(
             resolve_log(&cfg).unwrap(),
@@ -1523,12 +1534,12 @@ mod tests {
             exit_with_parent: false,
             idle_exit: None,
             shots: None,
-                no_tray: false,
+            no_tray: false,
             adopt_item_ids: None,
             record_out: None,
             logs: Vec::new(),
             bundle_out: None,
-                contributor: None,
+            contributor: None,
         };
         assert!(resolve_log(&cfg).is_err());
     }
@@ -1558,6 +1569,4 @@ mod tests {
         assert_eq!(parse_since("h"), None);
         assert_eq!(parse_since("banana"), None);
     }
-
-
 }

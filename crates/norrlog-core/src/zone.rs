@@ -302,7 +302,11 @@ mod tests {
             let z = Zone::parse(label);
             assert_eq!((z.mode, z.difficulty), (Mode::Group, tier), "{label}");
             assert_eq!(z.modifier.as_deref(), modifier, "{label}");
-            assert!(!z.name.contains(" - "), "{label} kept its marker: {}", z.name);
+            assert!(
+                !z.name.contains(" - "),
+                "{label} kept its marker: {}",
+                z.name
+            );
         }
 
         // The marked and unmarked spellings are *not* one variant, and this
@@ -361,7 +365,10 @@ mod tests {
     /// invent a naming convention the game does not have.
     #[test]
     fn the_article_is_kept() {
-        assert_eq!(Zone::parse("The Plane of Fear - Solo").name, "The Plane of Fear");
+        assert_eq!(
+            Zone::parse("The Plane of Fear - Solo").name,
+            "The Plane of Fear"
+        );
         assert_eq!(Zone::parse("The Ocean of Tears").name, "The Ocean of Tears");
     }
 
@@ -374,7 +381,11 @@ mod tests {
             let z = Zone::parse(&label);
             assert_eq!(z.name, "Innothule Swamp", "from {label}");
             assert_eq!(z.difficulty, *tier);
-            assert_eq!(z.mode, Mode::Instance, "a bare tier does not say which mode");
+            assert_eq!(
+                z.mode,
+                Mode::Instance,
+                "a bare tier does not say which mode"
+            );
             assert!(z.tier_name_agrees(), "{label} should be self-consistent");
             assert_eq!(z.label, label, "the client's string is kept verbatim");
         }
@@ -428,7 +439,10 @@ mod tests {
                 z.unrecognised_suffix.is_none(),
                 "{label} has a suffix the parser does not understand"
             );
-            assert!(z.tier_name_agrees(), "{label} disagrees with its own tier name");
+            assert!(
+                z.tier_name_agrees(),
+                "{label} disagrees with its own tier name"
+            );
             assert!(
                 !z.name.contains(" - Solo") && !z.name.ends_with(')'),
                 "{label} left a marker behind in the place name: {}",
@@ -445,7 +459,11 @@ mod tests {
         // carries one.
         assert_eq!(modes[&Mode::Instance], 38);
         assert_eq!(modes[&Mode::Solo], 25);
-        assert_eq!(modes.get(&Mode::Group), None, "no string here is marked group");
+        assert_eq!(
+            modes.get(&Mode::Group),
+            None,
+            "no string here is marked group"
+        );
 
         // The place with every variant: open, plus solo and group at each tier.
         let hate: Vec<Zone> = labels

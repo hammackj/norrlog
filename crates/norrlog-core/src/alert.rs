@@ -318,8 +318,10 @@ impl AlertBook {
         // A rule that is gone should not hold a cooldown or a warning against
         // its id, or re-adding it would start it in a fired state.
         let live: Vec<&str> = self.rules.iter().map(|r| r.id.as_str()).collect();
-        self.last_fired.retain(|(id, _), _| live.iter().any(|l| l == id));
-        self.warned.retain(|(id, _), _| live.iter().any(|l| l == id));
+        self.last_fired
+            .retain(|(id, _), _| live.iter().any(|l| l == id));
+        self.warned
+            .retain(|(id, _), _| live.iter().any(|l| l == id));
     }
 
     /// Add or replace one rule, keeping the rest.
@@ -340,7 +342,11 @@ impl AlertBook {
     /// Fires newer than `since`, oldest first, so a client can play them in
     /// order.
     pub fn since(&self, since: u64) -> Vec<AlertFire> {
-        self.fires.iter().filter(|f| f.seq > since).cloned().collect()
+        self.fires
+            .iter()
+            .filter(|f| f.seq > since)
+            .cloned()
+            .collect()
     }
 
     /// The highest sequence issued. A client records this on its first
@@ -623,10 +629,20 @@ mod tests {
                 text: "hits you".to_string(),
             },
         )]);
-        b.on_line(100, "[x] A mummy hits YOU for 40 points", &Event::Unknown, "V");
+        b.on_line(
+            100,
+            "[x] A mummy hits YOU for 40 points",
+            &Event::Unknown,
+            "V",
+        );
         assert!(b.since(0).is_empty(), "backlog must be silent");
         b.arm(true);
-        b.on_line(101, "[x] A mummy hits YOU for 40 points", &Event::Unknown, "V");
+        b.on_line(
+            101,
+            "[x] A mummy hits YOU for 40 points",
+            &Event::Unknown,
+            "V",
+        );
         assert_eq!(b.since(0).len(), 1);
     }
 
@@ -677,7 +693,9 @@ mod tests {
         )]);
         let p = |s: &str| Parser::new("Tharn").parse_line(s).unwrap();
         let looted = |item: &str| {
-            format!("[Wed Aug 06 21:15:03 2025] --You have looted a {item} from a mummy's corpse.--")
+            format!(
+                "[Wed Aug 06 21:15:03 2025] --You have looted a {item} from a mummy's corpse.--"
+            )
         };
         b.on_line(1, "x", &p(&looted("Rusty Dagger")).event, "V");
         assert!(b.since(0).is_empty());
@@ -696,9 +714,19 @@ mod tests {
             },
         )]);
         let p = |s: &str| Parser::new("Tharn").parse_line(s).unwrap();
-        b.on_line(1, "x", &p("[Wed Aug 06 21:15:03 2025] You told Bob, 'hi'").event, "Tharn");
+        b.on_line(
+            1,
+            "x",
+            &p("[Wed Aug 06 21:15:03 2025] You told Bob, 'hi'").event,
+            "Tharn",
+        );
         assert!(b.since(0).is_empty());
-        b.on_line(2, "x", &p("[Wed Aug 06 21:15:04 2025] Bob tells you, 'hi'").event, "Tharn");
+        b.on_line(
+            2,
+            "x",
+            &p("[Wed Aug 06 21:15:04 2025] Bob tells you, 'hi'").event,
+            "Tharn",
+        );
         assert_eq!(b.since(0).len(), 1);
     }
 
@@ -768,7 +796,12 @@ mod tests {
         )]);
         b.arm(true);
         assert!(b.rules()[0].error.is_some());
-        b.on_line(1, "[x] A mummy hits YOU for 40 points", &Event::Unknown, "V");
+        b.on_line(
+            1,
+            "[x] A mummy hits YOU for 40 points",
+            &Event::Unknown,
+            "V",
+        );
         assert!(b.since(0).is_empty());
     }
 
@@ -780,9 +813,19 @@ mod tests {
                 pattern: r"hits YOU for (\d{3,})".to_string(),
             },
         )]);
-        b.on_line(1, "[x] A mummy hits YOU for 40 points", &Event::Unknown, "V");
+        b.on_line(
+            1,
+            "[x] A mummy hits YOU for 40 points",
+            &Event::Unknown,
+            "V",
+        );
         assert!(b.since(0).is_empty(), "two digits is under the threshold");
-        b.on_line(2, "[x] A mummy hits YOU for 480 points", &Event::Unknown, "V");
+        b.on_line(
+            2,
+            "[x] A mummy hits YOU for 480 points",
+            &Event::Unknown,
+            "V",
+        );
         assert_eq!(b.since(0).len(), 1);
     }
 

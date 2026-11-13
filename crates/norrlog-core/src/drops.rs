@@ -498,7 +498,6 @@ impl DropTracker {
     }
 }
 
-
 /// The form two spellings of the same item are compared in.
 ///
 /// Not a slug: the site's own slug for "Legionnaire's Bracer" is
@@ -540,8 +539,18 @@ mod tests {
         let mut d = DropTracker::new(Game::EverQuest);
         d.on_kill("a snow orc trooper");
         d.on_kill("a snow orc trooper");
-        d.on_left_behind(100, "Rusty Two Handed Sword", "a snow orc trooper", Some("Icefall"));
-        d.on_left_behind(200, "Rusty Two Handed Sword", "a snow orc trooper", Some("Icefall"));
+        d.on_left_behind(
+            100,
+            "Rusty Two Handed Sword",
+            "a snow orc trooper",
+            Some("Icefall"),
+        );
+        d.on_left_behind(
+            200,
+            "Rusty Two Handed Sword",
+            "a snow orc trooper",
+            Some("Icefall"),
+        );
 
         let r = d.report();
         let item = &r.items[0];
@@ -598,16 +607,38 @@ mod tests {
     #[test]
     fn drops_accumulate_per_creature_with_zones() {
         let mut t = DropTracker::new(Game::EverQuestLegends);
-        t.on_drop(100, "Small Piece of High Quality Ore", 1, "a fire goblin", Some("Nagafen's Lair"));
-        t.on_drop(200, "Small Piece of High Quality Ore", 2, "fire goblin", Some("Solusek's Eye"));
-        t.on_drop(300, "Small Piece of High Quality Ore", 1, "an imp protector", None);
+        t.on_drop(
+            100,
+            "Small Piece of High Quality Ore",
+            1,
+            "a fire goblin",
+            Some("Nagafen's Lair"),
+        );
+        t.on_drop(
+            200,
+            "Small Piece of High Quality Ore",
+            2,
+            "fire goblin",
+            Some("Solusek's Eye"),
+        );
+        t.on_drop(
+            300,
+            "Small Piece of High Quality Ore",
+            1,
+            "an imp protector",
+            None,
+        );
 
         let r = t.report();
         assert_eq!(r.game, Game::EverQuestLegends);
         let ore = &r.items[0];
         assert_eq!(ore.looted, 3);
         assert_eq!(ore.quantity, 4, "one drop was a stack of two");
-        assert_eq!(ore.sources.len(), 2, "the article does not make a second creature");
+        assert_eq!(
+            ore.sources.len(),
+            2,
+            "the article does not make a second creature"
+        );
         // One creature, named the way the client named it. The article
         // settles nothing about identity and everything about the name.
         assert_eq!(ore.sources[0].npc, "a fire goblin");
@@ -617,7 +648,10 @@ mod tests {
             vec!["Nagafen's Lair", "Solusek's Eye"],
             "both zones kept"
         );
-        assert_eq!((ore.sources[0].first_seen, ore.sources[0].last_seen), (100, 200));
+        assert_eq!(
+            (ore.sources[0].first_seen, ore.sources[0].last_seen),
+            (100, 200)
+        );
     }
 
     /// A grade is a roll on an item, not another item — filing them apart
@@ -633,12 +667,19 @@ mod tests {
         let r = t.report();
         assert_eq!(r.items.len(), 1, "one item, not three: {:?}", r.items);
         let cap = &r.items[0];
-        assert_eq!(cap.item, "Woven Skull Cap", "named for the item, not a roll");
+        assert_eq!(
+            cap.item, "Woven Skull Cap",
+            "named for the item, not a roll"
+        );
         assert_eq!(cap.looted, 4);
         // Nothing is lost by folding: the grades are still on the record.
         assert_eq!(cap.grades, vec![(0, 1), (1, 2), (2, 1)]);
         assert_eq!(cap.sources.len(), 2);
-        let kos = cap.sources.iter().find(|s| s.npc == "Keeper of Souls").unwrap();
+        let kos = cap
+            .sources
+            .iter()
+            .find(|s| s.npc == "Keeper of Souls")
+            .unwrap();
         assert_eq!(kos.looted, 3);
         assert_eq!(kos.grades, vec![(0, 1), (1, 2)], "per creature, too");
         assert_eq!((kos.first_seen, kos.last_seen), (100, 300));
@@ -656,8 +697,14 @@ mod tests {
     /// Only a trailing grade is a grade; a `+` in the name is part of it.
     #[test]
     fn a_plus_elsewhere_in_a_name_is_not_a_grade() {
-        assert_eq!(split_grade("Woven Skull Cap +1"), ("Woven Skull Cap", Some(1)));
-        assert_eq!(split_grade("Woven Skull Cap+12"), ("Woven Skull Cap", Some(12)));
+        assert_eq!(
+            split_grade("Woven Skull Cap +1"),
+            ("Woven Skull Cap", Some(1))
+        );
+        assert_eq!(
+            split_grade("Woven Skull Cap+12"),
+            ("Woven Skull Cap", Some(12))
+        );
         assert_eq!(split_grade("Woven Skull Cap"), ("Woven Skull Cap", None));
         assert_eq!(split_grade("Wand of +Swords"), ("Wand of +Swords", None));
         assert_eq!(split_grade("+1"), ("+1", None));
@@ -697,8 +744,11 @@ mod tests {
         // creature and not a reason to lose the name.
         t.on_kill("fire goblin");
         let r = t.report();
-        assert_eq!(r.kills, vec![("a fire goblin".to_string(), 2)],
-                   "one creature, counted twice, named as the game names it");
+        assert_eq!(
+            r.kills,
+            vec![("a fire goblin".to_string(), 2)],
+            "one creature, counted twice, named as the game names it"
+        );
     }
 
     /// A creature killed but never seen dropping anything still belongs in the
@@ -726,20 +776,42 @@ mod place_tests {
     fn a_drop_is_counted_where_it_happened() {
         let mut t = DropTracker::default();
         for _ in 0..3 {
-            t.on_drop(1_000, "Chunk of Meat", 1, "a black wolf", Some("East Commonlands"));
+            t.on_drop(
+                1_000,
+                "Chunk of Meat",
+                1,
+                "a black wolf",
+                Some("East Commonlands"),
+            );
         }
-        t.on_drop(1_100, "Chunk of Meat", 1, "a black wolf", Some("Misty Thicket"));
+        t.on_drop(
+            1_100,
+            "Chunk of Meat",
+            1,
+            "a black wolf",
+            Some("Misty Thicket"),
+        );
         let r = t.report();
         let s = &r.items[0].sources[0];
 
         assert_eq!(s.looted, 4, "the total is unchanged");
-        assert_eq!(s.zones, ["East Commonlands", "Misty Thicket"], "and so is the set");
-        let mut by: Vec<(&str, u64)> =
-            s.places.iter().map(|p| (p.zone.as_str(), p.looted)).collect();
+        assert_eq!(
+            s.zones,
+            ["East Commonlands", "Misty Thicket"],
+            "and so is the set"
+        );
+        let mut by: Vec<(&str, u64)> = s
+            .places
+            .iter()
+            .map(|p| (p.zone.as_str(), p.looted))
+            .collect();
         by.sort();
         assert_eq!(by, [("East Commonlands", 3), ("Misty Thicket", 1)]);
-        assert_eq!(s.places.iter().map(|p| p.looted).sum::<u64>(), s.looted,
-                   "the places account for every loot");
+        assert_eq!(
+            s.places.iter().map(|p| p.looted).sum::<u64>(),
+            s.looted,
+            "the places account for every loot"
+        );
     }
 
     /// The instance tier is part of the place, because it is part of the fight.
@@ -751,8 +823,20 @@ mod place_tests {
     #[test]
     fn a_tier_is_part_of_the_place() {
         let mut t = DropTracker::default();
-        t.on_drop(1_000, "Bloodmoon", 1, "Lord of Ire", Some("The Plane of Hate"));
-        t.on_drop(1_100, "Bloodmoon", 1, "Lord of Ire", Some("The Plane of Hate - Group"));
+        t.on_drop(
+            1_000,
+            "Bloodmoon",
+            1,
+            "Lord of Ire",
+            Some("The Plane of Hate"),
+        );
+        t.on_drop(
+            1_100,
+            "Bloodmoon",
+            1,
+            "Lord of Ire",
+            Some("The Plane of Hate - Group"),
+        );
         let r = t.report();
         let s = &r.items[0].sources[0];
 
@@ -760,16 +844,27 @@ mod place_tests {
         assert_eq!(s.places.len(), 2, "two by mode");
         let modes: std::collections::BTreeSet<&str> =
             s.places.iter().map(|p| p.mode.as_str()).collect();
-        assert!(modes.len() == 2, "open and group are not the same fight: {modes:?}");
-        assert!(s.places.iter().all(|p| p.zone == "The Plane of Hate"),
-                "the mode comes off the label, the name stays whole");
+        assert!(
+            modes.len() == 2,
+            "open and group are not the same fight: {modes:?}"
+        );
+        assert!(
+            s.places.iter().all(|p| p.zone == "The Plane of Hate"),
+            "the mode comes off the label, the name stays whole"
+        );
     }
 
     /// A stacked drop is one loot of several items, in both places.
     #[test]
     fn a_place_carries_quantity_as_well_as_count() {
         let mut t = DropTracker::default();
-        t.on_drop(1_000, "Bone Chips", 4, "a decaying skeleton", Some("Paineel"));
+        t.on_drop(
+            1_000,
+            "Bone Chips",
+            4,
+            "a decaying skeleton",
+            Some("Paineel"),
+        );
         let r = t.report();
         let p = &r.items[0].sources[0].places[0];
         assert_eq!((p.looted, p.quantity), (1, 4));

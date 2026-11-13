@@ -55,7 +55,10 @@ pub fn since(since: u64) -> norrlog_api::DaemonLog {
             .lines
             .iter()
             .filter(|(s, _)| *s >= since)
-            .map(|(seq, text)| norrlog_api::DaemonLogLine { seq: *seq, text: text.clone() })
+            .map(|(seq, text)| norrlog_api::DaemonLogLine {
+                seq: *seq,
+                text: text.clone(),
+            })
             .collect(),
         next: r.next,
         dropped: since < oldest,
@@ -90,21 +93,23 @@ pub fn capture() {
         libc::fcntl(original, libc::F_SETFD, libc::FD_CLOEXEC);
         let reader = std::fs::File::from_raw_fd(read_end);
         let mut out = std::fs::File::from_raw_fd(original);
-        let spawned = std::thread::Builder::new().name("logring".into()).spawn(move || {
-            let mut lines = std::io::BufReader::new(reader);
-            let mut buf = Vec::new();
-            loop {
-                buf.clear();
-                match lines.read_until(b'\n', &mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => {
-                        let _ = out.write_all(&buf);
-                        let text = String::from_utf8_lossy(&buf);
-                        push(text.trim_end_matches(['\n', '\r']).to_string());
+        let spawned = std::thread::Builder::new()
+            .name("logring".into())
+            .spawn(move || {
+                let mut lines = std::io::BufReader::new(reader);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match lines.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => {
+                            let _ = out.write_all(&buf);
+                            let text = String::from_utf8_lossy(&buf);
+                            push(text.trim_end_matches(['\n', '\r']).to_string());
+                        }
                     }
                 }
-            }
-        });
+            });
         if spawned.is_err() {
             // The closure, and the two files in it, were dropped.
             libc::close(write_end);

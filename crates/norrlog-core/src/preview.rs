@@ -158,9 +158,9 @@ pub fn preview(b: &Bundle) -> Preview {
             (false, false) => Verdict::Absent,
         };
         let says = match verdict {
-            Verdict::Replaces => format!(
-                "replaces your {table} rows on the site with these {rows}"
-            ),
+            Verdict::Replaces => {
+                format!("replaces your {table} rows on the site with these {rows}")
+            }
             // Two different reasons a table is not cleared, and they need
             // different warnings. An incomplete bundle is the dangerous one:
             // the rows land on the `ON CONFLICT` and a sparse row blanks the
@@ -256,7 +256,11 @@ mod tests {
         let mut b = empty();
         b.sources = Some(Vec::new());
         let p = preview(&b);
-        let t = p.tables.iter().find(|t| t.table == "recipes").expect("recipes");
+        let t = p
+            .tables
+            .iter()
+            .find(|t| t.table == "recipes")
+            .expect("recipes");
         assert_eq!(t.verdict, Verdict::Absent);
         assert!(p.would_delete.is_empty());
     }
@@ -311,8 +315,6 @@ mod tests {
         assert_eq!(drops.verdict, Verdict::Deletes);
     }
 
-
-
     /// Rows from an incomplete bundle are folded in rather than replacing,
     /// and the panel says why. This is the state everything this daemon
     /// builds ships in, because it never marks a bundle complete.
@@ -330,7 +332,11 @@ mod tests {
         });
         b.sources = Some(Vec::new());
         let p = preview(&b);
-        let t = p.tables.iter().find(|t| t.table == "markers").expect("markers");
+        let t = p
+            .tables
+            .iter()
+            .find(|t| t.table == "markers")
+            .expect("markers");
         assert!(!b.complete, "this daemon must not mark a bundle complete");
         assert_eq!(t.verdict, Verdict::Merges);
         assert_eq!(t.rows, 1);
@@ -355,14 +361,20 @@ mod tests {
             creature: "an orc pawn".into(),
             zone: "crushbone".into(),
             faction: "Crushbone Orcs".into(),
-            adjustments: vec![FactionAmount { amount: -5, times: 3 }],
+            adjustments: vec![FactionAmount {
+                amount: -5,
+                times: 3,
+            }],
             kills: 3,
         });
         b.turnins.push(TurnIn {
             npc: "Megosh Thistlethorn".into(),
             item: "Halfling Ranger Note".into(),
             faction: "Storm Reapers".into(),
-            adjustments: vec![FactionAmount { amount: 100, times: 1 }],
+            adjustments: vec![FactionAmount {
+                amount: 100,
+                times: 1,
+            }],
             offered: 1,
             handins: 1,
         });

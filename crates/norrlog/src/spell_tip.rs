@@ -8,12 +8,12 @@
 //! it waits.
 
 use crate::api::{Api, query};
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{CLASS_CANNOT_CAST, Class, SpellLookup};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::{CLASS_CANNOT_CAST, Class, SpellLookup};
 use std::collections::HashMap;
 
 enum Lookup {
@@ -28,7 +28,10 @@ pub struct SpellCards {
 
 impl SpellCards {
     pub fn new() -> Self {
-        SpellCards { api: None, known: HashMap::new() }
+        SpellCards {
+            api: None,
+            known: HashMap::new(),
+        }
     }
 
     /// A different daemon may know different spells: start over.
@@ -63,7 +66,11 @@ impl SpellCards {
 }
 
 /// Hang a spell card on an element, keyed by the ability's name.
-pub fn spell_tip<E: StatefulInteractiveElement>(el: E, cards: &Entity<SpellCards>, name: &str) -> E {
+pub fn spell_tip<E: StatefulInteractiveElement>(
+    el: E,
+    cards: &Entity<SpellCards>,
+    name: &str,
+) -> E {
     let cards = cards.clone();
     let name = name.to_string();
     el.tooltip(move |_, cx| {
@@ -82,7 +89,11 @@ impl SpellTip {
     fn new(cards: Entity<SpellCards>, name: String, cx: &mut Context<Self>) -> Self {
         cards.update(cx, |c, cx| c.ensure(&name, cx));
         let _watch = cx.observe(&cards, |_, _, cx| cx.notify());
-        SpellTip { cards, name, _watch }
+        SpellTip {
+            cards,
+            name,
+            _watch,
+        }
     }
 }
 
@@ -94,7 +105,11 @@ impl Render for SpellTip {
         let Some(c) = self.cards.read(cx).get(&self.name).and_then(card) else {
             return div();
         };
-        let (badge, badge_colour) = if c.live { ("EQLDB", HEAL) } else { ("local spell file", MUTED) };
+        let (badge, badge_colour) = if c.live {
+            ("EQLDB", HEAL)
+        } else {
+            ("local spell file", MUTED)
+        };
         // Wrapped text in a card that sizes to its content measures short and
         // spills out of the card, so a card with a description takes the
         // renderer's full 340 px.
@@ -116,7 +131,14 @@ impl Render for SpellTip {
                     .gap_2()
                     .mb_1()
                     .child(div().font_weight(FontWeight::BOLD).child(c.title))
-                    .child(div().ml_auto().text_xs().whitespace_nowrap().text_color(hex(badge_colour)).child(badge)),
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_xs()
+                            .whitespace_nowrap()
+                            .text_color(hex(badge_colour))
+                            .child(badge),
+                    ),
             );
         if !c.facts.is_empty() {
             out = out.child(v_flex().children(c.facts.into_iter().map(|(label, v)| {
@@ -128,11 +150,23 @@ impl Render for SpellTip {
             })));
         }
         if let Some(classes) = c.classes {
-            out = out.child(h_flex().gap_1().child(div().text_color(hex(MUTED)).child("Classes")).child(classes));
+            out = out.child(
+                h_flex()
+                    .gap_1()
+                    .child(div().text_color(hex(MUTED)).child("Classes"))
+                    .child(classes),
+            );
         }
         if let Some(desc) = c.desc {
             out = out.child(
-                div().mt_1().pt_1().border_t_1().border_color(hex(BORDER)).text_xs().text_color(hex(MUTED)).child(desc),
+                div()
+                    .mt_1()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(hex(BORDER))
+                    .text_xs()
+                    .text_color(hex(MUTED))
+                    .child(desc),
             );
         }
         out
@@ -171,7 +205,10 @@ fn card(d: &SpellLookup) -> Option<Card> {
             }
         };
         fact("Mana", (e.mana > 0).then(|| e.mana.to_string()));
-        fact("Endurance", (e.endurance > 0).then(|| e.endurance.to_string()));
+        fact(
+            "Endurance",
+            (e.endurance > 0).then(|| e.endurance.to_string()),
+        );
         fact("Cast", e.cast_time.as_ref().map(|t| t.text.clone()));
         fact("Recast", e.recast.as_ref().map(|t| t.text.clone()));
         fact("Duration", e.duration.as_ref().map(|t| t.text.clone()));
@@ -180,7 +217,14 @@ fn card(d: &SpellLookup) -> Option<Card> {
     // eqdb's classes when it has them, else the spell file's, which always
     // knows. The renderer's comment says the same; its code only ever read
     // eqdb's.
-    let mut cls: Vec<String> = e.map(|e| e.classes.iter().map(|c| format!("{} {}", c.class, c.level)).collect()).unwrap_or_default();
+    let mut cls: Vec<String> = e
+        .map(|e| {
+            e.classes
+                .iter()
+                .map(|c| format!("{} {}", c.class, c.level))
+                .collect()
+        })
+        .unwrap_or_default();
     if cls.is_empty() {
         if let Some(l) = loc {
             cls = l
@@ -225,10 +269,18 @@ mod tests {
         assert!(c.live);
         assert_eq!(
             c.facts,
-            vec![("Mana", "409".into()), ("Cast", "3s".into()), ("Recast", "1.5s".into()), ("Duration", "up to 36s".into())]
+            vec![
+                ("Mana", "409".into()),
+                ("Cast", "3s".into()),
+                ("Recast", "1.5s".into()),
+                ("Duration", "up to 36s".into())
+            ]
         );
         assert_eq!(c.classes.as_deref(), Some("Shaman 49, Necromancer 50"));
-        assert_eq!(c.desc.as_deref(), Some("Fills your target's blood with poison."));
+        assert_eq!(
+            c.desc.as_deref(),
+            Some("Fills your target's blood with poison.")
+        );
     }
 
     #[test]
@@ -256,7 +308,8 @@ mod tests {
 
     #[test]
     fn an_unknown_name_draws_no_card() {
-        let d: SpellLookup = serde_json::from_str(r#"{"name":"slash","source":"unknown"}"#).unwrap();
+        let d: SpellLookup =
+            serde_json::from_str(r#"{"name":"slash","source":"unknown"}"#).unwrap();
         assert_eq!(card(&d), None);
     }
 }

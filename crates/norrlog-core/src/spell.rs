@@ -387,7 +387,12 @@ impl SpellDb {
         // several candidates inherited that, and the same fight named its
         // effect "Harm Touch XII" on one run and "Harm Touch XXXIII" on the
         // next. In id order the answer is the same every run.
-        for index in [&mut by_landed_on_other, &mut by_landed_on_you, &mut by_fades, &mut by_name] {
+        for index in [
+            &mut by_landed_on_other,
+            &mut by_landed_on_you,
+            &mut by_fades,
+            &mut by_name,
+        ] {
             for ids in index.values_mut() {
                 ids.sort_unstable();
             }
@@ -728,7 +733,8 @@ impl SpellDb {
             // The split has to fall on a word boundary, or `a will pillager`
             // could be cut mid-name by a phrase that merely happens to end the
             // same way.
-            if !(target.ends_with(' ') || target.ends_with('\'') || phrase.starts_with([' ', '\''])) {
+            if !(target.ends_with(' ') || target.ends_with('\'') || phrase.starts_with([' ', '\'']))
+            {
                 continue;
             }
             if best.is_none_or(|(t, _)| target.len() < t.len()) {
@@ -991,7 +997,8 @@ impl SpellResolver {
     /// Whether you cast exactly this rank recently, not just a spell of the
     /// same name.
     pub fn cast_this_rank_recently(&self, timestamp: i64, spell_name: &str) -> bool {
-        self.recent_cast_names(timestamp).any(|n| n.eq_ignore_ascii_case(spell_name))
+        self.recent_cast_names(timestamp)
+            .any(|n| n.eq_ignore_ascii_case(spell_name))
     }
 
     /// The names you cast within the association window, rank included.
@@ -999,7 +1006,10 @@ impl SpellResolver {
     /// every candidate a landing phrase could belong to.
     pub fn recent_cast_names(&self, timestamp: i64) -> impl Iterator<Item = &str> {
         let cutoff = timestamp - CAST_ASSOCIATION_WINDOW;
-        self.recent_casts.iter().filter(move |c| c.timestamp >= cutoff).map(|c| c.spell_name.as_str())
+        self.recent_casts
+            .iter()
+            .filter(move |c| c.timestamp >= cutoff)
+            .map(|c| c.spell_name.as_str())
     }
 
     pub fn db(&self) -> &SpellDb {
@@ -2206,13 +2216,20 @@ mod tests {
     fn candidates_for_a_shared_phrase_come_back_in_id_order() {
         for _ in 0..8 {
             let mut m = HashMap::new();
-            for (id, name) in [(907, "Harm Touch XXXIII"), (88, "Harm Touch XII"), (412, "Harm Touch XX")] {
+            for (id, name) in [
+                (907, "Harm Touch XXXIII"),
+                (88, "Harm Touch XII"),
+                (412, "Harm Touch XX"),
+            ] {
                 let mut s = spell(id, name, "", "", 0, 0);
                 s.landed_on_other = Some(" is struck by a harmful touch.".into());
                 m.insert(id, s);
             }
             let db = SpellDb::from_spells(m);
-            assert_eq!(db.candidates_for_landing_on_other(" is struck by a harmful touch."), [88, 412, 907]);
+            assert_eq!(
+                db.candidates_for_landing_on_other(" is struck by a harmful touch."),
+                [88, 412, 907]
+            );
         }
     }
 
@@ -2220,7 +2237,10 @@ mod tests {
     fn the_rank_you_cast_is_told_apart_from_its_siblings() {
         let mut r = SpellResolver::new(SpellDb::from_spells(HashMap::new()), 50);
         r.note_cast(1000, "Harm Touch XII");
-        assert!(r.cast_recently(1001, "Harm Touch XXXIII"), "a sibling rank still counts as cast");
+        assert!(
+            r.cast_recently(1001, "Harm Touch XXXIII"),
+            "a sibling rank still counts as cast"
+        );
         assert!(r.cast_this_rank_recently(1001, "Harm Touch XII"));
         assert!(!r.cast_this_rank_recently(1001, "Harm Touch XXXIII"));
     }
@@ -2242,13 +2262,24 @@ mod tests {
             f.join("^")
         };
         for extra in [false, true] {
-            let path = std::env::temp_dir().join(format!("norrlog-spells-{}-{extra}.txt", std::process::id()));
+            let path = std::env::temp_dir()
+                .join(format!("norrlog-spells-{}-{extra}.txt", std::process::id()));
             std::fs::write(&path, row(extra) + "\n").unwrap();
             let spells = SpellDb::load_spells(&path).unwrap();
             std::fs::remove_file(&path).ok();
             let s = &spells[&750];
-            assert!(s.is_charm, "charm read with {} fields", 173 + extra as usize);
-            assert_eq!(s.procs, [ProcGrant { spell: 6908, on_melee: true }]);
+            assert!(
+                s.is_charm,
+                "charm read with {} fields",
+                173 + extra as usize
+            );
+            assert_eq!(
+                s.procs,
+                [ProcGrant {
+                    spell: 6908,
+                    on_melee: true
+                }]
+            );
             assert_eq!(s.category_id, 4);
         }
     }
@@ -2263,13 +2294,20 @@ mod tests {
         f[1] = "Beguile".into();
         f[145] = "4".into();
         f[165] = "1|22|1|0|100|51$2|85|6908|400|100|0".into();
-        let path = std::env::temp_dir().join(format!("norrlog-spells-live-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("norrlog-spells-live-{}.txt", std::process::id()));
         std::fs::write(&path, f.join("^") + "\n").unwrap();
         let spells = SpellDb::load_spells(&path).unwrap();
         std::fs::remove_file(&path).ok();
         let s = &spells[&751];
         assert!(s.is_charm);
-        assert_eq!(s.procs, [ProcGrant { spell: 6908, on_melee: true }]);
+        assert_eq!(
+            s.procs,
+            [ProcGrant {
+                spell: 6908,
+                on_melee: true
+            }]
+        );
         assert_eq!(s.category_id, 4);
     }
 }

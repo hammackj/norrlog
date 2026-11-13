@@ -115,8 +115,14 @@ mod tests {
     /// A path that says nothing must not be resolved to a guess.
     #[test]
     fn an_unrecognised_path_stays_unknown() {
-        assert_eq!(Game::from_path(Path::new("/home/x/logs/log.txt")), Game::Unknown);
-        assert_eq!(Game::detect([Path::new("/tmp"), Path::new("/var")]), Game::Unknown);
+        assert_eq!(
+            Game::from_path(Path::new("/home/x/logs/log.txt")),
+            Game::Unknown
+        );
+        assert_eq!(
+            Game::detect([Path::new("/tmp"), Path::new("/var")]),
+            Game::Unknown
+        );
     }
 
     /// The first path that can answer wins, so a game directory outranks a log

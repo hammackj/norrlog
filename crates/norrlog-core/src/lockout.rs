@@ -855,7 +855,10 @@ mod tests {
         assert_eq!(v.remaining, 2);
         assert_eq!(v.this_week[0].boss.as_deref(), Some("Master Yael"));
         assert_eq!(
-            v.open_this_week.iter().map(|o| o.boss.as_str()).collect::<Vec<_>>(),
+            v.open_this_week
+                .iter()
+                .map(|o| o.boss.as_str())
+                .collect::<Vec<_>>(),
             vec!["Lady Vox"],
             "taken, not yet paid"
         );
@@ -911,7 +914,10 @@ mod tests {
     /// Killing the boss's pet is not killing the boss.
     #[test]
     fn phinigels_pet_is_not_phinigel() {
-        assert_eq!(canonical_boss("Phinigel Autropos"), Some("Phinigel Autropos"));
+        assert_eq!(
+            canonical_boss("Phinigel Autropos"),
+            Some("Phinigel Autropos")
+        );
         assert_eq!(canonical_boss("phinigel"), Some("Phinigel Autropos"));
         assert_eq!(canonical_boss("Phinigel Autropos pet"), None);
     }

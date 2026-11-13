@@ -26,12 +26,19 @@ pub fn hex(c: u32) -> Hsla {
 
 /// The two palettes Settings offers, as the Electron app names them: the
 /// empty string is the house palette.
-pub const THEMES: [(&str, &str); 2] =
-    [("", "hammackj — the house palette"), ("spellbook", "Spellbook — indigo and gold leaf")];
+pub const THEMES: [(&str, &str); 2] = [
+    ("", "hammackj — the house palette"),
+    ("spellbook", "Spellbook — indigo and gold leaf"),
+];
 
 /// Settings' scale steps, as the Electron app offers them.
-pub const SCALES: [(f32, &str); 5] =
-    [(0.85, "85% — denser"), (1., "100% — default"), (1.15, "115%"), (1.3, "130%"), (1.5, "150% — larger")];
+pub const SCALES: [(f32, &str); 5] = [
+    (0.85, "85% — denser"),
+    (1., "100% — default"),
+    (1.15, "115%"),
+    (1.3, "130%"),
+    (1.5, "150% — larger"),
+];
 
 static SPELLBOOK: AtomicBool = AtomicBool::new(false);
 /// The UI scale's bits; 1.0 to start.
@@ -44,12 +51,20 @@ pub fn set_palette(name: &str) {
 }
 
 pub fn palette() -> &'static str {
-    if SPELLBOOK.load(Ordering::Relaxed) { "spellbook" } else { "" }
+    if SPELLBOOK.load(Ordering::Relaxed) {
+        "spellbook"
+    } else {
+        ""
+    }
 }
 
 /// Set the UI scale, kept to the range Settings offers.
 pub fn set_scale(v: f32) {
-    let v = if v.is_finite() { v.clamp(0.85, 1.5) } else { 1. };
+    let v = if v.is_finite() {
+        v.clamp(0.85, 1.5)
+    } else {
+        1.
+    };
     SCALE.store(v.to_bits(), Ordering::Relaxed);
 }
 
@@ -169,8 +184,10 @@ pub fn apply(cx: &mut App) {
 /// `overflow_y_scrollbar` would replace with one of its own. The wrapper
 /// takes the scroller's place in the layout, so size it as the scroller was.
 pub fn vbar(handle: &ScrollHandle, scroller: impl IntoElement) -> Div {
-    div()
-        .relative()
-        .child(scroller)
-        .child(div().absolute().inset_0().child(Scrollbar::vertical(handle).viewport_from_layout()))
+    div().relative().child(scroller).child(
+        div()
+            .absolute()
+            .inset_0()
+            .child(Scrollbar::vertical(handle).viewport_from_layout()),
+    )
 }

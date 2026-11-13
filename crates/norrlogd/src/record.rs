@@ -33,8 +33,8 @@
 //! the record does not disturb it.
 
 use norrlog_core::collect::{
-    ConsiderCollector, FactionCause, FactionCollector, ForageCollector, MarkerCollector, MarkerKind,
-    PlayerCollector, SkillCollector, SpotCollector,
+    ConsiderCollector, FactionCause, FactionCollector, ForageCollector, MarkerCollector,
+    MarkerKind, PlayerCollector, SkillCollector, SpotCollector,
 };
 use norrlog_core::feed::{Context, Observer};
 use norrlog_core::game::Game;
@@ -649,23 +649,38 @@ mod tests {
             r.players.players
         );
         assert!(
-            r.consider.considers.iter().any(|c| c.creature.contains("Megosh")),
+            r.consider
+                .considers
+                .iter()
+                .any(|c| c.creature.contains("Megosh")),
             "the consider line was read: {:?}",
             r.consider.considers
         );
         assert_eq!(
-            r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
+            r.skills
+                .skills
+                .iter()
+                .find(|s| s.skill == "Baking")
+                .map(|s| s.at_least),
             Some(42),
             "the skill line was read: {:?}",
             r.skills.skills
         );
         assert_eq!(
-            r.carto.zones.iter().map(|z| (z.zone.as_str(), z.zone_short.as_str())).collect::<Vec<_>>(),
+            r.carto
+                .zones
+                .iter()
+                .map(|z| (z.zone.as_str(), z.zone_short.as_str()))
+                .collect::<Vec<_>>(),
             vec![("Rivervale", "rivervale")],
             "/who states the zone-name to shortname pairing"
         );
         assert_eq!(
-            r.carto.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            r.carto
+                .markers
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Megosh Thistlethorn"],
             "the cartographer block became a marker"
         );
@@ -691,7 +706,9 @@ mod tests {
 
         // And the live collector is still open, so the zone line that follows
         // is still read into the same block rather than a new one.
-        e.push_line("[Tue Jul 28 15:03:15 2026] [50 WAR/DRU/BRD] Tharn (Ogre) ZONE: Rivervale (rivervale)");
+        e.push_line(
+            "[Tue Jul 28 15:03:15 2026] [50 WAR/DRU/BRD] Tharn (Ogre) ZONE: Rivervale (rivervale)",
+        );
         let after = e.record_reports("t");
         assert_eq!(
             after.carto.markers.len(),

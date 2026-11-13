@@ -490,7 +490,10 @@ mod tests {
         // Punctuation is kept — it is part of the name — but case and spacing
         // are not.
         assert_eq!(match_key("Legionnaire's Bracer"), "legionnaire's bracer");
-        assert_eq!(match_key("  LEGIONNAIRE'S   BRACER "), "legionnaire's bracer");
+        assert_eq!(
+            match_key("  LEGIONNAIRE'S   BRACER "),
+            "legionnaire's bracer"
+        );
         assert_eq!(match_key(""), "");
     }
 

@@ -727,10 +727,7 @@ static RULES: &[(RuleId, &str)] = &[
     // "Your spell fizzles" is swept up as system noise further down, which is
     // why this has to come first: a fizzle that names its spell is a cast
     // that cost mana and produced nothing, and worth attributing.
-    (
-        RuleId::SpellFizzle,
-        r"^Your (?P<spell>.+?) spell fizzles!$",
-    ),
+    (RuleId::SpellFizzle, r"^Your (?P<spell>.+?) spell fizzles!$"),
     // ---- Alternate advancement ---------------------------------------------
     // "You have gained 2 ability point(s)!  You now have 5 ability point(s)."
     // "You have gained an ability point!  You now have 6 ability points."
@@ -814,10 +811,7 @@ static RULES: &[(RuleId, &str)] = &[
     //
     // Printed on every zone-in: the only class evidence that arrives without
     // the player typing anything. See [`Event::ChannelRoster`].
-    (
-        RuleId::ChannelRoster,
-        r"^Channels: (?P<list>\d+=.*)$",
-    ),
+    (RuleId::ChannelRoster, r"^Channels: (?P<list>\d+=.*)$"),
     // "[ANONYMOUS] Sneaky" — level, class and race withheld, name still
     // given. Still a WhoEntry, because the fact that matters is that this
     // name belongs to a player: the roster exists to keep people out of the
@@ -1072,7 +1066,10 @@ impl Parser {
         if name.is_empty() {
             return None;
         }
-        Some((name.to_string(), Self::server_without_rotation(server).to_string()))
+        Some((
+            name.to_string(),
+            Self::server_without_rotation(server).to_string(),
+        ))
     }
 
     /// A server name with a log rotation's date taken off.
@@ -1565,13 +1562,11 @@ impl Parser {
                     quantity: num("qty"),
                     remaining: num("left"),
                 },
-                RuleId::MerchantQuotePer | RuleId::MerchantQuoteOne => {
-                    Event::ItemQuoted {
-                        item: g("item").unwrap_or_default().to_string(),
-                        merchant: g("merchant").unwrap_or_default().to_string(),
-                        coin: Coin::parse(g("coin").unwrap_or_default()),
-                    }
-                }
+                RuleId::MerchantQuotePer | RuleId::MerchantQuoteOne => Event::ItemQuoted {
+                    item: g("item").unwrap_or_default().to_string(),
+                    merchant: g("merchant").unwrap_or_default().to_string(),
+                    coin: Coin::parse(g("coin").unwrap_or_default()),
+                },
                 RuleId::ItemPurchased => Event::ItemPurchased {
                     item: g("item").unwrap_or_default().to_string(),
                     quantity: num("qty"),
@@ -1581,9 +1576,9 @@ impl Parser {
                 RuleId::RecipeLearned => Event::RecipeLearned {
                     recipe: g("recipe").unwrap_or_default().to_string(),
                 },
-                RuleId::SongFizzle
-                | RuleId::SpellFizzle
-                | RuleId::SpellInterruptedNamed => Event::CastInterrupted { source: Actor::You },
+                RuleId::SongFizzle | RuleId::SpellFizzle | RuleId::SpellInterruptedNamed => {
+                    Event::CastInterrupted { source: Actor::You }
+                }
                 RuleId::SpellInterruptedOther => Event::CastInterrupted {
                     source: self.actor(g("src").unwrap_or_default()),
                 },
@@ -1661,11 +1656,11 @@ impl Parser {
                     actor: self.actor(g("actor").unwrap_or_default()),
                     text: g("text").unwrap_or_default().to_string(),
                 },
-                RuleId::ZoneRuleNotice
-                | RuleId::SystemAutoAttack
-                | RuleId::SystemMessage => Event::System {
-                    text: body.to_string(),
-                },
+                RuleId::ZoneRuleNotice | RuleId::SystemAutoAttack | RuleId::SystemMessage => {
+                    Event::System {
+                        text: body.to_string(),
+                    }
+                }
             };
             return ev;
         }
@@ -1866,7 +1861,10 @@ mod tests {
             Some(("Faul".to_string(), "rivervale".to_string()))
         );
         // Only a dash followed by digits alone is a rotation.
-        assert_eq!(Parser::server_without_rotation("rivervale-2b"), "rivervale-2b");
+        assert_eq!(
+            Parser::server_without_rotation("rivervale-2b"),
+            "rivervale-2b"
+        );
         assert_eq!(Parser::server_without_rotation("-260808"), "-260808");
         assert_eq!(Parser::server_without_rotation("rivervale-"), "rivervale-");
     }
@@ -1902,7 +1900,14 @@ mod tests {
     fn frenzy_takes_a_preposition_and_the_target_does_not_keep_it() {
         // Third person, damage.
         match p().parse_body("Morgok frenzies on a cracked skeleton for 12 points of damage.") {
-            Event::Damage { source, target, amount, kind, ability, .. } => {
+            Event::Damage {
+                source,
+                target,
+                amount,
+                kind,
+                ability,
+                ..
+            } => {
                 assert_eq!(source, Actor::Named("Morgok".into()));
                 assert_eq!(target, Actor::Named("a cracked skeleton".into()));
                 assert_eq!(amount, 12);
@@ -1951,7 +1956,12 @@ mod tests {
         // Damage to a creature with nobody named is a nuke of yours the client
         // did not name, and stays credited to you.
         match p().parse_body("Lord Nagafen was hit by non-melee for 500 points of damage.") {
-            Event::Damage { source, target, amount, .. } => {
+            Event::Damage {
+                source,
+                target,
+                amount,
+                ..
+            } => {
                 assert_eq!(source, Actor::You);
                 assert_eq!(target, Actor::Named("Lord Nagafen".into()));
                 assert_eq!(amount, 500);
@@ -1961,7 +1971,12 @@ mod tests {
         // Damage to you is not something you did to yourself. Nothing names
         // the attacker, so the attacker is named as unknown.
         match p().parse_body("You were hit by non-melee for 118 damage.") {
-            Event::Damage { source, target, amount, .. } => {
+            Event::Damage {
+                source,
+                target,
+                amount,
+                ..
+            } => {
                 assert_eq!(source, Actor::Named(UNSEEN_ATTACKER.into()));
                 assert_eq!(target, Actor::You);
                 assert_eq!(amount, 118);
@@ -2314,7 +2329,8 @@ mod tests {
     /// the spell in the rule above, and only `from` tells them apart.
     #[test]
     fn dot_tick_with_a_caster_still_wins() {
-        match p().parse_body("A young kodiak has taken 8 damage from Clinging Darkness by Sticky.") {
+        match p().parse_body("A young kodiak has taken 8 damage from Clinging Darkness by Sticky.")
+        {
             Event::Damage {
                 source, ability, ..
             } => {
@@ -2338,7 +2354,8 @@ mod tests {
             other => panic!("expected damage, got {other:?}"),
         }
 
-        match p().parse_body("You slash Lord Nagafen for 900 points of damage. (Riposte Slay Undead)")
+        match p()
+            .parse_body("You slash Lord Nagafen for 900 points of damage. (Riposte Slay Undead)")
         {
             Event::Damage { flags, .. } => {
                 assert!(flags.has("Riposte"), "the riposte must register too");
@@ -2417,7 +2434,9 @@ mod tests {
     /// what arrived rather than a separate payment.
     #[test]
     fn a_coin_split_is_coin() {
-        match p().parse_body("You receive 2 gold, 1 silver and 9 copper as your split (with a bonus).") {
+        match p()
+            .parse_body("You receive 2 gold, 1 silver and 9 copper as your split (with a bonus).")
+        {
             Event::CoinLoot { coin } => assert_eq!(coin.as_copper(), 219),
             other => panic!("expected coin, got {other:?}"),
         }
@@ -2526,7 +2545,11 @@ mod tests {
         }
         // What is left over really is just an NPC talking: chat, not a tell.
         match p().parse_body("a personal banker told you, 'Welcome to my bank!'") {
-            Event::Chat { speaker, channel, message } => {
+            Event::Chat {
+                speaker,
+                channel,
+                message,
+            } => {
                 assert_eq!(speaker, Actor::Named("a personal banker".into()));
                 assert_eq!(channel, "told you");
                 assert_eq!(message, "Welcome to my bank!");
@@ -2540,10 +2563,20 @@ mod tests {
     /// pattern subsumes the "your" one, so the narrower has to come first.
     #[test]
     fn a_spell_your_pet_cast_can_be_resisted() {
-        match p().parse_body("A forest giant greenwood resisted Tharn`s warder's Spirit of Inferno Strike!") {
-            Event::ResistedOther { target, caster, spell } => {
+        match p().parse_body(
+            "A forest giant greenwood resisted Tharn`s warder's Spirit of Inferno Strike!",
+        ) {
+            Event::ResistedOther {
+                target,
+                caster,
+                spell,
+            } => {
                 assert_eq!(target, Actor::Named("A forest giant greenwood".into()));
-                assert_eq!(caster, Actor::Named("Tharn`s warder".into()), "greedy: the pet, not Tharn");
+                assert_eq!(
+                    caster,
+                    Actor::Named("Tharn`s warder".into()),
+                    "greedy: the pet, not Tharn"
+                );
                 assert_eq!(spell, "Spirit of Inferno Strike");
             }
             other => panic!("expected another's resist, got {other:?}"),
@@ -2579,9 +2612,7 @@ mod tests {
             }
         }
         // The loot line names a corpse too, and must not be caught by it.
-        match p()
-            .parse_body("--You have looted a Fire Beetle Eye from a fire beetle's corpse.--")
-        {
+        match p().parse_body("--You have looted a Fire Beetle Eye from a fire beetle's corpse.--") {
             Event::Loot { .. } => {}
             other => panic!("expected loot, got {other:?}"),
         }
@@ -2648,7 +2679,11 @@ mod tests {
     #[test]
     fn a_merchant_quote_is_a_price_without_a_sale() {
         match p().parse_body("Blackeye told you, 'That'll be 7 copper per Muffin.'") {
-            Event::ItemQuoted { item, merchant, coin } => {
+            Event::ItemQuoted {
+                item,
+                merchant,
+                coin,
+            } => {
                 assert_eq!(item, "Muffin");
                 assert_eq!(merchant, "Blackeye");
                 assert_eq!(coin.as_copper(), 7);
@@ -2661,7 +2696,11 @@ mod tests {
             "a clockwork jeweler told you, 'That'll be 1 platinum 4 silver 9 copper \
              for the Jeweler's Kit.'",
         ) {
-            Event::ItemQuoted { item, merchant, coin } => {
+            Event::ItemQuoted {
+                item,
+                merchant,
+                coin,
+            } => {
                 assert_eq!(item, "Jeweler's Kit");
                 assert_eq!(merchant, "a clockwork jeweler");
                 assert_eq!(coin.as_copper(), 1049);
@@ -2674,9 +2713,8 @@ mod tests {
     /// be read as what they sell for.
     #[test]
     fn an_offer_to_buy_is_not_an_asking_price() {
-        let e = p().parse_body(
-            "Blackeye told you, 'I'll give you 1 copper for the Blackburrow Cask.'",
-        );
+        let e =
+            p().parse_body("Blackeye told you, 'I'll give you 1 copper for the Blackburrow Cask.'");
         assert!(
             !matches!(e, Event::ItemQuoted { .. }),
             "an offer to buy was read as an asking price: {e:?}"
@@ -2687,9 +2725,7 @@ mod tests {
     /// "for", which the client writes every time.
     #[test]
     fn purchase_captures_quantity_and_price() {
-        match p()
-            .parse_body("You purchased 20 Water Flask from Lheron Drast for  4 platinum.")
-        {
+        match p().parse_body("You purchased 20 Water Flask from Lheron Drast for  4 platinum.") {
             Event::ItemPurchased {
                 item,
                 quantity,
@@ -2709,11 +2745,9 @@ mod tests {
     /// denomination — the shape most purchases actually take.
     #[test]
     fn purchase_handles_multi_word_merchant_and_mixed_coin() {
-        match p()
-            .parse_body(
-                "You purchased 1 Backpack from a clockwork merchant for  9 gold 5 silver 2 copper.",
-            )
-        {
+        match p().parse_body(
+            "You purchased 1 Backpack from a clockwork merchant for  9 gold 5 silver 2 copper.",
+        ) {
             Event::ItemPurchased {
                 item,
                 quantity,
@@ -3162,7 +3196,13 @@ mod consider_tests {
         let e = ev("A woodland lion scowls at you, ready to attack -- \
                     what would you like your tombstone to say? (Lvl: 12)");
         match e {
-            Event::Consider { name, level, rare, attitude, difficulty } => {
+            Event::Consider {
+                name,
+                level,
+                rare,
+                attitude,
+                difficulty,
+            } => {
                 assert_eq!(name, "A woodland lion");
                 assert_eq!(level, 12);
                 assert!(!rare);
@@ -3177,10 +3217,13 @@ mod consider_tests {
     /// and the attitude rather than at either end.
     #[test]
     fn the_rare_marker_is_read_and_kept_out_of_the_name() {
-        match ev("a noxious spider - a rare creature - judges you amiably -- \
-                  You could probably win this fight. (Lvl: 24)")
-        {
-            Event::Consider { name, rare, level, .. } => {
+        match ev(
+            "a noxious spider - a rare creature - judges you amiably -- \
+                  You could probably win this fight. (Lvl: 24)",
+        ) {
+            Event::Consider {
+                name, rare, level, ..
+            } => {
                 assert_eq!(name, "a noxious spider");
                 assert!(rare);
                 assert_eq!(level, 24);
@@ -3206,7 +3249,10 @@ mod consider_tests {
     /// The raid line names nothing, which is why it is its own event.
     #[test]
     fn the_army_line_is_its_own_event() {
-        assert_eq!(ev("This creature would take an army to defeat!"), Event::ConsiderArmy);
+        assert_eq!(
+            ev("This creature would take an army to defeat!"),
+            Event::ConsiderArmy
+        );
     }
 
     /// Position, in the client's own order and sign.
@@ -3276,7 +3322,10 @@ mod zone_notice_tests {
     /// do; the guard is deliberately narrow to the client's two sentences.
     #[test]
     fn the_guard_does_not_swallow_an_ordinary_name() {
-        assert!(matches!(ev("You have entered Areana.") , Event::ZoneChange { .. }));
+        assert!(matches!(
+            ev("You have entered Areana."),
+            Event::ZoneChange { .. }
+        ));
     }
 }
 
@@ -3289,34 +3338,56 @@ mod who_tests {
 
     fn who(body: &str) -> (u32, String, String, String) {
         match Parser::new("Tharn").parse_body(body) {
-            Event::WhoEntry { level, classes, title, name, .. } => (level, classes, title, name),
+            Event::WhoEntry {
+                level,
+                classes,
+                title,
+                name,
+                ..
+            } => (level, classes, title, name),
             other => panic!("{body:?} parsed as {other:?}"),
         }
     }
 
     #[test]
     fn legends_abbreviations_still_parse() {
-        let (l, c, t, n) = who("[50 WAR/BRD/SHM] Tharn (Ogre) <Iron Lantern> ZONE: The Plane of Sky (airplane)");
-        assert_eq!((l, c.as_str(), t.as_str(), n.as_str()), (50, "WAR/BRD/SHM", "", "Tharn"));
+        let (l, c, t, n) =
+            who("[50 WAR/BRD/SHM] Tharn (Ogre) <Iron Lantern> ZONE: The Plane of Sky (airplane)");
+        assert_eq!(
+            (l, c.as_str(), t.as_str(), n.as_str()),
+            (50, "WAR/BRD/SHM", "", "Tharn")
+        );
     }
 
     #[test]
     fn everquest_writes_the_class_and_a_title_past_fifty() {
-        let (l, c, t, _) = who("[30 Beastlord] Tharn (Iksar)  ZONE: The Field of Bone (fieldofbone)");
+        let (l, c, t, _) =
+            who("[30 Beastlord] Tharn (Iksar)  ZONE: The Field of Bone (fieldofbone)");
         assert_eq!((l, c.as_str(), t.as_str()), (30, "Beastlord", ""));
         let (l, c, t, n) = who("[130 Imperator (Warrior)] Orrin (Skeleton) <Iron Lantern> ZONE: Crescent Reach (crescent)");
-        assert_eq!((l, c.as_str(), t.as_str(), n.as_str()), (130, "Warrior", "Imperator", "Orrin"));
+        assert_eq!(
+            (l, c.as_str(), t.as_str(), n.as_str()),
+            (130, "Warrior", "Imperator", "Orrin")
+        );
         let (_, c, _, _) = who("[60 Shadow Knight LFG] Orrin (Dark Elf)");
         assert_eq!(c, "Shadow Knight", "LFG is not part of the class");
-        assert_eq!(crate::class::parse_class_list(&c), [crate::class::Class::ShadowKnight]);
+        assert_eq!(
+            crate::class::parse_class_list(&c),
+            [crate::class::Class::ShadowKnight]
+        );
     }
 
     /// An NPC "told you" is not a tell: the Tells tab is for players.
     #[test]
     fn an_npc_told_you_is_chat_not_a_tell() {
         match Parser::new("Tharn").parse_body("a personal banker told you, 'Welcome to my bank!'") {
-            Event::Chat { channel, message, .. } => {
-                assert_eq!((channel.as_str(), message.as_str()), ("told you", "Welcome to my bank!"))
+            Event::Chat {
+                channel, message, ..
+            } => {
+                assert_eq!(
+                    (channel.as_str(), message.as_str()),
+                    ("told you", "Welcome to my bank!")
+                )
             }
             other => panic!("{other:?}"),
         }
@@ -3328,8 +3399,12 @@ mod who_tests {
 
     #[test]
     fn the_channel_roster_keeps_names_only() {
-        match Parser::new("Tharn").parse_body("Channels: 1=General(399), 2=Shadowknight(26), 3=Antonica(33)") {
-            Event::ChannelRoster { channels } => assert_eq!(channels, ["General", "Shadowknight", "Antonica"]),
+        match Parser::new("Tharn")
+            .parse_body("Channels: 1=General(399), 2=Shadowknight(26), 3=Antonica(33)")
+        {
+            Event::ChannelRoster { channels } => {
+                assert_eq!(channels, ["General", "Shadowknight", "Antonica"])
+            }
             other => panic!("{other:?}"),
         }
     }

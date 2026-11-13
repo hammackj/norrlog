@@ -12,13 +12,13 @@
 //! cut out once and kept.
 
 use crate::api::{Api, query};
+use crate::theme::px;
 use crate::theme::*;
 use base64::Engine as _;
-use norrlog_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::{EqdbItem, ItemBrief, ItemBriefReply, ItemLookup, SpriteIcon, WikiItem};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -82,7 +82,10 @@ impl ItemCards {
         }
         let Some(api) = self.api.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
-            let got = api.get::<HashMap<String, WikiItem>>("/api/wiki".to_string()).await.unwrap_or_default();
+            let got = api
+                .get::<HashMap<String, WikiItem>>("/api/wiki".to_string())
+                .await
+                .unwrap_or_default();
             let _ = this.update(cx, |c, cx| {
                 c.wiki = Some(Slot::Done(Some(got)));
                 cx.notify();
@@ -149,16 +152,26 @@ impl ItemCards {
             return self.sprite(&s, cx);
         }
         let uri = self.wiki_of(name)?.icon.clone()?;
-        self.icons.entry(uri.clone()).or_insert_with(|| data_uri_png(&uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))).clone()
+        self.icons
+            .entry(uri.clone())
+            .or_insert_with(|| {
+                data_uri_png(&uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))
+            })
+            .clone()
     }
 
     /// Where an item's name links: the site's page when it has one (false),
     /// else the wiki's (true), else nowhere.
     pub fn link(&self, name: &str, site_base: &str) -> Option<(String, bool)> {
-        if let Some(b) = self.brief(name).filter(|b| b.on_site && !b.slug.is_empty() && !site_base.is_empty()) {
+        if let Some(b) = self
+            .brief(name)
+            .filter(|b| b.on_site && !b.slug.is_empty() && !site_base.is_empty())
+        {
             return Some((format!("{site_base}/item/{}", b.slug), false));
         }
-        self.wiki_of(name).and_then(|w| w.url.clone()).map(|u| (u, true))
+        self.wiki_of(name)
+            .and_then(|w| w.url.clone())
+            .map(|u| (u, true))
     }
 
     fn ensure(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -192,7 +205,12 @@ impl ItemCards {
             return self.sprite(s, cx);
         }
         let uri = d.wiki.as_ref()?.icon.as_ref()?;
-        self.icons.entry(uri.clone()).or_insert_with(|| data_uri_png(uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))).clone()
+        self.icons
+            .entry(uri.clone())
+            .or_insert_with(|| {
+                data_uri_png(uri).map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)))
+            })
+            .clone()
     }
 
     pub(crate) fn sprite(&mut self, s: &SpriteIcon, cx: &mut Context<Self>) -> Option<Arc<Image>> {
@@ -217,7 +235,9 @@ impl ItemCards {
                         .get_bytes(url)
                         .await
                         .ok()
-                        .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Png).ok())
+                        .and_then(|b| {
+                            image::load_from_memory_with_format(&b, image::ImageFormat::Png).ok()
+                        })
                         .map(|i| Arc::new(i.to_rgba8()));
                     let _ = this.update(cx, |c, cx| {
                         c.sheets.insert(path, Slot::Done(sheet));
@@ -245,7 +265,9 @@ fn cut(sheet: &image::RgbaImage, s: &SpriteIcon) -> Option<Vec<u8>> {
 
 fn data_uri_png(uri: &str) -> Option<Vec<u8>> {
     let b64 = uri.strip_prefix("data:image/png;base64,")?;
-    base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()
 }
 
 fn first_match(d: &ItemLookup) -> Option<&EqdbItem> {
@@ -272,7 +294,11 @@ impl ItemTip {
     fn new(cards: Entity<ItemCards>, name: String, cx: &mut Context<Self>) -> Self {
         cards.update(cx, |c, cx| c.ensure(&name, cx));
         let _watch = cx.observe(&cards, |_, _, cx| cx.notify());
-        ItemTip { cards, name, _watch }
+        ItemTip {
+            cards,
+            name,
+            _watch,
+        }
     }
 }
 
@@ -281,7 +307,9 @@ impl Render for ItemTip {
         if crate::parts::cards_hidden() {
             return div();
         }
-        let Some(d) = self.cards.read(cx).get(&self.name).cloned() else { return div() };
+        let Some(d) = self.cards.read(cx).get(&self.name).cloned() else {
+            return div();
+        };
         let Some(c) = card(&d) else { return div() };
         let icon = self.cards.update(cx, |cards, cx| cards.icon(&d, cx));
         let (badge, badge_colour) = match c.badge {
@@ -305,9 +333,18 @@ impl Render for ItemTip {
                 h_flex()
                     .gap_2()
                     .mb_1()
-                    .when_some(icon, |d, i| d.child(img(i).size(px(40.)).flex_none().rounded(px(4.))))
+                    .when_some(icon, |d, i| {
+                        d.child(img(i).size(px(40.)).flex_none().rounded(px(4.)))
+                    })
                     .child(div().font_weight(FontWeight::BOLD).child(c.title))
-                    .child(div().ml_auto().text_xs().whitespace_nowrap().text_color(hex(badge_colour)).child(badge)),
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_xs()
+                            .whitespace_nowrap()
+                            .text_color(hex(badge_colour))
+                            .child(badge),
+                    ),
             );
         match c.stats {
             Stats::Map(rows) => {
@@ -320,16 +357,29 @@ impl Render for ItemTip {
                 })));
             }
             Stats::Raw(text) => {
-                out = out.child(v_flex().mb_1().text_xs().text_color(hex(MUTED)).children(text.lines().map(|l| div().child(l.to_string()))));
+                out = out.child(
+                    v_flex()
+                        .mb_1()
+                        .text_xs()
+                        .text_color(hex(MUTED))
+                        .children(text.lines().map(|l| div().child(l.to_string()))),
+                );
             }
             Stats::None => {}
         }
         // One run of text with a muted label, so a long list wraps as a
         // sentence does instead of running out of the card.
-        let label_style = HighlightStyle { color: Some(hex(MUTED)), ..Default::default() };
+        let label_style = HighlightStyle {
+            color: Some(hex(MUTED)),
+            ..Default::default()
+        };
         for (label, line) in c.lines {
             let text = format!("{label} {line}");
-            out = out.child(div().w_full().child(StyledText::new(text).with_highlights([(0..label.len(), label_style)])));
+            out = out.child(
+                div()
+                    .w_full()
+                    .child(StyledText::new(text).with_highlights([(0..label.len(), label_style)])),
+            );
         }
         out
     }
@@ -364,20 +414,44 @@ fn card(d: &ItemLookup) -> Option<Card> {
         return None;
     }
     let m = first_match(d);
-    let stats = match (m.and_then(|m| m.stats.as_ref()).filter(|s| !s.stats.is_empty()), d.wiki.as_ref().and_then(|w| w.stats.clone())) {
+    let stats = match (
+        m.and_then(|m| m.stats.as_ref())
+            .filter(|s| !s.stats.is_empty()),
+        d.wiki.as_ref().and_then(|w| w.stats.clone()),
+    ) {
         (Some(s), _) => Stats::Map(
-            s.stats.iter().map(|(k, v)| (k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect(),
+            s.stats
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string()),
+                    )
+                })
+                .collect(),
         ),
         (None, Some(raw)) if !raw.trim().is_empty() => Stats::Raw(raw),
         _ => Stats::None,
     };
     let mut lines = Vec::new();
     if let Some(m) = m {
-        for (label, list) in [("Drops from", &m.sources), ("Sold by", &m.vendors), ("Reward from", &m.rewarded_by), ("Used in", &m.used_in)] {
+        for (label, list) in [
+            ("Drops from", &m.sources),
+            ("Sold by", &m.vendors),
+            ("Reward from", &m.rewarded_by),
+            ("Used in", &m.used_in),
+        ] {
             if list.is_empty() {
                 continue;
             }
-            let mut s = list.iter().take(4).map(EqdbItem::named).collect::<Vec<_>>().join(", ");
+            let mut s = list
+                .iter()
+                .take(4)
+                .map(EqdbItem::named)
+                .collect::<Vec<_>>()
+                .join(", ");
             if list.len() > 4 {
                 s.push_str(&format!(" +{}", list.len() - 4));
             }
@@ -391,7 +465,12 @@ fn card(d: &ItemLookup) -> Option<Card> {
     } else {
         Badge::Bundled
     };
-    Some(Card { title: d.name.clone(), badge, stats, lines })
+    Some(Card {
+        title: d.name.clone(),
+        badge,
+        stats,
+        lines,
+    })
 }
 
 #[cfg(test)]
@@ -414,7 +493,11 @@ mod tests {
         // The site's order, not the alphabet's.
         assert_eq!(
             c.stats,
-            Stats::Map(vec![("Strength".into(), "9".into()), ("Dexterity".into(), "9".into()), ("Wisdom".into(), "9".into())])
+            Stats::Map(vec![
+                ("Strength".into(), "9".into()),
+                ("Dexterity".into(), "9".into()),
+                ("Wisdom".into(), "9".into())
+            ])
         );
         assert_eq!(
             c.lines,
@@ -449,16 +532,40 @@ mod tests {
     fn a_cell_is_cut_from_its_sheet_at_the_css_offset() {
         let mut sheet = image::RgbaImage::new(80, 80);
         sheet.put_pixel(40, 40, image::Rgba([255, 0, 0, 255]));
-        let png = cut(&sheet, &SpriteIcon { path: String::new(), x: -40, y: -40, size: 40 }).unwrap();
+        let png = cut(
+            &sheet,
+            &SpriteIcon {
+                path: String::new(),
+                x: -40,
+                y: -40,
+                size: 40,
+            },
+        )
+        .unwrap();
         let cell = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!((cell.width(), cell.height()), (40, 40));
         assert_eq!(cell.get_pixel(0, 0), &image::Rgba([255, 0, 0, 255]));
-        assert!(cut(&sheet, &SpriteIcon { path: String::new(), x: -80, y: 0, size: 40 }).is_none(), "off the sheet");
+        assert!(
+            cut(
+                &sheet,
+                &SpriteIcon {
+                    path: String::new(),
+                    x: -80,
+                    y: 0,
+                    size: 40
+                }
+            )
+            .is_none(),
+            "off the sheet"
+        );
     }
 
     #[test]
     fn a_bundled_icon_decodes_from_its_data_uri() {
-        assert_eq!(data_uri_png("data:image/png;base64,iVBORw0K"), Some(vec![0x89, b'P', b'N', b'G', 13, 10]));
+        assert_eq!(
+            data_uri_png("data:image/png;base64,iVBORw0K"),
+            Some(vec![0x89, b'P', b'N', b'G', 13, 10])
+        );
         assert_eq!(data_uri_png("https://example/x.png"), None);
     }
 }

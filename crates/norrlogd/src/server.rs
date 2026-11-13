@@ -59,7 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route("/overlay.js", get(overlay_js))
         .route("/api/snapshot", get(snapshot))
         .route("/api/panels", get(panels_list))
-        .route("/api/panels/{id}", axum::routing::put(panel_put).delete(panel_delete))
+        .route(
+            "/api/panels/{id}",
+            axum::routing::put(panel_put).delete(panel_delete),
+        )
         .route("/api/encounters", get(encounters))
         .route("/api/encounters/{id}", get(encounter_detail))
         .route("/api/mobs", get(mobs))
@@ -187,7 +190,8 @@ impl Life {
 
     /// Count a socket for as long as the returned guard lives.
     fn connect(self: &Arc<Self>) -> ClientGuard {
-        self.clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.clients
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.touch();
         ClientGuard(Arc::clone(self))
     }
@@ -198,7 +202,9 @@ struct ClientGuard(Arc<Life>);
 
 impl Drop for ClientGuard {
     fn drop(&mut self) {
-        self.0.clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0
+            .clients
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         // From the close, not from the open: the idle wait starts when the
         // last client *leaves*.
         self.0.touch();
@@ -252,7 +258,11 @@ async fn local_only(
 /// Why a request is refused, or `None` to let it through.
 fn refusal(headers: &axum::http::HeaderMap, port: u16) -> Option<String> {
     // A header that is not text cannot name this daemon either.
-    let text = |name| headers.get(name).map(|v: &axum::http::HeaderValue| v.to_str().unwrap_or("?").to_string());
+    let text = |name| {
+        headers
+            .get(name)
+            .map(|v: &axum::http::HeaderValue| v.to_str().unwrap_or("?").to_string())
+    };
     if let Some(host) = text(axum::http::header::HOST).filter(|h| !is_local_host(h, port)) {
         return Some(format!("refused: Host {host} is not this daemon"));
     }
@@ -263,7 +273,9 @@ fn refusal(headers: &axum::http::HeaderMap, port: u16) -> Option<String> {
 }
 
 fn is_local_host(host: &str, port: u16) -> bool {
-    ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| host.eq_ignore_ascii_case(&format!("{h}:{port}")))
+    ["127.0.0.1", "localhost", "[::1]"]
+        .iter()
+        .any(|h| host.eq_ignore_ascii_case(&format!("{h}:{port}")))
 }
 
 fn is_local_origin(origin: &str, port: u16) -> bool {
@@ -285,7 +297,10 @@ pub fn spawn_idle_exit(life: Arc<Life>, secs: u64) {
         let tick = std::time::Duration::from_secs(secs.clamp(1, 5));
         loop {
             tokio::time::sleep(tick).await;
-            if life.idle_for(unix_now()).is_some_and(|idle| idle >= secs as i64) {
+            if life
+                .idle_for(unix_now())
+                .is_some_and(|idle| idle >= secs as i64)
+            {
                 use std::io::Write;
                 let _ = writeln!(
                     std::io::stderr(),
@@ -303,7 +318,11 @@ async fn hello(State(s): State<AppState>) -> Json<norrlog_api::Hello> {
         let e = s.engine.locked("engine");
         (e.clock_offset(), e.zone_place())
     };
-    Json(norrlog_api::Hello { clock_offset, zone, ..s.life.hello() })
+    Json(norrlog_api::Hello {
+        clock_offset,
+        zone,
+        ..s.life.hello()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +508,6 @@ async fn encounters(
     Json(serde_json::json!({ "total": total, "offset": offset, "encounters": page }))
 }
 
-
 /// The historical browser, one row per creature instead of per fight.
 ///
 /// Same filters as `/api/encounters`, so the two are interchangeable views of
@@ -542,8 +560,7 @@ async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<ser
         // Last and separately, as in `encounters`: resolving a build is dearer
         // than any other test here, so it only runs on what survived them.
         let build = engine.build_label(e.start + (e.end - e.start) / 2);
-        if q
-            .build
+        if q.build
             .as_deref()
             .is_some_and(|want| !build_matches(want, &build))
         {
@@ -573,7 +590,14 @@ async fn mobs(State(s): State<AppState>, Query(q): Query<ListQuery>) -> Json<ser
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(100).min(1000);
     let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
-    Json(serde_json::to_value(norrlog_api::MobPage { total, offset, mobs: page }).unwrap_or_default())
+    Json(
+        serde_json::to_value(norrlog_api::MobPage {
+            total,
+            offset,
+            mobs: page,
+        })
+        .unwrap_or_default(),
+    )
 }
 
 /// Export chosen fights as a write-up.
@@ -731,7 +755,11 @@ async fn item_ids(State(state): State<AppState>) -> impl IntoResponse {
 fn my_dumps(
     state: &AppState,
     ids: &Arc<Mutex<crate::dumps::Ids>>,
-) -> (Option<(String, String)>, Vec<(String, String)>, Vec<norrlog_api::BagSource>) {
+) -> (
+    Option<(String, String)>,
+    Vec<(String, String)>,
+    Vec<norrlog_api::BagSource>,
+) {
     let me: Option<(String, String)> = state.store.as_ref().and_then(|st| {
         let st = st.lock().ok()?;
         let (c, sv) = st.identity();
@@ -744,7 +772,10 @@ fn my_dumps(
         if kind != norrlog_core::itemids::Source::Inventory {
             continue;
         }
-        let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if !mine(&file, me.as_ref()) {
             continue;
         }
@@ -756,7 +787,10 @@ fn my_dumps(
             .ok()
             .and_then(|t| t.elapsed().ok())
             .map(|d| d.as_secs());
-        seen.push(norrlog_api::BagSource { file: file.clone(), age_seconds: age });
+        seen.push(norrlog_api::BagSource {
+            file: file.clone(),
+            age_seconds: age,
+        });
         read.push((file, text));
     }
     seen.sort_by_key(|b| b.age_seconds.unwrap_or(u64::MAX));
@@ -777,12 +811,22 @@ fn bag_items(dumps: &[(String, String)]) -> Vec<norrlog_api::BagItem> {
             if k.is_empty() {
                 continue;
             }
-            let name = norrlog_core::drops::split_grade(&r.item).0.trim().to_string();
-            out.entry(k).or_insert_with(|| (name, Default::default())).1.insert(r.grade);
+            let name = norrlog_core::drops::split_grade(&r.item)
+                .0
+                .trim()
+                .to_string();
+            out.entry(k)
+                .or_insert_with(|| (name, Default::default()))
+                .1
+                .insert(r.grade);
         }
     }
     out.into_iter()
-        .map(|(key, (name, grades))| norrlog_api::BagItem { name, key, grades: grades.into_iter().collect() })
+        .map(|(key, (name, grades))| norrlog_api::BagItem {
+            name,
+            key,
+            grades: grades.into_iter().collect(),
+        })
         .collect()
 }
 
@@ -956,7 +1000,10 @@ impl LootQuery {
     }
 }
 
-async fn loot(State(s): State<AppState>, Query(q): Query<LootQuery>) -> Json<norrlog_api::LootList> {
+async fn loot(
+    State(s): State<AppState>,
+    Query(q): Query<LootQuery>,
+) -> Json<norrlog_api::LootList> {
     let engine = s.engine.locked("engine");
     let start = engine.session_start();
     let items = engine.loot_tally_since(q.session().then_some(start));
@@ -1132,7 +1179,8 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
                                 .iter_mut()
                                 .find(|d| d.npc.eq_ignore_ascii_case(&sighting.npc))
                             {
-                                Some(d) if d.looted + d.left >= sighting.looted + sighting.left => {}
+                                Some(d) if d.looted + d.left >= sighting.looted + sighting.left => {
+                                }
                                 Some(d) => *d = sighting,
                                 None => e.dropped_by.push(sighting),
                             }
@@ -2377,7 +2425,11 @@ async fn sky_site_overlay(
         .map(|i| crate::itemdb::match_key(&i.name))
         .collect();
     let mut drops = serde_json::Map::new();
-    for d in zone.get("drops").and_then(|v| v.as_array()).unwrap_or(&empty) {
+    for d in zone
+        .get("drops")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty)
+    {
         let Some(item) = d.get("item").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -2565,12 +2617,22 @@ struct PickupsQuery {
 }
 
 fn api_error(status: StatusCode, error: impl Into<String>) -> Response {
-    (status, Json(norrlog_api::ApiError { error: error.into() })).into_response()
+    (
+        status,
+        Json(norrlog_api::ApiError {
+            error: error.into(),
+        }),
+    )
+        .into_response()
 }
 
 /// A panel id: what an app names its panel by, kept to a URL-safe word.
 fn panel_id_ok(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// Rows a panel may carry. The overlay sits over the game; a panel longer
@@ -2584,10 +2646,16 @@ async fn panel_put(
     Json(mut p): Json<norrlog_api::Panel>,
 ) -> Response {
     if !panel_id_ok(&id) {
-        return api_error(StatusCode::BAD_REQUEST, "a panel id is 1-64 of A-Z a-z 0-9 - _ .");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "a panel id is 1-64 of A-Z a-z 0-9 - _ .",
+        );
     }
     if p.rows.len() > PANEL_ROWS {
-        return api_error(StatusCode::BAD_REQUEST, format!("a panel carries at most {PANEL_ROWS} rows"));
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!("a panel carries at most {PANEL_ROWS} rows"),
+        );
     }
     p.ttl_secs = p.ttl_secs.clamp(5, 600);
     let now = unix_now();
@@ -2600,7 +2668,10 @@ async fn panel_put(
 
 /// `DELETE /api/panels/{id}`: take a panel down. Taking down one that is not
 /// up is not an error: the outcome asked for is the one that holds.
-async fn panel_delete(State(s): State<AppState>, axum::extract::Path(id): axum::extract::Path<String>) -> StatusCode {
+async fn panel_delete(
+    State(s): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> StatusCode {
     s.panels.locked("panels").remove(&id);
     StatusCode::NO_CONTENT
 }
@@ -2613,17 +2684,30 @@ async fn panels_list(State(s): State<AppState>) -> Json<norrlog_api::Panels> {
     all.retain(|_, (_, _, exp)| *exp > now);
     let mut up: Vec<(i64, norrlog_api::PanelUp)> = all
         .iter()
-        .map(|(id, (p, at, _))| (*at, norrlog_api::PanelUp { id: id.clone(), panel: p.clone() }))
+        .map(|(id, (p, at, _))| {
+            (
+                *at,
+                norrlog_api::PanelUp {
+                    id: id.clone(),
+                    panel: p.clone(),
+                },
+            )
+        })
         .collect();
     up.sort_by(|a, b| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
-    Json(norrlog_api::Panels { panels: up.into_iter().map(|(_, p)| p).collect() })
+    Json(norrlog_api::Panels {
+        panels: up.into_iter().map(|(_, p)| p).collect(),
+    })
 }
 
 /// `GET /api/pickups?since=<log ts>`: what you picked up, one row per item.
 ///
 /// `since` is in the log's clock; without it, the last hour before the
 /// engine's `now`. Graded copies are left out, as `recent_pickups` explains.
-async fn api_pickups(State(s): State<AppState>, Query(q): Query<PickupsQuery>) -> Json<norrlog_api::Pickups> {
+async fn api_pickups(
+    State(s): State<AppState>,
+    Query(q): Query<PickupsQuery>,
+) -> Json<norrlog_api::Pickups> {
     let engine = s.engine.locked("engine");
     let since = q.since.unwrap_or_else(|| engine.now() - 3600);
     let pickups = engine
@@ -2651,7 +2735,13 @@ async fn api_bags(State(s): State<AppState>) -> Response {
     };
     let (me, read, sources) = my_dumps(&s, ids);
     let (character, server) = me.unwrap_or_default();
-    Json(norrlog_api::Bags { character, server, sources, items: bag_items(&read) }).into_response()
+    Json(norrlog_api::Bags {
+        character,
+        server,
+        sources,
+        items: bag_items(&read),
+    })
+    .into_response()
 }
 
 /// `GET /api/bundle`: the export document as it stands, for the collector to
@@ -2763,17 +2853,25 @@ mod tests {
         assert!(is_local_origin("http://localhost:8777", 8777));
         assert!(is_local_origin("http://[::1]:8777", 8777));
         assert!(is_local_origin("file://", 8777), "the Electron app's pages");
-        assert!(!is_local_origin("null", 8777), "a sandboxed frame on any site");
+        assert!(
+            !is_local_origin("null", 8777),
+            "a sandboxed frame on any site"
+        );
         assert!(!is_local_origin("http://untrusted.example", 8777));
-        assert!(!is_local_origin("http://127.0.0.1:9999", 8777), "another local server's page");
+        assert!(
+            !is_local_origin("http://127.0.0.1:9999", 8777),
+            "another local server's page"
+        );
         assert!(!is_local_origin("https://127.0.0.1:8777", 8777));
         assert!(!is_local_origin("http://127.0.0.1:8777.evil.example", 8777));
         assert!(is_local_host("LOCALHOST:8777", 8777));
-        assert!(!is_local_host("rebound.example:8777", 8777), "DNS rebinding");
+        assert!(
+            !is_local_host("rebound.example:8777", 8777),
+            "DNS rebinding"
+        );
         assert!(!is_local_host("127.0.0.1", 8777));
     }
     use norrlog_core::spell::SpellDb;
-
 
     /// One character's bags, not every character's.
     ///
@@ -2855,16 +2953,21 @@ mod tests {
     async fn hello_says_who_this_is() {
         let st = state_with(&[]);
         let life = Arc::clone(&st.life);
-        life.last_activity.store(0, std::sync::atomic::Ordering::SeqCst);
+        life.last_activity
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         let app = router(st);
         let resp = tower::ServiceExt::oneshot(
             app,
-            axum::http::Request::get("/api/hello").body(axum::body::Body::empty()).unwrap(),
+            axum::http::Request::get("/api/hello")
+                .body(axum::body::Body::empty())
+                .unwrap(),
         )
         .await
         .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let h: norrlog_api::Hello = serde_json::from_slice(&body).unwrap();
         assert_eq!(h.identity, "norrlogd");
         assert_eq!(h.api_version, norrlog_api::API_VERSION);
@@ -2914,7 +3017,9 @@ mod tests {
             .expect("workspace root");
         let dir = root.join("gui/renderer");
         // The daemon is usable without the desktop app beside it.
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let files: Vec<std::path::PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -2962,15 +3067,23 @@ mod tests {
 
         let mut broken: Vec<String> = Vec::new();
         for path in &files {
-            let Ok(src) = std::fs::read_to_string(path) else { continue };
-            let me = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let Ok(src) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let me = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let mut rest = src.as_str();
             while let Some(i) = rest.find("import {") {
                 rest = &rest[i + 8..];
                 let Some(close) = rest.find('}') else { break };
                 let names = &rest[..close];
                 let after = &rest[close..];
-                let Some(q) = after.find("\"./") else { continue };
+                let Some(q) = after.find("\"./") else {
+                    continue;
+                };
                 let tail = &after[q + 3..];
                 let Some(e) = tail.find('"') else { continue };
                 let target = &tail[..e];
@@ -2982,15 +3095,14 @@ mod tests {
                 for n in names.split(',') {
                     let n = n.split(" as ").next().unwrap_or("").trim();
                     if !n.is_empty() && !has.contains(n) {
-                        broken.push(format!("{me} imports {n:?} from {target}, which does not export it"));
+                        broken.push(format!(
+                            "{me} imports {n:?} from {target}, which does not export it"
+                        ));
                     }
                 }
             }
         }
-        assert!(
-            broken.is_empty(),
-            "the renderer will not load: {broken:#?}"
-        );
+        assert!(broken.is_empty(), "the renderer will not load: {broken:#?}");
     }
 
     /// Every `$("id")` the renderer reaches for is an id something makes.
@@ -3015,12 +3127,18 @@ mod tests {
         let Ok(html) = std::fs::read_to_string(dir.join("index.html")) else {
             return;
         };
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let js: String = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "js"))
-            .filter_map(|p| std::fs::read_to_string(&p).map(|s| format!("//@{}\n{s}", p.display())).ok())
+            .filter_map(|p| {
+                std::fs::read_to_string(&p)
+                    .map(|s| format!("//@{}\n{s}", p.display()))
+                    .ok()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         if js.is_empty() {
@@ -3278,7 +3396,10 @@ mod tests {
         assert_eq!(v["total"], 1);
         let row = &v["mobs"][0];
         assert_eq!(row["name"], "a dusty bat");
-        assert_eq!(row["damage_done_to_it"], 10, "its own damage, not the pull's");
+        assert_eq!(
+            row["damage_done_to_it"], 10,
+            "its own damage, not the pull's"
+        );
         assert_eq!(row["kills"], 1);
         assert_eq!(row["shared_with"], 1, "and it says it shared the fight");
     }
@@ -3318,14 +3439,19 @@ mod tests {
             Query(q)
         };
         let resp = item_lookup(State(s.clone()), ask("Adamantium Earring +2")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
-        let d: norrlog_api::ItemLookup = serde_json::from_slice(&body).expect("lookup matches the API type");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        let d: norrlog_api::ItemLookup =
+            serde_json::from_slice(&body).expect("lookup matches the API type");
         assert_eq!(d.name, "Adamantium Earring");
         assert_eq!(d.source, "unknown");
         assert!(d.wiki.is_none());
 
         let resp = item_lookup(State(s), ask("Nothing Anyone Has Heard Of")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22)
+            .await
+            .unwrap();
         let d: norrlog_api::ItemLookup = serde_json::from_slice(&body).unwrap();
         assert_eq!(d.source, "unknown");
     }
@@ -3335,7 +3461,7 @@ mod tests {
     /// file does not know is `unknown`, which draws no card.
     #[tokio::test]
     async fn spell_lookup_matches_the_api_type() {
-        use norrlog_core::class::{CLASS_CANNOT_CAST, CLASS_COUNT, Class};
+        use norrlog_core::class::{Class, CLASS_CANNOT_CAST, CLASS_COUNT};
         use norrlog_core::spell::Spell;
         let mut levels = [CLASS_CANNOT_CAST; CLASS_COUNT];
         levels[Class::Shaman.index()] = 49;
@@ -3360,7 +3486,8 @@ mod tests {
             procs: Vec::new(),
         };
         let s = state_with(&[]);
-        *s.engine.locked("test") = Engine::new("Tharn".into(), SpellDb::from_spells([(436, bolt)].into()));
+        *s.engine.locked("test") =
+            Engine::new("Tharn".into(), SpellDb::from_spells([(436, bolt)].into()));
         let ask = |name: &str| {
             let mut q = std::collections::HashMap::new();
             q.insert("name".to_string(), name.to_string());
@@ -3368,15 +3495,22 @@ mod tests {
         };
 
         let resp = spell_lookup(State(s.clone()), ask("Envenomed Bolt X")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        let d: norrlog_api::SpellLookup = serde_json::from_slice(&body).expect("lookup matches the API type");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let d: norrlog_api::SpellLookup =
+            serde_json::from_slice(&body).expect("lookup matches the API type");
         assert_eq!(d.source, "local");
-        let local = d.local.expect("the spell file places the rank by its base name");
+        let local = d
+            .local
+            .expect("the spell file places the rank by its base name");
         assert_eq!(local.name, "Envenomed Bolt");
         assert_eq!(local.classes[Class::Shaman.index()], 49);
 
         let resp = spell_lookup(State(s), ask("slash")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let d: norrlog_api::SpellLookup = serde_json::from_slice(&body).unwrap();
         assert_eq!(d.source, "unknown");
     }
@@ -3395,8 +3529,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         // The GPUI parser reads this through the API crate's type; a field
         // the daemon renames or drops has to fail here, not in a window.
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
-        let d: norrlog_api::EncounterDetail = serde_json::from_slice(&body).expect("detail matches the API type");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        let d: norrlog_api::EncounterDetail =
+            serde_json::from_slice(&body).expect("detail matches the API type");
         assert_eq!(d.summary.id, 1);
         assert!(d.encounter.actors.contains_key("you"));
         assert!(!d.summary.meter.is_empty(), "the detail carries the meter");
@@ -3423,7 +3560,10 @@ mod tests {
             ("Wind Rune Neza".into(), Some("rune".into()))
         );
         // No bracket at all, and a bracket that is part of the name.
-        assert_eq!(split_site_item("Efreeti Belt"), ("Efreeti Belt".into(), None));
+        assert_eq!(
+            split_site_item("Efreeti Belt"),
+            ("Efreeti Belt".into(), None)
+        );
         assert_eq!(
             split_site_item("Some Item (with (nested) brackets)"),
             ("Some Item (with (nested) brackets)".into(), None)
@@ -3513,10 +3653,8 @@ mod tests {
         assert!(out.iter().any(|l| l.contains("wind rune neza")));
 
         // An empty item list is the site not saying, not the site disagreeing.
-        assert!(
-            !sky_disagreements(ours, &agrees, start, &[])
-                .iter()
-                .any(|l| l.starts_with("items:"))
-        );
+        assert!(!sky_disagreements(ours, &agrees, start, &[])
+            .iter()
+            .any(|l| l.starts_with("items:")));
     }
 }

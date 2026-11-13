@@ -11,16 +11,16 @@
 use crate::api::{Api, query};
 use crate::format::when;
 use crate::item_tip::{ItemCards, item_tip};
-use crate::table::{self, Col, col, muted};
 use crate::parts::{card, hint, note, stat};
+use crate::table::{self, Col, col, muted};
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{LootDetail, LootList, LootTally};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{Sizable, h_flex, v_flex};
+use norrlog_api::{LootDetail, LootList, LootTally};
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(10);
@@ -134,7 +134,9 @@ impl LootView {
         let Some(api) = self.api.clone() else { return };
         self.last_load = Some(Instant::now());
         self._tasks.push(cx.spawn(async move |this, cx| {
-            let Ok(l) = api.get::<LootList>("/api/loot?session=1".into()).await else { return };
+            let Ok(l) = api.get::<LootList>("/api/loot?session=1".into()).await else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 v.session = l.items;
                 v.session_start = l.session_start;
@@ -153,7 +155,13 @@ impl LootView {
     }
 
     /// A snapshot arrived: refresh what is showing, ten seconds apart.
-    pub fn on_snapshot(&mut self, visible: bool, played_seconds: i64, sessions: u64, cx: &mut Context<Self>) {
+    pub fn on_snapshot(
+        &mut self,
+        visible: bool,
+        played_seconds: i64,
+        sessions: u64,
+        cx: &mut Context<Self>,
+    ) {
         let changed = (played_seconds, sessions) != (self.played_seconds, self.sessions);
         self.played_seconds = played_seconds;
         self.sessions = sessions;
@@ -200,7 +208,12 @@ impl LootView {
     fn open(&mut self, item: String, cx: &mut Context<Self>) {
         let Some(api) = self.api.clone() else { return };
         self._tasks.push(cx.spawn(async move |this, cx| {
-            let Ok(d) = api.get::<LootDetail>(format!("/api/loot/item?{}", query(&[("item", item)]))).await else { return };
+            let Ok(d) = api
+                .get::<LootDetail>(format!("/api/loot/item?{}", query(&[("item", item)])))
+                .await
+            else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 v.detail = Some(d);
                 cx.notify();
@@ -219,7 +232,10 @@ impl LootView {
                 .rounded(px(5.))
                 .cursor_pointer()
                 .when(sub == s, |d| d.bg(hex(PANEL_2)).text_color(hex(ACCENT)))
-                .when(sub != s, |d| d.text_color(hex(MUTED)).hover(|st| st.text_color(hex(TEXT))))
+                .when(sub != s, |d| {
+                    d.text_color(hex(MUTED))
+                        .hover(|st| st.text_color(hex(TEXT)))
+                })
                 .child(label)
                 .on_click(cx.listener(move |v, _, _, cx| v.select(s, cx)))
         };
@@ -227,19 +243,31 @@ impl LootView {
             .gap_2()
             .child(tab("loot-all", "All loot", Sub::All))
             .child(tab("loot-session", "This session", Sub::Session))
-            .when(crate::features::has("motes"), |d| d.child(tab("loot-motes", "Motes", Sub::Motes)))
-            .when(sub == Sub::All, |d| d.child(div().w(px(220.)).child(Input::new(&self.search).small())))
+            .when(crate::features::has("motes"), |d| {
+                d.child(tab("loot-motes", "Motes", Sub::Motes))
+            })
+            .when(sub == Sub::All, |d| {
+                d.child(div().w(px(220.)).child(Input::new(&self.search).small()))
+            })
             .child(muted(count))
     }
 
     fn row(&self, prefix: &str, i: &LootTally, hover: bool, cx: &mut Context<Self>) -> AnyElement {
         let name = i.item.clone();
         // Full width spelled out: a virtual list sizes its rows to their content.
-        let r = table::row(SharedString::from(format!("{prefix}-{}", i.item)), COLS, cells(i))
-            .w_full()
-            .cursor_pointer()
-            .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)));
-        if hover { item_tip(r, &self.items, &i.item).into_any_element() } else { r.into_any_element() }
+        let r = table::row(
+            SharedString::from(format!("{prefix}-{}", i.item)),
+            COLS,
+            cells(i),
+        )
+        .w_full()
+        .cursor_pointer()
+        .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)));
+        if hover {
+            item_tip(r, &self.items, &i.item).into_any_element()
+        } else {
+            r.into_any_element()
+        }
     }
 
     /// The All table draws only the rows in view: a long log has thousands
@@ -247,10 +275,18 @@ impl LootView {
     /// as the whole list.
     fn render_all(&self, cx: &mut Context<Self>) -> (String, Div) {
         let q = self.search.read(cx).value().trim().to_lowercase();
-        let shown: Vec<usize> = (0..self.all.len()).filter(|&n| matches(&self.all[n], &q)).collect();
+        let shown: Vec<usize> = (0..self.all.len())
+            .filter(|&n| matches(&self.all[n], &q))
+            .collect();
         // "seen", not "looted": an item left on the corpse is in the list too.
         let count = format!("{} of {} items seen", shown.len(), self.all.len());
-        let card = v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(COLS));
+        let card = v_flex()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(hex(BORDER))
+            .bg(hex(PANEL))
+            .overflow_hidden()
+            .child(table::head(COLS));
         let card = if let Some(e) = &self.all_error {
             card.child(table::empty_row(e.clone()))
         } else if shown.is_empty() {
@@ -263,7 +299,10 @@ impl LootView {
                     n,
                     cx.processor(move |v: &mut Self, range: std::ops::Range<usize>, _, cx| {
                         // Only the All table carries item cards, as in the renderer.
-                        range.filter_map(|k| shown.get(k).and_then(|&n| v.all.get(n)).cloned()).map(|i| v.row("la", &i, true, cx)).collect::<Vec<_>>()
+                        range
+                            .filter_map(|k| shown.get(k).and_then(|&n| v.all.get(n)).cloned())
+                            .map(|i| v.row("la", &i, true, cx))
+                            .collect::<Vec<_>>()
                     }),
                 )
                 .flex_1()
@@ -278,7 +317,11 @@ impl LootView {
         let total: u64 = rows.iter().map(|i| i.count).sum();
         let sold: u64 = rows.iter().map(|i| i.sold_total_copper).sum();
         let count = if self.session_start != 0 {
-            format!("since {} — {total} items, {} kinds", when(Some(self.session_start)), rows.len())
+            format!(
+                "since {} — {total} items, {} kinds",
+                when(Some(self.session_start)),
+                rows.len()
+            )
         } else {
             "no session yet".into()
         };
@@ -287,7 +330,11 @@ impl LootView {
         } else {
             rows.iter().map(|i| self.row("ls", i, true, cx)).collect()
         };
-        let summary = format!("{:.2}pp from corpses · {:.2}pp auto-sold", self.session_coin as f64 / 1000., sold as f64 / 1000.);
+        let summary = format!(
+            "{:.2}pp from corpses · {:.2}pp auto-sold",
+            self.session_coin as f64 / 1000.,
+            sold as f64 / 1000.
+        );
         let open = self.session_note;
         let panel = v_flex()
             .gap_3()
@@ -318,18 +365,36 @@ impl LootView {
 
     fn render_motes(&self, cx: &mut Context<Self>) -> (String, Div) {
         let motes = mote_ladder(&self.all);
-        let this_session: std::collections::HashMap<String, u64> =
-            self.session.iter().filter(|i| is_mote(&i.item)).map(|i| (i.item.to_lowercase(), i.count)).collect();
-        let summary = motes_summary(&motes, this_session.values().sum(), self.played_seconds, self.sessions);
+        let this_session: std::collections::HashMap<String, u64> = self
+            .session
+            .iter()
+            .filter(|i| is_mote(&i.item))
+            .map(|i| (i.item.to_lowercase(), i.count))
+            .collect();
+        let summary = motes_summary(
+            &motes,
+            this_session.values().sum(),
+            self.played_seconds,
+            self.sessions,
+        );
         let count = format!("{} mote tiers", motes.len());
         let max = motes.iter().map(|m| m.count).max().unwrap_or(1).max(1) as f32;
         let rows: Vec<AnyElement> = if motes.is_empty() {
-            vec![div().py_2().text_color(hex(MUTED)).child("No motes looted yet").into_any_element()]
+            vec![
+                div()
+                    .py_2()
+                    .text_color(hex(MUTED))
+                    .child("No motes looted yet")
+                    .into_any_element(),
+            ]
         } else {
             motes
                 .iter()
                 .map(|m| {
-                    let n = this_session.get(&m.item.to_lowercase()).copied().unwrap_or(0);
+                    let n = this_session
+                        .get(&m.item.to_lowercase())
+                        .copied()
+                        .unwrap_or(0);
                     let name = m.item.clone();
                     let row = h_flex()
                         .id(SharedString::from(format!("mote-{}", m.item)))
@@ -342,19 +407,48 @@ impl LootView {
                         .bg(hex(PANEL_2))
                         .overflow_hidden()
                         .cursor_pointer()
-                        .child(div().absolute().top_0().bottom_0().left_0().w(relative(m.count as f32 / max)).bg(wash(YOU, 0.22)))
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left_0()
+                                .w(relative(m.count as f32 / max))
+                                .bg(wash(YOU, 0.22)),
+                        )
                         .child(div().font_weight(FontWeight::MEDIUM).child(m.item.clone()))
                         .child(
                             h_flex()
                                 .gap(px(19.))
                                 .flex_none()
-                                .child(muted(format!("{} source{}", m.sources.len(), if m.sources.len() == 1 { "" } else { "s" })))
+                                .child(muted(format!(
+                                    "{} source{}",
+                                    m.sources.len(),
+                                    if m.sources.len() == 1 { "" } else { "s" }
+                                )))
                                 .child(if n > 0 {
-                                    div().min_w(px(70.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(format!("+{n}"))
+                                    div()
+                                        .min_w(px(70.))
+                                        .flex()
+                                        .justify_end()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(format!("+{n}"))
                                 } else {
-                                    div().min_w(px(70.)).flex().justify_end().text_color(hex(MUTED)).child("—")
+                                    div()
+                                        .min_w(px(70.))
+                                        .flex()
+                                        .justify_end()
+                                        .text_color(hex(MUTED))
+                                        .child("—")
                                 })
-                                .child(div().min_w(px(50.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(m.count.to_string())),
+                                .child(
+                                    div()
+                                        .min_w(px(50.))
+                                        .flex()
+                                        .justify_end()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(m.count.to_string()),
+                                ),
                         )
                         .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)));
                     // The card on every list, not only All: the renderer's
@@ -422,7 +516,12 @@ impl LootView {
         } else {
             format!("{} — {}", when(Some(d.first_seen)), when(Some(d.last_seen)))
         };
-        let stacks = d.stacks.iter().map(|(size, n)| format!("{size}×{n}")).collect::<Vec<_>>().join(", ");
+        let stacks = d
+            .stacks
+            .iter()
+            .map(|(size, n)| format!("{size}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let creatures = d.sources.len();
         let sources: Vec<AnyElement> = d
             .sources
@@ -435,7 +534,13 @@ impl LootView {
                     vec![
                         v_flex()
                             .child(s.mob.clone())
-                            .child(div().text_xs().text_color(hex(MUTED)).whitespace_normal().child(s.zones.join(", ")))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(hex(MUTED))
+                                    .whitespace_normal()
+                                    .child(s.zones.join(", ")),
+                            )
                             .into_any_element(),
                         // What you left stays apart from what you took: same
                         // evidence about the creature, a different fact about you.
@@ -444,8 +549,18 @@ impl LootView {
                             .child(s.drops.to_string())
                             .when(s.left > 0, |d| d.child(muted(format!("+{} left", s.left))))
                             .into_any_element(),
-                        muted(if s.quantity != s.drops { s.quantity.to_string() } else { String::new() }).into_any_element(),
-                        muted(if s.kills > 0 { s.kills.to_string() } else { "—".into() }).into_any_element(),
+                        muted(if s.quantity != s.drops {
+                            s.quantity.to_string()
+                        } else {
+                            String::new()
+                        })
+                        .into_any_element(),
+                        muted(if s.kills > 0 {
+                            s.kills.to_string()
+                        } else {
+                            "—".into()
+                        })
+                        .into_any_element(),
                         match s.rate {
                             // Sightings per kill, not a percentage: two of an
                             // item on one corpse is two lines, and 2.00 is
@@ -465,10 +580,14 @@ impl LootView {
                 .iter()
                 .enumerate()
                 .map(|(k, (z, n))| {
-                    table::row(SharedString::from(format!("ldz-{k}")), ZONE_COLS, vec![
-                        div().child(z.clone()).into_any_element(),
-                        div().child(n.to_string()).into_any_element(),
-                    ])
+                    table::row(
+                        SharedString::from(format!("ldz-{k}")),
+                        ZONE_COLS,
+                        vec![
+                            div().child(z.clone()).into_any_element(),
+                            div().child(n.to_string()).into_any_element(),
+                        ],
+                    )
                     .into_any_element()
                 })
                 .collect()
@@ -520,18 +639,36 @@ impl Render for LootView {
                 Sub::All => {
                     // Scrolls inside its table, so the toolbar stays put.
                     let (count, body) = self.render_all(cx);
-                    return v_flex().size_full().gap_3().child(self.render_toolbar(count, cx)).child(body).into_any_element();
+                    return v_flex()
+                        .size_full()
+                        .gap_3()
+                        .child(self.render_toolbar(count, cx))
+                        .child(body)
+                        .into_any_element();
                 }
                 Sub::Session => self.render_session(cx),
                 Sub::Motes => self.render_motes(cx),
             };
-            v_flex().gap_3().child(self.render_toolbar(count, cx)).child(body).into_any_element()
+            v_flex()
+                .gap_3()
+                .child(self.render_toolbar(count, cx))
+                .child(body)
+                .into_any_element()
         };
         // Its own scroller: the shell draws this view cached at a fixed size.
         // The detail scrolls apart from the list, so going back keeps the
         // list where it was.
-        let id = if self.detail.is_some() { "loot-detail-scroll" } else { "loot-scroll" };
-        div().size_full().overflow_y_scrollbar().id(id).child(page).into_any_element()
+        let id = if self.detail.is_some() {
+            "loot-detail-scroll"
+        } else {
+            "loot-scroll"
+        };
+        div()
+            .size_full()
+            .overflow_y_scrollbar()
+            .id(id)
+            .child(page)
+            .into_any_element()
     }
 }
 
@@ -539,30 +676,53 @@ impl Render for LootView {
 // The rules, apart from drawing.
 
 fn is_mote(name: &str) -> bool {
-    name.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == "mote")
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == "mote")
 }
 
-const MOTE_TIERS: [&str; 6] = ["Infinitesimal", "Minor", "Lesser", "Potential", "Greater", "Major"];
+const MOTE_TIERS: [&str; 6] = [
+    "Infinitesimal",
+    "Minor",
+    "Lesser",
+    "Potential",
+    "Greater",
+    "Major",
+];
 
 /// Where a mote sits on the ladder. "Mote of Potential" carries no adjective
 /// and sits between Lesser and Greater; an unknown tier sorts last, so a new
 /// one shows rather than vanishing.
 fn mote_tier(name: &str) -> usize {
-    if let Some(i) = MOTE_TIERS.iter().position(|t| *t != "Potential" && name.contains(t)) {
+    if let Some(i) = MOTE_TIERS
+        .iter()
+        .position(|t| *t != "Potential" && name.contains(t))
+    {
         return i;
     }
-    if name.trim().eq_ignore_ascii_case("mote of potential") { 3 } else { MOTE_TIERS.len() }
+    if name.trim().eq_ignore_ascii_case("mote of potential") {
+        3
+    } else {
+        MOTE_TIERS.len()
+    }
 }
 
 fn mote_ladder(all: &[LootTally]) -> Vec<&LootTally> {
     let mut m: Vec<&LootTally> = all.iter().filter(|i| is_mote(&i.item)).collect();
-    m.sort_by(|a, b| mote_tier(&a.item).cmp(&mote_tier(&b.item)).then_with(|| a.item.cmp(&b.item)));
+    m.sort_by(|a, b| {
+        mote_tier(&a.item)
+            .cmp(&mote_tier(&b.item))
+            .then_with(|| a.item.cmp(&b.item))
+    });
     m
 }
 
 /// Motes first, then the daemon's order, each half as it came.
 fn motes_first(v: &[LootTally]) -> Vec<&LootTally> {
-    v.iter().filter(|i| is_mote(&i.item)).chain(v.iter().filter(|i| !is_mote(&i.item))).collect()
+    v.iter()
+        .filter(|i| is_mote(&i.item))
+        .chain(v.iter().filter(|i| !is_mote(&i.item)))
+        .collect()
 }
 
 fn motes_summary(motes: &[&LootTally], session: u64, played_seconds: i64, sessions: u64) -> String {
@@ -573,9 +733,15 @@ fn motes_summary(motes: &[&LootTally], session: u64, played_seconds: i64, sessio
     let hours = played_seconds as f64 / 3600.;
     let mut rate = String::new();
     if total > 0 && hours >= 0.05 {
-        rate = format!(" · {:.1}/hour over {hours:.1}h played", total as f64 / hours);
+        rate = format!(
+            " · {:.1}/hour over {hours:.1}h played",
+            total as f64 / hours
+        );
         if sessions > 0 {
-            rate.push_str(&format!(", {:.1} per session across {sessions}", total as f64 / sessions as f64));
+            rate.push_str(&format!(
+                ", {:.1} per session across {sessions}",
+                total as f64 / sessions as f64
+            ));
         }
     }
     format!(
@@ -586,7 +752,9 @@ fn motes_summary(motes: &[&LootTally], session: u64, played_seconds: i64, sessio
 }
 
 fn matches(i: &LootTally, q: &str) -> bool {
-    q.is_empty() || i.item.to_lowercase().contains(q) || i.sources.iter().any(|s| s.to_lowercase().contains(q))
+    q.is_empty()
+        || i.item.to_lowercase().contains(q)
+        || i.sources.iter().any(|s| s.to_lowercase().contains(q))
 }
 
 /// Up to `n` names, then `+N`.
@@ -601,16 +769,36 @@ fn first(v: &[String], n: usize) -> String {
 /// What became of an item, as badges: `kept`, `sold`, `stored`,
 /// `transmuted`, each `×N` only when it was not every copy.
 fn fates(i: &LootTally) -> Vec<(String, u32)> {
-    [(i.kept, "kept", MUTED), (i.sold, "sold", ACCENT), (i.stored, "stored", YOU), (i.transmuted, "transmuted", PET)]
-        .into_iter()
-        .filter(|(n, _, _)| *n > 0)
-        .map(|(n, label, c)| (if n == i.count { label.to_string() } else { format!("{label} ×{n}") }, c))
-        .collect()
+    [
+        (i.kept, "kept", MUTED),
+        (i.sold, "sold", ACCENT),
+        (i.stored, "stored", YOU),
+        (i.transmuted, "transmuted", PET),
+    ]
+    .into_iter()
+    .filter(|(n, _, _)| *n > 0)
+    .map(|(n, label, c)| {
+        (
+            if n == i.count {
+                label.to_string()
+            } else {
+                format!("{label} ×{n}")
+            },
+            c,
+        )
+    })
+    .collect()
 }
 
 /// "left on corpse", with a count only beside something also taken.
 fn left_badge(i: &LootTally) -> Option<String> {
-    (i.left > 0).then(|| if i.count > 0 { format!("left on corpse ×{}", i.left) } else { "left on corpse".into() })
+    (i.left > 0).then(|| {
+        if i.count > 0 {
+            format!("left on corpse ×{}", i.left)
+        } else {
+            "left on corpse".into()
+        }
+    })
 }
 
 /// The headline for an item's page, written around what was seen rather than
@@ -622,21 +810,47 @@ fn seen_line(d: &LootDetail) -> String {
     if d.drops == 0 {
         return format!("never taken · left on {} corpse{}", d.left, plural(d.left));
     }
-    let taken = format!("{} received over {} pickup{}", d.total, d.drops, plural(d.drops));
-    if d.left > 0 { format!("{taken} · left {} more", d.left) } else { taken }
+    let taken = format!(
+        "{} received over {} pickup{}",
+        d.total,
+        d.drops,
+        plural(d.drops)
+    );
+    if d.left > 0 {
+        format!("{taken} · left {} more", d.left)
+    } else {
+        taken
+    }
 }
 
 fn fate_cell(i: &LootTally) -> AnyElement {
     let mut d = h_flex().gap_1().min_w_0().overflow_hidden();
     for (label, c) in fates(i) {
-        d = d.child(div().flex_none().px(px(5.)).rounded(px(4.)).text_xs().bg(wash(c, 0.18)).text_color(hex(c)).child(label));
+        d = d.child(
+            div()
+                .flex_none()
+                .px(px(5.))
+                .rounded(px(4.))
+                .text_xs()
+                .bg(wash(c, 0.18))
+                .text_color(hex(c))
+                .child(label),
+        );
     }
     // Not a fate the item met in your hands, but in live EverQuest (no
     // auto-sell) the commonest outcome. The quietest badge for that reason:
     // coloured loudly it would drown the fates that are actually notable.
     if let Some(label) = left_badge(i) {
         d = d.child(
-            div().flex_none().px(px(5.)).rounded(px(4.)).text_xs().border_1().border_color(hex(BORDER)).text_color(hex(MUTED)).child(label),
+            div()
+                .flex_none()
+                .px(px(5.))
+                .rounded(px(4.))
+                .text_xs()
+                .border_1()
+                .border_color(hex(BORDER))
+                .text_color(hex(MUTED))
+                .child(label),
         );
     }
     if !i.stored_in.is_empty() {
@@ -651,12 +865,25 @@ fn fate_cell(i: &LootTally) -> AnyElement {
 fn cells(i: &LootTally) -> Vec<AnyElement> {
     vec![
         div().child(i.item.clone()).into_any_element(),
-        if i.count > 0 { div().child(i.count.to_string()).into_any_element() } else { muted("—").into_any_element() },
-        muted(if i.left > 0 { i.left.to_string() } else { String::new() }).into_any_element(),
+        if i.count > 0 {
+            div().child(i.count.to_string()).into_any_element()
+        } else {
+            muted("—").into_any_element()
+        },
+        muted(if i.left > 0 {
+            i.left.to_string()
+        } else {
+            String::new()
+        })
+        .into_any_element(),
         muted(first(&i.sources, 3)).into_any_element(),
         fate_cell(i),
-        muted(if i.sold_total_copper > 0 { format!("{:.2}", i.sold_total_copper as f64 / 1000.) } else { String::new() })
-            .into_any_element(),
+        muted(if i.sold_total_copper > 0 {
+            format!("{:.2}", i.sold_total_copper as f64 / 1000.)
+        } else {
+            String::new()
+        })
+        .into_any_element(),
     ]
 }
 
@@ -679,19 +906,33 @@ fn worth(d: &LootDetail) -> String {
     if let Some(b) = d.buy_price_copper {
         w.push(format!("a merchant charges {}", pp(b as f64)));
     }
-    if w.is_empty() { "Never sold, and never bought from a merchant, so there is no price on record.".into() } else { w.join(" · ") }
+    if w.is_empty() {
+        "Never sold, and never bought from a merchant, so there is no price on record.".into()
+    } else {
+        w.join(" · ")
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Pieces.
 
 fn table_card(cols: &[Col], rows: Vec<AnyElement>) -> Div {
-    v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(cols)).children(rows)
+    v_flex()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(hex(BORDER))
+        .bg(hex(PANEL))
+        .overflow_hidden()
+        .child(table::head(cols))
+        .children(rows)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{fates, first, is_mote, left_badge, matches, mote_ladder, mote_tier, motes_first, motes_summary, seen_line, worth};
+    use super::{
+        fates, first, is_mote, left_badge, matches, mote_ladder, mote_tier, motes_first,
+        motes_summary, seen_line, worth,
+    };
     use norrlog_api::{LootDetail, LootTally};
 
     fn t(item: &str, count: u64) -> LootTally {
@@ -716,7 +957,10 @@ mod tests {
         assert!(is_mote("Mote of Greater Potential"));
         assert!(is_mote("mote"));
         assert!(!is_mote("Remote Control"));
-        assert!(!is_mote("Motes"), "the renderer's \\bmote\\b does not match a plural either");
+        assert!(
+            !is_mote("Motes"),
+            "the renderer's \\bmote\\b does not match a plural either"
+        );
     }
 
     #[test]
@@ -745,7 +989,11 @@ mod tests {
 
     #[test]
     fn a_session_lists_motes_first_and_otherwise_keeps_the_daemons_order() {
-        let v = [t("Bone Chips", 9), t("Mote of Minor Potential", 1), t("Rat Ear", 2)];
+        let v = [
+            t("Bone Chips", 9),
+            t("Mote of Minor Potential", 1),
+            t("Rat Ear", 2),
+        ];
         let names: Vec<&str> = motes_first(&v).iter().map(|m| m.item.as_str()).collect();
         assert_eq!(names, ["Mote of Minor Potential", "Bone Chips", "Rat Ear"]);
     }
@@ -775,9 +1023,23 @@ mod tests {
         assert_eq!(left_badge(&t("Bone Chips", 4)), None);
 
         let mut d = norrlog_api::LootDetail {
-            item: "Tiny Glowing Skull".into(), total: 0, drops: 0, left: 2, first_seen: 0, last_seen: 0,
-            sources: vec![], zones: vec![], kept: 0, sold: 0, stored: 0, transmuted: 0,
-            sold_total_copper: 0, sales: 0, best_sale_copper: 0, buy_price_copper: None, stacks: vec![],
+            item: "Tiny Glowing Skull".into(),
+            total: 0,
+            drops: 0,
+            left: 2,
+            first_seen: 0,
+            last_seen: 0,
+            sources: vec![],
+            zones: vec![],
+            kept: 0,
+            sold: 0,
+            stored: 0,
+            transmuted: 0,
+            sold_total_copper: 0,
+            sales: 0,
+            best_sale_copper: 0,
+            buy_price_copper: None,
+            stacks: vec![],
         };
         assert_eq!(seen_line(&d), "never taken · left on 2 corpses");
         (d.total, d.drops, d.left) = (3, 1, 1);
@@ -786,7 +1048,10 @@ mod tests {
 
     #[test]
     fn lists_stop_at_n_and_say_how_many_more() {
-        let v: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|s| s.to_string()).collect();
+        let v: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(first(&v, 3), "a, b, c +2");
         assert_eq!(first(&v[..2], 3), "a, b");
     }
@@ -809,7 +1074,10 @@ mod tests {
             motes_summary(&refs, 3, 7200, 4),
             " — 3 this session · 12 all time, across 2 tiers · 6.0/hour over 2.0h played, 3.0 per session across 4"
         );
-        assert_eq!(motes_summary(&refs, 0, 60, 1), " — 0 this session · 12 all time, across 2 tiers");
+        assert_eq!(
+            motes_summary(&refs, 0, 60, 1),
+            " — 0 this session · 12 all time, across 2 tiers"
+        );
         assert_eq!(motes_summary(&[], 0, 7200, 1), "");
     }
 
@@ -834,11 +1102,17 @@ mod tests {
             buy_price_copper: None,
             stacks: vec![],
         };
-        assert_eq!(worth(&d), "Never sold, and never bought from a merchant, so there is no price on record.");
+        assert_eq!(
+            worth(&d),
+            "Never sold, and never bought from a merchant, so there is no price on record."
+        );
         d.sales = 2;
         d.sold_total_copper = 3000;
         d.best_sale_copper = 2000;
         d.buy_price_copper = Some(78);
-        assert_eq!(worth(&d), "sold 2 times for 3.00p (best 2.00p, avg 1.50p) · a merchant charges 0.08p");
+        assert_eq!(
+            worth(&d),
+            "sold 2 times for 3.00p (best 2.00p, avg 1.50p) · a merchant charges 0.08p"
+        );
     }
 }

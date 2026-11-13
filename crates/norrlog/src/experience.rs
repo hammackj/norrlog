@@ -10,18 +10,22 @@
 
 use crate::api::Api;
 use crate::format::{dur, when};
-use crate::parts::{ROW, ROW_ENEMY, ROW_PET, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note, split};
+use crate::parts::{
+    ROW, ROW_ENEMY, ROW_PET, ROW_YOU, bar_row, card, dim, empty, figure, fill, hint, note, split,
+};
 use crate::table::{self, Col, col, muted, tag};
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Sizable, h_flex, v_flex};
+use norrlog_api::{
+    AaAbility, AaReport, ClassLevelReport, ExpSource, ExperienceReport, LevelRecord, ZoneShare,
+};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -89,7 +93,9 @@ impl ExperienceView {
         self.last_load = Some(Instant::now());
         let a = api.clone();
         self.track(cx.spawn_in(window, async move |this, cx| {
-            let got = a.get::<ExperienceReport>("/api/experience".to_string()).await;
+            let got = a
+                .get::<ExperienceReport>("/api/experience".to_string())
+                .await;
             let _ = this.update_in(cx, |v, window, cx| {
                 match got {
                     Ok(r) => {
@@ -109,7 +115,12 @@ impl ExperienceView {
         let Some(api) = self.api.clone() else { return };
         self.track(cx.spawn_in(window, async move |this, cx| {
             // A failure is silent.
-            let Ok(r) = api.get::<ClassLevelReport>("/api/class-levels".to_string()).await else { return };
+            let Ok(r) = api
+                .get::<ClassLevelReport>("/api/class-levels".to_string())
+                .await
+            else {
+                return;
+            };
             let _ = this.update_in(cx, |v, window, cx| {
                 v.sync_inputs(&r, window, cx);
                 v.levels = Some(r);
@@ -121,7 +132,9 @@ impl ExperienceView {
     fn load_aa(&mut self, cx: &mut Context<Self>) {
         let Some(api) = self.api.clone() else { return };
         self.track(cx.spawn(async move |this, cx| {
-            let Ok(r) = api.get::<AaReport>("/api/aa".to_string()).await else { return };
+            let Ok(r) = api.get::<AaReport>("/api/aa".to_string()).await else {
+                return;
+            };
             let _ = this.update(cx, |v, cx| {
                 v.aa = Some(r);
                 cx.notify();
@@ -150,14 +163,18 @@ impl ExperienceView {
             }
             let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
             let abbrev = c.abbrev.clone();
-            self.subs.push(cx.subscribe_in(&input, window, move |v, input, ev: &InputEvent, window, cx| {
-                // The renderer's `change`: when the edit is committed, by
-                // Enter or by leaving the field.
-                if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    let typed = input.read(cx).value().trim().parse::<u32>().ok();
-                    v.commit_level(&abbrev, typed, window, cx);
-                }
-            }));
+            self.subs.push(cx.subscribe_in(
+                &input,
+                window,
+                move |v, input, ev: &InputEvent, window, cx| {
+                    // The renderer's `change`: when the edit is committed, by
+                    // Enter or by leaving the field.
+                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        let typed = input.read(cx).value().trim().parse::<u32>().ok();
+                        v.commit_level(&abbrev, typed, window, cx);
+                    }
+                },
+            ));
             self.inputs.insert(c.abbrev.clone(), input);
         }
     }
@@ -165,10 +182,22 @@ impl ExperienceView {
     /// POST a typed level from 1 to the game's cap (50 Legends, 130 live
     /// EverQuest, from the report), then reload. Anything else is ignored,
     /// as the renderer ignores it.
-    fn commit_level(&mut self, abbrev: &str, typed: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
+    fn commit_level(
+        &mut self,
+        abbrev: &str,
+        typed: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let cap = self.levels.as_ref().map_or(50, |r| r.cap);
-        let Some(level) = typed.filter(|l| (1..=cap).contains(l)) else { return };
-        let held = self.levels.as_ref().and_then(|r| r.classes.iter().find(|c| c.abbrev == abbrev)).map(|c| c.level);
+        let Some(level) = typed.filter(|l| (1..=cap).contains(l)) else {
+            return;
+        };
+        let held = self
+            .levels
+            .as_ref()
+            .and_then(|r| r.classes.iter().find(|c| c.abbrev == abbrev))
+            .map(|c| c.level);
         if held == Some(level) {
             return;
         }
@@ -198,20 +227,32 @@ impl ExperienceView {
                     None
                 };
                 let input = self.inputs.get(&c.abbrev).cloned();
-                let source = if c.at != 0 { format!("{}, {}", c.source_label, when(Some(c.at))) } else { c.source_label.clone() };
+                let source = if c.at != 0 {
+                    format!("{}, {}", c.source_label, when(Some(c.at)))
+                } else {
+                    c.source_label.clone()
+                };
                 h_flex()
                     .gap_3()
                     .px(px(9.))
                     .py(px(3.))
                     .rounded(px(5.))
                     .bg(hex(PANEL_2))
-                    .child(div().w(px(170.)).flex_none().font_weight(FontWeight::MEDIUM).child(format!("{} — {}", c.abbrev, c.name)))
+                    .child(
+                        div()
+                            .w(px(170.))
+                            .flex_none()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!("{} — {}", c.abbrev, c.name)),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
                             .w(px(150.))
                             .flex_none()
-                            .when_some(input, |d, i| d.child(div().w(px(64.)).child(Input::new(&i).small())))
+                            .when_some(input, |d, i| {
+                                d.child(div().w(px(64.)).child(Input::new(&i).small()))
+                            })
                             .when_some(state, |d, t| d.child(t)),
                     )
                     .child(muted(source))
@@ -244,7 +285,9 @@ impl ExperienceView {
             None => String::new(),
         };
         let _ = cx;
-        card("Class levels").child(rows).when(!hint_text.is_empty(), |d| d.child(hint(hint_text)))
+        card("Class levels")
+            .child(rows)
+            .when(!hint_text.is_empty(), |d| d.child(hint(hint_text)))
     }
 
     fn render_stats(&self) -> Div {
@@ -259,28 +302,72 @@ impl ExperienceView {
             (None, Some(e)) => e.current_level.map_or_else(dash, |l| l.to_string()),
             (None, None) => dash(),
         };
-        let big = |label: &str, v: String| stat_card(label, div().text_2xl().font_weight(FontWeight::BOLD).child(v), None);
-        let small = |label: &str, v: String| stat_card(label, div().text_xl().font_weight(FontWeight::BOLD).child(v), None);
+        let big = |label: &str, v: String| {
+            stat_card(
+                label,
+                div().text_2xl().font_weight(FontWeight::BOLD).child(v),
+                None,
+            )
+        };
+        let small = |label: &str, v: String| {
+            stat_card(
+                label,
+                div().text_xl().font_weight(FontWeight::BOLD).child(v),
+                None,
+            )
+        };
         div()
             .flex()
             .flex_row()
             .flex_wrap()
             .gap_3()
             .child(big("Current level", level))
-            .child(big("Progress", e.map_or_else(dash, |e| format!("{:.1}%", e.current_percent))))
-            .child(small("Rate", e.map_or_else(dash, |e| rate_text(e.rate_per_hour))))
-            .child(small("Time to next level", e.map_or_else(dash, |e| e.seconds_to_next_level.map_or_else(dash, |s| dur(s as f64)))))
+            .child(big(
+                "Progress",
+                e.map_or_else(dash, |e| format!("{:.1}%", e.current_percent)),
+            ))
+            .child(small(
+                "Rate",
+                e.map_or_else(dash, |e| rate_text(e.rate_per_hour)),
+            ))
+            .child(small(
+                "Time to next level",
+                e.map_or_else(dash, |e| {
+                    e.seconds_to_next_level.map_or_else(dash, |s| dur(s as f64))
+                }),
+            ))
             .child(small("Average per level", e.map_or_else(dash, average)))
-            .child(big("AA per hour", e.map_or_else(dash, |e| format!("{:.2}", aa_rate(e)))))
+            .child(big(
+                "AA per hour",
+                e.map_or_else(dash, |e| format!("{:.2}", aa_rate(e))),
+            ))
             .child(stat_card(
                 "AA earned",
-                div().text_xl().font_weight(FontWeight::BOLD).child(e.map_or_else(dash, aa_earned)),
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child(e.map_or_else(dash, aa_earned)),
                 e.and_then(unlogged),
             ))
-            .child(big("Potion charges", e.map_or_else(dash, |e| if e.aa_potion_active { format!("{}/5", e.aa_potion_charges) } else { "none".into() })))
+            .child(big(
+                "Potion charges",
+                e.map_or_else(dash, |e| {
+                    if e.aa_potion_active {
+                        format!("{}/5", e.aa_potion_charges)
+                    } else {
+                        "none".into()
+                    }
+                }),
+            ))
             .child(small(
                 "Doubled coverage",
-                e.map_or_else(dash, |e| format!("{:.0}% · {:.2}x", e.aa_doubled_share * 100., e.aa_effective_multiplier)),
+                e.map_or_else(dash, |e| {
+                    format!(
+                        "{:.0}% · {:.2}x",
+                        e.aa_doubled_share * 100.,
+                        e.aa_effective_multiplier
+                    )
+                }),
             ))
     }
 
@@ -294,26 +381,42 @@ impl ExperienceView {
                     e.aa_doubled_share,
                     fill(ROW_YOU),
                     "Doubled awards",
-                    h_flex().gap_3().child(dim(format!("{} of {awards}", e.aa_gains_doubled))).child(figure(format!("{:.0}%", e.aa_doubled_share * 100.))),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("{} of {awards}", e.aa_gains_doubled)))
+                        .child(figure(format!("{:.0}%", e.aa_doubled_share * 100.))),
                 ))
-                .child(bar_row(1. - e.aa_doubled_share, fill(ROW), "Normal awards", figure(e.aa_gains_normal.to_string())))
+                .child(bar_row(
+                    1. - e.aa_doubled_share,
+                    fill(ROW),
+                    "Normal awards",
+                    figure(e.aa_gains_normal.to_string()),
+                ))
                 .child(bar_row(
                     1.,
                     fill(ROW_PET),
                     "Potions consumed",
-                    h_flex().gap_3().child(dim(format!("{} charges granted", e.aa_potions_used * 5))).child(figure(e.aa_potions_used.to_string())),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("{} charges granted", e.aa_potions_used * 5)))
+                        .child(figure(e.aa_potions_used.to_string())),
                 ))
                 .child(bar_row(
                     bonus as f64 / e.aa_earned.max(1) as f64,
                     fill(ROW_YOU),
                     "AA from potions",
-                    h_flex().gap_3().child(dim(format!("of {} earned", e.aa_earned))).child(figure(format!("+{bonus}"))),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("of {} earned", e.aa_earned)))
+                        .child(figure(format!("+{bonus}"))),
                 ))
                 .when(e.aa_doubled_unaccounted > 0, |d| {
                     d.child(bar_row(
                         0.,
                         fill(ROW),
-                        div().text_color(hex(MUTED)).child("Doubled before the log began"),
+                        div()
+                            .text_color(hex(MUTED))
+                            .child("Doubled before the log began"),
                         dim(e.aa_doubled_unaccounted.to_string()),
                     ))
                 });
@@ -336,14 +439,18 @@ impl ExperienceView {
             // character still reads "→ N+1".
             let label = format!(
                 "Level {} → {}",
-                e.current_level.map_or_else(|| "?".to_string(), |l| l.to_string()),
+                e.current_level
+                    .map_or_else(|| "?".to_string(), |l| l.to_string()),
                 e.current_level.unwrap_or(0) + 1
             );
             bar_row(
                 pct / 100.,
                 fill(ROW_YOU),
                 div().text_color(hex(YOU)).child(label),
-                h_flex().gap_3().child(dim(format!("{} kills", e.current_kills))).child(figure(format!("{pct:.1}%"))),
+                h_flex()
+                    .gap_3()
+                    .child(dim(format!("{} kills", e.current_kills)))
+                    .child(figure(format!("{pct:.1}%"))),
             )
         });
         card("Progress through this level").children(row).child(note(
@@ -370,7 +477,14 @@ impl ExperienceView {
                     xp_rate(z) / zmax,
                     fill(ROW),
                     z.name.clone(),
-                    h_flex().gap_3().child(dim(format!("{} kills · {}", z.kills, dur(z.seconds as f64)))).child(per(format!("{:.1}", xp_rate(z)), "%/hr")),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!(
+                            "{} kills · {}",
+                            z.kills,
+                            dur(z.seconds as f64)
+                        )))
+                        .child(per(format!("{:.1}", xp_rate(z)), "%/hr")),
                 )
             })
         });
@@ -381,11 +495,17 @@ impl ExperienceView {
                     per_kill(m) / mmax,
                     fill(ROW_ENEMY),
                     m.name.clone(),
-                    h_flex().gap_3().child(dim(format!("x{}", m.kills))).child(per(format!("{:.2}", per_kill(m)), "%/kill")),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("x{}", m.kills)))
+                        .child(per(format!("{:.2}", per_kill(m)), "%/kill")),
                 )
             })
         });
-        let amax = aa_zones.iter().map(|z| z.aa as f64 / z.seconds.max(1) as f64).fold(1e-9, f64::max);
+        let amax = aa_zones
+            .iter()
+            .map(|z| z.aa as f64 / z.seconds.max(1) as f64)
+            .fold(1e-9, f64::max);
         let aa_rows = list_or(aa_zones.is_empty(), "No AA earned yet", || {
             aa_zones.iter().take(10).map(|z| {
                 let r = z.aa as f64 * 3600. / z.seconds.max(1) as f64;
@@ -393,7 +513,10 @@ impl ExperienceView {
                     z.aa as f64 / z.seconds.max(1) as f64 / amax,
                     fill(ROW),
                     z.name.clone(),
-                    h_flex().gap_3().child(dim(format!("{} AA · {}", z.aa, dur(z.seconds as f64)))).child(per(format!("{r:.2}"), "AA/hr")),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("{} AA · {}", z.aa, dur(z.seconds as f64))))
+                        .child(per(format!("{r:.2}"), "AA/hr")),
                 )
             })
         });
@@ -401,25 +524,44 @@ impl ExperienceView {
         let smax = bought.iter().map(|p| p.spent).max().unwrap_or(1).max(1) as f64;
         let spent_rows = list_or(bought.is_empty(), "Nothing purchased yet", || {
             bought.iter().take(12).map(|p| {
-                let mut name = h_flex().min_w_0().gap(px(5.)).child(div().min_w_0().overflow_hidden().text_ellipsis().child(p.ability.clone()));
+                let mut name = h_flex().min_w_0().gap(px(5.)).child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(p.ability.clone()),
+                );
                 match p.enabled {
                     Some(true) => name = name.child(tag("on", HEAL).flex_none()),
                     Some(false) => name = name.child(tag("off", PET).flex_none()),
                     None => {}
                 }
-                let ladder = if p.client_rank != 0 && p.client_rank != p.rank { format!(" (ladder {})", p.client_rank) } else { String::new() };
+                let ladder = if p.client_rank != 0 && p.client_rank != p.rank {
+                    format!(" (ladder {})", p.client_rank)
+                } else {
+                    String::new()
+                };
                 bar_row(
                     p.spent as f64 / smax,
                     fill(ROW_PET),
                     name,
-                    h_flex().gap_3().child(dim(format!("rank {}{ladder}", p.rank))).child(per(p.spent.to_string(), "pts")),
+                    h_flex()
+                        .gap_3()
+                        .child(dim(format!("rank {}{ladder}", p.rank)))
+                        .child(per(p.spent.to_string(), "pts")),
                 )
             })
         });
         v_flex()
             .gap_3()
-            .child(split(card("Best zones (experience per hour)").child(zone_rows), card("Best mobs (experience per kill)").child(mob_rows)))
-            .child(split(card("Best zones (AA per hour)").child(aa_rows), card("Ability points spent").child(spent_rows)))
+            .child(split(
+                card("Best zones (experience per hour)").child(zone_rows),
+                card("Best mobs (experience per kill)").child(mob_rows),
+            ))
+            .child(split(
+                card("Best zones (AA per hour)").child(aa_rows),
+                card("Ability points spent").child(spent_rows),
+            ))
     }
 
     fn render_levels(&self) -> Div {
@@ -443,7 +585,13 @@ impl ExperienceView {
             .bg(hex(PANEL))
             .overflow_hidden()
             .child(table::head(LEVEL_COLS))
-            .child(div().id("x-levels").max_h(px(420.)).overflow_y_scrollbar().child(body))
+            .child(
+                div()
+                    .id("x-levels")
+                    .max_h(px(420.))
+                    .overflow_y_scrollbar()
+                    .child(body),
+            )
     }
 
     fn render_aa(&self, cx: &mut Context<Self>) -> Div {
@@ -456,16 +604,23 @@ impl ExperienceView {
         let title = h_flex()
             .gap_1()
             .items_baseline()
-            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child("AA CATALOGUE"))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hex(MUTED))
+                    .child("AA CATALOGUE"),
+            )
             .child(div().text_sm().text_color(hex(MUTED)).child(summary));
         let unfinished = self.unfinished_only;
-        let toolbar = Checkbox::new("aa-unfinished").label("Unfinished only").checked(unfinished).on_click(cx.listener(
-            |v, checked: &bool, _, cx| {
+        let toolbar = Checkbox::new("aa-unfinished")
+            .label("Unfinished only")
+            .checked(unfinished)
+            .on_click(cx.listener(|v, checked: &bool, _, cx| {
                 v.unfinished_only = *checked;
                 v.load_aa(cx);
                 cx.notify();
-            },
-        ));
+            }));
         let rows = match r {
             None => v_flex(),
             Some(r) if r.abilities.is_empty() => empty("No /alt list dump seen in this log yet"),
@@ -511,7 +666,11 @@ impl Render for ExperienceView {
             .child(self.render_lists())
             .child(self.render_levels())
             .child(self.render_aa(cx));
-        div().id("experience-scroll").size_full().overflow_y_scrollbar().child(page)
+        div()
+            .id("experience-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(page)
     }
 }
 
@@ -527,13 +686,29 @@ const LEVEL_COLS: &[Col] = &[
 ];
 
 fn level_row(i: usize, l: &LevelRecord) -> AnyElement {
-    let ppk = if l.kills > 0 { l.percent / l.kills as f64 } else { 0. };
-    let pph = if l.seconds > 0 { l.percent * 3600. / l.seconds as f64 } else { 0. };
+    let ppk = if l.kills > 0 {
+        l.percent / l.kills as f64
+    } else {
+        0.
+    };
+    let pph = if l.seconds > 0 {
+        l.percent * 3600. / l.seconds as f64
+    } else {
+        0.
+    };
     let label = l.level.map_or_else(|| "?".to_string(), |n| n.to_string());
-    let level = h_flex().gap_1().child(label).when(!l.complete, |d| d.child(muted("(partial)")));
+    let level = h_flex()
+        .gap_1()
+        .child(label)
+        .when(!l.complete, |d| d.child(muted("(partial)")));
     // In a flex row, so the tag keeps its own width rather than the column's.
-    let loadout: AnyElement =
-        if l.build.is_empty() { muted("—").into_any_element() } else { h_flex().child(tag(l.build.clone(), ACCENT).ml_0()).into_any_element() };
+    let loadout: AnyElement = if l.build.is_empty() {
+        muted("—").into_any_element()
+    } else {
+        h_flex()
+            .child(tag(l.build.clone(), ACCENT).ml_0())
+            .into_any_element()
+    };
     let (shown, all) = zone_cell(&l.zones);
     let r#where = div()
         .id(SharedString::from(format!("x-where-{i}")))
@@ -541,7 +716,9 @@ fn level_row(i: usize, l: &LevelRecord) -> AnyElement {
         .overflow_hidden()
         .text_ellipsis()
         .child(shown)
-        .when_some(all, |d, all| d.tooltip(move |window, cx| Tooltip::new(all.clone()).build(window, cx)));
+        .when_some(all, |d, all| {
+            d.tooltip(move |window, cx| Tooltip::new(all.clone()).build(window, cx))
+        });
     table::row(
         SharedString::from(format!("x-level-{i}")),
         LEVEL_COLS,
@@ -551,7 +728,13 @@ fn level_row(i: usize, l: &LevelRecord) -> AnyElement {
             r#where.into_any_element(),
             div().child(dur(l.seconds as f64)).into_any_element(),
             div().child(l.kills.to_string()).into_any_element(),
-            div().child(if ppk > 0. { format!("{ppk:.2}") } else { "—".into() }).into_any_element(),
+            div()
+                .child(if ppk > 0. {
+                    format!("{ppk:.2}")
+                } else {
+                    "—".into()
+                })
+                .into_any_element(),
             div().child(format!("{pph:.1}")).into_any_element(),
             muted(l.events.to_string()).into_any_element(),
         ],
@@ -567,16 +750,36 @@ fn zone_cell(zones: &[ZoneShare]) -> (String, Option<String>) {
     }
     let total: f64 = zones.iter().map(|z| z.percent).sum::<f64>();
     let total = if total == 0. { 1. } else { total };
-    let top: Vec<String> = zones.iter().take(2).map(|z| format!("{} {:.0}%", z.zone, (z.percent / total * 100.).round())).collect();
-    let rest = if zones.len() > 2 { format!(" +{}", zones.len() - 2) } else { String::new() };
-    let all = zones.iter().map(|z| format!("{}: {:.1}%", z.zone, z.percent)).collect::<Vec<_>>().join("\n");
+    let top: Vec<String> = zones
+        .iter()
+        .take(2)
+        .map(|z| format!("{} {:.0}%", z.zone, (z.percent / total * 100.).round()))
+        .collect();
+    let rest = if zones.len() > 2 {
+        format!(" +{}", zones.len() - 2)
+    } else {
+        String::new()
+    };
+    let all = zones
+        .iter()
+        .map(|z| format!("{}: {:.1}%", z.zone, z.percent))
+        .collect::<Vec<_>>()
+        .join("\n");
     (format!("{}{rest}", top.join(", ")), Some(all))
 }
 
 fn aa_row(i: usize, a: &AaAbility) -> AnyElement {
     let listed = a.ranks.len();
-    let share = if a.truncated { 0. } else { a.owned_rank as f64 / listed.max(1) as f64 };
-    let held = if a.is_toggle { a.real_owned_rank } else { a.owned_rank };
+    let share = if a.truncated {
+        0.
+    } else {
+        a.owned_rank as f64 / listed.max(1) as f64
+    };
+    let held = if a.is_toggle {
+        a.real_owned_rank
+    } else {
+        a.owned_rank
+    };
     let denom = if a.truncated {
         "?".to_string()
     } else if a.is_toggle {
@@ -592,10 +795,25 @@ fn aa_row(i: usize, a: &AaAbility) -> AnyElement {
         dim(format!("{} pts to finish", a.cost_to_finish.unwrap_or(0))).into_any_element()
     };
     // The next rank not owned, or the last when it is complete.
-    let next = a.ranks.iter().find(|r| r.rank > a.owned_rank).or(a.ranks.last()).map(|r| r.description.clone()).unwrap_or_default();
-    let mut name = h_flex().min_w_0().gap(px(5.)).child(div().min_w_0().overflow_hidden().text_ellipsis().child(a.name.clone()));
+    let next = a
+        .ranks
+        .iter()
+        .find(|r| r.rank > a.owned_rank)
+        .or(a.ranks.last())
+        .map(|r| r.description.clone())
+        .unwrap_or_default();
+    let mut name = h_flex().min_w_0().gap(px(5.)).child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(a.name.clone()),
+    );
     if a.is_toggle {
-        let why = format!("One ability the client splits into ': Enabled' and ': Disabled' halves sharing a ladder of {}", a.owned_rank);
+        let why = format!(
+            "One ability the client splits into ': Enabled' and ': Disabled' halves sharing a ladder of {}",
+            a.owned_rank
+        );
         name = name.child(
             div()
                 .id(SharedString::from(format!("aa-toggle-{i}")))
@@ -607,17 +825,34 @@ fn aa_row(i: usize, a: &AaAbility) -> AnyElement {
     name = name.child(dim(format!("#{}", a.id)).flex_none());
     div()
         .id(SharedString::from(format!("aa-{i}")))
-        .child(bar_row(share, fill(ROW), name, h_flex().gap_3().child(note).child(figure(format!("{held}/{denom}")))))
-        .when(!next.is_empty(), |d| d.tooltip(move |window, cx| Tooltip::new(next.clone()).build(window, cx)))
+        .child(bar_row(
+            share,
+            fill(ROW),
+            name,
+            h_flex()
+                .gap_3()
+                .child(note)
+                .child(figure(format!("{held}/{denom}"))),
+        ))
+        .when(!next.is_empty(), |d| {
+            d.tooltip(move |window, cx| Tooltip::new(next.clone()).build(window, cx))
+        })
         .into_any_element()
 }
 
 /// ` — N abilities · C points to finish what is listed`, and what is missing.
 fn aa_summary(r: &AaReport) -> String {
     let cut = r.abilities.iter().filter(|a| a.truncated).count();
-    let mut s = format!(" — {} abilities · {} points to finish what is listed", r.abilities.len(), r.visible_cost_to_finish);
+    let mut s = format!(
+        " — {} abilities · {} points to finish what is listed",
+        r.abilities.len(),
+        r.visible_cost_to_finish
+    );
     if r.dump_probably_truncated {
-        s.push_str(&format!(" · dump capped at {}, catalogue incomplete", r.last_dump_entries));
+        s.push_str(&format!(
+            " · dump capped at {}, catalogue incomplete",
+            r.last_dump_entries
+        ));
     }
     if cut > 0 {
         s.push_str(&format!(" · {cut} ladder(s) cut short"));
@@ -626,12 +861,20 @@ fn aa_summary(r: &AaReport) -> String {
 }
 
 fn rate_text(per_hour: f64) -> String {
-    if per_hour > 0. { format!("{per_hour:.1} %/hr") } else { "idle".into() }
+    if per_hour > 0. {
+        format!("{per_hour:.1} %/hr")
+    } else {
+        "idle".into()
+    }
 }
 
 fn average(e: &ExperienceReport) -> String {
     match e.average_seconds_per_level.filter(|s| *s != 0) {
-        Some(s) => format!("{} · {} kills", dur(s as f64), e.average_kills_per_level.unwrap_or(0.).round()),
+        Some(s) => format!(
+            "{} · {} kills",
+            dur(s as f64),
+            e.average_kills_per_level.unwrap_or(0.).round()
+        ),
         None => "—".into(),
     }
 }
@@ -639,11 +882,18 @@ fn average(e: &ExperienceReport) -> String {
 /// The recent window's rate, or the lifetime one when that is nothing;
 /// nothing says which, as in the renderer.
 fn aa_rate(e: &ExperienceReport) -> f64 {
-    if e.aa_per_hour > 0. { e.aa_per_hour } else { e.aa_lifetime_per_hour }
+    if e.aa_per_hour > 0. {
+        e.aa_per_hour
+    } else {
+        e.aa_lifetime_per_hour
+    }
 }
 
 fn aa_earned(e: &ExperienceReport) -> String {
-    format!("{} · {} unspent · {} spent in log", e.aa_earned, e.aa_unspent, e.aa_spent)
+    format!(
+        "{} · {} unspent · {} spent in log",
+        e.aa_earned, e.aa_unspent, e.aa_spent
+    )
 }
 
 /// The ranks held but never seen bought, which the log can name exactly.
@@ -656,15 +906,28 @@ fn unlogged(e: &ExperienceReport) -> Option<String> {
         .iter()
         .map(|a| {
             let ranks: Vec<String> = a.unlogged_ranks.iter().map(|r| r.to_string()).collect();
-            format!("{} rank {} (holds {}, at most {})", a.ability, ranks.join(", "), a.rank, a.unlogged_cost_max)
+            format!(
+                "{} rank {} (holds {}, at most {})",
+                a.ability,
+                ranks.join(", "),
+                a.rank,
+                a.unlogged_cost_max
+            )
         })
         .collect::<Vec<_>>()
         .join("; ");
-    Some(format!("Bought before this log: {list}. At most {} points unaccounted.", e.aa_unlogged_cost_max))
+    Some(format!(
+        "Bought before this log: {list}. At most {} points unaccounted.",
+        e.aa_unlogged_cost_max
+    ))
 }
 
 fn xp_rate(z: &ExpSource) -> f64 {
-    if z.seconds > 0 { z.percent * 3600. / z.seconds as f64 } else { 0. }
+    if z.seconds > 0 {
+        z.percent * 3600. / z.seconds as f64
+    } else {
+        0.
+    }
 }
 
 fn per_kill(m: &ExpSource) -> f64 {
@@ -673,11 +936,23 @@ fn per_kill(m: &ExpSource) -> f64 {
 
 /// A figure with its unit dimmed after it: `12.3 %/hr`.
 fn per(value: String, unit: &'static str) -> Div {
-    h_flex().gap(px(3.)).items_baseline().child(figure(value)).child(dim(unit).text_sm())
+    h_flex()
+        .gap(px(3.))
+        .items_baseline()
+        .child(figure(value))
+        .child(dim(unit).text_sm())
 }
 
-fn list_or<I: IntoIterator<Item = Div>>(is_empty: bool, empty_text: &'static str, rows: impl FnOnce() -> I) -> Div {
-    if is_empty { empty(empty_text) } else { v_flex().gap_1().children(rows()) }
+fn list_or<I: IntoIterator<Item = Div>>(
+    is_empty: bool,
+    empty_text: &'static str,
+    rows: impl FnOnce() -> I,
+) -> Div {
+    if is_empty {
+        empty(empty_text)
+    } else {
+        v_flex().gap_1().children(rows())
+    }
 }
 
 fn stat_card(label: &str, value: impl IntoElement, note: Option<String>) -> Div {
@@ -690,7 +965,13 @@ fn stat_card(label: &str, value: impl IntoElement, note: Option<String>) -> Div 
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(label.to_uppercase()))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hex(MUTED))
+                .child(label.to_uppercase()),
+        )
         .child(value)
         .when_some(note, |d, n| d.child(hint(n)))
 }
@@ -702,10 +983,16 @@ mod tests {
 
     #[test]
     fn a_level_names_its_top_two_zones_and_counts_the_rest() {
-        let z = |zone: &str, percent: f64| ZoneShare { zone: zone.into(), percent };
+        let z = |zone: &str, percent: f64| ZoneShare {
+            zone: zone.into(),
+            percent,
+        };
         let (shown, all) = zone_cell(&[z("Hate", 30.), z("Fear", 10.), z("Sky", 5.), z("Ro", 5.)]);
         assert_eq!(shown, "Hate 60%, Fear 20% +2");
-        assert_eq!(all.as_deref(), Some("Hate: 30.0%\nFear: 10.0%\nSky: 5.0%\nRo: 5.0%"));
+        assert_eq!(
+            all.as_deref(),
+            Some("Hate: 30.0%\nFear: 10.0%\nSky: 5.0%\nRo: 5.0%")
+        );
         assert_eq!(zone_cell(&[]), ("—".to_string(), None));
     }
 
@@ -722,6 +1009,9 @@ mod tests {
                 "last_dump_entries":100,"dump_probably_truncated":true,"undescribed":[],"visible_cost_to_finish":12}"#,
         )
         .unwrap();
-        assert_eq!(aa_summary(&r), " — 1 abilities · 12 points to finish what is listed · dump capped at 100, catalogue incomplete · 1 ladder(s) cut short");
+        assert_eq!(
+            aa_summary(&r),
+            " — 1 abilities · 12 points to finish what is listed · dump capped at 100, catalogue incomplete · 1 ladder(s) cut short"
+        );
     }
 }

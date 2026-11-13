@@ -148,7 +148,6 @@ pub struct RecentPickup {
     pub zone: Option<String>,
 }
 
-
 /// One row of an incoming-damage breakdown.
 #[derive(Debug, Clone, Serialize)]
 pub struct IncomingRow {
@@ -597,7 +596,9 @@ impl Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
             resolver: SpellResolver::new(spell_db, 1),
-            classes: ClassDetector::with_slots(norrlog_core::profile::profile(game).class_slots.into()),
+            classes: ClassDetector::with_slots(
+                norrlog_core::profile::profile(game).class_slots.into(),
+            ),
             class_slots: norrlog_core::profile::profile(game).class_slots,
             class_levels: norrlog_core::classlevel::ClassLevelTracker::for_profile(
                 &norrlog_core::profile::profile(game),
@@ -720,7 +721,10 @@ impl Engine {
 
     /// The current zone as a place name; see `Snapshot::zone_place`.
     pub fn zone_place(&self) -> Option<String> {
-        self.tracker.current_zone().map(|z| norrlog_core::zone::Zone::parse(z).name).filter(|z| !z.is_empty())
+        self.tracker
+            .current_zone()
+            .map(|z| norrlog_core::zone::Zone::parse(z).name)
+            .filter(|z| !z.is_empty())
     }
 
     /// Current time in the log's clock domain.
@@ -1173,11 +1177,11 @@ impl Engine {
                 if let norrlog_core::event::Actor::Named(npc) = target {
                     if !self.is_a_player(npc) {
                         self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
-                    // A damage line names both the spell and who it hit, so a
-                    // spell the game will only cast at one body type settles
-                    // what that creature is. Whose spell it was does not
-                    // matter — the restriction is the game's, so a group
-                    // member's cast proves it just as well as your own.
+                        // A damage line names both the spell and who it hit, so a
+                        // spell the game will only cast at one body type settles
+                        // what that creature is. Whose spell it was does not
+                        // matter — the restriction is the game's, so a group
+                        // member's cast proves it just as well as your own.
                         if let Some(kind) =
                             ability.as_deref().and_then(|a| self.spell_restricts_to(a))
                         {
@@ -1647,9 +1651,7 @@ impl Engine {
         if let Event::CoinLoot { coin } = &entry.event {
             if self.tracker.current().is_none() {
                 if let Some(last) = self.encounters.last_mut() {
-                    if entry.timestamp - last.end
-                        <= norrlog_core::encounter::LOOT_GRACE_SECONDS
-                    {
+                    if entry.timestamp - last.end <= norrlog_core::encounter::LOOT_GRACE_SECONDS {
                         last.coin_copper += coin.as_copper();
                     }
                 }
@@ -2009,7 +2011,10 @@ impl Engine {
         if trio.len() < 3 {
             return String::new();
         }
-        trio.iter().map(|c| c.abbrev()).collect::<Vec<_>>().join("/")
+        trio.iter()
+            .map(|c| c.abbrev())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     /// The classes believed active at a moment, in canonical order.
@@ -2392,11 +2397,14 @@ impl Engine {
     /// no span to draw, and drawing it as a zero-length bar would say the
     /// opposite of what it means.
     fn note_effect_on_target(&mut self, timestamp: i64, body: &str) {
-        let Some((target, span)) = self
-            .resolver
-            .db()
-            .split_landing_on_other(body)
-            .and_then(|(t, ids)| self.resolve_span(timestamp, ids).map(|s| (t.to_string(), s)))
+        let Some((target, span)) =
+            self.resolver
+                .db()
+                .split_landing_on_other(body)
+                .and_then(|(t, ids)| {
+                    self.resolve_span(timestamp, ids)
+                        .map(|s| (t.to_string(), s))
+                })
         else {
             return;
         };
@@ -2487,7 +2495,10 @@ impl Engine {
     /// that same spell within the resolver's association window — the pairing
     /// is what disambiguates a charm from a mez sharing the phrase.
     fn landed_effect_is_your_charm(&self, timestamp: i64, text: &str) -> bool {
-        self.charm_among(timestamp, self.resolver.db().candidates_for_landing_on_other(text))
+        self.charm_among(
+            timestamp,
+            self.resolver.db().candidates_for_landing_on_other(text),
+        )
     }
 
     /// Whether any of these spells is a charm you cast within the resolver's
@@ -3062,7 +3073,10 @@ impl Engine {
                     .entry(norrlog_core::drops::canonical_npc(src).to_lowercase())
                     .or_insert_with(|| (src.clone(), 0, Vec::new()));
                 e.1 += 1;
-                if let Some(z) = self.encounter_containing(l.timestamp).and_then(|e| e.zone.clone()) {
+                if let Some(z) = self
+                    .encounter_containing(l.timestamp)
+                    .and_then(|e| e.zone.clone())
+                {
                     *zones.entry(z.clone()).or_default() += 1;
                     if !e.2.contains(&z) {
                         e.2.push(z);
@@ -3158,7 +3172,11 @@ impl Engine {
                 // first runs larger (108 against 75 for one skeleton), so
                 // taking the tracker's alone would shrink the denominator and
                 // inflate the figure. The larger keeps it a floor.
-                s.kills = deaths.get(key.as_str()).copied().unwrap_or(0).max(self.drops.kills_of(&key));
+                s.kills = deaths
+                    .get(key.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    .max(self.drops.kills_of(&key));
                 // The times you walked away from it are in the drop tracker,
                 // not in the loot log — the loot log only ever records what
                 // you actually took.
@@ -3312,7 +3330,11 @@ impl Engine {
         // Newest first; a chest's items all land in the same second, so the
         // name breaks the tie, or the order is the HashMap's and changes on
         // every start.
-        v.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| a.item.cmp(&b.item)));
+        v.sort_by(|a, b| {
+            b.last_seen
+                .cmp(&a.last_seen)
+                .then_with(|| a.item.cmp(&b.item))
+        });
         v
     }
 
@@ -3392,12 +3414,7 @@ impl Engine {
                     v.retain(|(_, n)| *n > 0);
                     v
                 },
-                melee_swings: s
-                    .hits_by_kind
-                    .get("melee")
-                    .copied()
-                    .unwrap_or(0)
-                    + s.misses,
+                melee_swings: s.hits_by_kind.get("melee").copied().unwrap_or(0) + s.misses,
                 crit_by_kind: s
                     .crit_breakdown()
                     .into_iter()
@@ -3523,12 +3540,21 @@ impl Engine {
     /// the incoming line at the same moment, which is the more useful way to
     /// see it than a silent gap in the pet line.
     fn tick_series(enc: &Encounter) -> TickSeries {
-        let seconds = enc.dealt_ticks.values().map(Vec::len).max().unwrap_or(0)
+        let seconds = enc
+            .dealt_ticks
+            .values()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0)
             .max(enc.taken_ticks.len())
             // The fight's own length, so a pull that ends in ten seconds of
             // nobody hitting anything draws those ten seconds rather than
             // stopping at the last swing and looking shorter than it was.
-            .max(if enc.ticks_retained { enc.duration() as usize } else { 0 })
+            .max(if enc.ticks_retained {
+                enc.duration() as usize
+            } else {
+                0
+            })
             .min(norrlog_core::encounter::TICKS_MAX_SECONDS);
         if !enc.ticks_retained || seconds == 0 {
             return TickSeries::default();
@@ -3546,7 +3572,9 @@ impl Engine {
             }
         };
         for (key, run) in &enc.dealt_ticks {
-            let Some(st) = enc.actors.get(key) else { continue };
+            let Some(st) = enc.actors.get(key) else {
+                continue;
+            };
             let lane = if key == "you" {
                 &mut out.you
             } else if st.is_yours() || st.summoned {
@@ -3754,8 +3782,11 @@ impl Engine {
             session_motes: {
                 // Cheapest tier first, which is the order they are earned in
                 // and the order the desktop panel uses.
-                let mut v: Vec<(String, u64)> =
-                    self.session_motes.iter().map(|(k, n)| (k.clone(), *n)).collect();
+                let mut v: Vec<(String, u64)> = self
+                    .session_motes
+                    .iter()
+                    .map(|(k, n)| (k.clone(), *n))
+                    .collect();
                 v.sort_by(|a, b| mote_tier(&a.0).cmp(&mote_tier(&b.0)).then(a.0.cmp(&b.0)));
                 v
             },
@@ -3873,7 +3904,10 @@ mod tests {
                     x.actors
                         .iter()
                         .filter(|(k, st)| {
-                            k.as_str() != "you" && !st.is_yours() && !st.summoned && !st.damaged_by_you
+                            k.as_str() != "you"
+                                && !st.is_yours()
+                                && !st.summoned
+                                && !st.damaged_by_you
                         })
                         .map(|(_, st)| st.damage_done)
                         .sum::<u64>()
@@ -3926,11 +3960,23 @@ mod tests {
         assert_eq!(t.you.len(), t.allies.len());
         assert_eq!(t.you.len(), t.pets.len());
 
-        assert_eq!(t.you, vec![300, 0, 0, 0, 100], "your damage is not on the fight's seconds");
+        assert_eq!(
+            t.you,
+            vec![300, 0, 0, 0, 100],
+            "your damage is not on the fight's seconds"
+        );
         // The empty second is a zero, not a hole.
         assert_eq!(t.you[1], 0);
-        assert_eq!(t.incoming, vec![0, 0, 90, 0, 0], "what landed on you is misplaced");
-        assert_eq!(t.allies, vec![0, 0, 0, 40, 0], "another player is not on the ally line");
+        assert_eq!(
+            t.incoming,
+            vec![0, 0, 90, 0, 0],
+            "what landed on you is misplaced"
+        );
+        assert_eq!(
+            t.allies,
+            vec![0, 0, 0, 40, 0],
+            "another player is not on the ally line"
+        );
         // The giant is an enemy -- you hit it -- so its output is on the
         // incoming line only for the part that reached you, and nowhere else.
         assert_eq!(t.pets.iter().sum::<u32>(), 0, "no pets in this fight");
@@ -3962,7 +4008,10 @@ mod tests {
             ],
         );
         let (s, _fights, _combat) = e.session_summary(false);
-        assert!(!s.tick_series.retained, "a session drew a curve across its own gaps");
+        assert!(
+            !s.tick_series.retained,
+            "a session drew a curve across its own gaps"
+        );
         assert!(s.tick_series.you.is_empty());
     }
 
@@ -3996,12 +4045,28 @@ mod tests {
         assert_eq!(s.duration, 10, "the fixture's length is the denominator");
         assert_eq!(s.your_damage, 1300);
 
-        let melee = s.outgoing_groups.iter().find(|g| g.group == "Melee").expect("melee");
-        let spell = s.outgoing_groups.iter().find(|g| g.group == "Spell").expect("spell");
+        let melee = s
+            .outgoing_groups
+            .iter()
+            .find(|g| g.group == "Melee")
+            .expect("melee");
+        let spell = s
+            .outgoing_groups
+            .iter()
+            .find(|g| g.group == "Spell")
+            .expect("spell");
         assert_eq!(melee.damage, 800);
         assert_eq!(spell.damage, 500);
-        assert!((melee.dps - 80.0).abs() < 1e-9, "melee dps was {}", melee.dps);
-        assert!((spell.dps - 50.0).abs() < 1e-9, "spell dps was {}", spell.dps);
+        assert!(
+            (melee.dps - 80.0).abs() < 1e-9,
+            "melee dps was {}",
+            melee.dps
+        );
+        assert!(
+            (spell.dps - 50.0).abs() < 1e-9,
+            "spell dps was {}",
+            spell.dps
+        );
 
         // The whole point: the groups reconcile with the headline.
         let summed: f64 = s.outgoing_groups.iter().map(|g| g.dps).sum();
@@ -4017,11 +4082,28 @@ mod tests {
         // the two rows are distinguishable.
         for g in &s.outgoing_groups {
             let inner: f64 = g.abilities.iter().map(|a| a.dps).sum();
-            assert!((inner - g.dps).abs() < 1e-9, "{} splits into {inner}, not {}", g.group, g.dps);
+            assert!(
+                (inner - g.dps).abs() < 1e-9,
+                "{} splits into {inner}, not {}",
+                g.group,
+                g.dps
+            );
         }
-        let slash = melee.abilities.iter().find(|a| a.name.contains("lash")).expect("slash");
-        let kick = melee.abilities.iter().find(|a| a.name.contains("ick")).expect("kick");
-        assert!((slash.dps - 60.0).abs() < 1e-9, "slash dps was {}", slash.dps);
+        let slash = melee
+            .abilities
+            .iter()
+            .find(|a| a.name.contains("lash"))
+            .expect("slash");
+        let kick = melee
+            .abilities
+            .iter()
+            .find(|a| a.name.contains("ick"))
+            .expect("kick");
+        assert!(
+            (slash.dps - 60.0).abs() < 1e-9,
+            "slash dps was {}",
+            slash.dps
+        );
         assert!((kick.dps - 20.0).abs() < 1e-9, "kick dps was {}", kick.dps);
     }
 
@@ -4334,7 +4416,10 @@ mod tests {
                 "[Sun Sep 13 14:59:52 2026] Reclusive ghoul magus writhes in the grip of agony.",
             ],
         );
-        e.tracker.current().map(|enc| enc.effects.iter().map(|f| f.spell.clone()).collect()).unwrap_or_default()
+        e.tracker
+            .current()
+            .map(|enc| enc.effects.iter().map(|f| f.spell.clone()).collect())
+            .unwrap_or_default()
     }
 
     #[test]
@@ -4541,7 +4626,10 @@ mod tests {
             .expect("the sword was seen");
         assert_eq!(item.left, 1);
         assert_eq!(item.looted, 0);
-        assert_eq!(item.sources[0].npc, "a snow orc trooper", "named as the client names it");
+        assert_eq!(
+            item.sources[0].npc, "a snow orc trooper",
+            "named as the client names it"
+        );
         assert_eq!(item.sources[0].kills, 1, "the kill is the denominator");
     }
 
@@ -4569,7 +4657,9 @@ mod tests {
                 "[Tue Jul 28 14:00:12 2026] --You left a Loose Scale on a scaled wolf tracker.--",
             ],
         );
-        let d = e.loot_detail("Loose Scale").expect("the scale was looted once");
+        let d = e
+            .loot_detail("Loose Scale")
+            .expect("the scale was looted once");
         let tracker = d
             .sources
             .iter()
@@ -4608,8 +4698,11 @@ mod tests {
             ],
         );
         let d = e.loot_detail("Wolf Pelt").expect("looted once");
-        let rows: Vec<(&str, u64, u64, u64)> =
-            d.sources.iter().map(|s| (s.mob.as_str(), s.drops, s.left, s.kills)).collect();
+        let rows: Vec<(&str, u64, u64, u64)> = d
+            .sources
+            .iter()
+            .map(|s| (s.mob.as_str(), s.drops, s.left, s.kills))
+            .collect();
         assert_eq!(rows, [("a black wolf", 1, 1, 2)]);
         assert_eq!(d.sources[0].rate, Some(1.0), "two sightings over two kills");
     }
@@ -4672,7 +4765,10 @@ mod tests {
         let d = e.loot_detail("Tiny Glowing Skull").expect("it has a page");
         assert_eq!(d.drops, 0);
         assert_eq!(d.left, 1);
-        assert!(d.first_seen > 0, "dated from the sighting, not from a pickup");
+        assert!(
+            d.first_seen > 0,
+            "dated from the sighting, not from a pickup"
+        );
 
         // The item you did take is unaffected.
         let chips = tally.iter().find(|t| t.item == "Bone Chips").unwrap();
@@ -5252,7 +5348,10 @@ mod tests {
             ],
         );
         e.set_live(true);
-        assert!(e.take_events().is_empty(), "the backlog is history, not news");
+        assert!(
+            e.take_events().is_empty(),
+            "the backlog is history, not news"
+        );
 
         for l in [
             "[Tue Jul 28 12:01:00 2026] You have entered East Commonlands.",
@@ -5305,9 +5404,15 @@ mod tests {
         let names: Vec<&str> = got.iter().map(|p| p.item.as_str()).collect();
         assert!(names.contains(&"Rusty Dagger"), "kept: {names:?}");
         assert!(names.contains(&"Spider Silk"), "stored: {names:?}");
-        assert!(!names.contains(&"Stale Bread"), "outside the window: {names:?}");
+        assert!(
+            !names.contains(&"Stale Bread"),
+            "outside the window: {names:?}"
+        );
         assert!(!names.contains(&"Woven Skull Cap +1"), "graded: {names:?}");
-        assert!(names.contains(&"Fire Beetle Eye"), "sold, not gone: {names:?}");
+        assert!(
+            names.contains(&"Fire Beetle Eye"),
+            "sold, not gone: {names:?}"
+        );
 
         // Newest first, and the corpse it came off travels with it.
         assert_eq!(got.first().map(|p| p.item.as_str()), Some("Spider Silk"));
@@ -5318,7 +5423,10 @@ mod tests {
         let held = |n: &str| got.iter().find(|p| p.item == n).unwrap().held;
         assert!(held("Rusty Dagger"), "kept, so it is in your bags");
         assert!(held("Spider Silk"), "stored, so it is still yours");
-        assert!(!held("Fire Beetle Eye"), "sold, so the chat link is the way in");
+        assert!(
+            !held("Fire Beetle Eye"),
+            "sold, so the chat link is the way in"
+        );
     }
 
     /// A pickup carries the place you were standing in, which is the half of
@@ -5370,7 +5478,10 @@ mod tests {
             ],
         );
         let got = e.recent_pickups(e.now() - 3600);
-        let d = got.iter().find(|p| p.item == "Rusty Dagger").expect("dagger");
+        let d = got
+            .iter()
+            .find(|p| p.item == "Rusty Dagger")
+            .expect("dagger");
         assert_eq!(d.count, 2);
         assert!(d.held, "one of the two is still in your bags");
     }
@@ -5404,16 +5515,35 @@ mod tests {
             "[Tue Jul 28 14:00:01 2026] You have slain a rat!".to_string(),
         ];
         // A chest's worth in one second, in no particular order.
-        for item in ["Silver Ring", "Bone Chips", "Rusty Dagger", "Ale", "Moss Snake Skin", "Cloth Cap"] {
-            lines.push(format!("[Tue Jul 28 14:00:02 2026] --You have looted a {item} from a rat's corpse.--"));
+        for item in [
+            "Silver Ring",
+            "Bone Chips",
+            "Rusty Dagger",
+            "Ale",
+            "Moss Snake Skin",
+            "Cloth Cap",
+        ] {
+            lines.push(format!(
+                "[Tue Jul 28 14:00:02 2026] --You have looted a {item} from a rat's corpse.--"
+            ));
         }
-        lines.push("[Tue Jul 28 14:00:09 2026] --You have looted a Rat Ear from a rat's corpse.--".into());
+        lines.push(
+            "[Tue Jul 28 14:00:09 2026] --You have looted a Rat Ear from a rat's corpse.--".into(),
+        );
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         feed(&mut e, &refs);
         let names: Vec<String> = e.loot_tally().into_iter().map(|t| t.item).collect();
         assert_eq!(
             names,
-            ["Rat Ear", "Ale", "Bone Chips", "Cloth Cap", "Moss Snake Skin", "Rusty Dagger", "Silver Ring"]
+            [
+                "Rat Ear",
+                "Ale",
+                "Bone Chips",
+                "Cloth Cap",
+                "Moss Snake Skin",
+                "Rusty Dagger",
+                "Silver Ring"
+            ]
         );
     }
 
@@ -5434,7 +5564,8 @@ mod tests {
         );
         let enc = e.encounters().first().expect("a fight");
         let wire = serde_json::to_value(e.summarise(enc, false)).unwrap();
-        let brief: norrlog_api::EncounterBrief = serde_json::from_value(wire).expect("decodes as the API type");
+        let brief: norrlog_api::EncounterBrief =
+            serde_json::from_value(wire).expect("decodes as the API type");
         assert_eq!(brief.title, "a rat");
         assert_eq!(brief.your_damage, 22);
         assert_eq!(brief.kills, 1);

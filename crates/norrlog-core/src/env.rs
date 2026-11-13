@@ -34,7 +34,10 @@ mod tests {
     fn every_old_name_is_one_the_project_used() {
         for n in ["GAME_DIR", "EQDB", "DAEMON", "SHOTS_DIR"] {
             let old = super::old_name(n).unwrap();
-            assert!(old.starts_with("EQLPARSER_") || old.starts_with("EQL_"), "{old}");
+            assert!(
+                old.starts_with("EQLPARSER_") || old.starts_with("EQL_"),
+                "{old}"
+            );
             assert!(old.ends_with(n), "{old} is not {n}");
         }
     }

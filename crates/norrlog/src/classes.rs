@@ -3,11 +3,11 @@
 //! section of the parity inventory.
 
 use crate::parts::{ROW, bar_row, card, dim, empty, figure, fill, note};
-use norrlog_api::ClassInfo;
-use gpui::*;
 use crate::theme::px;
+use gpui::*;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::ClassInfo;
 
 pub struct ClassesView {
     classes: Vec<ClassInfo>,
@@ -16,7 +16,10 @@ pub struct ClassesView {
 
 impl ClassesView {
     pub fn new() -> Self {
-        ClassesView { classes: Vec::new(), note_open: false }
+        ClassesView {
+            classes: Vec::new(),
+            note_open: false,
+        }
     }
 
     /// A snapshot arrived. Only a change redraws: the evidence moves far less
@@ -24,7 +27,10 @@ impl ClassesView {
     pub fn on_snapshot(&mut self, classes: Vec<ClassInfo>, cx: &mut Context<Self>) {
         let same = classes.len() == self.classes.len()
             && classes.iter().zip(&self.classes).all(|(a, b)| {
-                a.name == b.name && a.stated == b.stated && pct(a.share) == pct(b.share) && reasons(a) == reasons(b)
+                a.name == b.name
+                    && a.stated == b.stated
+                    && pct(a.share) == pct(b.share)
+                    && reasons(a) == reasons(b)
             });
         if !same {
             self.classes = classes;
@@ -50,39 +56,60 @@ impl Render for ClassesView {
                 bar_row(
                     c.share as f64,
                     fill(ROW),
-                    h_flex().gap_1().child(c.name.clone()).child(dim(format!("({})", c.abbrev))),
+                    h_flex()
+                        .gap_1()
+                        .child(c.name.clone())
+                        .child(dim(format!("({})", c.abbrev))),
                     h_flex()
                         .gap_3()
                         // Long reasons give way to the share, on one line as the renderer keeps them.
-                        .child(dim(reasons(c)).max_w(px(640.)).overflow_hidden().whitespace_nowrap().text_ellipsis())
+                        .child(
+                            dim(reasons(c))
+                                .max_w(px(640.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis(),
+                        )
                         // A class the game named is not a reading with a
                         // confidence, and a percentage beside it would invite
                         // reading it as one.
-                        .child(figure(if c.stated { "stated".into() } else { pct(c.share) })),
+                        .child(figure(if c.stated {
+                            "stated".into()
+                        } else {
+                            pct(c.share)
+                        })),
                 )
             }))
         };
         // The notes come before the rows, as in the renderer.
-        div().id("classes-scroll").size_full().overflow_y_scrollbar().child(
-            card("Detected classes")
-                .child(note(
-                    "classes-note",
-                    self.note_open,
-                    NOTE,
-                    cx.listener(|v, _, _, cx| {
-                        v.note_open = !v.note_open;
-                        cx.notify();
-                    }),
-                ))
-                .child(rows),
-        )
+        div()
+            .id("classes-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(
+                card("Detected classes")
+                    .child(note(
+                        "classes-note",
+                        self.note_open,
+                        NOTE,
+                        cx.listener(|v, _, _, cx| {
+                            v.note_open = !v.note_open;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(rows),
+            )
     }
 }
 
 /// Up to four reasons, comma-joined, or `—`. The rest are not shown.
 fn reasons(c: &ClassInfo) -> String {
     let r: Vec<&str> = c.reasons.iter().take(4).map(String::as_str).collect();
-    if r.is_empty() { "—".into() } else { r.join(", ") }
+    if r.is_empty() {
+        "—".into()
+    } else {
+        r.join(", ")
+    }
 }
 
 fn pct(share: f32) -> String {
@@ -96,7 +123,14 @@ mod tests {
 
     #[test]
     fn a_row_shows_four_reasons_at_most_and_a_rounded_share() {
-        let mut c = ClassInfo { name: "Shaman".into(), abbrev: "SHM".into(), score: 1., share: 0.179, reasons: vec![], stated: false };
+        let mut c = ClassInfo {
+            name: "Shaman".into(),
+            abbrev: "SHM".into(),
+            score: 1.,
+            share: 0.179,
+            reasons: vec![],
+            stated: false,
+        };
         assert_eq!(reasons(&c), "—");
         c.reasons = (1..=6).map(|n| format!("r{n}")).collect();
         assert_eq!(reasons(&c), "r1, r2, r3, r4");

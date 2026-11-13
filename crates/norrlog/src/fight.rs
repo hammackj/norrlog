@@ -5,18 +5,18 @@
 //! Fetched once when opened and never refreshed: a closed fight does not
 //! change. The two charts are in `charts.rs`.
 
-use crate::spell_tip::{SpellCards, spell_tip};
 use crate::encounters::EncountersView;
 use crate::format::{dur, num, when};
+use crate::parts::BarAnim;
+use crate::spell_tip::{SpellCards, spell_tip};
 use crate::table::{self, Col, col, muted, tag};
+use crate::theme::px;
 use crate::theme::*;
-use norrlog_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::theme::px;
-use crate::parts::BarAnim;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
+use norrlog_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
 use std::collections::{HashMap, HashSet};
 
 /// What the detail remembers while it is open. Nothing persists past it.
@@ -48,9 +48,17 @@ const FLAT_COLS: &[Col] = &[
     col("Max", Some(44.), true),
     col("Crit", Some(40.), true),
 ];
-const CRIT_COLS: &[Col] =
-    &[col("Type", None, false), col("Hits", Some(60.), true), col("Crits", Some(60.), true), col("Rate", Some(60.), true)];
-const LEDGER_COLS: &[Col] = &[col("", None, false), col("", Some(60.), true), col("", Some(56.), true)];
+const CRIT_COLS: &[Col] = &[
+    col("Type", None, false),
+    col("Hits", Some(60.), true),
+    col("Crits", Some(60.), true),
+    col("Rate", Some(60.), true),
+];
+const LEDGER_COLS: &[Col] = &[
+    col("", None, false),
+    col("", Some(60.), true),
+    col("", Some(56.), true),
+];
 const HEAL_COLS: &[Col] = &[
     col("Heal spell", None, false),
     col("Healed", Some(64.), true),
@@ -68,10 +76,22 @@ const MOB_COLS: &[Col] = &[
     col("Loot", Some(44.), true),
     col("Resists", Some(56.), true),
 ];
-const RESIST_COLS: &[Col] =
-    &[col("Spell", None, false), col("Resisted", Some(70.), true), col("Landed", Some(60.), true), col("Rate", Some(50.), true)];
-const DEATH_COLS: &[Col] = &[col("Victim", None, false), col("Killed by", None, false), col("When", Some(130.), false)];
-const LOOT_COLS: &[Col] = &[col("Item", None, false), col("Qty", Some(40.), true), col("From", None, false)];
+const RESIST_COLS: &[Col] = &[
+    col("Spell", None, false),
+    col("Resisted", Some(70.), true),
+    col("Landed", Some(60.), true),
+    col("Rate", Some(50.), true),
+];
+const DEATH_COLS: &[Col] = &[
+    col("Victim", None, false),
+    col("Killed by", None, false),
+    col("When", Some(130.), false),
+];
+const LOOT_COLS: &[Col] = &[
+    col("Item", None, false),
+    col("Qty", Some(40.), true),
+    col("From", None, false),
+];
 
 const NAME_SHARED: &str = "At least two creatures in this fight answered to this name — the log gives no id, so \
                            their damage, healing and deaths are pooled here and cannot be separated.";
@@ -82,11 +102,18 @@ impl EncountersView {
         let e = &d.encounter;
         let you = e.actors.get("you");
 
-        let mut sub = h_flex().gap_2().text_color(hex(MUTED)).child(s.zone.clone().unwrap_or_else(|| "unknown zone".into()));
+        let mut sub = h_flex()
+            .gap_2()
+            .text_color(hex(MUTED))
+            .child(s.zone.clone().unwrap_or_else(|| "unknown zone".into()));
         if s.difficulty > 0 {
             sub = sub.child(tag(format!("d{}", s.difficulty), PET));
         }
-        sub = sub.child(format!("· {} · {}", when(Some(s.start)), dur(s.duration as f64)));
+        sub = sub.child(format!(
+            "· {} · {}",
+            when(Some(s.start)),
+            dur(s.duration as f64)
+        ));
         if !s.build.is_empty() {
             sub = sub.child("·").child(tag(s.build.clone(), ACCENT));
         }
@@ -98,7 +125,12 @@ impl EncountersView {
         meter_card = meter_card.child(crit_breakdown(&s.meter, s.duration));
 
         let healing = {
-            let mut c = card("Healing").child(metric(&s.meter, Metric::Healing, "No healing in this fight", None));
+            let mut c = card("Healing").child(metric(
+                &s.meter,
+                Metric::Healing,
+                "No healing in this fight",
+                None,
+            ));
             if let Some(t) = you.and_then(heal_spells) {
                 c = c.child(div().mt_2().child(t));
             }
@@ -107,7 +139,17 @@ impl EncountersView {
 
         let mut out = v_flex()
             .gap_3()
-            .child(v_flex().gap_1().child(div().text_lg().font_weight(FontWeight::BOLD).child(s.title.clone())).child(sub))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::BOLD)
+                            .child(s.title.clone()),
+                    )
+                    .child(sub),
+            )
             .child(
                 div()
                     .flex()
@@ -126,11 +168,26 @@ impl EncountersView {
                         num(Some(s.your_healing as f64)),
                         Some(format!("{} hps", num(Some(s.your_hps)))),
                     ))
-                    .child(stat("Damage taken", num(Some(s.your_damage_taken as f64)), None)),
+                    .child(stat(
+                        "Damage taken",
+                        num(Some(s.your_damage_taken as f64)),
+                        None,
+                    )),
             )
             .children(crate::charts::dps_card(e, s))
-            .child(split(meter_card, self.damage_panes(you, &s.outgoing_groups, cx)))
-            .child(split(healing, card("Damage taken").child(metric(&s.meter, Metric::Taken, "Nobody took damage", None))))
+            .child(split(
+                meter_card,
+                self.damage_panes(you, &s.outgoing_groups, cx),
+            ))
+            .child(split(
+                healing,
+                card("Damage taken").child(metric(
+                    &s.meter,
+                    Metric::Taken,
+                    "Nobody took damage",
+                    None,
+                )),
+            ))
             .child(crate::charts::timeline_card(e, s));
 
         if s.mobs.len() >= 2 {
@@ -144,21 +201,42 @@ impl EncountersView {
 
     /// One row per actor that dealt damage. A row whose actor has abilities
     /// opens to their breakdown, as the renderer's `wireDrilldown`.
-    fn meter(&self, meter: &[MeterRow], actors: &HashMap<String, ActorStats>, cx: &mut Context<Self>) -> Div {
+    fn meter(
+        &self,
+        meter: &[MeterRow],
+        actors: &HashMap<String, ActorStats>,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let rows = fold_pets(meter.iter().filter(|r| r.damage > 0).cloned().collect());
         if rows.is_empty() {
             return empty("No damage recorded");
         }
         let mut out = v_flex().gap_1();
         for (r, folded) in rows {
-            let abilities =
-                actors.get(&r.key).filter(|_| !r.key.is_empty()).and_then(|st| ability_rows(st, r.damage, &r.key, &self.spells));
+            let abilities = actors
+                .get(&r.key)
+                .filter(|_| !r.key.is_empty())
+                .and_then(|st| ability_rows(st, r.damage, &r.key, &self.spells));
             let open = self.fight.open.contains(&r.key);
-            let mut name = h_flex().gap_1().min_w_0().overflow_hidden().font_weight(FontWeight::MEDIUM);
+            let mut name = h_flex()
+                .gap_1()
+                .min_w_0()
+                .overflow_hidden()
+                .font_weight(FontWeight::MEDIUM);
             if abilities.is_some() {
-                name = name.child(div().text_color(hex(MUTED)).child(if open { "▾" } else { "▸" }));
+                name = name.child(div().text_color(hex(MUTED)).child(if open {
+                    "▾"
+                } else {
+                    "▸"
+                }));
             }
-            name = name.child(div().text_color(hex(side_name(&r))).whitespace_nowrap().text_ellipsis().child(r.name.clone()));
+            name = name.child(
+                div()
+                    .text_color(hex(side_name(&r)))
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(r.name.clone()),
+            );
             if let Some((label, color)) = pet_tag(&r, folded) {
                 name = name.child(tag(label, color));
             }
@@ -175,14 +253,25 @@ impl EncountersView {
                 .flex_none()
                 .child(muted(format!("{:.0}% crit", r.crit_rate * 100.)))
                 .child(muted(num(Some(r.damage as f64))))
-                .child(div().min_w(px(52.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(num(Some(r.dps))));
-            let mut row =
-                bar(r.share, side_bar(&r)).id(SharedString::from(format!("meter-{}", r.key))).child(name).child(nums);
+                .child(
+                    div()
+                        .min_w(px(52.))
+                        .flex()
+                        .justify_end()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(num(Some(r.dps))),
+                );
+            let mut row = bar(r.share, side_bar(&r))
+                .id(SharedString::from(format!("meter-{}", r.key)))
+                .child(name)
+                .child(nums);
             if abilities.is_some() {
                 let key = r.key.clone();
                 row = row
                     .cursor_pointer()
-                    .tooltip(|window, cx| Tooltip::new("Click for the ability breakdown").build(window, cx))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Click for the ability breakdown").build(window, cx)
+                    })
                     .on_click(cx.listener(move |v, _, _, cx| {
                         if !v.fight.open.remove(&key) {
                             v.fight.open.insert(key.clone());
@@ -200,34 +289,59 @@ impl EncountersView {
 
     /// Outgoing and Incoming, two panes of one card: the same question from
     /// opposite directions.
-    fn damage_panes(&self, you: Option<&ActorStats>, groups: &[AbilityGroup], cx: &mut Context<Self>) -> Div {
+    fn damage_panes(
+        &self,
+        you: Option<&ActorStats>,
+        groups: &[AbilityGroup],
+        cx: &mut Context<Self>,
+    ) -> Div {
         let incoming = self.fight.incoming;
-        let subtab = |id: &'static str, label: &'static str, count: u64, active: bool, to_in: bool| {
-            div()
-                .id(id)
-                .flex()
-                .gap_1()
-                .px_3()
-                .py_1()
-                .rounded(px(5.))
-                .cursor_pointer()
-                .when(active, |d| d.bg(hex(BG)).text_color(hex(ACCENT)))
-                .when(!active, |d| d.text_color(hex(MUTED)).hover(|s| s.bg(wash(TEXT, 0.05)).text_color(hex(TEXT))))
-                .child(label)
-                .child(div().text_color(hex(MUTED)).child(num(Some(count as f64))))
-                .on_click(cx.listener(move |v, _, _, cx| {
-                    v.fight.incoming = to_in;
-                    cx.notify();
-                }))
-        };
+        let subtab =
+            |id: &'static str, label: &'static str, count: u64, active: bool, to_in: bool| {
+                div()
+                    .id(id)
+                    .flex()
+                    .gap_1()
+                    .px_3()
+                    .py_1()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(active, |d| d.bg(hex(BG)).text_color(hex(ACCENT)))
+                    .when(!active, |d| {
+                        d.text_color(hex(MUTED))
+                            .hover(|s| s.bg(wash(TEXT, 0.05)).text_color(hex(TEXT)))
+                    })
+                    .child(label)
+                    .child(div().text_color(hex(MUTED)).child(num(Some(count as f64))))
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        v.fight.incoming = to_in;
+                        cx.notify();
+                    }))
+            };
         let tabs = h_flex()
             .gap_1()
             .p(px(3.))
             .rounded(px(7.))
             .bg(hex(PANEL_2))
-            .child(subtab("pane-out", "Outgoing", you.map_or(0, |y| y.damage_done), !incoming, false))
-            .child(subtab("pane-in", "Incoming", you.map_or(0, |y| y.damage_taken), incoming, true));
-        let body = if incoming { incoming_pane(you) } else { outgoing_pane(you, groups, &self.spells) };
+            .child(subtab(
+                "pane-out",
+                "Outgoing",
+                you.map_or(0, |y| y.damage_done),
+                !incoming,
+                false,
+            ))
+            .child(subtab(
+                "pane-in",
+                "Incoming",
+                you.map_or(0, |y| y.damage_taken),
+                incoming,
+                true,
+            ));
+        let body = if incoming {
+            incoming_pane(you)
+        } else {
+            outgoing_pane(you, groups, &self.spells)
+        };
         panel().child(div().flex().child(tabs)).child(body)
     }
 }
@@ -236,7 +350,14 @@ impl EncountersView {
 // Building blocks.
 
 fn panel() -> Div {
-    v_flex().gap_2().p_3().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).min_w_0()
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(hex(BORDER))
+        .bg(hex(PANEL))
+        .min_w_0()
 }
 
 fn card(title: &str) -> Div {
@@ -244,11 +365,20 @@ fn card(title: &str) -> Div {
 }
 
 fn heading(title: &str) -> Div {
-    div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.to_uppercase())
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(hex(MUTED))
+        .child(title.to_uppercase())
 }
 
 fn sub_heading(title: impl Into<SharedString>) -> Div {
-    div().mt_2().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(hex(MUTED)).child(title.into())
+    div()
+        .mt_2()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(hex(MUTED))
+        .child(title.into())
 }
 
 fn empty(text: &'static str) -> Div {
@@ -263,7 +393,11 @@ fn hint(text: impl Into<SharedString>) -> Div {
     if bold.is_empty() {
         return d.child(text);
     }
-    let style = HighlightStyle { font_weight: Some(FontWeight::BOLD), color: Some(hex(TEXT).into()), ..Default::default() };
+    let style = HighlightStyle {
+        font_weight: Some(FontWeight::BOLD),
+        color: Some(hex(TEXT).into()),
+        ..Default::default()
+    };
     d.child(StyledText::new(plain).with_highlights(bold.into_iter().map(|r| (r, style))))
 }
 
@@ -274,7 +408,9 @@ fn bold_runs(s: &str) -> (String, Vec<std::ops::Range<usize>>) {
     let mut runs = Vec::new();
     let mut rest = s;
     while let Some(i) = rest.find("**") {
-        let Some(j) = rest[i + 2..].find("**") else { break };
+        let Some(j) = rest[i + 2..].find("**") else {
+            break;
+        };
         out.push_str(&rest[..i]);
         let start = out.len();
         out.push_str(&rest[i + 2..i + 2 + j]);
@@ -287,7 +423,14 @@ fn bold_runs(s: &str) -> (String, Vec<std::ops::Range<usize>>) {
 
 /// Two cards side by side, wrapping to one column when the window is narrow.
 fn split(a: Div, b: Div) -> Div {
-    div().flex().flex_row().flex_wrap().gap_3().items_start().child(a.flex_1().min_w(px(420.))).child(b.flex_1().min_w(px(420.)))
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap_3()
+        .items_start()
+        .child(a.flex_1().min_w(px(420.)))
+        .child(b.flex_1().min_w(px(420.)))
 }
 
 fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
@@ -299,8 +442,18 @@ fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
         .border_1()
         .border_color(hex(BORDER))
         .bg(hex(PANEL))
-        .child(div().text_xs().text_color(hex(MUTED)).child(label.to_uppercase()))
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(value));
+        .child(
+            div()
+                .text_xs()
+                .text_color(hex(MUTED))
+                .child(label.to_uppercase()),
+        )
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value),
+        );
     if let Some(note) = note {
         c = c.child(div().text_xs().text_color(hex(MUTED)).child(note));
     }
@@ -310,7 +463,16 @@ fn stat(label: &'static str, value: String, note: Option<String>) -> Div {
 /// A meter row: a bar `share` wide behind a name and its numbers, the
 /// renderer's `.row` with its `::before`.
 fn bar(share: f64, color: Hsla) -> Div {
-    bar_with(div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(color).into_any_element())
+    bar_with(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(relative(share.clamp(0., 1.) as f32))
+            .bg(color)
+            .into_any_element(),
+    )
 }
 
 /// A bar row around a fill already built, such as `BarAnim`'s eased one.
@@ -331,19 +493,43 @@ fn bar_with(fill: AnyElement) -> Div {
 fn fill_for(anim: &mut Option<&mut BarAnim>, key: String, share: f64, color: Hsla) -> AnyElement {
     match anim {
         Some(a) => a.fill(key, share.clamp(0., 1.) as f32, color),
-        None => div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(color).into_any_element(),
+        None => div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(relative(share.clamp(0., 1.) as f32))
+            .bg(color)
+            .into_any_element(),
     }
 }
 
 /// A table row with the ability-table bar behind it, `share` of the whole.
-fn bar_row(id: impl Into<ElementId>, cols: &[Col], cells: Vec<AnyElement>, share: f64) -> Stateful<Div> {
+fn bar_row(
+    id: impl Into<ElementId>,
+    cols: &[Col],
+    cells: Vec<AnyElement>,
+    share: f64,
+) -> Stateful<Div> {
     table::row_dense(id, cols, cells).relative().child(
-        div().absolute().top_0().bottom_0().left_0().w(relative(share.clamp(0., 1.) as f32)).bg(wash(YOU, 0.22)),
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(relative(share.clamp(0., 1.) as f32))
+            .bg(wash(YOU, 0.22)),
     )
 }
 
 fn table_box(cols: &[Col], rows: Vec<AnyElement>) -> Div {
-    v_flex().rounded(px(6.)).border_1().border_color(hex(BORDER)).overflow_hidden().child(table::head_dense(cols)).children(rows)
+    v_flex()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(hex(BORDER))
+        .overflow_hidden()
+        .child(table::head_dense(cols))
+        .children(rows)
 }
 
 /// An ability's name, carrying its spell card. A swing or a damage shield
@@ -351,7 +537,11 @@ fn table_box(cols: &[Col], rows: Vec<AnyElement>) -> Div {
 /// share the word is not what was done, so those carry none.
 fn spell_name(id: SharedString, name: &str, kind: &str, spells: &Entity<SpellCards>) -> AnyElement {
     let el = div().id(id).child(name.to_string());
-    if matches!(kind, "melee" | "damage shield") { el.into_any_element() } else { spell_tip(el, spells, name).into_any_element() }
+    if matches!(kind, "melee" | "damage shield") {
+        el.into_any_element()
+    } else {
+        spell_tip(el, spells, name).into_any_element()
+    }
 }
 
 fn cell(s: impl Into<SharedString>) -> AnyElement {
@@ -395,37 +585,74 @@ pub(crate) enum Metric {
 /// The dashboard's damage meter: `meterHtml(enc.meter)` with no actor map,
 /// so no drill-down and no hover on the rows, but the same pet folding and
 /// the same `2+` tag as the Encounters detail.
-pub(crate) fn plain_meter(meter: &[MeterRow], empty_text: &'static str, mut anim: Option<&mut BarAnim>) -> Div {
+pub(crate) fn plain_meter(
+    meter: &[MeterRow],
+    empty_text: &'static str,
+    mut anim: Option<&mut BarAnim>,
+) -> Div {
     let rows = fold_pets(meter.iter().filter(|r| r.damage > 0).cloned().collect());
     if rows.is_empty() {
         return empty(empty_text);
     }
-    v_flex().gap_1().children(rows.into_iter().map(|(r, folded)| {
-        let mut name = h_flex().gap_1().min_w_0().overflow_hidden().font_weight(FontWeight::MEDIUM);
-        name = name.child(div().text_color(hex(side_name(&r))).whitespace_nowrap().text_ellipsis().child(r.name.clone()));
-        if let Some((label, color)) = pet_tag(&r, folded) {
-            name = name.child(tag(label, color));
-        }
-        if r.name_shared {
-            name = name.child(
-                div()
-                    .id(SharedString::from(format!("dash-shared-{}", r.key)))
-                    .child(tag("2+", MUTED))
-                    .tooltip(|window, cx| Tooltip::new(NAME_SHARED).build(window, cx)),
-            );
-        }
-        let nums = h_flex()
-            .gap_3()
-            .flex_none()
-            .child(muted(format!("{:.0}% crit", r.crit_rate * 100.)))
-            .child(muted(num(Some(r.damage as f64))))
-            .child(div().min_w(px(52.)).flex().justify_end().font_weight(FontWeight::SEMIBOLD).child(num(Some(r.dps))));
-        bar_with(fill_for(&mut anim, format!("dmg-{}", r.key), r.share, side_bar(&r))).child(name).child(nums)
-    }).collect::<Vec<_>>())
+    v_flex().gap_1().children(
+        rows.into_iter()
+            .map(|(r, folded)| {
+                let mut name = h_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .font_weight(FontWeight::MEDIUM);
+                name = name.child(
+                    div()
+                        .text_color(hex(side_name(&r)))
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(r.name.clone()),
+                );
+                if let Some((label, color)) = pet_tag(&r, folded) {
+                    name = name.child(tag(label, color));
+                }
+                if r.name_shared {
+                    name = name.child(
+                        div()
+                            .id(SharedString::from(format!("dash-shared-{}", r.key)))
+                            .child(tag("2+", MUTED))
+                            .tooltip(|window, cx| Tooltip::new(NAME_SHARED).build(window, cx)),
+                    );
+                }
+                let nums = h_flex()
+                    .gap_3()
+                    .flex_none()
+                    .child(muted(format!("{:.0}% crit", r.crit_rate * 100.)))
+                    .child(muted(num(Some(r.damage as f64))))
+                    .child(
+                        div()
+                            .min_w(px(52.))
+                            .flex()
+                            .justify_end()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(num(Some(r.dps))),
+                    );
+                bar_with(fill_for(
+                    &mut anim,
+                    format!("dmg-{}", r.key),
+                    r.share,
+                    side_bar(&r),
+                ))
+                .child(name)
+                .child(nums)
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// `metricHtml`: one row set, filtered and sorted per metric.
-pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str, mut anim: Option<&mut BarAnim>) -> Div {
+pub(crate) fn metric(
+    meter: &[MeterRow],
+    m: Metric,
+    empty_text: &'static str,
+    mut anim: Option<&mut BarAnim>,
+) -> Div {
     let value = |r: &MeterRow| match m {
         Metric::Healing => r.healing,
         Metric::Taken => r.damage_taken,
@@ -435,27 +662,56 @@ pub(crate) fn metric(meter: &[MeterRow], m: Metric, empty_text: &'static str, mu
     if rows.is_empty() {
         return empty(empty_text);
     }
-    v_flex().gap_1().children(rows.into_iter().map(|r| {
-        let (share, rate) = match m {
-            Metric::Healing => (r.heal_share, Some(r.hps)),
-            Metric::Taken => (r.taken_share, None),
-        };
-        let mut nums = h_flex().gap_3().flex_none().child(muted(num(Some(value(r) as f64))));
-        if let Some(rate) = rate {
-            nums = nums.child(
-                h_flex().gap_1().font_weight(FontWeight::SEMIBOLD).child(num(Some(rate))).child(muted("hps")),
-            );
-        }
-        let pane = if matches!(m, Metric::Healing) { "heal" } else { "taken" };
-        bar_with(fill_for(&mut anim, format!("{pane}-{}", r.key), share, side_bar(r)))
-            .child(div().font_weight(FontWeight::MEDIUM).text_color(hex(side_name(r))).child(r.name.clone()))
-            .child(nums)
-    }).collect::<Vec<_>>())
+    v_flex().gap_1().children(
+        rows.into_iter()
+            .map(|r| {
+                let (share, rate) = match m {
+                    Metric::Healing => (r.heal_share, Some(r.hps)),
+                    Metric::Taken => (r.taken_share, None),
+                };
+                let mut nums = h_flex()
+                    .gap_3()
+                    .flex_none()
+                    .child(muted(num(Some(value(r) as f64))));
+                if let Some(rate) = rate {
+                    nums = nums.child(
+                        h_flex()
+                            .gap_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(num(Some(rate)))
+                            .child(muted("hps")),
+                    );
+                }
+                let pane = if matches!(m, Metric::Healing) {
+                    "heal"
+                } else {
+                    "taken"
+                };
+                bar_with(fill_for(
+                    &mut anim,
+                    format!("{pane}-{}", r.key),
+                    share,
+                    side_bar(r),
+                ))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(hex(side_name(r)))
+                        .child(r.name.clone()),
+                )
+                .child(nums)
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// `outgoingPaneHtml`: your damage grouped by mechanism, or the flat list
 /// for a fight parsed before abilities carried a kind.
-fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Entity<SpellCards>) -> Div {
+fn outgoing_pane(
+    you: Option<&ActorStats>,
+    groups: &[AbilityGroup],
+    spells: &Entity<SpellCards>,
+) -> Div {
     let Some(you) = you.filter(|y| y.damage_done > 0) else {
         return empty("No damage dealt");
     };
@@ -472,7 +728,14 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                     num(Some(a.total as f64)),
                     format!("{:.1}%", a.total as f64 / total * 100.),
                     a.hits.to_string(),
-                    format!("{:.0}", if a.hits > 0 { a.total as f64 / a.hits as f64 } else { 0. }),
+                    format!(
+                        "{:.0}",
+                        if a.hits > 0 {
+                            a.total as f64 / a.hits as f64
+                        } else {
+                            0.
+                        }
+                    ),
                     a.max.to_string(),
                     format!("{:.0}%", crit_pct(a.crits, a.hits)),
                 ]
@@ -488,7 +751,15 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                 bar_row(
                     SharedString::from(format!("flat-{name}")),
                     &cols,
-                    vec![cell(next()), cell(next()), dim(next()), dim(next()), cell(next()), cell(next()), dim(next())],
+                    vec![
+                        cell(next()),
+                        cell(next()),
+                        dim(next()),
+                        dim(next()),
+                        cell(next()),
+                        cell(next()),
+                        dim(next()),
+                    ],
                     a.total as f64 / total,
                 )
                 .into_any_element()
@@ -509,7 +780,11 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                         num(Some(a.damage as f64)),
                         dps_text(Some(a.dps)),
                         format!("{:.1}%", a.share * 100.),
-                        if a.casts > 0 { num(Some(a.casts as f64)) } else { "—".into() },
+                        if a.casts > 0 {
+                            num(Some(a.casts as f64))
+                        } else {
+                            "—".into()
+                        },
                         a.hits.to_string(),
                         format!("{:.0}", a.average),
                         a.max.to_string(),
@@ -519,7 +794,10 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                 .collect()
         })
         .collect();
-    let cols = table::fit(GROUP_COLS, &texts.iter().flatten().cloned().collect::<Vec<_>>());
+    let cols = table::fit(
+        GROUP_COLS,
+        &texts.iter().flatten().cloned().collect::<Vec<_>>(),
+    );
     let mut out = v_flex().gap_1();
     for (g, texts) in groups.iter().zip(texts) {
         out = out.child(
@@ -527,7 +805,12 @@ fn outgoing_pane(you: Option<&ActorStats>, groups: &[AbilityGroup], spells: &Ent
                 .mt_2()
                 .justify_between()
                 .gap_2()
-                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(g.group.to_uppercase()))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(g.group.to_uppercase()),
+                )
                 .child(div().text_xs().text_color(hex(MUTED)).child(format!(
                     "{} · {} dps · {:.0}% of your damage",
                     num(Some(g.damage as f64)),
@@ -584,17 +867,32 @@ fn incoming_pane(you: Option<&ActorStats>) -> Div {
         let body = if list.is_empty() {
             empty("None")
         } else {
-            v_flex().gap_1().children(list.into_iter().map(|(name, t, hits, max)| {
-                let mut nums = h_flex().gap_3().flex_none();
-                if hits > 0 {
-                    nums = nums.child(muted(format!("{} hits · max {}", num(Some(hits as f64)), num(Some(max as f64)))));
-                }
-                bar(t as f64 / total, wash(ENEMY, 0.22))
-                    .child(div().font_weight(FontWeight::MEDIUM).child(name))
-                    .child(nums.child(div().font_weight(FontWeight::SEMIBOLD).child(num(Some(t as f64)))))
-            }))
+            v_flex()
+                .gap_1()
+                .children(list.into_iter().map(|(name, t, hits, max)| {
+                    let mut nums = h_flex().gap_3().flex_none();
+                    if hits > 0 {
+                        nums = nums.child(muted(format!(
+                            "{} hits · max {}",
+                            num(Some(hits as f64)),
+                            num(Some(max as f64))
+                        )));
+                    }
+                    bar(t as f64 / total, wash(ENEMY, 0.22))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                        .child(
+                            nums.child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(num(Some(t as f64))),
+                            ),
+                        )
+                }))
         };
-        v_flex().gap_1().child(sub_heading(title.to_uppercase())).child(body)
+        v_flex()
+            .gap_1()
+            .child(sub_heading(title.to_uppercase()))
+            .child(body)
     };
     let (swings, avoid) = avoidance(you);
     v_flex()
@@ -604,20 +902,41 @@ fn incoming_pane(you: Option<&ActorStats>) -> Div {
             num(Some(total)),
             avoid,
             num(Some(swings as f64)),
-            if you.deaths > 0 { format!("died {}×", you.deaths) } else { "survived".into() }
+            if you.deaths > 0 {
+                format!("died {}×", you.deaths)
+            } else {
+                "survived".into()
+            }
         )))
-        .child(section("By type", you.damage_taken_by_kind.iter().map(|(k, v)| (k.clone(), *v, 0, 0)).collect()))
-        .child(section("By attacker", you.damage_taken_by_source.iter().map(|(k, v)| (k.clone(), *v, 0, 0)).collect()))
+        .child(section(
+            "By type",
+            you.damage_taken_by_kind
+                .iter()
+                .map(|(k, v)| (k.clone(), *v, 0, 0))
+                .collect(),
+        ))
+        .child(section(
+            "By attacker",
+            you.damage_taken_by_source
+                .iter()
+                .map(|(k, v)| (k.clone(), *v, 0, 0))
+                .collect(),
+        ))
         .child(section(
             "By attack",
-            you.damage_taken_by_ability.iter().map(|(k, a)| (k.clone(), a.total, a.hits, a.max)).collect(),
+            you.damage_taken_by_ability
+                .iter()
+                .map(|(k, a)| (k.clone(), a.total, a.hits, a.max))
+                .collect(),
         ))
 }
 
 /// `critBreakdownHtml`: crit rate per mechanism, the swing ledgers, and the
 /// lines that explain a fight's numbers (stuns, extra attacks, overhealing).
 fn crit_breakdown(meter: &[MeterRow], duration: i64) -> Div {
-    let Some(you) = meter.iter().find(|r| r.is_you) else { return div() };
+    let Some(you) = meter.iter().find(|r| r.is_you) else {
+        return div();
+    };
     if you.crit_by_kind.is_empty() && you.heals == 0 {
         return div();
     }
@@ -628,7 +947,12 @@ fn crit_breakdown(meter: &[MeterRow], duration: i64) -> Div {
             table::row_dense(
                 SharedString::from(format!("crit-{kind}")),
                 CRIT_COLS,
-                vec![cell(kind.clone()), cell(int(*hits)), cell(int(*crits)), cell(format!("{:.1}%", rate * 100.))],
+                vec![
+                    cell(kind.clone()),
+                    cell(int(*hits)),
+                    cell(int(*crits)),
+                    cell(format!("{:.1}%", rate * 100.)),
+                ],
             )
             .into_any_element()
         })
@@ -639,7 +963,10 @@ fn crit_breakdown(meter: &[MeterRow], duration: i64) -> Div {
                 "crit-healing",
                 CRIT_COLS,
                 vec![
-                    div().text_color(hex(YOU)).child("healing").into_any_element(),
+                    div()
+                        .text_color(hex(YOU))
+                        .child("healing")
+                        .into_any_element(),
                     cell(int(you.heals)),
                     cell(int(you.heal_crits)),
                     cell(format!("{:.1}%", you.heal_crit_rate * 100.)),
@@ -650,16 +977,34 @@ fn crit_breakdown(meter: &[MeterRow], duration: i64) -> Div {
             .into_any_element(),
         );
     }
-    let mut out = v_flex().gap_2().child(sub_heading("YOUR CRIT RATE BY TYPE")).child(table_box(CRIT_COLS, rows));
+    let mut out = v_flex()
+        .gap_2()
+        .child(sub_heading("YOUR CRIT RATE BY TYPE"))
+        .child(table_box(CRIT_COLS, rows));
     for line in crit_hints(you, duration) {
         out = out.child(hint(line));
     }
     let ledgers = [
-        ledger(&you.offence_outcomes, "Your swings", "Missed is you not connecting; the rest is the target stopping you."),
-        ledger(&you.defence_outcomes, "Swings at you", "Everything below landed is avoidance — the part you can gear for."),
+        ledger(
+            &you.offence_outcomes,
+            "Your swings",
+            "Missed is you not connecting; the rest is the target stopping you.",
+        ),
+        ledger(
+            &you.defence_outcomes,
+            "Swings at you",
+            "Everything below landed is avoidance — the part you can gear for.",
+        ),
     ];
     if ledgers.iter().any(Option::is_some) {
-        out = out.child(div().flex().flex_row().flex_wrap().gap_3().children(ledgers.into_iter().flatten()));
+        out = out.child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_3()
+                .children(ledgers.into_iter().flatten()),
+        );
     }
     if let Some(line) = overheal_line(you) {
         out = out.child(hint(line));
@@ -682,7 +1027,11 @@ fn ledger(rows: &[(String, u64)], title: &str, note: &'static str) -> Option<Div
             bar_row(
                 SharedString::from(format!("ledger-{title}-{what}")),
                 LEDGER_COLS,
-                vec![cell(what), cell(int(n)), dim(format!("{:.1}%", share * 100.))],
+                vec![
+                    cell(what),
+                    cell(int(n)),
+                    dim(format!("{:.1}%", share * 100.)),
+                ],
                 share,
             )
             .into_any_element()
@@ -696,10 +1045,22 @@ fn ledger(rows: &[(String, u64)], title: &str, note: &'static str) -> Option<Div
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title.to_string()),
+                    )
                     .child(muted(format!("{} swings", int(total)))),
             )
-            .child(v_flex().rounded(px(6.)).border_1().border_color(hex(BORDER)).overflow_hidden().children(body))
+            .child(
+                v_flex()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(hex(BORDER))
+                    .overflow_hidden()
+                    .children(body),
+            )
             .child(hint(note)),
     )
 }
@@ -715,7 +1076,11 @@ fn heal_spells(you: &ActorStats) -> Option<Div> {
         .into_iter()
         .take(12)
         .map(|(name, a)| {
-            let share = if you.healing_done > 0 { a.total as f64 / you.healing_done as f64 * 100. } else { 0. };
+            let share = if you.healing_done > 0 {
+                a.total as f64 / you.healing_done as f64 * 100.
+            } else {
+                0.
+            };
             let mut n = h_flex().gap_1().child(name.clone());
             if a.kind == "hot" {
                 n = n.child(tag("hot", PET));
@@ -729,9 +1094,20 @@ fn heal_spells(you: &ActorStats) -> Option<Div> {
                     dim(format!("{share:.1}%")),
                     // A dash where the cast was never seen: a zero would
                     // claim it was never cast.
-                    dim(if a.casts > 0 { num(Some(a.casts as f64)) } else { "—".into() }),
+                    dim(if a.casts > 0 {
+                        num(Some(a.casts as f64))
+                    } else {
+                        "—".into()
+                    }),
                     dim(a.hits.to_string()),
-                    cell(format!("{:.0}", if a.hits > 0 { a.total as f64 / a.hits as f64 } else { 0. })),
+                    cell(format!(
+                        "{:.0}",
+                        if a.hits > 0 {
+                            a.total as f64 / a.hits as f64
+                        } else {
+                            0.
+                        }
+                    )),
                     cell(a.max.to_string()),
                 ],
             )
@@ -773,14 +1149,23 @@ fn resists_card(resists: &[norrlog_api::ResistTally]) -> Div {
             let who = r
                 .targets
                 .iter()
-                .map(|(t, n)| if *n > 1 { format!("{t} ×{n}") } else { t.clone() })
+                .map(|(t, n)| {
+                    if *n > 1 {
+                        format!("{t} ×{n}")
+                    } else {
+                        t.clone()
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             table::row_dense(
                 SharedString::from(format!("resist-{}", r.spell)),
                 RESIST_COLS,
                 vec![
-                    v_flex().child(r.spell.clone()).child(muted(who).text_sm()).into_any_element(),
+                    v_flex()
+                        .child(r.spell.clone())
+                        .child(muted(who).text_sm())
+                        .into_any_element(),
                     cell(r.resisted.to_string()),
                     dim(r.landed.to_string()),
                     cell(resist_rate(r.resisted, r.landed)),
@@ -807,7 +1192,11 @@ fn deaths_card(deaths: &[norrlog_api::DeathRecord]) -> Div {
             table::row_dense(
                 SharedString::from(format!("death-{i}")),
                 DEATH_COLS,
-                vec![cell(x.victim.clone()), dim(x.killer.clone().unwrap_or_else(|| "—".into())), dim(when(Some(x.timestamp)))],
+                vec![
+                    cell(x.victim.clone()),
+                    dim(x.killer.clone().unwrap_or_else(|| "—".into())),
+                    dim(when(Some(x.timestamp))),
+                ],
             )
             .into_any_element()
         })
@@ -834,8 +1223,14 @@ fn loot_card(e: &norrlog_api::Encounter, items: &Entity<crate::item_tip::ItemCar
                 SharedString::from(format!("loot-{i}")),
                 LOOT_COLS,
                 vec![
-                    crate::item_tip::item_tip(div().id(SharedString::from(format!("loot-item-{i}"))).child(l.item.clone()), items, &l.item)
-                        .into_any_element(),
+                    crate::item_tip::item_tip(
+                        div()
+                            .id(SharedString::from(format!("loot-item-{i}")))
+                            .child(l.item.clone()),
+                        items,
+                        &l.item,
+                    )
+                    .into_any_element(),
                     cell(l.quantity.to_string()),
                     dim(l.source.clone().unwrap_or_else(|| "—".into())),
                 ],
@@ -852,48 +1247,97 @@ fn loot_card(e: &norrlog_api::Encounter, items: &Entity<crate::item_tip::ItemCar
 /// An actor's own abilities, biggest first, as the renderer's drill list.
 /// Shares are of that actor's damage: the question inside a row is where
 /// *its* damage came from.
-fn ability_rows(st: &ActorStats, total: u64, key: &str, spells: &Entity<SpellCards>) -> Option<Div> {
-    let mut rows: Vec<(&String, &AbilityStats)> = st.by_ability.iter().filter(|(_, a)| a.total > 0).collect();
+fn ability_rows(
+    st: &ActorStats,
+    total: u64,
+    key: &str,
+    spells: &Entity<SpellCards>,
+) -> Option<Div> {
+    let mut rows: Vec<(&String, &AbilityStats)> =
+        st.by_ability.iter().filter(|(_, a)| a.total > 0).collect();
     if rows.is_empty() {
         return None;
     }
     rows.sort_by(|a, b| b.1.total.cmp(&a.1.total).then_with(|| a.0.cmp(b.0)));
-    let sum = if total > 0 { total } else { rows.iter().map(|r| r.1.total).sum::<u64>().max(1) } as f64;
-    Some(v_flex().gap(px(2.)).pl_4().children(rows.into_iter().map(|(name, a)| {
-        bar(a.total as f64 / sum, wash(YOU, 0.18))
-            .py(px(3.))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .min_w_0()
-                    // The name gives way to the numbers, not the kind tag.
-                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(spell_name(
-                        SharedString::from(format!("sp-dr-{key}-{name}")),
-                        name,
-                        &a.kind,
-                        spells,
-                    )))
-                    .child(tag(if a.kind.is_empty() { "?".into() } else { a.kind.clone() }, ACCENT).flex_none()),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .flex_none()
-                    .child(muted(drill_counts(a)))
-                    .child(muted(format!(
-                        "avg {} · max {}",
-                        num(Some(if a.hits > 0 { (a.total as f64 / a.hits as f64).round() } else { 0. })),
-                        num(Some(a.max as f64))
-                    )))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(num(Some(a.total as f64)))),
-            )
-    })))
+    let sum = if total > 0 {
+        total
+    } else {
+        rows.iter().map(|r| r.1.total).sum::<u64>().max(1)
+    } as f64;
+    Some(
+        v_flex()
+            .gap(px(2.))
+            .pl_4()
+            .children(rows.into_iter().map(|(name, a)| {
+                bar(a.total as f64 / sum, wash(YOU, 0.18))
+                    .py(px(3.))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .min_w_0()
+                            // The name gives way to the numbers, not the kind tag.
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(spell_name(
+                                        SharedString::from(format!("sp-dr-{key}-{name}")),
+                                        name,
+                                        &a.kind,
+                                        spells,
+                                    )),
+                            )
+                            .child(
+                                tag(
+                                    if a.kind.is_empty() {
+                                        "?".into()
+                                    } else {
+                                        a.kind.clone()
+                                    },
+                                    ACCENT,
+                                )
+                                .flex_none(),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .flex_none()
+                            .child(muted(drill_counts(a)))
+                            .child(muted(format!(
+                                "avg {} · max {}",
+                                num(Some(if a.hits > 0 {
+                                    (a.total as f64 / a.hits as f64).round()
+                                } else {
+                                    0.
+                                })),
+                                num(Some(a.max as f64))
+                            )))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(num(Some(a.total as f64))),
+                            ),
+                    )
+            })),
+    )
 }
 
 /// `{n} casts · {n} hits · {c}% crit`, casts only where they were recorded.
 fn drill_counts(a: &AbilityStats) -> String {
-    let casts = if a.casts > 0 { format!("{} cast{} · ", a.casts, plural(a.casts)) } else { String::new() };
-    format!("{casts}{} hit{} · {:.0}% crit", a.hits, plural(a.hits), crit_pct(a.crits, a.hits))
+    let casts = if a.casts > 0 {
+        format!("{} cast{} · ", a.casts, plural(a.casts))
+    } else {
+        String::new()
+    };
+    format!(
+        "{casts}{} hit{} · {:.0}% crit",
+        a.hits,
+        plural(a.hits),
+        crit_pct(a.crits, a.hits)
+    )
 }
 
 /// Fold each creature's summoned pet into it, as `foldPets`: never your own
@@ -906,8 +1350,12 @@ fn fold_pets(rows: Vec<MeterRow>) -> Vec<(MeterRow, usize)> {
         if r.is_you || r.is_pet || r.pet_kind.as_deref() != Some("summoned") {
             continue;
         }
-        let Some(owner) = r.pet_owner.as_deref() else { continue };
-        let Some(o) = out.iter().position(|(x, _)| x.name == owner) else { continue };
+        let Some(owner) = r.pet_owner.as_deref() else {
+            continue;
+        };
+        let Some(o) = out.iter().position(|(x, _)| x.name == owner) else {
+            continue;
+        };
         if o == i {
             continue;
         }
@@ -919,7 +1367,11 @@ fn fold_pets(rows: Vec<MeterRow>) -> Vec<(MeterRow, usize)> {
         *n += 1;
         absorbed[i] = true;
     }
-    out.into_iter().zip(absorbed).filter(|(_, gone)| !gone).map(|(r, _)| r).collect()
+    out.into_iter()
+        .zip(absorbed)
+        .filter(|(_, gone)| !gone)
+        .map(|(r, _)| r)
+        .collect()
 }
 
 /// `petTag`: what kind of pet a row is, and whose.
@@ -932,23 +1384,48 @@ fn pet_tag(r: &MeterRow, folded: usize) -> Option<(String, u32)> {
     if r.is_pet {
         return Some((label.to_string(), PET));
     }
-    Some((r.pet_owner.as_ref().map_or_else(|| label.to_string(), |o| format!("{label} {o}")), MUTED))
+    Some((
+        r.pet_owner
+            .as_ref()
+            .map_or_else(|| label.to_string(), |o| format!("{label} {o}")),
+        MUTED,
+    ))
 }
 
 /// The sentence under the meter about what your pets added.
 fn pet_line(d: &EncounterDetail) -> Option<String> {
-    let pets = if d.your_pets.is_empty() { &d.charmed_pets } else { &d.your_pets };
+    let pets = if d.your_pets.is_empty() {
+        &d.charmed_pets
+    } else {
+        &d.your_pets
+    };
     if pets.is_empty() {
         return None;
     }
     let s = &d.summary;
     let own = d.encounter.actors.get("you").map_or(0, |y| y.damage_done);
-    Some(pet_sentence(pets.len(), d.charmed_pets.len(), own, d.your_damage_with_pets, s.duration, s.charm_uptime, s.charm_breaks))
+    Some(pet_sentence(
+        pets.len(),
+        d.charmed_pets.len(),
+        own,
+        d.your_damage_with_pets,
+        s.duration,
+        s.charm_uptime,
+        s.charm_breaks,
+    ))
 }
 
 /// `pets` you had, `charmed` of them charmed; `own` your damage alone, `with`
 /// it plus the pets'.
-fn pet_sentence(pets: usize, charmed: usize, own: u64, with: u64, duration: i64, uptime: f64, breaks: u32) -> String {
+fn pet_sentence(
+    pets: usize,
+    charmed: usize,
+    own: u64,
+    with: u64,
+    duration: i64,
+    uptime: f64,
+    breaks: u32,
+) -> String {
     // Only "charmed" when every one of them was: a magician's pet and a
     // bard's charm can share a meter.
     let all_charmed = charmed == pets && charmed > 0;
@@ -962,12 +1439,23 @@ fn pet_sentence(pets: usize, charmed: usize, own: u64, with: u64, duration: i64,
         "{word} contributed **{}** damage — your total including pets is **{}** ({} dps).",
         num(Some(with.saturating_sub(own) as f64)),
         num(Some(with as f64)),
-        num(Some(if duration > 0 { with as f64 / duration as f64 } else { 0. })),
+        num(Some(if duration > 0 {
+            with as f64 / duration as f64
+        } else {
+            0.
+        })),
     );
     if charmed > 0 {
-        line.push_str(&format!(" Charm held **{}** of the fight", charm_pct(uptime, breaks)));
+        line.push_str(&format!(
+            " Charm held **{}** of the fight",
+            charm_pct(uptime, breaks)
+        ));
         if breaks > 0 {
-            line.push_str(&format!(", breaking {} time{}.", breaks, plural(breaks as u64)));
+            line.push_str(&format!(
+                ", breaking {} time{}.",
+                breaks,
+                plural(breaks as u64)
+            ));
         } else {
             line.push_str(" without breaking.");
         }
@@ -978,7 +1466,11 @@ fn pet_sentence(pets: usize, charmed: usize, own: u64, with: u64, duration: i64,
 /// A broken charm did not hold all of the fight, however the rounding falls.
 fn charm_pct(uptime: f64, breaks: u32) -> String {
     let pct = uptime.min(1.) * 100.;
-    if breaks > 0 && pct > 99. { ">99%".into() } else { format!("{pct:.0}%") }
+    if breaks > 0 && pct > 99. {
+        ">99%".into()
+    } else {
+        format!("{pct:.0}%")
+    }
 }
 
 /// Swings at you and the share you avoided, as the Incoming pane's head.
@@ -986,7 +1478,14 @@ fn avoidance(you: &ActorStats) -> (u64, f64) {
     let hits: u64 = you.damage_taken_by_ability.values().map(|a| a.hits).sum();
     let avoided = you.attacks_missed + you.avoided;
     let swings = hits + avoided;
-    (swings, if swings > 0 { avoided as f64 / swings as f64 * 100. } else { 0. })
+    (
+        swings,
+        if swings > 0 {
+            avoided as f64 / swings as f64 * 100.
+        } else {
+            0.
+        },
+    )
 }
 
 /// The cause, extra-attack and stun lines under the crit table.
@@ -1026,7 +1525,11 @@ fn crit_hints(you: &MeterRow, duration: i64) -> Vec<String> {
         } else {
             String::new()
         };
-        let more = if you.stuns_avoided > 0 { format!(", shrugging off {} more", you.stuns_avoided) } else { String::new() };
+        let more = if you.stuns_avoided > 0 {
+            format!(", shrugging off {} more", you.stuns_avoided)
+        } else {
+            String::new()
+        };
         out.push(format!(
             "Stunned for **{}**{of}, across {} stun{}{more}.",
             dur(you.stunned_seconds as f64),
@@ -1065,7 +1568,11 @@ fn dps_text(v: Option<f64>) -> String {
 
 fn resist_rate(resisted: u64, landed: u64) -> String {
     let attempts = resisted + landed;
-    if attempts == 0 { "—".into() } else { format!("{:.0}%", resisted as f64 / attempts as f64 * 100.) }
+    if attempts == 0 {
+        "—".into()
+    } else {
+        format!("{:.0}%", resisted as f64 / attempts as f64 * 100.)
+    }
 }
 
 fn coin_pp(copper: u64) -> String {
@@ -1073,7 +1580,11 @@ fn coin_pp(copper: u64) -> String {
 }
 
 fn crit_pct(crits: u64, hits: u64) -> f64 {
-    if hits > 0 { crits as f64 / hits as f64 * 100. } else { 0. }
+    if hits > 0 {
+        crits as f64 / hits as f64 * 100.
+    } else {
+        0.
+    }
 }
 
 /// `toLocaleString()` for a count: grouped, no decimals.
@@ -1091,7 +1602,10 @@ fn plural(n: u64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{bold_runs, pet_sentence, MeterRow, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_tag, resist_rate};
+    use super::{
+        MeterRow, bold_runs, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_sentence,
+        pet_tag, resist_rate,
+    };
     use norrlog_api::AbilityStats;
 
     fn row(name: &str, damage: u64) -> MeterRow {
@@ -1137,7 +1651,10 @@ mod tests {
              Charm held **88%** of the fight, breaking 1 time."
         );
         assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).starts_with("Charmed pets contributed"));
-        assert!(pet_sentence(2, 2, 0, 10, 10, 1.0, 0).ends_with("Charm held **100%** of the fight without breaking."));
+        assert!(
+            pet_sentence(2, 2, 0, 10, 10, 1.0, 0)
+                .ends_with("Charm held **100%** of the fight without breaking.")
+        );
         assert!(pet_sentence(2, 2, 0, 10, 10, 0.5, 5).ends_with("breaking 5 times."));
         let summoned = pet_sentence(1, 0, 0, 10, 10, 0.0, 0);
         assert!(summoned.starts_with("Your pet contributed") && !summoned.contains("Charm"));
@@ -1146,7 +1663,10 @@ mod tests {
 
     #[test]
     fn bold_runs_drop_their_markers_and_keep_their_place() {
-        assert_eq!(bold_runs("From **Critical** 39× · **Slay** 2×"), ("From Critical 39× · Slay 2×".into(), vec![5..13, 22..26]));
+        assert_eq!(
+            bold_runs("From **Critical** 39× · **Slay** 2×"),
+            ("From Critical 39× · Slay 2×".into(), vec![5..13, 22..26])
+        );
         assert_eq!(bold_runs("no marks"), ("no marks".into(), vec![]));
         assert_eq!(bold_runs("odd ** one"), ("odd ** one".into(), vec![]));
         assert_eq!(bold_runs("**×**"), ("×".into(), vec![0..2]));
@@ -1168,9 +1688,19 @@ mod tests {
         assert_eq!(resist_rate(3, 1), "75%");
         assert_eq!(resist_rate(0, 0), "—");
         assert_eq!(coin_pp(5353), "5.35 pp");
-        let a = AbilityStats { total: 300, hits: 3, crits: 1, casts: 1, ..Default::default() };
+        let a = AbilityStats {
+            total: 300,
+            hits: 3,
+            crits: 1,
+            casts: 1,
+            ..Default::default()
+        };
         assert_eq!(drill_counts(&a), "1 cast · 3 hits · 33% crit");
-        let swing = AbilityStats { total: 10, hits: 1, ..Default::default() };
+        let swing = AbilityStats {
+            total: 10,
+            hits: 1,
+            ..Default::default()
+        };
         assert_eq!(drill_counts(&swing), "1 hit · 0% crit");
     }
 }

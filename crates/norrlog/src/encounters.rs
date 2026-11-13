@@ -8,18 +8,18 @@
 //! the new fights by scrolling back up.
 
 use crate::api::{Api, query};
+use crate::fight::FightUi;
 use crate::format::{dur, num, when};
 use crate::table::{self, Col, col, muted, tag};
-use crate::theme::*;
-use crate::fight::FightUi;
-use norrlog_api::{EncounterBrief, EncounterDetail, EncounterPage, MobPage, MobRow};
-use gpui::*;
 use crate::theme::px;
+use crate::theme::*;
+use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Sizable, h_flex, v_flex};
+use norrlog_api::{EncounterBrief, EncounterDetail, EncounterPage, MobPage, MobRow};
 use std::time::Duration;
 
 /// Rows per page: the renderer's, and as much as is worth drawing at once.
@@ -162,7 +162,11 @@ impl EncountersView {
     fn filters(&self, cx: &App) -> Vec<(&'static str, String)> {
         let text = |i: &Entity<InputState>| i.read(cx).value().trim().to_string();
         let mut q = Vec::new();
-        for (k, v) in [("search", text(&self.search)), ("zone", text(&self.zone)), ("build", text(&self.build))] {
+        for (k, v) in [
+            ("search", text(&self.search)),
+            ("zone", text(&self.zone)),
+            ("build", text(&self.build)),
+        ] {
             if !v.is_empty() {
                 q.push((k, v));
             }
@@ -195,14 +199,29 @@ impl EncountersView {
         let generation = self.generation;
         let mut q = self.filters(cx);
         q.push(("limit", PAGE.to_string()));
-        q.push(("offset", if append { self.rows.len() } else { 0 }.to_string()));
+        q.push((
+            "offset",
+            if append { self.rows.len() } else { 0 }.to_string(),
+        ));
         let by_mob = self.by_mob;
-        let path = format!("{}?{}", if by_mob { "/api/mobs" } else { "/api/encounters" }, query(&q));
+        let path = format!(
+            "{}?{}",
+            if by_mob {
+                "/api/mobs"
+            } else {
+                "/api/encounters"
+            },
+            query(&q)
+        );
         self.loading = Some(cx.spawn(async move |this, cx| {
             let got: Result<(Rows, usize), String> = if by_mob {
-                api.get::<MobPage>(path).await.map(|p| (Rows::Mobs(p.mobs), p.total))
+                api.get::<MobPage>(path)
+                    .await
+                    .map(|p| (Rows::Mobs(p.mobs), p.total))
             } else {
-                api.get::<EncounterPage>(path).await.map(|p| (Rows::Fights(p.encounters), p.total))
+                api.get::<EncounterPage>(path)
+                    .await
+                    .map(|p| (Rows::Fights(p.encounters), p.total))
             };
             let _ = this.update(cx, |v, cx| {
                 if v.generation != generation || v.by_mob != by_mob {
@@ -222,7 +241,11 @@ impl EncountersView {
                     // right, and the button is still there to try again.
                     Err(e) if !append => {
                         v.error = Some(e);
-                        v.rows = if by_mob { Rows::Mobs(Vec::new()) } else { Rows::Fights(Vec::new()) };
+                        v.rows = if by_mob {
+                            Rows::Mobs(Vec::new())
+                        } else {
+                            Rows::Fights(Vec::new())
+                        };
                         v.total = 0;
                     }
                     Err(_) => {}
@@ -261,7 +284,9 @@ impl EncountersView {
         self.detail_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let got = api.get::<EncounterDetail>(format!("/api/encounters/{id}")).await;
+            let got = api
+                .get::<EncounterDetail>(format!("/api/encounters/{id}"))
+                .await;
             let _ = this.update(cx, |v, cx| {
                 if matches!(v.detail, Some(Detail::Loading(want)) if want == id) {
                     v.detail = Some(match got {
@@ -283,41 +308,63 @@ impl EncountersView {
         }
         // Opened rather than fetched: a download, named by the daemon's
         // Content-Disposition.
-        crate::parts::open_web(cx, &format!("{}/api/encounters/export?{}", api.base(), query(&q)));
+        crate::parts::open_web(
+            cx,
+            &format!("{}/api/encounters/export?{}", api.base(), query(&q)),
+        );
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
         let cur = self.difficulty;
-        let label = DIFFICULTIES.iter().find(|d| d.0 == cur).map(|d| d.1).unwrap_or("Difficulty: any");
+        let label = DIFFICULTIES
+            .iter()
+            .find(|d| d.0 == cur)
+            .map(|d| d.1)
+            .unwrap_or("Difficulty: any");
         let w = this.clone();
-        let difficulty = Button::new("enc-difficulty").label(label).small().dropdown_menu(move |mut menu, _, _| {
-            for &(d, label) in DIFFICULTIES {
-                let w = w.clone();
-                menu = menu.item(PopupMenuItem::new(label).checked(cur == d).on_click(move |_, _, cx| {
-                    let _ = w.update(cx, |v, cx| {
-                        v.difficulty = d;
-                        v.load(false, cx);
-                    });
-                }));
-            }
-            menu
-        });
+        let difficulty = Button::new("enc-difficulty")
+            .label(label)
+            .small()
+            .dropdown_menu(move |mut menu, _, _| {
+                for &(d, label) in DIFFICULTIES {
+                    let w = w.clone();
+                    menu = menu.item(PopupMenuItem::new(label).checked(cur == d).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.difficulty = d;
+                                v.load(false, cx);
+                            });
+                        },
+                    ));
+                }
+                menu
+            });
         let by_mob = self.by_mob;
         let w = this.clone();
         let split = Button::new("enc-split")
-            .label(if by_mob { "Show: each mob" } else { "Show: whole fights" })
+            .label(if by_mob {
+                "Show: each mob"
+            } else {
+                "Show: whole fights"
+            })
             .small()
             .dropdown_menu(move |mut menu, _, _| {
                 for (mob, label) in [(false, "whole fights"), (true, "each mob")] {
                     let w = w.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(by_mob == mob).on_click(move |_, _, cx| {
-                        let _ = w.update(cx, |v, cx| {
-                            v.by_mob = mob;
-                            v.rows = if mob { Rows::Mobs(Vec::new()) } else { Rows::Fights(Vec::new()) };
-                            v.load(false, cx);
-                        });
-                    }));
+                    menu = menu.item(PopupMenuItem::new(label).checked(by_mob == mob).on_click(
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |v, cx| {
+                                v.by_mob = mob;
+                                v.rows = if mob {
+                                    Rows::Mobs(Vec::new())
+                                } else {
+                                    Rows::Fights(Vec::new())
+                                };
+                                v.load(false, cx);
+                            });
+                        },
+                    ));
                 }
                 menu
             });
@@ -334,8 +381,20 @@ impl EncountersView {
             .child(difficulty)
             .child(input(&self.min_dur, 120.))
             .child(split)
-            .child(Button::new("enc-md").label("Export .md").small().ghost().on_click(cx.listener(|v, _, _, cx| v.export(false, cx))))
-            .child(Button::new("enc-csv").label("Export .csv").small().ghost().on_click(cx.listener(|v, _, _, cx| v.export(true, cx))))
+            .child(
+                Button::new("enc-md")
+                    .label("Export .md")
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|v, _, _, cx| v.export(false, cx))),
+            )
+            .child(
+                Button::new("enc-csv")
+                    .label("Export .csv")
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|v, _, _, cx| v.export(true, cx))),
+            )
             .child(muted(self.count_text()))
     }
 
@@ -346,16 +405,34 @@ impl EncountersView {
     fn render_list(&self, cx: &mut Context<Self>) -> Div {
         let needle = self.search.read(cx).value().trim().to_lowercase();
         let (cols, body): (&[Col], Vec<AnyElement>) = match &self.rows {
-            Rows::Fights(v) => {
-                (FIGHT_COLS, v.iter().map(|e| self.fight_row(e, &needle, cx).into_any_element()).collect())
-            }
-            Rows::Mobs(v) => (MOB_COLS, v.iter().map(|m| self.mob_row(m, cx).into_any_element()).collect()),
+            Rows::Fights(v) => (
+                FIGHT_COLS,
+                v.iter()
+                    .map(|e| self.fight_row(e, &needle, cx).into_any_element())
+                    .collect(),
+            ),
+            Rows::Mobs(v) => (
+                MOB_COLS,
+                v.iter()
+                    .map(|m| self.mob_row(m, cx).into_any_element())
+                    .collect(),
+            ),
         };
-        let mut t = v_flex().rounded(px(8.)).border_1().border_color(hex(BORDER)).bg(hex(PANEL)).overflow_hidden().child(table::head(cols));
+        let mut t = v_flex()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(hex(BORDER))
+            .bg(hex(PANEL))
+            .overflow_hidden()
+            .child(table::head(cols));
         if let Some(e) = &self.error {
             t = t.child(table::empty_row(e.clone()));
         } else if body.is_empty() {
-            t = t.child(table::empty_row(if self.by_mob { "No matching mobs" } else { "No matching encounters" }));
+            t = t.child(table::empty_row(if self.by_mob {
+                "No matching mobs"
+            } else {
+                "No matching encounters"
+            }));
         } else {
             t = t.children(body);
         }
@@ -363,7 +440,10 @@ impl EncountersView {
         if self.error.is_none() && self.rows.len() < self.total {
             out = out.child(
                 div().flex().justify_center().child(
-                    Button::new("enc-more").label("Load more").small().on_click(cx.listener(|v, _, _, cx| v.load(true, cx))),
+                    Button::new("enc-more")
+                        .label("Load more")
+                        .small()
+                        .on_click(cx.listener(|v, _, _, cx| v.load(true, cx))),
                 ),
             );
         }
@@ -374,7 +454,12 @@ impl EncountersView {
         // The fight is titled after the creature that took most damage; the
         // one searched for is often among the rest, so say which matched.
         let matched = matched_opponent(&e.title, &e.opponents, needle);
-        let mut name = div().id(SharedString::from(format!("enc-t-{}", e.id))).flex().flex_row().gap_1().child(e.title.clone());
+        let mut name = div()
+            .id(SharedString::from(format!("enc-t-{}", e.id)))
+            .flex()
+            .flex_row()
+            .gap_1()
+            .child(e.title.clone());
         if let Some(m) = matched {
             name = name.child(muted(format!("· {m}")));
         }
@@ -389,11 +474,18 @@ impl EncountersView {
             vec![
                 name.into_any_element(),
                 zone_cell(&e.zone, e.difficulty).into_any_element(),
-                muted(if e.build.is_empty() { "—".into() } else { e.build.clone() }).into_any_element(),
+                muted(if e.build.is_empty() {
+                    "—".into()
+                } else {
+                    e.build.clone()
+                })
+                .into_any_element(),
                 muted(when(Some(e.start))).into_any_element(),
                 div().child(dur(e.duration as f64)).into_any_element(),
                 div().child(num(Some(e.your_dps))).into_any_element(),
-                div().child(num(Some(e.your_damage as f64))).into_any_element(),
+                div()
+                    .child(num(Some(e.your_damage as f64)))
+                    .into_any_element(),
                 muted(num(Some(e.total_damage as f64))).into_any_element(),
                 muted(blank_zero(e.loot_count as u64)).into_any_element(),
             ],
@@ -414,10 +506,17 @@ impl EncountersView {
             vec![
                 name.into_any_element(),
                 zone_cell(&m.zone, m.difficulty).into_any_element(),
-                muted(if m.build.is_empty() { "—".into() } else { m.build.clone() }).into_any_element(),
+                muted(if m.build.is_empty() {
+                    "—".into()
+                } else {
+                    m.build.clone()
+                })
+                .into_any_element(),
                 muted(when(Some(m.start))).into_any_element(),
                 muted(dur(m.duration as f64)).into_any_element(),
-                div().child(num(Some(m.damage_done_to_it as f64))).into_any_element(),
+                div()
+                    .child(num(Some(m.damage_done_to_it as f64)))
+                    .into_any_element(),
                 muted(num(Some(m.damage_it_did as f64))).into_any_element(),
                 muted(blank_zero(m.kills as u64)).into_any_element(),
                 muted(blank_zero(m.loot as u64)).into_any_element(),
@@ -430,10 +529,14 @@ impl EncountersView {
     /// One fight, from `fight.rs`, under a way back to the list. The list
     /// is kept as it was, so going back costs no fetch.
     fn render_detail(&self, cx: &mut Context<Self>) -> Div {
-        let back = Button::new("enc-back").label("← Back to list").small().ghost().on_click(cx.listener(|v, _, _, cx| {
-            v.detail = None;
-            cx.notify();
-        }));
+        let back = Button::new("enc-back")
+            .label("← Back to list")
+            .small()
+            .ghost()
+            .on_click(cx.listener(|v, _, _, cx| {
+                v.detail = None;
+                cx.notify();
+            }));
         let body = match &self.detail {
             Some(Detail::Loading(_)) | None => muted("Loading…"),
             Some(Detail::Failed(e)) => div().text_color(hex(ENEMY)).child(e.clone()),
@@ -447,7 +550,13 @@ impl EncountersView {
                 .overflow_y_scroll()
                 .own_axis()
                 .track_scroll(&self.detail_scroll)
-                .child(v_flex().gap_3().pb_4().child(h_flex().child(back)).child(body)),
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .pb_4()
+                        .child(h_flex().child(back))
+                        .child(body),
+                ),
         )
         .size_full()
     }
@@ -456,36 +565,46 @@ impl EncountersView {
 impl Render for EncountersView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.detail.is_some() {
-            return div().size_full().child(self.render_detail(cx)).into_any_element();
+            return div()
+                .size_full()
+                .child(self.render_detail(cx))
+                .into_any_element();
         }
         v_flex()
             .size_full()
             .gap_3()
             .child(self.render_toolbar(cx))
-            .child(vbar(
-                &self.scroll,
-                div()
-                    .id("enc-scroll")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .own_axis()
-                    .track_scroll(&self.scroll)
-                    // Back at the top with fights waiting: bring them in.
-                    .on_scroll(cx.listener(|v, _, _, cx| {
-                        if v.new_waiting && v.undisturbed() {
-                            v.load(false, cx);
-                        }
-                    }))
-                    .child(self.render_list(cx)),
+            .child(
+                vbar(
+                    &self.scroll,
+                    div()
+                        .id("enc-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .own_axis()
+                        .track_scroll(&self.scroll)
+                        // Back at the top with fights waiting: bring them in.
+                        .on_scroll(cx.listener(|v, _, _, cx| {
+                            if v.new_waiting && v.undisturbed() {
+                                v.load(false, cx);
+                            }
+                        }))
+                        .child(self.render_list(cx)),
+                )
+                .flex_1()
+                .min_h_0(),
             )
-            .flex_1()
-            .min_h_0())
             .into_any_element()
     }
 }
 
 fn zone_cell(zone: &Option<String>, difficulty: u8) -> Div {
-    let mut d = div().flex().flex_row().items_center().gap_1().child(muted(zone.clone().unwrap_or_else(|| "—".into())));
+    let mut d = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .child(muted(zone.clone().unwrap_or_else(|| "—".into())));
     if difficulty > 0 {
         d = d.child(tag(format!("d{difficulty}"), PET));
     }
@@ -497,7 +616,11 @@ fn zone_cell(zone: &Option<String>, difficulty: u8) -> Div {
 fn count_text(shown: usize, total: usize, by_mob: bool, waiting: bool) -> String {
     let unit = if by_mob { "mob" } else { "encounter" };
     let noun = format!("{unit}{}", if total == 1 { "" } else { "s" });
-    let mut s = if shown < total { format!("showing {shown} of {total} {noun}") } else { format!("{total} {noun}") };
+    let mut s = if shown < total {
+        format!("showing {shown} of {total} {noun}")
+    } else {
+        format!("{total} {noun}")
+    };
     if waiting {
         s.push_str(" · new fights, scroll up to refresh");
     }
@@ -524,24 +647,46 @@ mod tests {
 
     #[test]
     fn the_count_says_what_is_shown_and_what_exists() {
-        assert_eq!(count_text(300, 884, false, false), "showing 300 of 884 encounters");
+        assert_eq!(
+            count_text(300, 884, false, false),
+            "showing 300 of 884 encounters"
+        );
         assert_eq!(count_text(1, 1, false, false), "1 encounter");
         assert_eq!(count_text(0, 0, true, false), "0 mobs");
-        assert_eq!(count_text(300, 885, false, true), "showing 300 of 885 encounters · new fights, scroll up to refresh");
+        assert_eq!(
+            count_text(300, 885, false, true),
+            "showing 300 of 885 encounters · new fights, scroll up to refresh"
+        );
     }
 
     #[test]
     fn a_search_names_the_opponent_it_matched_only_when_the_title_hides_it() {
         let foes = vec!["a lurking mummy".to_string(), "a skeletal monk".to_string()];
-        assert_eq!(matched_opponent("a lurking mummy (+1 more)", &foes, "monk").map(String::as_str), Some("a skeletal monk"));
-        assert_eq!(matched_opponent("a lurking mummy (+1 more)", &foes, "mummy"), None);
-        assert_eq!(matched_opponent("a lurking mummy (+1 more)", &foes, ""), None);
-        assert_eq!(matched_opponent("a lurking mummy (+1 more)", &foes, "gnoll"), None);
+        assert_eq!(
+            matched_opponent("a lurking mummy (+1 more)", &foes, "monk").map(String::as_str),
+            Some("a skeletal monk")
+        );
+        assert_eq!(
+            matched_opponent("a lurking mummy (+1 more)", &foes, "mummy"),
+            None
+        );
+        assert_eq!(
+            matched_opponent("a lurking mummy (+1 more)", &foes, ""),
+            None
+        );
+        assert_eq!(
+            matched_opponent("a lurking mummy (+1 more)", &foes, "gnoll"),
+            None
+        );
     }
 
     #[test]
     fn filters_go_out_as_the_renderer_sends_them() {
-        let q = query(&[("search", "skeletal monk".into()), ("difficulty", "4".into()), ("min_duration", "30".into())]);
+        let q = query(&[
+            ("search", "skeletal monk".into()),
+            ("difficulty", "4".into()),
+            ("min_duration", "30".into()),
+        ]);
         assert_eq!(q, "search=skeletal+monk&difficulty=4&min_duration=30");
     }
 }

@@ -200,7 +200,10 @@ impl ClassLevelTracker {
     /// Classes stop at `cap`; an unplayed class sits at `unplayed`, or has no
     /// level at all when that is `None`.
     pub fn with_rules(cap: u32, unplayed: Option<u32>) -> Self {
-        let mut t = Self { cap, ..Self::default() };
+        let mut t = Self {
+            cap,
+            ..Self::default()
+        };
         let Some(start) = unplayed else { return t };
         // Every class starts known, not unknown: in Legends an unplayed class
         // is level 10, which is a fact rather than a guess. It also sharpens
@@ -351,9 +354,7 @@ impl ClassLevelTracker {
                 // not `l < level` either — so every one of them went to
                 // `pending` and no class ever acquired a level at all.
                 None | Some(LevelSource::Baseline) => true,
-                Some(_) => self
-                    .level_of(*c)
-                    .is_some_and(|l| l < self.cap && l < level),
+                Some(_) => self.level_of(*c).is_some_and(|l| l < self.cap && l < level),
             })
             .collect();
         (loose.len() == 1).then(|| loose[0])
@@ -581,7 +582,11 @@ mod tests {
         // An old /who from before the warrior capped. Lower, and ignored.
         t.on_who(200, 28, &loadout);
         assert_eq!(t.level_of(Class::Warrior), Some(50));
-        assert_eq!(t.level_of(Class::Shaman), Some(28), "and the floor still lands");
+        assert_eq!(
+            t.level_of(Class::Shaman),
+            Some(28),
+            "and the floor still lands"
+        );
     }
 
     /// The baseline still does the job it was added for: on a mature
@@ -847,20 +852,21 @@ mod tests {
         assert_eq!(ranked.iter().copied().min(), Some(Baseline));
     }
 
-
     /// EverQuest has no unplayed-class baseline: a level nothing stated is
     /// unknown, and a `/who` row at 130 is not refused for passing Legends'
     /// cap of 50.
     #[test]
     fn everquest_has_no_baseline_and_a_cap_of_130() {
-        let t = ClassLevelTracker::for_profile(&crate::profile::profile(crate::game::Game::EverQuest));
+        let t =
+            ClassLevelTracker::for_profile(&crate::profile::profile(crate::game::Game::EverQuest));
         assert_eq!(t.level_of(Class::Warrior), None);
         assert_eq!(t.cap(), 130);
         let mut t = t;
         t.on_who(100, 130, &[Class::Warrior]);
         assert_eq!(t.level_of(Class::Warrior), Some(130));
-        let legends = ClassLevelTracker::for_profile(&crate::profile::profile(crate::game::Game::EverQuestLegends));
+        let legends = ClassLevelTracker::for_profile(&crate::profile::profile(
+            crate::game::Game::EverQuestLegends,
+        ));
         assert_eq!(legends.level_of(Class::Warrior), Some(STARTING_LEVEL));
     }
 }
-
