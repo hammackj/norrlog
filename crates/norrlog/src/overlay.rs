@@ -2035,7 +2035,8 @@ fn window_kind(_kind: Kind, _layer: bool, _g: Geometry) -> WindowKind {
 ///
 /// Wayland has an input region for this. GPUI's is implemented only there,
 /// so under X11 the window's input shape is emptied directly, which is what
-/// Electron's `setIgnoreMouseEvents` does underneath.
+/// Electron's `setIgnoreMouseEvents` does underneath. Windows and macOS have
+/// a window flag each, set directly for the same reason.
 pub fn set_click_through(window: &mut Window, on: bool) {
     #[cfg(target_os = "linux")]
     {
@@ -2049,9 +2050,58 @@ pub fn set_click_through(window: &mut Window, on: bool) {
             _ => {}
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match HasWindowHandle::window_handle(window).map(|h| h.as_raw()) {
+            #[cfg(windows)]
+            Ok(RawWindowHandle::Win32(h)) => windows_click_through(h.hwnd.get() as _, on),
+            #[cfg(target_os = "macos")]
+            Ok(RawWindowHandle::AppKit(h)) => macos_click_through(h.ns_view.as_ptr(), on),
+            _ => {}
+        }
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         let _ = (window, on);
+    }
+}
+
+/// `WS_EX_TRANSPARENT` passes clicks to whatever is underneath, and only does
+/// so on a layered window. Layered at full opacity: GPUI draws through
+/// DirectComposition, and the attribute only makes the style take effect.
+/// Untested on real hardware.
+#[cfg(windows)]
+fn windows_click_through(hwnd: windows_sys::Win32::Foundation::HWND, on: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW,
+        WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    };
+    // SAFETY: the handle is GPUI's live window, and this runs on its thread.
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let next = if on {
+            style | (WS_EX_LAYERED | WS_EX_TRANSPARENT) as isize
+        } else {
+            style & !(WS_EX_TRANSPARENT as isize)
+        };
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+        if on {
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+        }
+    }
+}
+
+/// The window's own switch, what Electron calls on macOS. Untested on a Mac.
+#[cfg(target_os = "macos")]
+fn macos_click_through(view: *mut std::ffi::c_void, on: bool) {
+    use objc2_app_kit::NSView;
+    // SAFETY: the pointer is GPUI's live content view, on the main thread.
+    let Some(view) = (unsafe { view.cast::<NSView>().as_ref() }) else {
+        return;
+    };
+    if let Some(window) = view.window() {
+        window.setIgnoresMouseEvents(on);
     }
 }
 

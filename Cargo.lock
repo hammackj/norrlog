@@ -4137,6 +4137,7 @@ dependencies = [
  "async-channel",
  "base64",
  "chrono",
+ "embed-resource",
  "futures-util",
  "gpui-component",
  "gpui-pre",
@@ -4144,11 +4145,13 @@ dependencies = [
  "image",
  "norrlog-api",
  "norrlog-client",
+ "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "rodio",
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 

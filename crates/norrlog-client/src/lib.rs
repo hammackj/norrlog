@@ -217,6 +217,11 @@ impl Client {
             // Not ours to stop: the daemon outlives whoever started it for as
             // long as anybody else is attached.
             .kill_on_drop(false);
+        // Windows: CREATE_NO_WINDOW, or the daemon opens a console window of
+        // its own over the game; CREATE_NEW_PROCESS_GROUP, so a Ctrl+C meant
+        // for whoever started it does not reach it too.
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
         let mut child = cmd.spawn().map_err(Error::Spawn)?;
 
         let started = Instant::now();

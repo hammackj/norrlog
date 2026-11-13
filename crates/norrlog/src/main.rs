@@ -8,6 +8,10 @@
 //! What the daemon follows comes from the app's config (see `config`), so
 //! whichever app starts it starts it the same way; Settings writes it.
 
+// No console window behind the app on Windows. Debug builds keep theirs, for
+// the log lines.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod alerts;
 mod api;
 mod bestiary;

@@ -34,8 +34,21 @@ gpui = { version = "=0.3.12", package = "gpui-pre" }
 gpui_platform = { version = "=0.3.12", package = "gpui-pre-platform", features = ["font-kit", "x11", "wayland"] }
 gpui-component = "=0.9.1"
 
+[build-dependencies]
+# Only used when building for Windows (see build.rs).
+embed-resource = "3"
+
 # The overlay's click-through under X11: GPUI sets an input region only on
 # Wayland, so the window's input shape is emptied directly.
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
 x11rb = { version = "0.13", features = ["shape"] }
+
+# The overlay's click-through elsewhere: GPUI has no call for it on either.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }

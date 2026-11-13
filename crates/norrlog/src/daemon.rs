@@ -379,8 +379,13 @@ async fn terminate(pid: u32) {
     };
     #[cfg(windows)]
     let mut cmd = {
+        // Forced: a process with no window never gets the close message a
+        // plain taskkill sends, and refuses it. The daemon writes history as
+        // it goes and has no shutdown step, so this is what SIGTERM is on
+        // Unix. No console flashing up over the game while it runs.
         let mut c = tokio::process::Command::new("taskkill");
-        c.arg("/PID").arg(pid.to_string());
+        c.arg("/F").arg("/PID").arg(pid.to_string());
+        c.creation_flags(0x0800_0000);
         c
     };
     if let Err(e) = cmd.stdin(std::process::Stdio::null()).status().await {
