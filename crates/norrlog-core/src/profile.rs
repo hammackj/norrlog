@@ -42,6 +42,16 @@ pub struct Profile {
     /// daemon still asks eqldb for every game, because eqdb does not answer
     /// eqldb's `/api/item` JSON (it serves an HTML page there).
     pub item_site: &'static str,
+    /// How many times its spell-file duration a buff on you is kept, once
+    /// that time has run out, before it is taken to have gone. `None` where
+    /// the spell file's duration is the real one.
+    ///
+    /// Live EverQuest's casters extend their buffs with AAs and focus items,
+    /// by an amount the log never states: Shaman buffs listed at 100
+    /// minutes were still up after three hours, and their wear-off lines
+    /// are seldom written. So the listed time is a floor there. A buff past
+    /// it is shown with how long it has overrun, not dropped.
+    pub buff_overrun: Option<u32>,
 }
 
 const LEGENDS: Profile = Profile {
@@ -53,6 +63,7 @@ const LEGENDS: Profile = Profile {
     lockouts: true,
     motes: true,
     item_site: "https://eqldb.hammackj.com",
+    buff_overrun: None,
 };
 
 const EVERQUEST: Profile = Profile {
@@ -64,6 +75,7 @@ const EVERQUEST: Profile = Profile {
     lockouts: false,
     motes: false,
     item_site: "https://eqdb.hammackj.com",
+    buff_overrun: Some(3),
 };
 
 /// The rules for `game`.

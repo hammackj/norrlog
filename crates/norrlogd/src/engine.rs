@@ -84,6 +84,10 @@ pub struct BuffInfo {
     pub name: String,
     pub remaining: Option<i64>,
     pub total: Option<i64>,
+    /// Seconds past its listed duration, for a buff kept on by the game's
+    /// overrun allowance (`Profile::buff_overrun`); `remaining` is then 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrun: Option<i64>,
     /// How sure we are this is the right spell; the UI dims low values because
     /// landing text alone is ambiguous.
     pub confidence: f32,
@@ -598,7 +602,11 @@ impl Engine {
         let mut e = Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
-            resolver: SpellResolver::new(spell_db, 1),
+            resolver: {
+                let mut r = SpellResolver::new(spell_db, 1);
+                r.set_overrun(norrlog_core::profile::profile(game).buff_overrun);
+                r
+            },
             classes: ClassDetector::with_slots(
                 norrlog_core::profile::profile(game).class_slots.into(),
             ),
@@ -3722,6 +3730,7 @@ impl Engine {
             spell_id: b.spell_id,
             remaining: b.remaining(now),
             total: b.expires.map(|e| e - b.started),
+            overrun: b.overrun(now),
             confidence: b.confidence,
             permanent: b.permanent,
             is_aura: b.is_aura(),

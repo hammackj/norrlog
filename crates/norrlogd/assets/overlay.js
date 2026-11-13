@@ -956,11 +956,18 @@
     el.buffs.innerHTML = list
       .map((b) => {
         const total = b.total || 1;
+        // Past the time the spell file gives it, and still taken to be on
+        // (live EverQuest extends buffs by an amount the log never states):
+        // how long past, rather than a timer stuck at zero.
+        const over = b.overrun != null;
         const pct = b.permanent
           ? 100
-          : Math.max(0, Math.min(100, (b.remaining / total) * 100));
+          : over
+            ? 0
+            : Math.max(0, Math.min(100, (b.remaining / total) * 100));
         const cls = ["buff", `cat-${(b.category || "other").replace(/[^a-z]/g, "")}`];
-        if (!b.permanent) {
+        if (over) cls.push("overrun");
+        else if (!b.permanent) {
           if (b.remaining <= 10) cls.push("urgent");
           else if (b.remaining <= 30) cls.push("expiring");
         }
@@ -969,7 +976,9 @@
         if (b.confidence < 0.8) cls.push("unsure");
         return `<div class="${cls.join(" ")}" style="--remain:${pct.toFixed(1)}%">
           <span class="bname">${esc(b.name)}</span>
-          <span class="btime">${b.permanent ? "&infin;" : dur(b.remaining)}</span>
+          <span class="btime">${
+            b.permanent ? "&infin;" : over ? `+${longDur(b.overrun, true)}` : dur(b.remaining)
+          }</span>
         </div>`;
       })
       .join("");
@@ -1027,7 +1036,9 @@
     lastSnapshot.buffs = lastSnapshot.buffs.map((b) =>
       b.remaining == null || b.permanent
         ? b
-        : { ...b, remaining: Math.max(0, b.remaining - 1) }
+        : b.overrun != null
+          ? { ...b, overrun: b.overrun + 1 }
+          : { ...b, remaining: Math.max(0, b.remaining - 1) }
     );
     renderBuffs(lastSnapshot.buffs);
   }, 1000);

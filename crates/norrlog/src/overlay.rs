@@ -1077,7 +1077,7 @@ impl OverlayView {
                     "detrimental" | "damage" => rgba_of(ENEMY, 0.34),
                     _ => rgba_of(WASH, 0.14),
                 };
-                let time = if flag(&b, "permanent") {
+                let time = if flag(&b, "permanent") || b.get("overrun").is_some() {
                     TEXT
                 } else if left <= 10. {
                     ENEMY
@@ -1103,7 +1103,12 @@ impl OverlayView {
                     .filter_map(|b| {
                         let rem = b.get("remaining").and_then(Value::as_f64)?;
                         let perm = flag(b, "permanent");
-                        let left = if perm { rem } else { (rem - gone).max(0.) };
+                        let over = b.get("overrun").is_some();
+                        let left = if perm || over {
+                            rem
+                        } else {
+                            (rem - gone).max(0.)
+                        };
                         let total = b
                             .get("total")
                             .and_then(Value::as_f64)
@@ -1111,6 +1116,8 @@ impl OverlayView {
                             .unwrap_or(1.);
                         let share = if perm {
                             1.
+                        } else if over {
+                            0.
                         } else {
                             (left / total).clamp(0., 1.)
                         };
@@ -1712,12 +1719,17 @@ fn timer_row(b: &Value, left: f64, share: f64, bar: Rgba, time: u32) -> Div {
         .and_then(Value::as_f64)
         .is_some_and(|c| c < 0.8);
     let name = format!("{}{}", s(b, "name"), if unsure { " ?" } else { "" });
-    let t = if flag(b, "permanent") {
-        "∞".to_string()
+    // Past the time the spell file gives it, and still taken to be on:
+    // how long past, dimmed, rather than a timer stuck at zero.
+    let overrun = b.get("overrun").and_then(Value::as_f64);
+    let (t, colour) = if flag(b, "permanent") {
+        ("∞".to_string(), time)
+    } else if let Some(o) = overrun {
+        (format!("+{}", long_dur(o, true)), DIM)
     } else {
-        dur(left)
+        (dur(left), time)
     };
-    bar_row(div().child(name), vec![(t, time)], share, bar, 1.)
+    bar_row(div().child(name), vec![(t, colour)], share, bar, 1.)
 }
 
 fn empty(text: &str) -> AnyElement {

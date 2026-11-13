@@ -870,6 +870,22 @@ impl ActiveBuff {
     pub fn remaining(&self, now: i64) -> Option<i64> {
         self.expires.map(|e| (e - now).max(0))
     }
+
+    /// How long past its listed duration it is, once it has run out.
+    pub fn overrun(&self, now: i64) -> Option<i64> {
+        self.expires.filter(|&e| now >= e).map(|e| now - e)
+    }
+
+    /// Still on: before it expires, or, with an overrun allowance, before
+    /// `overrun` times its duration has passed.
+    fn alive(&self, now: i64, overrun: Option<u32>) -> bool {
+        match (self.expires, overrun) {
+            (None, _) => true,
+            (Some(e), _) if e > now => true,
+            (Some(e), Some(k)) => now < self.started + (e - self.started) * i64::from(k),
+            _ => false,
+        }
+    }
 }
 
 /// How long after a cast begins we will still associate a landing message with
@@ -929,6 +945,9 @@ pub struct SpellResolver {
     /// Current character level, kept up to date from level-up messages. Buff
     /// durations scale with it.
     level: u32,
+    /// See `Profile::buff_overrun`. Buffs only: a debuff is the enemy's
+    /// spell, and nothing of yours extends it.
+    overrun: Option<u32>,
     active: Vec<ActiveBuff>,
     /// Confidence of the most recent [`Self::resolve_landing`]. Diagnostic
     /// only — the authoritative per-buff value lives on [`ActiveBuff`].
@@ -945,6 +964,7 @@ impl SpellResolver {
             learned: HashMap::new(),
             marks: HashMap::new(),
             level,
+            overrun: None,
             active: Vec::new(),
             last_confidence: 0.0,
         }
@@ -1026,6 +1046,10 @@ impl SpellResolver {
 
     pub fn level(&self) -> u32 {
         self.level
+    }
+
+    pub fn set_overrun(&mut self, overrun: Option<u32>) {
+        self.overrun = overrun;
     }
 
     pub fn set_level(&mut self, level: u32) {
@@ -1280,9 +1304,12 @@ impl SpellResolver {
         candidates.first().copied()
     }
 
-    /// Drop buffs whose expiry has passed.
+    /// Drop effects whose time has passed: a buff's with the overrun
+    /// allowance, a debuff's as listed.
     pub fn expire(&mut self, now: i64) {
-        self.active.retain(|b| b.expires.is_none_or(|e| e > now));
+        let overrun = self.overrun;
+        self.active
+            .retain(|b| b.alive(now, if b.beneficial { overrun } else { None }));
     }
 
     /// Drop every buff, because you died.
@@ -1354,10 +1381,12 @@ impl SpellResolver {
         let mut v: Vec<ActiveBuff> = self
             .active
             .iter()
-            .filter(|b| b.beneficial && !self.is_own_aura(b) && b.expires.is_none_or(|e| e > now))
+            .filter(|b| b.beneficial && !self.is_own_aura(b) && b.alive(now, self.overrun))
             .cloned()
             .collect();
-        v.sort_by_key(|b| b.expires.unwrap_or(i64::MAX));
+        // Overrun ones after those still counting down, and before the
+        // permanent ones.
+        v.sort_by_key(|b| (b.overrun(now).is_some(), b.expires.unwrap_or(i64::MAX)));
         v
     }
 
@@ -1513,6 +1542,29 @@ mod tests {
         r.note_cast_by_other(900, "Flight of Eagles");
         r.resolve_landing(1000, lands);
         assert!(r.active_buffs(1000)[0].confidence < 0.5);
+    }
+
+    /// Live EverQuest's buffs outlast their spell-file time. With an
+    /// overrun allowance a buff stays, saying how far past it is, until the
+    /// allowance runs out; without one it goes on time.
+    #[test]
+    fn an_overrun_allowance_keeps_a_buff_past_its_listed_time() {
+        let db = || db_with(vec![spell(1, "Haste", "You feel quick.", "", 4, 10)]);
+        let mut r = SpellResolver::new(db(), 50);
+        r.set_overrun(Some(3));
+        r.resolve_landing(1000, "You feel quick.");
+        // Ten ticks: a minute listed, three allowed.
+        let b = &r.active_buffs(1090)[0];
+        assert_eq!((b.remaining(1090), b.overrun(1090)), (Some(0), Some(30)));
+        assert_eq!(r.active_buffs(1179).len(), 1);
+        // Nor does the pruning the engine runs on every line drop it.
+        r.expire(1100);
+        assert_eq!(r.active_buffs(1100).len(), 1);
+        assert!(r.active_buffs(1180).is_empty());
+
+        let mut exact = SpellResolver::new(db(), 50);
+        exact.resolve_landing(1000, "You feel quick.");
+        assert!(exact.active_buffs(1060).is_empty());
     }
 
     /// Time camped does not count down a buff.

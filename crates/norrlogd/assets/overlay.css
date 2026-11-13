@@ -295,6 +295,8 @@ body {
 
 .buff.expiring .btime { color: var(--accent); }
 .buff.urgent .btime { color: var(--enemy); }
+/* Past its listed time, still on: a floor, not a countdown. */
+.buff.overrun .btime { color: rgb(var(--dim-rgb) / 0.95); }
 
 .buff .bname {
   white-space: nowrap;
