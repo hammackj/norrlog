@@ -99,7 +99,8 @@ detection, which need the game's `spells_us.txt`.
 Norrlog keeps its history in `~/.config/norrlog` (or your platform's usual
 place). Nothing leaves your machine except item look-ups: tooltips and icons are
 fetched from eqldb.hammackj.com (EverQuest Legends) or eqdb.hammackj.com
-(EverQuest). Start the daemon with `--eqdb off` to turn that off.
+(EverQuest). Turn that off in Settings ("Item info"), or start the daemon with
+`--eqdb off`; tooltips then use the item data bundled with the app.
 
 To run the daemon on its own, for the overlay alone:
 
