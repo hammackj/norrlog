@@ -118,43 +118,139 @@ pub fn play(s: Sound, gain: f32) {
     }
 }
 
-/// Say `text` at `gain` (0..1), slightly fast: an alert is worth hearing
-/// now, not narrated.
-pub fn speak(text: &str, gain: f32) {
-    if text.is_empty() || gain <= 0. {
-        return;
+/// A speech command: the program, its arguments, and the text, which on
+/// Windows travels in an environment variable so that nothing in it is ever
+/// read as PowerShell.
+#[derive(Debug, PartialEq)]
+struct Speech {
+    program: &'static str,
+    args: Vec<String>,
+    env: Option<(&'static str, String)>,
+}
+
+/// The PowerShell that speaks `$env:NORRLOG_SAY`, with `{volume}` (0..100).
+const SAPI_SPEAK: &str = "Add-Type -AssemblyName System.Speech; \
+    $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
+    $s.Volume = {volume}; $s.Rate = 2; $s.Speak($env:NORRLOG_SAY)";
+const SAPI_VOICES: &str = "Add-Type -AssemblyName System.Speech; \
+    (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices().Count";
+
+/// How `os` says `text` at `gain` (0..1), slightly fast: an alert is worth
+/// hearing now, not narrated. `None` for nothing to say, or no gain, which
+/// is silence everywhere.
+fn speech(os: &str, text: &str, gain: f32) -> Option<Speech> {
+    if text.trim().is_empty() || gain <= 0. {
+        return None;
     }
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("say");
-        c.args(["-r", "200", "--", text]);
-        c
-    } else {
-        let mut c = std::process::Command::new("spd-say");
-        // Volume runs -100..100 with 0 as the default level.
-        let volume = ((gain * 200.) - 100.).round() as i32;
-        c.args(["-r", "10", "-i", &volume.to_string(), "--", text]);
-        c
-    };
-    let _ = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let gain = gain.min(1.);
+    Some(match os {
+        // `say` has no volume flag; its embedded `volm` command is the
+        // per-utterance volume, 0..1.
+        "macos" => Speech {
+            program: "say",
+            args: vec!["-r".into(), "200".into(), "--".into(), format!("[[volm {gain:.2}]] {text}")],
+            env: None,
+        },
+        "windows" => Speech {
+            program: "powershell",
+            args: ["-NoProfile", "-NonInteractive", "-Command"]
+                .into_iter()
+                .map(String::from)
+                .chain([SAPI_SPEAK.replace("{volume}", &((gain * 100.).round() as u32).to_string())])
+                .collect(),
+            env: Some(("NORRLOG_SAY", text.to_string())),
+        },
+        // speech-dispatcher: volume runs -100..100 with 0 as the default.
+        _ => Speech {
+            program: "spd-say",
+            args: vec!["-r".into(), "10".into(), "-i".into(), (((gain * 200.) - 100.).round() as i32).to_string(), "--".into(), text.to_string()],
+            env: None,
+        },
+    })
+}
+
+fn command(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window flashing up over the game.
+        c.creation_flags(0x0800_0000);
+    }
+    c
+}
+
+/// Say `text` at `gain` (0..1). The process is waited for on a thread of its
+/// own, so none is left behind, and a failure to start it is said rather
+/// than swallowed.
+pub fn speak(text: &str, gain: f32) -> Result<(), String> {
+    let Some(s) = speech(std::env::consts::OS, text, gain) else { return Ok(()) };
+    let mut c = command(s.program);
+    c.args(&s.args);
+    if let Some((k, v)) = &s.env {
+        c.env(k, v);
+    }
+    let mut child = c
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            let why = format!("could not run {}: {e}", s.program);
+            eprintln!("[norrlog] speech: {why}");
+            why
+        })?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Whether the system can speak at all. speech-dispatcher accepts text with
 /// no voice behind it and says nothing, which looks like a broken alert, so
-/// its voice list is read: `dummy` alone is no voice.
+/// its voice list is read: `dummy` alone is no voice. Windows is asked how
+/// many voices are installed.
 pub fn voices_available() -> bool {
-    if cfg!(target_os = "macos") {
-        return true;
+    match std::env::consts::OS {
+        "macos" => true,
+        "windows" => command("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", SAPI_VOICES])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            .is_some_and(|n| n > 0),
+        _ => {
+            let Ok(out) = command("spd-say").arg("-L").output() else { return false };
+            String::from_utf8_lossy(&out.stdout).lines().skip(1).any(|l| {
+                let name = l.split_whitespace().next().unwrap_or("");
+                !name.is_empty() && name != "dummy"
+            })
+        }
     }
-    let Ok(out) = std::process::Command::new("spd-say").arg("-L").output() else { return false };
-    String::from_utf8_lossy(&out.stdout).lines().skip(1).any(|l| {
-        let name = l.split_whitespace().next().unwrap_or("");
-        !name.is_empty() && name != "dummy"
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RATE, synth};
+    use super::{RATE, speech, synth};
+
+    #[test]
+    fn each_system_is_asked_to_speak_at_the_gain_given() {
+        for os in ["linux", "macos", "windows"] {
+            assert_eq!(speech(os, "charm broke", 0.), None, "{os}: no gain is silence");
+            assert_eq!(speech(os, "  ", 1.), None);
+        }
+        let mac = |g| speech("macos", "charm broke", g).unwrap().args[3].clone();
+        assert_eq!(mac(0.1), "[[volm 0.10]] charm broke");
+        assert_eq!(mac(1.0), "[[volm 1.00]] charm broke");
+        let win = speech("windows", "it's \"$(rm -rf)\"", 0.25).unwrap();
+        assert_eq!(win.program, "powershell");
+        assert!(win.args.last().unwrap().contains("$s.Volume = 25;"));
+        assert!(!win.args.iter().any(|a| a.contains("rm -rf")), "the text is never part of the script");
+        assert_eq!(win.env, Some(("NORRLOG_SAY", "it's \"$(rm -rf)\"".to_string())));
+        let lin = speech("linux", "charm broke", 0.5).unwrap();
+        assert_eq!((lin.program, lin.args[3].as_str()), ("spd-say", "0"));
+    }
     use norrlog_api::Sound;
 
     #[test]

@@ -384,7 +384,9 @@ impl AlertsView {
             for f in &fresh {
                 crate::sound::play(f.sound, gain);
                 if let Some(say) = &f.say {
-                    crate::sound::speak(say, gain);
+                    // A failure is on stderr; an alert firing is no moment
+                    // for a dialog.
+                    let _ = crate::sound::speak(say, gain);
                 }
             }
             for f in fresh {
@@ -571,14 +573,18 @@ impl AlertsView {
         }));
     }
 
-    /// Deliberately audible even when muted: you pressed the button.
-    fn hear(&self, cx: &App) {
+    /// Deliberately audible even when muted: you pressed the button. A
+    /// voice that could not be started is said in the tab.
+    fn hear(&mut self, cx: &mut Context<Self>) {
         let gain = self.prefs.gain().max(0.2);
         crate::sound::play(self.sound, gain);
         if self.speak {
             let say = self.value(&self.inputs.say, cx);
             let text = if say.is_empty() { self.value(&self.inputs.name, cx) } else { say };
-            crate::sound::speak(&text, gain);
+            if let Err(e) = crate::sound::speak(&text, gain) {
+                self.status = format!("speech: {e}");
+                cx.notify();
+            }
         }
     }
 }
