@@ -35,8 +35,8 @@
 //! how a reference page wants to read: a page per place, and a matrix of mode
 //! against tier beneath it.
 //!
-//! Across two characters' logs, 124 distinct zone strings collapse to 62
-//! zones. Forty-three have a single form — the outdoor and city zones both
+//! Across two characters' logs, 123 distinct zone strings collapse to 61
+//! zones. Forty-two have a single form — the outdoor and city zones both
 //! games share — while The Plane of Hate has all ten.
 //!
 //! # Classic EverQuest
@@ -417,8 +417,8 @@ mod tests {
     /// Every zone string two characters' logs actually produced.
     ///
     /// Hand-written cases only cover the shapes someone thought of; this
-    /// covers the shapes the game produced. It also pins the collapse: 124
-    /// strings are 62 places, and a change that quietly split or merged them
+    /// covers the shapes the game produced. It also pins the collapse: 123
+    /// strings are 61 places, and a change that quietly split or merged them
     /// would break here rather than in a database six months from now.
     #[test]
     fn every_observed_zone_string_parses() {
@@ -428,7 +428,7 @@ mod tests {
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        assert_eq!(labels.len(), 124, "the fixture itself should be intact");
+        assert_eq!(labels.len(), 123, "the fixture itself should be intact");
 
         let mut places = std::collections::BTreeSet::new();
         let mut modes = std::collections::BTreeMap::new();
@@ -452,8 +452,8 @@ mod tests {
             *modes.entry(z.mode).or_insert(0) += 1;
         }
 
-        assert_eq!(places.len(), 62, "124 strings are 62 places");
-        assert_eq!(modes[&Mode::Open], 61);
+        assert_eq!(places.len(), 61, "123 strings are 61 places");
+        assert_eq!(modes[&Mode::Open], 60);
         // These 38 were counted as group until the marker turned out to be
         // something the client writes only sometimes. None of these strings
         // carries one.
