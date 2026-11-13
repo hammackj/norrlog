@@ -459,7 +459,19 @@ impl EncountersView {
             .flex()
             .flex_row()
             .gap_1()
-            .child(e.title.clone());
+            .min_w_0()
+            .overflow_hidden()
+            // A row of its own, so the cell's ellipsis does not reach the
+            // text inside: the title truncates itself rather than being
+            // clipped mid-letter when the column is narrow.
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(e.title.clone()),
+            );
         if let Some(m) = matched {
             name = name.child(muted(format!("· {m}")));
         }
