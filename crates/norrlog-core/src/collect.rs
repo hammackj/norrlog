@@ -851,8 +851,8 @@ mod roster_tests {
     /// The ordinary line, with everything stated.
     #[test]
     fn a_who_line_names_a_player() {
-        let c = players("[Tue Jul 28 18:26:30 2026] [5 MNK/MAG] Firooz (Iksar)  ZONE: Befallen (befallen)  \n");
-        let p = &c.seen()["Firooz"];
+        let c = players("[Tue Jul 28 18:26:30 2026] [5 MNK/MAG] Ostrin (Iksar)  ZONE: Befallen (befallen)  \n");
+        let p = &c.seen()["Ostrin"];
         assert_eq!(p.level, 5);
         assert_eq!(p.classes, vec!["MNK", "MAG"]);
         assert_eq!(p.race, "Iksar");

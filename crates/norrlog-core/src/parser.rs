@@ -789,8 +789,8 @@ static RULES: &[(RuleId, &str)] = &[
         RuleId::LevelUp,
         r"^You have gained a level!\s*Welcome to level (?P<level>\d+)!$",
     ),
-    // "[50 WAR/BRD/SHM] Cream (Ogre) <Sparkle Motion> ZONE: The Plane of Sky (airplane)"
-    // "[10 MNK/NEC] Darmoss (Iksar)  ZONE: Befallen (befallen)"
+    // "[50 WAR/BRD/SHM] Gorvan (Ogre) <Ember Watch> ZONE: The Plane of Sky (airplane)"
+    // "[10 MNK/NEC] Kessil (Iksar)  ZONE: Befallen (befallen)"
     //
     // The only line in the log that states a level and a class loadout
     // together, and for the player's own row it is the game's own answer to
