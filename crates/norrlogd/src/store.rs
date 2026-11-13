@@ -250,11 +250,13 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
-        if s.repairs_pending()? {
+        let inferred = s.inferred_group_sources()?;
+        if !inferred.is_empty() || s.repairs_pending()? {
             s.back_up_before_repair(path)?;
         }
         s.repair_rule_notice_zones()?;
         s.drop_graded_duplicates()?;
+        s.repair_inferred_group_mode(&inferred)?;
         Ok(s)
     }
 
@@ -490,6 +492,150 @@ impl Store {
         eprintln!(
             "[norrlogd] repairing history; a copy from before is at {}",
             to.display()
+        );
+        Ok(())
+    }
+
+    /// The logs whose `group` rows are the old inference, not the client's.
+    ///
+    /// Before f93d9a6 a tier with no mode on it (`Nagafen's Lair 2`) was
+    /// read as a group instance, because no log on file had ever written
+    /// `- Group`. The client does write it, so an unmarked tier is now an
+    /// instance -- but history written before then still files those kills,
+    /// swings and health samples under `group`, a mode the player was never
+    /// in, and once the same log was read again it has them twice: under
+    /// `group` from the first read and `instance` from the second.
+    ///
+    /// Whether a log's `group` rows are inference is a fact about the log:
+    /// one that never says `- Group` cannot have produced a real one. So each
+    /// log with `group` rows is read once, for that, and the answer kept in
+    /// `group_mode_checked`. A log that does say it is left alone, inferred
+    /// and real rows being indistinguishable there; so is a log that is no
+    /// longer on disk, until it is.
+    fn inferred_group_sources(&self) -> Result<Vec<String>> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS group_mode_checked (
+                source TEXT PRIMARY KEY,
+                marked INTEGER NOT NULL
+            )",
+        )?;
+        let candidates: Vec<String> = {
+            let mut st = self.conn.prepare(
+                "SELECT DISTINCT source FROM (
+                    SELECT source FROM npc_profiles WHERE mode = 'group'
+                    UNION SELECT source FROM npc_melee WHERE mode = 'group'
+                    UNION SELECT source FROM npc_health_samples WHERE mode = 'group'
+                    UNION SELECT source FROM item_drop_places WHERE mode = 'group'
+                 ) WHERE source NOT IN (SELECT source FROM group_mode_checked)",
+            )?;
+            let rows = st.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut out = Vec::new();
+        for source in candidates {
+            let Some(marked) = log_marks_group(Path::new(&source)) else {
+                continue;
+            };
+            if marked {
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO group_mode_checked (source, marked) VALUES (?1, 1)",
+                    params![source],
+                )?;
+            } else {
+                out.push(source);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Refile the inferred `group` rows of these logs as `instance`.
+    ///
+    /// A row with no `instance` twin is the only record of what it counts
+    /// and is renamed. A row with one was read twice -- every twin in the
+    /// histories on file has its sightings inside the twin's -- so it is not
+    /// added in; the twin keeps the larger of each count instead, because a
+    /// handful of first reads counted a kill or a swing more than the
+    /// re-read, and a repair should not make a number smaller than the log
+    /// once showed.
+    fn repair_inferred_group_mode(&mut self, sources: &[String]) -> Result<()> {
+        if sources.is_empty() {
+            return Ok(());
+        }
+        const ID: &str = "t.game = g.game AND t.character = g.character AND t.server = g.server \
+             AND t.source = g.source AND t.zone = g.zone AND t.difficulty = g.difficulty \
+             AND t.npc = g.npc AND t.mode = 'instance'";
+        let tx = self.conn.transaction()?;
+        for source in sources {
+            tx.execute(
+                &format!(
+                    "UPDATE npc_profiles AS t SET
+                        kills = MAX(t.kills, g.kills),
+                        deaths_to_it = MAX(t.deaths_to_it, g.deaths_to_it),
+                        max_hit = MAX(t.max_hit, g.max_hit),
+                        first_seen = MIN(t.first_seen, g.first_seen),
+                        last_seen = MAX(t.last_seen, g.last_seen)
+                     FROM npc_profiles AS g
+                     WHERE g.source = ?1 AND g.mode = 'group' AND {ID}"
+                ),
+                params![source],
+            )?;
+            // A melee row's counts belong together (hits and misses make the
+            // swings), so the twin with more swings is kept whole.
+            tx.execute(
+                &format!(
+                    "UPDATE npc_melee AS t SET
+                        swings = g.swings, hits = g.hits, misses = g.misses,
+                        avoided = g.avoided, damage = g.damage,
+                        max_hit = MAX(t.max_hit, g.max_hit)
+                     FROM npc_melee AS g
+                     WHERE g.source = ?1 AND g.mode = 'group' AND {ID}
+                       AND t.level = g.level AND t.stance = g.stance
+                       AND g.swings > t.swings"
+                ),
+                params![source],
+            )?;
+            tx.execute(
+                "UPDATE item_drop_places AS t SET
+                    looted = MAX(t.looted, g.looted),
+                    quantity = MAX(t.quantity, g.quantity)
+                 FROM item_drop_places AS g
+                 WHERE g.source = ?1 AND g.mode = 'group'
+                   AND t.game = g.game AND t.character = g.character
+                   AND t.server = g.server AND t.source = g.source
+                   AND t.item = g.item AND t.npc = g.npc AND t.zone = g.zone
+                   AND t.difficulty = g.difficulty AND t.mode = 'instance'",
+                params![source],
+            )?;
+            // Health samples are keyed to the second and the hit points, so a
+            // twin is the same sample and there is nothing to merge.
+            for t in [
+                "npc_profiles",
+                "npc_melee",
+                "npc_health_samples",
+                "item_drop_places",
+            ] {
+                tx.execute(
+                    &format!(
+                        "UPDATE OR IGNORE {t} SET mode = 'instance' \
+                         WHERE source = ?1 AND mode = 'group'"
+                    ),
+                    params![source],
+                )?;
+                // What is left had a twin, merged above.
+                tx.execute(
+                    &format!("DELETE FROM {t} WHERE source = ?1 AND mode = 'group'"),
+                    params![source],
+                )?;
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO group_mode_checked (source, marked) VALUES (?1, 0)",
+                params![source],
+            )?;
+        }
+        tx.commit()?;
+        eprintln!(
+            "[norrlogd] refiled the inferred group rows of {} log(s) as instance",
+            sources.len()
         );
         Ok(())
     }
@@ -3570,6 +3716,29 @@ impl Store {
     }
 }
 
+/// Whether a log ever names a group instance as one (`You have entered
+/// Nagafen's Lair - Group 2.`), or `None` when it cannot be read. Read in
+/// full, once per log; a 400 MB log takes about a second.
+fn log_marks_group(path: &Path) -> Option<bool> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut r = std::io::BufReader::with_capacity(1 << 20, file);
+    let entered = memchr::memmem::Finder::new(b"] You have entered ");
+    let group = memchr::memmem::Finder::new(b" - Group");
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if r.read_until(b'\n', &mut line).ok()? == 0 {
+            return Some(false);
+        }
+        if let Some(i) = entered.find(&line) {
+            if group.find(&line[i..]).is_some() {
+                return Some(true);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5273,6 +5442,135 @@ mod graded_duplicate_tests {
         let s = Store::open_as(&db, "Test", "test").unwrap();
         assert_eq!(copies(), 1, "nothing left to repair, so no second copy");
         drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod inferred_group_mode_tests {
+    use super::*;
+
+    fn profile(s: &Store, source: &str, mode: &str, npc: &str, kills: i64, seen: (i64, i64)) {
+        s.conn
+            .execute(
+                "INSERT INTO npc_profiles (game, character, server, source, zone, mode,
+                    difficulty, npc, kills, deaths_to_it, max_hit, first_seen, last_seen)
+                 VALUES ('legends', 'Test', 'test', ?1, 'Nagafen''s Lair', ?2, 2, ?3, ?4, 0,
+                    40, ?5, ?6)",
+                params![source, mode, npc, kills, seen.0, seen.1],
+            )
+            .unwrap();
+    }
+
+    fn sample(s: &Store, source: &str, mode: &str, at: i64) {
+        s.conn
+            .execute(
+                "INSERT INTO npc_health_samples (game, character, server, source, zone, mode,
+                    difficulty, npc, at, hp)
+                 VALUES ('legends', 'Test', 'test', ?1, 'Nagafen''s Lair', ?2, 2,
+                    'a lava drake', ?3, 900)",
+                params![source, mode, at],
+            )
+            .unwrap();
+    }
+
+    fn rows(s: &Store, sql: &str) -> Vec<(String, String, i64)> {
+        let mut st = s.conn.prepare(sql).unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// An unmarked log's group rows become instance rows, a twin counted
+    /// once at the larger count; a marked log and a missing one keep theirs.
+    #[test]
+    fn inferred_group_rows_are_refiled_as_instance() {
+        let dir = std::env::temp_dir().join(format!("norrlog-groupmode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let unmarked = dir.join("eqlog_A_test.txt");
+        let marked = dir.join("eqlog_B_test.txt");
+        let gone = dir.join("eqlog_C_test.txt");
+        std::fs::write(
+            &unmarked,
+            "[Sat Aug 16 10:00:00 2025] You have entered Nagafen's Lair 2.\n\
+             [Sat Aug 16 10:00:05 2025] Grimble tells the group, 'Group up - Group 2 is here'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &marked,
+            "[Sat Aug 16 10:00:00 2025] You have entered Nagafen's Lair - Group 2.\n",
+        )
+        .unwrap();
+        let (a, b, c) = (
+            unmarked.to_string_lossy().to_string(),
+            marked.to_string_lossy().to_string(),
+            gone.to_string_lossy().to_string(),
+        );
+        let db = dir.join("history.db");
+        {
+            let s = Store::open_as(&db, "Test", "test").unwrap();
+            // Read twice: the first read counted one kill more.
+            profile(&s, &a, "group", "a wan ghoul knight", 113, (100, 200));
+            profile(&s, &a, "instance", "a wan ghoul knight", 112, (100, 200));
+            // Read once, under the inference only.
+            profile(&s, &a, "group", "a lava drake", 5, (150, 160));
+            sample(&s, &a, "group", 150);
+            sample(&s, &a, "instance", 150);
+            sample(&s, &a, "group", 155);
+            profile(&s, &b, "group", "a lava drake", 3, (100, 110));
+            profile(&s, &c, "group", "a lava drake", 2, (100, 110));
+        }
+        let s = Store::open_as(&db, "Test", "test").unwrap();
+        let kills = rows(
+            &s,
+            "SELECT npc, mode, kills FROM npc_profiles WHERE source = ?1 ORDER BY npc"
+                .replace("?1", &format!("'{a}'"))
+                .as_str(),
+        );
+        assert_eq!(
+            kills,
+            vec![
+                ("a lava drake".into(), "instance".into(), 5),
+                ("a wan ghoul knight".into(), "instance".into(), 113),
+            ]
+        );
+        let samples = rows(
+            &s,
+            &format!(
+                "SELECT npc, mode, at FROM npc_health_samples WHERE source = '{a}' ORDER BY at"
+            ),
+        );
+        assert_eq!(
+            samples,
+            vec![
+                ("a lava drake".into(), "instance".into(), 150),
+                ("a lava drake".into(), "instance".into(), 155),
+            ]
+        );
+        for (src, why) in [(&b, "it says - Group"), (&c, "it is not on disk")] {
+            let left = rows(
+                &s,
+                &format!("SELECT npc, mode, kills FROM npc_profiles WHERE source = '{src}'"),
+            );
+            assert_eq!(left[0].1, "group", "kept because {why}");
+        }
+        let copies = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".before-repair-"))
+            .count();
+        assert_eq!(copies, 1, "backed up before the repair");
+        drop(s);
+        // Once is enough: the next open neither scans nor copies again.
+        let _s = Store::open_as(&db, "Test", "test").unwrap();
+        let copies = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".before-repair-"))
+            .count();
+        assert_eq!(copies, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

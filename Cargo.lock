@@ -4241,6 +4241,7 @@ dependencies = [
  "futures-util",
  "ksni",
  "libc",
+ "memchr",
  "norrlog-api",
  "norrlog-client",
  "norrlog-core",
