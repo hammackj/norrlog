@@ -1423,8 +1423,38 @@ fn ability_rows(
                                     .child(num(Some(a.total as f64))),
                             ),
                     )
-            })),
+            }))
+            .children(also_cast(st).map(|line| div().pt_1().child(hint(line)))),
     )
+}
+
+/// What an actor cast in the fight that did no damage — heals, buffs, a
+/// creature's debuffs — most cast first: `Also cast: Complete Heal ×2`.
+fn also_cast(st: &ActorStats) -> Option<String> {
+    let mut casts: Vec<(&String, u64)> = st
+        .by_ability
+        .iter()
+        .filter(|(_, a)| a.total == 0 && a.casts > 0)
+        .map(|(n, a)| (n, a.casts))
+        .collect();
+    if casts.is_empty() {
+        return None;
+    }
+    casts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    // A cast the client did not name ("begins to cast a spell") is still a
+    // cast, and says so rather than printing as a bare count.
+    let list: Vec<String> = casts
+        .iter()
+        .map(|(n, c)| {
+            let n = if n.is_empty() {
+                "unnamed spell"
+            } else {
+                n.as_str()
+            };
+            format!("{n} ×{c}")
+        })
+        .collect();
+    Some(format!("Also cast: {}", list.join(", ")))
 }
 
 /// `{n} casts · {n} hits · {c}% crit`, casts only where they were recorded.
@@ -1795,7 +1825,7 @@ fn compact(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MeterRow, bold_runs, charm_pct, coin_pp, compact, death_window_line, dps_text,
+        MeterRow, also_cast, bold_runs, charm_pct, coin_pp, compact, death_window_line, dps_text,
         drill_counts, fold_pets, parse_line, pet_sentence, pet_tag, resist_rate, seconds_before,
     };
     use norrlog_api::AbilityStats;
@@ -1968,6 +1998,25 @@ mod tests {
         assert_eq!(
             death_window_line(&d),
             "1,000 damage taken in the last 15s; the last 2 hits, 750 of it, are below"
+        );
+    }
+
+    #[test]
+    fn casts_that_did_no_damage_are_listed_most_first() {
+        let mut st = norrlog_api::ActorStats::default();
+        assert_eq!(also_cast(&st), None);
+        let cast = |casts, total| AbilityStats {
+            casts,
+            total,
+            ..Default::default()
+        };
+        st.by_ability.insert("Complete Heal".into(), cast(2, 0));
+        st.by_ability.insert("Aegolism".into(), cast(1, 0));
+        st.by_ability.insert("Smite".into(), cast(3, 900));
+        st.by_ability.insert(String::new(), cast(1, 0));
+        assert_eq!(
+            also_cast(&st).as_deref(),
+            Some("Also cast: Complete Heal ×2, unnamed spell ×1, Aegolism ×1")
         );
     }
 }

@@ -1843,7 +1843,16 @@ impl EncounterTracker {
                 let key = source.key();
                 let mine = self.pet_owners.get(&key).is_some_and(|o| *o == self.player)
                     || self.charmed.contains_key(&key);
-                if !mine {
+                // Anyone already in the open fight -- a groupmate, the
+                // creature itself -- has the cast counted too, so a breakdown
+                // can say who cast what. Already in it, never added by it: a
+                // cast still neither opens a fight nor makes its caster a
+                // combatant.
+                let fighting = self
+                    .current
+                    .as_ref()
+                    .is_some_and(|enc| enc.actors.contains_key(&key));
+                if !mine && !fighting {
                     // `closed`, not `None`: the idle check at the top of this
                     // function may have just closed a fight, and returning
                     // `None` threw it away. A dungeon is full of creatures
@@ -3467,6 +3476,32 @@ mod tests {
         assert!(
             !encs[0].actors.contains_key("a wandering shaman"),
             "a passing caster is not a combatant"
+        );
+    }
+
+    /// Anyone already in the fight has their casts counted, the creature
+    /// included; a caster who is not in it still is not added by casting.
+    #[test]
+    fn casts_by_anyone_already_fighting_are_counted() {
+        let encs = run(&[
+            (100, "You slash a giant for 10 points of damage."),
+            (101, "Orrin hits a giant for 40 points of damage."),
+            (102, "Orrin begins casting Complete Heal."),
+            (103, "Orrin begins casting Complete Heal."),
+            (104, "A giant begins casting Fire Breath."),
+            (105, "Mirela begins casting Complete Heal."),
+            (110, "You have slain a giant!"),
+        ]);
+        let e = &encs[0];
+        let heal = e.actors["orrin"]
+            .by_ability
+            .get("Complete Heal")
+            .expect("counted");
+        assert_eq!((heal.casts, heal.hits, heal.total), (2, 0, 0));
+        assert_eq!(e.actors["a giant"].by_ability["Fire Breath"].casts, 1);
+        assert!(
+            !e.actors.contains_key("mirela"),
+            "casting does not make a bystander a combatant"
         );
     }
 
