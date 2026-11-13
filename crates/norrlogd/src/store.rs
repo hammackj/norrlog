@@ -257,7 +257,55 @@ impl Store {
         s.repair_rule_notice_zones()?;
         s.drop_graded_duplicates()?;
         s.repair_inferred_group_mode(&inferred)?;
+        s.reread_logs_with_drops_once()?;
         Ok(s)
+    }
+
+    /// Have every log with drops on file read again from its start, once.
+    ///
+    /// `put_drops` used to replace rows only under the same key, and the key
+    /// is how the item and creature are spelled. A fold that respelled them
+    /// left the old rows beside the new: Tharn's log held 35,965 loots on file
+    /// against the 22,817 lines in it. `put_drops` now clears a log's rows
+    /// before writing, but only a whole read calls it, and a log that is not
+    /// followed is read again only when it grows. Zeroing the watermark makes
+    /// the next catch-up sweep read it whole; the followed log is read whole
+    /// at every start anyway. Nothing is deleted here, and a log that no
+    /// longer exists keeps what it has.
+    fn reread_logs_with_drops_once(&mut self) -> Result<()> {
+        const NAME: &str = "reread-logs-with-drops";
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS store_repairs (
+                name TEXT PRIMARY KEY,
+                at   INTEGER NOT NULL
+            )",
+        )?;
+        let done: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM store_repairs WHERE name = ?1)",
+            [NAME],
+            |r| r.get(0),
+        )?;
+        if !done {
+            let n = tx.execute(
+                "UPDATE sources SET bytes = 0
+                 WHERE bytes > 0 AND path IN (SELECT DISTINCT source FROM item_drops)",
+                [],
+            )?;
+            if n > 0 {
+                eprintln!("[norrlogd] {n} log(s) will be read again to recount their drops");
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            tx.execute(
+                "INSERT INTO store_repairs (name, at) VALUES (?1, ?2)",
+                params![NAME, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// An in-memory database, for tests.
@@ -1929,9 +1977,10 @@ impl Store {
 
     /// Record what this log has seen dropping, and the kills behind it.
     ///
-    /// Rows are keyed by log, so this REPLACEs only what the same log said
-    /// last time. Re-parsing changes nothing; a different log adds to the
-    /// pile rather than overwriting it.
+    /// Only ever called with the whole log read, so the report is
+    /// everything that log says: its rows are cleared and rewritten, and
+    /// re-parsing changes nothing. A different log adds to the pile rather
+    /// than overwriting it.
     pub fn put_drops(
         &mut self,
         game: &str,
@@ -1942,6 +1991,21 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut n = 0;
         {
+            // Cleared per source first. The rows are keyed on how the item
+            // and creature are spelled, and a fold that changes the spelling
+            // -- "lizardman broodling" becoming "a lizardman broodling", a
+            // graded name folding to its base -- would otherwise leave the old
+            // row beside the new one, counting the same loots twice. Tharn's
+            // log held 35,965 loots on file against 22,817 lines.
+            for table in ["item_drops", "item_drop_places", "npc_kills"] {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {table}
+                         WHERE game = ?1 AND character = ?2 AND server = ?3 AND source = ?4"
+                    ),
+                    params![game, c, sv, source],
+                )?;
+            }
             let mut drop_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO item_drops
                  (game, character, server, source, item, npc, zones, looted, left_behind,
@@ -1967,17 +2031,6 @@ impl Store {
                     n += 1;
                 }
             }
-            // Cleared per source before the rewrite, unlike the row above.
-            // `INSERT OR REPLACE` keys on a place, so a zone that stopped
-            // appearing in this log's report -- because a name was corrected,
-            // or the fold changed -- would otherwise be left behind as a
-            // sighting nothing supports any more. The parent row is keyed on
-            // the pairing and cannot go stale that way; this can.
-            tx.execute(
-                "DELETE FROM item_drop_places
-                 WHERE game = ?1 AND character = ?2 AND server = ?3 AND source = ?4",
-                params![game, c, sv, source],
-            )?;
             let mut place_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO item_drop_places
                  (game, character, server, source, item, npc, zone, mode,
@@ -4164,6 +4217,117 @@ mod tests {
             vec!["misty thicket"],
             "the zone the re-read no longer reports is gone: {got:?}"
         );
+    }
+
+    /// A pairing whose spelling changed is replaced, not kept beside the new
+    /// one.
+    ///
+    /// A build up to September wrote "lizardman broodling" where the current
+    /// one writes "a lizardman broodling" for the same loot line. Keyed on
+    /// the spelling, the re-read added a row instead of replacing one, and
+    /// Tharn's log counted 35,965 loots against the 22,817 lines it holds.
+    #[test]
+    fn a_respelled_pairing_replaces_the_old_row() {
+        use norrlog_core::drops::{DropPlace, DropReport, DropSighting, ItemDrops};
+        use norrlog_core::game::Game;
+
+        let report = |npc: &str| DropReport {
+            game: Game::EverQuestLegends,
+            kills: vec![(npc.to_string(), 4)],
+            items: vec![ItemDrops {
+                item: "Lizardman Scale".into(),
+                game: Game::EverQuestLegends,
+                sources: vec![DropSighting {
+                    npc: npc.into(),
+                    zones: vec!["the feerrott".into()],
+                    places: vec![DropPlace {
+                        zone: "the feerrott".into(),
+                        mode: "open".into(),
+                        difficulty: 0,
+                        looted: 3,
+                        quantity: 3,
+                    }],
+                    looted: 3,
+                    left: 0,
+                    quantity: 3,
+                    kills: 4,
+                    grades: Vec::new(),
+                    first_seen: 1,
+                    last_seen: 2,
+                }],
+                looted: 3,
+                left: 0,
+                quantity: 3,
+                grades: Vec::new(),
+            }],
+        };
+
+        let mut st = Store::in_memory().unwrap();
+        st.put_drops("everquest-legends", "log-a", &report("lizardman broodling"))
+            .unwrap();
+        // Another log's rows are not this log's to clear.
+        st.put_drops("everquest-legends", "log-b", &report("lizardman broodling"))
+            .unwrap();
+        st.put_drops(
+            "everquest-legends",
+            "log-a",
+            &report("a lizardman broodling"),
+        )
+        .unwrap();
+
+        let rows = |table: &str, source: &str| -> Vec<String> {
+            let mut q = st
+                .conn
+                .prepare(&format!(
+                    "SELECT npc FROM {table} WHERE source = ?1 ORDER BY npc"
+                ))
+                .unwrap();
+            q.query_map([source], |r| r.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            rows("item_drops", "log-a"),
+            ["a lizardman broodling"],
+            "the old spelling is gone"
+        );
+        assert_eq!(rows("npc_kills", "log-a"), ["a lizardman broodling"]);
+        assert_eq!(rows("item_drops", "log-b"), ["lizardman broodling"]);
+        assert_eq!(rows("npc_kills", "log-b"), ["lizardman broodling"]);
+    }
+
+    /// Logs with drops on file are read again once, so the respelled rows
+    /// `put_drops` used to leave behind are cleared by the next whole read.
+    #[test]
+    fn logs_with_drops_are_read_again_once() {
+        let mut st = Store::in_memory().unwrap();
+        st.note_source("/logs/a.txt", 500, 1).unwrap();
+        st.note_source("/logs/b.txt", 700, 1).unwrap();
+        st.conn
+            .execute(
+                "INSERT INTO item_drops (game, character, server, source, item, npc, zones,
+                 looted, quantity, first_seen, last_seen)
+                 VALUES ('everquest-legends','Test','test','/logs/a.txt','Bone Chips',
+                 'a decaying skeleton','',1,1,1,1)",
+                [],
+            )
+            .unwrap();
+        st.reread_logs_with_drops_once().unwrap();
+        let bytes = |st: &Store| {
+            st.sources()
+                .unwrap()
+                .into_iter()
+                .map(|(p, _, b)| (p, b))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let got = bytes(&st);
+        assert_eq!(got["/logs/a.txt"], 0, "a log with drops is read again");
+        assert_eq!(got["/logs/b.txt"], 700, "one without is left alone");
+
+        st.note_source("/logs/a.txt", 500, 2).unwrap();
+        st.reread_logs_with_drops_once().unwrap();
+        assert_eq!(bytes(&st)["/logs/a.txt"], 500, "and only once");
     }
 
     /// A skill ceiling is the highest anybody reached, so a shorter re-read
