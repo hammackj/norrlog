@@ -171,11 +171,11 @@ pub struct AlertsView {
     volume: Entity<SliderState>,
     /// Newest first; this session only.
     fires: Vec<AlertFire>,
-    /// The highest fire played. `None` until the first snapshot.
-    alert_seq: Option<u64>,
+    /// How far the fires and the feed have been taken, in this daemon's
+    /// numbering.
+    cursors: Cursors,
     /// Newest first.
     feed: VecDeque<LogLine>,
-    line_seq: u64,
     feed_live: bool,
     voices: Option<bool>,
     notes: [bool; 2],
@@ -234,9 +234,8 @@ impl AlertsView {
             prefs,
             volume,
             fires: Vec::new(),
-            alert_seq: None,
+            cursors: Cursors::default(),
             feed: VecDeque::new(),
-            line_seq: 0,
             feed_live: true,
             voices: None,
             notes: [false; 2],
@@ -247,6 +246,13 @@ impl AlertsView {
     }
 
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
+        // A different daemon counts from one again; what it says is news even
+        // where its numbers are below the old one's.
+        if let Some(a) = &api
+            && self.cursors.attach(a.client.hello().pid)
+        {
+            self.feed.clear();
+        }
         self.api = api;
         self._poll = self.api.as_ref().map(|_| {
             cx.spawn(async move |this, cx| {
@@ -305,14 +311,19 @@ impl AlertsView {
             return;
         }
         let Some(api) = self.api.clone() else { return };
-        let since = self.line_seq;
+        let since = self.cursors.line_seq;
+        let asked = self.cursors.daemon;
         self.track(cx.spawn(async move |this, cx| {
             let Ok(r) = api.get::<LinesReply>(format!("/api/lines?since={since}")).await else { return };
             let _ = this.update(cx, |v, cx| {
+                // An answer from a daemon since replaced is not this one's.
+                if v.cursors.daemon != asked {
+                    return;
+                }
                 let was = v.feed_live;
                 v.feed_live = r.live;
                 if let Some(last) = r.lines.last() {
-                    v.line_seq = v.line_seq.max(last.seq);
+                    v.cursors.line_seq = v.cursors.line_seq.max(last.seq);
                     for l in r.lines {
                         v.feed.push_front(l);
                     }
@@ -327,11 +338,7 @@ impl AlertsView {
 
     /// A snapshot arrived, whichever tab is open: play what is new.
     pub fn on_fires(&mut self, fires: Vec<AlertFire>, seq: u64, cx: &mut Context<Self>) {
-        let Some(played) = self.alert_seq else {
-            self.alert_seq = Some(seq);
-            return;
-        };
-        let fresh: Vec<AlertFire> = fires.into_iter().filter(|f| f.seq > played).collect();
+        let fresh = self.cursors.fresh(fires, seq);
         if !fresh.is_empty() {
             let gain = self.prefs.gain();
             for f in &fresh {
@@ -346,7 +353,6 @@ impl AlertsView {
             self.fires.truncate(FIRES_MAX);
             cx.notify();
         }
-        self.alert_seq = Some(played.max(seq));
     }
 
     fn value(&self, i: &Entity<InputState>, cx: &App) -> String {
@@ -844,9 +850,70 @@ fn new_id() -> String {
     format!("a{}", out.into_iter().collect::<String>())
 }
 
+/// How far the fires and the log feed have been taken.
+///
+/// Both are numbered by the daemon from one, so the numbers mean something
+/// only for the daemon that gave them. A daemon restarted (a log switch, a
+/// port change, a crash) starts again from one, and a cursor carried over
+/// would hide its first hundred alerts behind an old one's hundred.
+#[derive(Default)]
+struct Cursors {
+    /// The daemon the numbers are from, by process id.
+    daemon: Option<u32>,
+    /// The highest fire played. `None` until the first snapshot.
+    alert_seq: Option<u64>,
+    line_seq: u64,
+}
+
+impl Cursors {
+    /// Attached to `pid`. True when it is a different daemon, and the cursors
+    /// were reset; a reconnect to the same one keeps them.
+    fn attach(&mut self, pid: u32) -> bool {
+        if self.daemon == Some(pid) {
+            return false;
+        }
+        *self = Cursors { daemon: Some(pid), ..Default::default() };
+        true
+    }
+
+    /// The fires not yet played. The first snapshot from a daemon only sets
+    /// the baseline: what fired before the app was looking is not played.
+    fn fresh(&mut self, fires: Vec<AlertFire>, seq: u64) -> Vec<AlertFire> {
+        let Some(played) = self.alert_seq else {
+            self.alert_seq = Some(seq);
+            return Vec::new();
+        };
+        self.alert_seq = Some(played.max(seq));
+        fires.into_iter().filter(|f| f.seq > played).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{line_name, new_id, parse_int, summary};
+    use super::{line_name, new_id, parse_int, summary, Cursors};
+
+    fn fire(seq: u64) -> norrlog_api::AlertFire {
+        serde_json::from_value(serde_json::json!({
+            "seq": seq, "at": 0, "rule_id": "r", "name": "n", "detail": "", "sound": "chime"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_daemons_alerts_play_though_its_numbers_start_again() {
+        let mut c = Cursors::default();
+        assert!(c.attach(10));
+        assert!(c.fresh(vec![fire(100)], 100).is_empty(), "the first snapshot is the baseline");
+        assert_eq!(c.fresh(vec![fire(100), fire(101)], 101).len(), 1);
+        c.line_seq = 5_000_000;
+        assert!(!c.attach(10), "a reconnect to the same daemon keeps its place");
+        assert!(c.fresh(vec![fire(101)], 101).is_empty(), "and does not replay");
+        assert!(c.attach(11), "a restarted daemon");
+        assert_eq!(c.line_seq, 0, "the feed starts from its first line");
+        assert!(c.fresh(vec![], 0).is_empty());
+        assert_eq!(c.fresh(vec![fire(1)], 1).len(), 1, "its first alert plays");
+        assert!(c.fresh(vec![fire(1)], 1).is_empty(), "once");
+    }
     use norrlog_api::{SignalKind, Trigger};
 
     #[test]
