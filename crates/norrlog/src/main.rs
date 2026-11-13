@@ -10,6 +10,7 @@
 
 mod alerts;
 mod api;
+mod bestiary;
 mod character;
 mod charts;
 mod classes;

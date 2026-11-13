@@ -1332,3 +1332,10 @@ pub struct LinesReply {
     #[serde(default)]
     pub live: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Bestiary: `GET /api/bestiary` is core's report, merged across every log on
+// file for the game being followed.
+
+pub use norrlog_core::bestiary::{BestiaryReport, CreatureKind, MeleeAgainst, NpcProfile};
+pub use norrlog_core::zone::{Mode, TIER_NAMES};

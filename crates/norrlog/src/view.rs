@@ -23,6 +23,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("procs", "Procs"),
     ("tradeskills", "Tradeskills"),
     ("forage", "Forage"),
+    ("bestiary", "Bestiary"),
     ("sky", "Sky"),
     ("tells", "Tells"),
     ("alerts", "Alerts"),
@@ -60,6 +61,7 @@ pub struct Shell {
     experience: Entity<crate::experience::ExperienceView>,
     tradeskills: Entity<crate::tradeskills::TradeskillsView>,
     forage: Entity<crate::forage::ForageView>,
+    bestiary: Entity<crate::bestiary::BestiaryView>,
     sky: Entity<crate::sky::SkyView>,
     tells: Entity<crate::tells::TellsView>,
     alerts: Entity<crate::alerts::AlertsView>,
@@ -116,6 +118,7 @@ impl Shell {
         let experience = cx.new(|_| crate::experience::ExperienceView::new());
         let tradeskills = cx.new(|_| crate::tradeskills::TradeskillsView::new());
         let forage = cx.new(|_| crate::forage::ForageView::new());
+        let bestiary = cx.new(|cx| crate::bestiary::BestiaryView::new(window, cx));
         let sky = cx.new(crate::sky::SkyView::new);
         let dashboard = cx.new(crate::dashboard::DashboardView::new);
         // The dashboard's Sky bars follow the Sky tab's own loads.
@@ -151,6 +154,7 @@ impl Shell {
             experience,
             tradeskills,
             forage,
+            bestiary,
             sky,
             tells,
             alerts,
@@ -226,6 +230,12 @@ impl Shell {
                 self.forage.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
                     if open == "forage" {
+                        v.load(cx);
+                    }
+                });
+                self.bestiary.update(cx, |v, cx| {
+                    v.set_api(Some(api.clone()), cx);
+                    if open == "bestiary" {
                         v.load(cx);
                     }
                 });
@@ -305,6 +315,9 @@ impl Shell {
                 let forage_open = self.tab == "forage";
                 self.forage
                     .update(cx, |v, cx| v.on_snapshot(forage_open, cx));
+                let bestiary_open = self.tab == "bestiary";
+                self.bestiary
+                    .update(cx, |v, cx| v.on_snapshot(bestiary_open, cx));
                 let sky_open = self.tab == "sky";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
                 let current = s
@@ -353,6 +366,7 @@ impl Shell {
                 self.experience.update(cx, |v, cx| v.set_api(None, cx));
                 self.tradeskills.update(cx, |v, cx| v.set_api(None, cx));
                 self.forage.update(cx, |v, cx| v.set_api(None, cx));
+                self.bestiary.update(cx, |v, cx| v.set_api(None, cx));
                 self.sky.update(cx, |v, cx| v.set_api(None, cx));
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
                 self.alerts.update(cx, |v, cx| v.set_api(None, cx));
@@ -402,6 +416,9 @@ impl Shell {
         }
         if tab == "tradeskills" {
             self.tradeskills.update(cx, |v, cx| v.load(cx));
+        }
+        if tab == "bestiary" {
+            self.bestiary.update(cx, |v, cx| v.load(cx));
         }
         if tab == "forage" {
             self.forage.update(cx, |v, cx| v.load(cx));
@@ -702,6 +719,11 @@ impl Shell {
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
+            "bestiary" => self
+                .bestiary
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             "alerts" => self
                 .alerts
                 .clone()
@@ -755,6 +777,7 @@ impl Render for Shell {
                         | "experience"
                         | "tradeskills"
                         | "forage"
+                        | "bestiary"
                         | "sky"
                         | "tells"
                         | "alerts"
