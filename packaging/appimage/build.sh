@@ -28,9 +28,9 @@ install -m644 packaging/appimage/norrlog.desktop "$APPDIR/usr/share/applications
 for size in 32 48 64 128 256; do
     d="$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$d"
-    install -m644 "packaging/eqlparser-$size.png" "$d/norrlog.png"
+    install -m644 "packaging/norrlog-$size.png" "$d/norrlog.png"
 done
-install -m644 packaging/eqlparser-256.png "$APPDIR/norrlog.png"
+install -m644 packaging/norrlog-256.png "$APPDIR/norrlog.png"
 ln -s norrlog.png "$APPDIR/.DirIcon"
 
 mkdir -p "$OUT"

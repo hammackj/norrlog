@@ -14,7 +14,7 @@ use norrlog_api::Hello;
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Nav order, as the Electron app has it: (id, label, parity file).
+/// Nav order, as the Electron app had it: (id, label, parity file).
 pub const TABS: &[(&str, &str, &str)] = &[
     ("dashboard", "Dashboard", "shell-and-dashboard.md"),
     ("encounters", "Encounters", "encounters-and-procs.md"),
@@ -666,8 +666,8 @@ impl Shell {
             id => {
                 let (_, label, _) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
                 notice(
-                    &format!("{label} is not ported yet"),
-                    "The Electron app still has it.".to_string(),
+                    &format!("{label} is not here yet"),
+                    "This view has not been built in this app yet.".to_string(),
                 )
                 .into_any_element()
             }

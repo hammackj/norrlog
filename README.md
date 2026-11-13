@@ -70,6 +70,8 @@ cargo build --release
 ./target/release/norrlog
 ```
 
+To add it to your desktop's menu, run `packaging/install-launcher.sh`.
+
 Norrlog is used daily on Linux, with the game running under Wine or CrossOver.
 
 **Windows and macOS support is experimental.** It builds and its tests pass

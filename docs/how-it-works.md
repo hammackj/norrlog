@@ -180,18 +180,8 @@ crates/norrlog-client/    attach to or start the daemon, typed API calls
 crates/norrlog-api/       the API's types, shared by the daemon and its clients
 crates/norrlog-read/, -vision, -shot, -parse
                           reading item screenshots
-gui/                      the earlier Electron app, being retired
-  main.js                   window and overlay lifecycle, config, IPC
-  preload.js                the only privileged surface the renderer sees
-  renderer/app.js           entry point: tab bar, WebSocket, snapshot, boot
-  renderer/core.js          shared state and formatters; imports nothing
-  renderer/<tab>.js         one module per tab, reached via `VIEW_LOADERS`
+packaging/                desktop launcher, icons, AppImage build
 ```
-
-The Electron renderer is plain ES modules loaded straight from disk — no build step, no
-bundler. `core.js` is the only thing everything depends on, and nothing imports
-a module that imports it back; the boundaries were derived from the reference
-graph rather than from where the section comments happened to fall.
 
 ## Notes on accuracy
 

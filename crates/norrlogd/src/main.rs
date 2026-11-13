@@ -62,8 +62,6 @@ struct Config {
     eqdb: Vec<String>,
     /// How far back to read on startup, in seconds. `None` reads everything.
     since: Option<i64>,
-    /// Exit when the process that started this one goes away.
-    exit_with_parent: bool,
     /// Exit this many seconds after the last client has gone and nothing has
     /// been asked of the daemon. `None` keeps running.
     idle_exit: Option<u64>,
@@ -183,10 +181,6 @@ OPTIONS:
                        shapes eqldb's rebuild has always written, so the two
                        readings of one log can be diffed against each other.
                        Touches no history database and follows nothing.
-    --exit-with-parent Exit when the process that started this one does, by
-                       watching for the parent pid to change. For the desktop
-                       app, which owns the daemon and must not leave it running
-                       when it is killed rather than asked to quit.
     --idle-exit <secs> Exit once no client has held a socket open and nothing
                        has been asked of the daemon for <secs> seconds. For a
                        daemon shared by several apps: whichever starts it, it
@@ -225,73 +219,6 @@ ENDPOINTS:
     std::process::exit(2)
 }
 
-/// Exit when whoever started this process goes away.
-///
-/// # Why the parent pid, and not a pipe or a signal
-///
-/// The desktop app owns this daemon: it spawns it, and its quit handlers kill
-/// it. Those handlers cover every way the app can be *told* to stop. They
-/// cover none of the ways it can stop existing — SIGKILL, a crash, the OOM
-/// killer, a session ending out from under it — and in each of those this
-/// process was reparented to init and carried on, holding the port, tailing
-/// the log and answering requests for a window that is gone. The next launch
-/// then finds its port taken by a daemon the user cannot see to close.
-///
-/// The obvious fix is a pipe from the parent, watched for end-of-file. It does
-/// not work here, and the reason is worth writing down: Electron's helper
-/// processes — gpu, zygote, broker — inherit the parent's descriptors, and
-/// they outlive a SIGKILL of the main process. The write end therefore stays
-/// open in a process nobody is tracking, no end-of-file ever arrives, and the
-/// daemon waits forever on a parent that has been dead for an hour. This was
-/// measured, not guessed: `/proc/<daemon>/fd/0` was still held by an orphaned
-/// gpu-process.
-///
-/// `getppid` cannot be inherited or held open by anybody. The kernel changes
-/// it to the reaper's pid the instant the real parent dies, whatever killed
-/// it, so the original value being gone *is* the event — no signal handler, no
-/// descriptor, and no pid-reuse race to reason about, since this is the
-/// kernel's own answer to "who is my parent" rather than a number we stored
-/// and compared.
-///
-/// Opt-in, because a daemon started from a terminal belongs to whoever started
-/// it: its parent is the shell, and a shell exiting should not necessarily
-/// take it down.
-#[cfg(unix)]
-fn exit_with_parent() {
-    use std::io::Write;
-    let original = std::os::unix::process::parent_id();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        if std::os::unix::process::parent_id() != original {
-            /* Reported with a write that is allowed to fail.
-             *
-             * Not a stylistic preference — `eprintln!` panics when the write
-             * fails, and the write fails *here specifically*: this daemon's
-             * stderr is a pipe to the app, so the process being reported dead
-             * is the one that was reading this. The panic killed the watchdog
-             * thread before it reached the exit below, and the daemon then ran
-             * on forever having correctly noticed that it should not. The
-             * failure looks exactly like the watchdog never running, which is
-             * why it is written down here rather than left to be rediscovered.
-             */
-            let _ = writeln!(
-                std::io::stderr(),
-                "[norrlogd] the process that started this one is gone; exiting"
-            );
-            // The follower flushes history on a timer and holds the engine
-            // lock while it ingests, so there is nothing to join here that
-            // would not risk hanging on the way out. Whatever the last flush
-            // wrote is what survives — exactly what a kill would have left.
-            std::process::exit(0);
-        }
-    });
-}
-
-/// No parent to watch. The flag is accepted and does nothing rather than
-/// failing, so one launcher can pass it on every platform.
-#[cfg(not(unix))]
-fn exit_with_parent() {}
-
 /// `--eqdb off` (or `none`): no item site at all.
 fn is_off(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "none")
@@ -323,7 +250,6 @@ fn parse_args() -> Config {
         },
         // Off by default: run from a terminal, this daemon belongs to whoever
         // started it and should outlive nothing in particular.
-        exit_with_parent: false,
         idle_exit: None,
         shots: None,
         no_tray: false,
@@ -421,7 +347,6 @@ fn parse_args() -> Config {
             "--record-out" => cfg.record_out = args.next().map(PathBuf::from),
             "--bundle-out" => cfg.bundle_out = args.next().map(PathBuf::from),
             "--contributor" => cfg.contributor = args.next(),
-            "--exit-with-parent" => cfg.exit_with_parent = true,
             "--idle-exit" => match args.next().and_then(|v| v.parse().ok()) {
                 Some(secs) => cfg.idle_exit = Some(secs),
                 None => {
@@ -509,11 +434,6 @@ fn close_inherited_fds() {
 }
 
 async fn run(cfg: Config) -> anyhow::Result<()> {
-    // Before anything slow: a parent that dies during a long initial parse
-    // should still take this with it.
-    if cfg.exit_with_parent {
-        exit_with_parent();
-    }
     // The migration, and nothing else. It needs no log, no history database
     // and no port — and a second daemon opening the history database beside
     // the one the desktop app is running is a worse thing to ask of somebody
@@ -1505,7 +1425,6 @@ mod tests {
             game: None,
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
-            exit_with_parent: false,
             idle_exit: None,
             shots: None,
             no_tray: false,
@@ -1531,7 +1450,6 @@ mod tests {
             game: None,
             since: None,
             eqdb: DEFAULT_EQDB.iter().map(|s| s.to_string()).collect(),
-            exit_with_parent: false,
             idle_exit: None,
             shots: None,
             no_tray: false,

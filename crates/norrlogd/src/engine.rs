@@ -14,8 +14,8 @@ use norrlog_core::encounter::{Encounter, EncounterTracker};
 use norrlog_core::experience::{ExpTracker, LevelRecord};
 use norrlog_core::feed::Context;
 use norrlog_core::game::Game;
-use norrlog_core::lockout::{BuildRecord, LockoutReport, LockoutTracker};
-use norrlog_core::npc::{NpcReport, NpcTracker};
+use norrlog_core::lockout::{LockoutReport, LockoutTracker};
+use norrlog_core::npc::NpcTracker;
 use norrlog_core::procs::{ProcRegistry, ProcReport, ProcTracker};
 use norrlog_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
 use norrlog_core::spell::{BuffMark, SpellDb, SpellResolver};
@@ -28,30 +28,6 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 pub use norrlog_api::{AbilityGroup, EncounterSummary, GroupedAbility, MeterRow, TickSeries};
-
-/// One of your deaths, with its context.
-#[derive(Debug, Clone, Serialize)]
-pub struct DeathReportRow {
-    pub at: i64,
-    pub killer: Option<String>,
-    pub zone: String,
-    /// The fight it happened in, so a death traces back to an encounter.
-    pub encounter_id: u64,
-    pub encounter_title: String,
-    pub damage_in_window: u64,
-    pub blows: Vec<norrlog_core::encounter::IncomingHit>,
-}
-
-/// Everything the deaths view shows.
-#[derive(Debug, Clone, Serialize)]
-pub struct DeathReport {
-    pub deaths: Vec<DeathReportRow>,
-    /// Who has killed you most often.
-    pub by_killer: Vec<(String, u32)>,
-    /// Which zones you die in.
-    pub by_zone: Vec<(String, u32)>,
-    pub total: usize,
-}
 
 /// A charm that failed to take, for the resist overlay.
 #[derive(Debug, Clone, Serialize)]
@@ -2261,11 +2237,6 @@ impl Engine {
             .map(|(_, z)| z.clone())
     }
 
-    /// Which bosses each build has cleared.
-    pub fn build_history(&self) -> Vec<BuildRecord> {
-        self.lockouts.builds(&|ts| self.build_label(ts))
-    }
-
     /// Whether a named effect wearing off a creature ends its charm.
     ///
     /// True for a charm spell, and also when the database has never heard of
@@ -2336,57 +2307,6 @@ impl Engine {
         // rule on them could not say what failed. This one can.
         self.alerts
             .on_signal(at, Signal::CharmResisted { target, how: kind });
-    }
-
-    /// Your deaths, newest first, each with the blows that caused it.
-    ///
-    /// Only your own: a mob dying is a kill, and the buffer of incoming hits
-    /// only ever held damage aimed at you.
-    pub fn death_report(&self) -> DeathReport {
-        use std::collections::HashMap;
-        let mut rows: Vec<DeathReportRow> = Vec::new();
-        let mut by_killer: HashMap<String, u32> = HashMap::new();
-        let mut by_zone: HashMap<String, u32> = HashMap::new();
-
-        let all = self
-            .encounters
-            .iter()
-            .chain(self.tracker.current().into_iter());
-        for enc in all {
-            let title = self.summarise(enc, false).title;
-            for d in &enc.deaths {
-                if !self.is_player(&d.victim) {
-                    continue;
-                }
-                let zone = enc.zone.clone().unwrap_or_default();
-                *by_killer
-                    .entry(d.killer.clone().unwrap_or_else(|| "unknown".into()))
-                    .or_default() += 1;
-                *by_zone.entry(zone.clone()).or_default() += 1;
-                rows.push(DeathReportRow {
-                    at: d.timestamp,
-                    killer: d.killer.clone(),
-                    zone,
-                    encounter_id: enc.id,
-                    encounter_title: title.clone(),
-                    damage_in_window: d.damage_in_window,
-                    blows: d.final_blows.clone(),
-                });
-            }
-        }
-        rows.sort_by_key(|r| std::cmp::Reverse(r.at));
-
-        let mut by_killer: Vec<(String, u32)> = by_killer.into_iter().collect();
-        by_killer.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let mut by_zone: Vec<(String, u32)> = by_zone.into_iter().collect();
-        by_zone.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-
-        DeathReport {
-            total: rows.len(),
-            deaths: rows,
-            by_killer,
-            by_zone,
-        }
     }
 
     /// Whether a display name refers to the logging character.
@@ -2564,11 +2484,6 @@ impl Engine {
             .map(|p| (p.ability.to_lowercase(), (p.client_rank, p.spent)))
             .collect();
         self.aa.report(&owned)
-    }
-
-    /// Captured NPC interactions, for writing quests up.
-    pub fn npc_report(&self) -> NpcReport {
-        self.npcs.report()
     }
 
     /// Private conversations, threaded by correspondent.

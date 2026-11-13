@@ -1,12 +1,8 @@
 # Rust build output. 2 GB and fully reproducible from Cargo.lock.
 /target/
 
-# Electron dependencies. Reproducible from package-lock.json, which *is*
-# tracked so builds are pinned.
-node_modules/
-
 # Runtime state lives in ~/.config/norrlog (and ~/.local/share/norrlog), and
-# the Electron app's in ~/.config/eqlparser-gui —
+# the app's settings in ~/.config/eqlparser-gui —
 # buff marks, seeded task definitions, the Sky quest catalogue, window
 # geometry. Never inside the repo, but ignore stray copies just in case.
 *.local.json

@@ -78,7 +78,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/drops", get(drops))
         .route("/api/bestiary", get(bestiary))
         .route("/api/tasks", get(tasks).post(define_task))
-        .route("/api/builds", get(builds))
         .route("/api/history", get(history))
         .route("/api/raid-kills", get(raid_kills))
         .route("/api/logs", get(logs))
@@ -86,9 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/export", get(export))
         .route("/api/encounters/export", get(export_encounters))
         .route("/api/charm", get(charm))
-        .route("/api/deaths", get(deaths))
         .route("/api/tells", get(tells))
-        .route("/api/npcs", get(npcs))
         .route("/api/quests", get(quests).post(put_quest))
         .route("/api/quests/delete", post(delete_quest))
         .route("/api/quests/export", get(export_quests))
@@ -289,9 +286,8 @@ fn is_local_origin(origin: &str, port: u16) -> bool {
 ///
 /// Checked on a timer rather than at the moment the last client leaves, so a
 /// client that reconnects — an app reloading its window, OBS switching scenes
-/// — is not a reason to exit. The exit is the same one `--exit-with-parent`
-/// makes: history is flushed on its own timer, and whatever the last flush
-/// wrote is what a kill would have left.
+/// — is not a reason to exit. History is flushed on its own timer, so
+/// whatever the last flush wrote is what a kill would have left.
 pub fn spawn_idle_exit(life: Arc<Life>, secs: u64) {
     tokio::spawn(async move {
         let tick = std::time::Duration::from_secs(secs.clamp(1, 5));
@@ -1885,7 +1881,7 @@ async fn logs(State(s): State<AppState>) -> Json<serde_json::Value> {
 
 /// Durable history: everything kept across log files.
 ///
-/// Distinct from `/api/builds` and `/api/lockouts`, which only ever see the
+/// Distinct from `/api/lockouts`, which only ever sees the
 /// log currently being followed. This is the one that survives a rotation.
 async fn history(State(s): State<AppState>) -> Json<serde_json::Value> {
     let Some(store) = &s.store else {
@@ -1970,12 +1966,6 @@ async fn raid_kills(State(s): State<AppState>) -> Response {
         "orphans": orphans,
     }))
     .into_response()
-}
-
-/// Captured NPC interactions, the raw material for a quest write-up.
-async fn npcs(State(s): State<AppState>) -> Json<norrlog_core::npc::NpcReport> {
-    let engine = s.engine.locked("engine");
-    Json(engine.npc_report())
 }
 
 /// What forage has yielded, per zone.
@@ -2132,12 +2122,6 @@ fn render_quests_markdown(quests: &[crate::store::QuestRecord]) -> String {
 async fn tells(State(s): State<AppState>) -> Json<norrlog_core::tells::TellReport> {
     let engine = s.engine.locked("engine");
     Json(engine.tell_report())
-}
-
-/// Your deaths, with what killed you.
-async fn deaths(State(s): State<AppState>) -> Json<crate::engine::DeathReport> {
-    let engine = s.engine.locked("engine");
-    Json(engine.death_report())
 }
 
 /// Charm state and recent charm failures, for the resist overlay.
@@ -2581,12 +2565,6 @@ async fn define_sky_quest(
     (StatusCode::OK, "ok").into_response()
 }
 
-/// Which bosses each class build has cleared.
-async fn builds(State(s): State<AppState>) -> Json<Vec<norrlog_core::lockout::BuildRecord>> {
-    let engine = s.engine.locked("engine");
-    Json(engine.build_history())
-}
-
 #[derive(Debug, Deserialize)]
 struct ClassQuery {
     /// Return every class with evidence, not just the chosen trio. The trio is
@@ -3002,184 +2980,6 @@ mod tests {
         }
     }
 
-    /// Every named import across the renderer resolves.
-    ///
-    /// The same failure as the id test and a different cause: a module that
-    /// imports a name its target does not export does not load, and every
-    /// listener it wires goes with it. It is easy to reach for — adding one
-    /// function to an import line is how a feature usually starts — and the
-    /// only report is a console nobody has open.
-    #[test]
-    fn every_named_import_in_the_renderer_resolves() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root");
-        let dir = root.join("gui/renderer");
-        // The daemon is usable without the desktop app beside it.
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return;
-        };
-        let files: Vec<std::path::PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "js"))
-            .collect();
-        if files.is_empty() {
-            return;
-        }
-
-        /// What a module exports, by the two forms this renderer uses:
-        /// `export const/let/function/class NAME`, and `export { a, b }`.
-        fn exports(src: &str) -> std::collections::BTreeSet<String> {
-            let mut out = std::collections::BTreeSet::new();
-            let word = |s: &str| -> String {
-                s.chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
-                    .collect()
-            };
-            let mut rest = src;
-            while let Some(i) = rest.find("export ") {
-                rest = &rest[i + 7..];
-                let mut t = rest.trim_start();
-                for kw in ["async ", "function ", "const ", "let ", "var ", "class "] {
-                    t = t.strip_prefix(kw).unwrap_or(t).trim_start();
-                }
-                if let Some(list) = t.strip_prefix('{') {
-                    if let Some(end) = list.find('}') {
-                        for n in list[..end].split(',') {
-                            // `export { a as b }` exports `b`.
-                            let n = n.rsplit(" as ").next().unwrap_or("").trim();
-                            if !n.is_empty() {
-                                out.insert(n.to_string());
-                            }
-                        }
-                    }
-                    continue;
-                }
-                let name = word(t);
-                if !name.is_empty() {
-                    out.insert(name);
-                }
-            }
-            out
-        }
-
-        let mut broken: Vec<String> = Vec::new();
-        for path in &files {
-            let Ok(src) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            let me = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let mut rest = src.as_str();
-            while let Some(i) = rest.find("import {") {
-                rest = &rest[i + 8..];
-                let Some(close) = rest.find('}') else { break };
-                let names = &rest[..close];
-                let after = &rest[close..];
-                let Some(q) = after.find("\"./") else {
-                    continue;
-                };
-                let tail = &after[q + 3..];
-                let Some(e) = tail.find('"') else { continue };
-                let target = &tail[..e];
-                let Ok(tsrc) = std::fs::read_to_string(dir.join(target)) else {
-                    broken.push(format!("{me} imports from {target}, which is not there"));
-                    continue;
-                };
-                let has = exports(&tsrc);
-                for n in names.split(',') {
-                    let n = n.split(" as ").next().unwrap_or("").trim();
-                    if !n.is_empty() && !has.contains(n) {
-                        broken.push(format!(
-                            "{me} imports {n:?} from {target}, which does not export it"
-                        ));
-                    }
-                }
-            }
-        }
-        assert!(broken.is_empty(), "the renderer will not load: {broken:#?}");
-    }
-
-    /// Every `$("id")` the renderer reaches for is an id something makes.
-    ///
-    /// The renderer wires its listeners at module scope, so `$("cfg-save")`
-    /// against an id that is not there is not a dead button — `$` returns
-    /// null, `.addEventListener` throws, the module fails to load, and every
-    /// feature in that file goes with it. A typo in a settings field takes
-    /// out the settings tab.
-    ///
-    /// An id counts as made if `index.html` has it or if some renderer module
-    /// writes it into an `innerHTML` template, which is where the encounters
-    /// sub-tabs and the tasks toggle come from.
-    #[test]
-    fn every_id_the_renderer_reaches_for_is_one_something_makes() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root");
-        let dir = root.join("gui/renderer");
-        // The daemon is usable without the desktop app beside it.
-        let Ok(html) = std::fs::read_to_string(dir.join("index.html")) else {
-            return;
-        };
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return;
-        };
-        let js: String = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "js"))
-            .filter_map(|p| {
-                std::fs::read_to_string(&p)
-                    .map(|s| format!("//@{}\n{s}", p.display()))
-                    .ok()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if js.is_empty() {
-            return;
-        }
-
-        // Every `id="..."` anywhere -- the page's own, and the ones the
-        // renderer builds into its templates.
-        let mut made = std::collections::BTreeSet::new();
-        for src in [&html, &js] {
-            let mut rest = src.as_str();
-            while let Some(i) = rest.find("id=\"") {
-                rest = &rest[i + 4..];
-                if let Some(j) = rest.find('"') {
-                    made.insert(rest[..j].to_string());
-                }
-            }
-        }
-
-        let mut missing: Vec<String> = Vec::new();
-        let mut rest = js.as_str();
-        while let Some(i) = rest.find("$(\"") {
-            rest = &rest[i + 3..];
-            let Some(j) = rest.find('"') else { break };
-            // Only a literal: `$("view-" + name)` names no id here, and the
-            // half in the source is not one to look for.
-            if rest[j + 1..].starts_with(')') {
-                let id = &rest[..j];
-                if !made.contains(id) {
-                    missing.push(id.to_string());
-                }
-            }
-        }
-        assert!(
-            missing.is_empty(),
-            "the renderer reaches for {missing:?}, which nothing makes -- \
-             the module holding it will throw at load and take its whole tab \
-             with it"
-        );
-    }
-
     /// The overlay's panels and the Settings tickboxes are two lists in two
     /// files, and they drift. A comment above the second one already said
     /// "adding one to the overlay means adding it here", and the `motes` panel
@@ -3189,30 +2989,13 @@ mod tests {
     /// So the lists are checked against each other rather than trusted.
     #[test]
     fn every_overlay_panel_is_offered_in_settings() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root");
-        // Every renderer module, not one named file: the list used to live in
-        // app.js and moved to settings.js when the renderer was split, which
-        // broke this test without anything being wrong with the app. What is
-        // being asked is "can the user switch this panel on anywhere", so ask
-        // it of the whole renderer.
-        let Ok(dir) = std::fs::read_dir(root.join("gui/renderer")) else {
-            // The daemon is usable without the desktop app beside it; a
-            // missing renderer is not this test's business to fail over.
-            return;
-        };
-        let app_js: String = dir
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "js"))
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if app_js.is_empty() {
-            return;
-        }
+        // The desktop app's list, read as source: the daemon does not depend
+        // on the app, and the two are in one workspace, so this always runs.
+        let settings = include_str!("../../norrlog/src/overlay_settings.rs");
+        let settings = &settings[settings
+            .find("pub const PANELS")
+            .expect("overlay_settings.rs still has PANELS")..];
+        let settings = &settings[..settings.find("];").expect("PANELS ends")];
 
         let panels = |src: &str, pat: &str| -> std::collections::BTreeSet<String> {
             let mut out = std::collections::BTreeSet::new();
@@ -3233,14 +3016,14 @@ mod tests {
         // An old name for `apps`, kept so saved URLs still work; Settings
         // ticks `apps` for it rather than offering it twice.
         in_overlay.remove("wanted");
-        let in_settings = panels(&app_js, "[\"");
+        let in_settings = panels(settings, "(\"");
         assert!(!in_overlay.is_empty(), "found no panels in the overlay");
 
         let missing: Vec<&String> = in_overlay.difference(&in_settings).collect();
         assert!(
             missing.is_empty(),
             "the overlay has panels Settings cannot switch on: {missing:?} \
-             — add them to OVERLAY_PANELS in gui/renderer/settings.js"
+             — add them to PANELS in crates/norrlog/src/overlay_settings.rs"
         );
     }
 

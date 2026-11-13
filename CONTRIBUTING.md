@@ -85,9 +85,6 @@ reads the log, and the daemon's HTTP and WebSocket API. In short:
 - **norrlog** is the desktop app that draws what the daemon reports;
 - **norrlog-core** is the parsing itself.
 
-`gui/` is the earlier Electron app, being retired. New work goes in the Rust
-app.
-
 ## Licence
 
 Norrlog is MIT-licensed. By contributing, you agree that your contribution is
