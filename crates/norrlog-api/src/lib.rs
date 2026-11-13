@@ -495,8 +495,8 @@ pub struct MobRow {
 // detail through the same structs the daemon writes it with.
 
 pub use norrlog_core::encounter::{
-    AbilityStats, ActorStats, DeathRecord, Encounter, LootRecord, MobBreakdown, Outcome,
-    ResistTally, TimelineEffect, TimelineEvent, TimelineMark,
+    AbilityStats, ActorStats, DeathRecord, Encounter, IncomingHit, LootRecord, MobBreakdown,
+    Outcome, ResistTally, TimelineEffect, TimelineEvent, TimelineMark, DEATH_WINDOW,
 };
 
 /// `GET /api/procs`: how often each proc fired, per minute of combat.

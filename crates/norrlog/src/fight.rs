@@ -13,8 +13,9 @@ use crate::theme::px;
 use crate::theme::*;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{Sizable as _, h_flex, v_flex};
 use norrlog_api::{AbilityGroup, AbilityStats, ActorStats, EncounterDetail, MeterRow};
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +26,8 @@ pub struct FightUi {
     pub incoming: bool,
     /// Meter rows whose ability breakdown is open, by actor key.
     pub open: HashSet<String>,
+    /// The parse was copied for chat since this fight was opened.
+    pub parse_copied: bool,
 }
 
 const GROUP_COLS: &[Col] = &[
@@ -86,6 +89,12 @@ const DEATH_COLS: &[Col] = &[
     col("Killed by", None, false),
     col("When", Some(130.), false),
 ];
+const BLOW_COLS: &[Col] = &[
+    col("When", Some(44.), true),
+    col("From", None, false),
+    col("Attack", None, false),
+    col("Damage", Some(64.), true),
+];
 const LOOT_COLS: &[Col] = &[
     col("Item", None, false),
     col("Qty", Some(40.), true),
@@ -142,10 +151,34 @@ impl EncountersView {
                 v_flex()
                     .gap_1()
                     .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .child(s.title.clone()),
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(s.title.clone()),
+                            )
+                            .child({
+                                let line = parse_line(&s.title, s.duration, &s.meter);
+                                Button::new("fight-copy-parse")
+                                    .label(if self.fight.parse_copied {
+                                        "Copied"
+                                    } else {
+                                        "Copy parse"
+                                    })
+                                    .small()
+                                    .ghost()
+                                    .tooltip(line.clone())
+                                    .on_click(cx.listener(move |v, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            line.clone(),
+                                        ));
+                                        v.fight.parse_copied = true;
+                                        cx.notify();
+                                    }))
+                            }),
                     )
                     .child(sub),
             )
@@ -1200,7 +1233,77 @@ fn deaths_card(deaths: &[norrlog_api::DeathRecord]) -> Div {
             .into_any_element()
         })
         .collect();
-    c.child(table_box(DEATH_COLS, rows))
+    let mut c = c.child(table_box(DEATH_COLS, rows));
+    for (i, x) in deaths
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| !x.final_blows.is_empty())
+    {
+        c = c.child(
+            v_flex()
+                .mt_2()
+                .gap_1()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Before {} died", x.victim)),
+                )
+                .child(hint(death_window_line(x))),
+        );
+        // Oldest first, so it reads toward the death; the record keeps them
+        // newest first.
+        let rows = x
+            .final_blows
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(j, h)| {
+                table::row_dense(
+                    SharedString::from(format!("death-{i}-hit-{j}")),
+                    BLOW_COLS,
+                    vec![
+                        dim(seconds_before(x.timestamp, h.at)),
+                        cell(h.source.clone()),
+                        dim(h.ability.clone()),
+                        cell(num(Some(h.amount as f64))),
+                    ],
+                )
+                .into_any_element()
+            })
+            .collect();
+        c = c.child(table_box(BLOW_COLS, rows));
+    }
+    c
+}
+
+/// How long before a death a hit landed: `-3s`, or `0s` on the same second.
+/// The log's clock is whole seconds, so nothing finer is claimed.
+fn seconds_before(death: i64, hit: i64) -> String {
+    match death - hit {
+        d if d <= 0 => "0s".into(),
+        d => format!("-{d}s"),
+    }
+}
+
+/// What the table under a death adds up to, and over how long.
+///
+/// The record keeps only the last few hits but totals the whole window, so
+/// when the two differ the line says how much of the total the table shows,
+/// rather than letting the rows pass for every hit there was.
+fn death_window_line(x: &norrlog_api::DeathRecord) -> String {
+    let shown: u64 = x.final_blows.iter().map(|h| h.amount).sum();
+    let n = x.final_blows.len();
+    let hits = if n == 1 { "hit" } else { "hits" };
+    let total = num(Some(x.damage_in_window as f64));
+    let window = norrlog_api::DEATH_WINDOW;
+    if shown >= x.damage_in_window {
+        format!("{total} damage taken in the last {window}s, {n} {hits}")
+    } else {
+        format!(
+            "{total} damage taken in the last {window}s; the last {n} {hits}, {} of it, are below",
+            num(Some(shown as f64))
+        )
+    }
 }
 
 /// With the item card on each name, which the renderer's table lacks.
@@ -1599,11 +1702,101 @@ fn plural(n: u64) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// The longest line the client accepts in chat, with room left for the
+/// `/gsay ` in front of it.
+const CHAT_MAX: usize = 500;
+
+/// The fight as one line to paste into EverQuest chat: the title, how long
+/// it took and the side's total, then everyone who did damage on your side,
+/// most first, with their DPS and share of the side's damage.
+///
+/// Your side only, since nobody pastes the creature's numbers into /gsay, and
+/// the shares are of that side's damage, not of both sides'. Pets are folded
+/// into their owners, yours included. Rates are per second of
+/// the fight. Entries that would carry the line past what chat accepts are
+/// dropped whole, from the bottom, and the line says how many.
+pub(crate) fn parse_line(title: &str, duration: i64, meter: &[MeterRow]) -> String {
+    let ours: Vec<MeterRow> = meter
+        .iter()
+        .filter(|r| r.damage > 0 && (!r.is_enemy || r.is_pet))
+        .cloned()
+        .collect();
+    let mut rows: Vec<MeterRow> = fold_pets(ours).into_iter().map(|(r, _)| r).collect();
+    // Your own pets too, which the meter keeps apart so you can see what they
+    // did. In chat the custom is one line per player, marked `+Pet`.
+    let mut i = 0;
+    while i < rows.len() {
+        let owner = rows[i]
+            .pet_owner
+            .clone()
+            .filter(|_| rows[i].is_pet)
+            .and_then(|o| rows.iter().position(|x| x.name == o && !x.is_pet));
+        match owner {
+            Some(o) => {
+                let pet = rows.remove(i);
+                let o = if o > i { o - 1 } else { o };
+                rows[o].damage += pet.damage;
+                if !rows[o].name.ends_with(" +Pet") {
+                    rows[o].name.push_str(" +Pet");
+                }
+            }
+            None => i += 1,
+        }
+    }
+    rows.sort_by(|a, b| b.damage.cmp(&a.damage));
+    let total: u64 = rows.iter().map(|r| r.damage).sum();
+    let secs = duration.max(1);
+    let mut line = format!(
+        "{title} in {secs}s, {} damage @{} dps",
+        compact(total),
+        compact(total / secs as u64)
+    );
+    if rows.is_empty() {
+        return line;
+    }
+    line.push_str(" ---");
+    for (i, r) in rows.iter().enumerate() {
+        let share = if total == 0 {
+            0.
+        } else {
+            r.damage as f64 * 100. / total as f64
+        };
+        let entry = format!(
+            "{} {}. {} {}@{} [{:.0}%]",
+            if i == 0 { "" } else { " |" },
+            i + 1,
+            r.name,
+            compact(r.damage),
+            compact(r.damage / secs as u64),
+            share
+        );
+        let rest = rows.len() - i;
+        let more = format!(" | +{rest} more");
+        if line.len() + entry.len() + if rest > 1 { more.len() } else { 0 } > CHAT_MAX {
+            line.push_str(&more);
+            break;
+        }
+        line.push_str(&entry);
+    }
+    line
+}
+
+/// A number short enough for chat: 9999 as written, then K and M.
+fn compact(n: u64) -> String {
+    if n < 10_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}K", n as f64 / 1e3)
+    } else {
+        format!("{:.2}M", n as f64 / 1e6)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MeterRow, bold_runs, charm_pct, coin_pp, dps_text, drill_counts, fold_pets, pet_sentence,
-        pet_tag, resist_rate,
+        MeterRow, bold_runs, charm_pct, coin_pp, compact, death_window_line, dps_text,
+        drill_counts, fold_pets, parse_line, pet_sentence, pet_tag, resist_rate, seconds_before,
     };
     use norrlog_api::AbilityStats;
 
@@ -1701,5 +1894,80 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(drill_counts(&swing), "1 hit · 0% crit");
+    }
+
+    #[test]
+    fn a_parse_is_your_side_most_first_with_shares_of_that_side() {
+        let mut you = row("Tharn", 1317);
+        you.is_enemy = false;
+        you.is_you = true;
+        let mut friend = row("Orrin", 400);
+        friend.is_enemy = false;
+        let mut pet = row("Kabanab", 100);
+        pet.is_enemy = false;
+        pet.pet_kind = Some("summoned".into());
+        pet.pet_owner = Some("Orrin".into());
+        let boss = row("Asaka L`Rei", 382);
+        let mut mine = row("Kenekab", 183);
+        mine.is_enemy = false;
+        mine.is_pet = true;
+        mine.pet_kind = Some("pet".into());
+        mine.pet_owner = Some("Tharn".into());
+        let line = parse_line("Asaka L`Rei", 32, &[boss, mine, friend, you, pet]);
+        assert_eq!(
+            line,
+            "Asaka L`Rei in 32s, 2000 damage @62 dps --- 1. Tharn +Pet 1500@46 [75%] | 2. Orrin 500@15 [25%]"
+        );
+    }
+
+    #[test]
+    fn a_parse_too_long_for_chat_drops_whole_entries_and_says_so() {
+        let rows: Vec<MeterRow> = (0..60)
+            .map(|i| {
+                let mut r = row(&format!("Player{i:02}"), 100_000 - i as u64);
+                r.is_enemy = false;
+                r
+            })
+            .collect();
+        let line = parse_line("a dragon", 100, &rows);
+        assert!(line.len() <= 500, "{} chars", line.len());
+        assert!(line.contains("1. Player00 100.0K@1000 [2%]"), "{line}");
+        assert!(line.ends_with(" more"), "{line}");
+        assert_eq!(compact(12_345), "12.3K");
+        assert_eq!(compact(2_500_000), "2.50M");
+    }
+
+    #[test]
+    fn a_hit_before_a_death_is_counted_back_from_it() {
+        assert_eq!(seconds_before(100, 97), "-3s");
+        assert_eq!(seconds_before(100, 100), "0s");
+        // A hit stamped a second after the death line is the same moment.
+        assert_eq!(seconds_before(100, 101), "0s");
+    }
+
+    #[test]
+    fn a_death_with_more_hits_than_kept_says_how_much_is_shown() {
+        let hit = |amount| norrlog_api::IncomingHit {
+            at: 99,
+            source: "a fire giant".into(),
+            ability: "punches".into(),
+            amount,
+        };
+        let mut d = norrlog_api::DeathRecord {
+            timestamp: 100,
+            victim: "Tharn".into(),
+            killer: Some("a fire giant".into()),
+            final_blows: vec![hit(300), hit(450)],
+            damage_in_window: 750,
+        };
+        assert_eq!(
+            death_window_line(&d),
+            "750 damage taken in the last 15s, 2 hits"
+        );
+        d.damage_in_window = 1_000;
+        assert_eq!(
+            death_window_line(&d),
+            "1,000 damage taken in the last 15s; the last 2 hits, 750 of it, are below"
+        );
     }
 }
