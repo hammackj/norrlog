@@ -21,7 +21,7 @@ use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{Sizable, h_flex, v_flex};
-use norrlog_api::{BestiaryReport, MeleeAgainst, NpcProfile, TIER_NAMES};
+use norrlog_api::{BestiaryReport, MeleeAgainst, NpcCast, NpcProfile, TIER_NAMES};
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(30);
@@ -110,7 +110,10 @@ const NOTE: &str = "Merged across every log on file for this game, so a creature
     damaged, which is why the median and not the mean.\n\nMelee is split by the character it hit, that character's \
     level and the stance they fought in. A hit rate is as much your armour and stance as the creature's accuracy, so \
     rates from different pairings are never added together. A stance of unknown means the log had not said; it is \
-    not the same as balanced. Avoided is your dodge, parry, riposte and block, kept apart from a plain miss.\n\nA \
+    not the same as balanced. Avoided is your dodge, parry, riposte and block, kept apart from a plain miss.\n\nSpells \
+    are counted three ways, which are never added together: Cast is a \"begins casting\" line, Landed is the spell's \
+    damage hitting someone, Ticks are beats of damage over time. A dragon's breath is never announced and only ever \
+    lands, so no one column is the whole story. A spell is filed only against a creature that fought.\n\nA \
     body type appears only when the game proved it: a spell that lands only on undead, summoned creatures, animals or \
     plants landed on it.";
 
@@ -298,6 +301,12 @@ impl BestiaryView {
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Its melee"))
                     .child(melee_table(&n.melee)),
             )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Its spells"))
+                    .child(cast_table(&n.casts)),
+            )
             .when(!elsewhere.is_empty(), |d| {
                 d.child(
                     v_flex()
@@ -325,7 +334,7 @@ impl BestiaryView {
 const MELEE_COLS: &[Col] = &[
     col("Against", None, false),
     col("Level", Some(44.), true),
-    col("Stance", Some(80.), false),
+    col("Stance", Some(92.), false),
     col("Swings", Some(56.), true),
     col("Hit", Some(44.), true),
     col("Missed", Some(56.), true),
@@ -398,6 +407,78 @@ fn melee_cells(m: &MeleeAgainst) -> Vec<String> {
         } else {
             m.max_hit.to_string()
         },
+    ]
+}
+
+const CAST_COLS: &[Col] = &[
+    col("Spell", None, false),
+    col("Cast", Some(44.), true),
+    col("Landed", Some(56.), true),
+    col("Damage", Some(84.), true),
+    col("Element", Some(84.), false),
+    col("Ticks", Some(48.), true),
+];
+
+/// One row per spell. The three counts are different events: a cast
+/// announced, a spell landing, a damage-over-time tick.
+fn cast_table(rows: &[NpcCast]) -> Div {
+    if rows.is_empty() {
+        return hint("No casts recorded.");
+    }
+    let mut rows: Vec<&NpcCast> = rows.iter().collect();
+    rows.sort_by(|a, b| {
+        (b.casts + b.hits + b.ticks)
+            .cmp(&(a.casts + a.hits + a.ticks))
+            .then(a.spell.cmp(&b.spell))
+    });
+    let texts: Vec<Vec<String>> = rows.iter().map(|c| cast_cells(c)).collect();
+    let cols = crate::table::fit(CAST_COLS, &texts);
+    v_flex()
+        .child(head_dense(&cols))
+        .children(texts.into_iter().enumerate().map(|(i, t)| {
+            let cells = t
+                .into_iter()
+                .map(|s| {
+                    if s == "—" {
+                        muted(s).into_any_element()
+                    } else {
+                        div().child(s).into_any_element()
+                    }
+                })
+                .collect();
+            row_dense(
+                SharedString::from(format!("bestiary-cast-{i}")),
+                &cols,
+                cells,
+            )
+        }))
+}
+
+fn cast_cells(c: &NpcCast) -> Vec<String> {
+    let n = |v: u64| {
+        if v == 0 {
+            "—".to_string()
+        } else {
+            v.to_string()
+        }
+    };
+    vec![
+        c.spell.clone(),
+        n(c.casts),
+        n(c.hits),
+        if c.hits == 0 {
+            "—".into()
+        } else if c.damage_min == c.damage_max {
+            num(Some(c.damage_max as f64))
+        } else {
+            format!(
+                "{}–{}",
+                num(Some(c.damage_min as f64)),
+                num(Some(c.damage_max as f64))
+            )
+        },
+        c.element.clone().unwrap_or_else(|| "—".into()),
+        n(c.ticks),
     ]
 }
 
@@ -528,8 +609,8 @@ fn summary(r: &BestiaryReport, matched: usize, needle: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{entry_key, health_short, health_spread, melee_cells, place};
-    use norrlog_api::{Game, MeleeAgainst, Mode, NpcProfile};
+    use super::{cast_cells, entry_key, health_short, health_spread, melee_cells, place};
+    use norrlog_api::{Game, MeleeAgainst, Mode, NpcCast, NpcProfile};
 
     fn npc(zone: &str, mode: Mode, difficulty: u8) -> NpcProfile {
         NpcProfile {
@@ -606,6 +687,18 @@ mod tests {
             damage: 30,
             max_hit: 12,
         };
+        let c = NpcCast {
+            spell: "Lava Breath".into(),
+            hits: 2,
+            damage_min: 420,
+            damage_max: 600,
+            element: Some("fire".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cast_cells(&c),
+            ["Lava Breath", "—", "2", "420–600", "fire", "—"]
+        );
         assert_eq!(
             melee_cells(&m),
             ["Tharn", "?", "unknown", "4", "75%", "1", "0", "10", "12"]
