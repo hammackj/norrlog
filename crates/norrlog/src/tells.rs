@@ -1,6 +1,6 @@
 //! Tells: `loadTells` and `renderThread` (tells.js), threaded by
 //! correspondent. The checklist is the Tells section of
-//! `docs/parity/tells-alerts-settings.md`.
+//! the parity inventory.
 //!
 //! `/api/tells` is fetched when the tab opens and every ten seconds while it
 //! is on screen. A failure is silent.

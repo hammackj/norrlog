@@ -1,6 +1,6 @@
 //! Classes: `renderClasses` (sky.js). The snapshot's class evidence, redrawn
 //! on every push; it has no loader of its own. The checklist is the Classes
-//! section of `docs/parity/experience-character-classes.md`.
+//! section of the parity inventory.
 
 use crate::parts::{ROW, bar_row, card, dim, empty, figure, fill, note};
 use norrlog_api::ClassInfo;

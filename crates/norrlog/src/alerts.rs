@@ -1,6 +1,6 @@
 //! Alerts: the rule list and editor, what went off, and the log feed rules
 //! are built from (alerts.js). The checklist is the Alerts section of
-//! `docs/parity/tells-alerts-settings.md`.
+//! the parity inventory.
 //!
 //! The daemon decides whether something happened and puts each fire on the
 //! snapshot; this view plays every fire newer than the last one played,

@@ -1,6 +1,6 @@
 //! Loot: everything picked up, this session's haul, and the mote ladder,
 //! with a drill-down per item. Ports `loot.js`; the checklist is the Loot
-//! section of `docs/parity/loot-and-tooltips.md`.
+//! section of the parity inventory.
 //!
 //! Like the renderer, the three lists are separate fetches with separate
 //! caches. Opening the tab fetches the subtab showing (the renderer fetches
@@ -168,7 +168,7 @@ impl LootView {
 
     /// Fetch what the open subtab shows. Opening the tab calls this, so
     /// returning to Loot with This session showing refreshes that rather
-    /// than All, which the renderer reloads whatever is open (a3bphvj).
+    /// than All, which the renderer reloads whatever is open.
     pub fn load_open(&mut self, cx: &mut Context<Self>) {
         if self.sub == Sub::Motes && !crate::features::has("motes") {
             self.sub = Sub::All;
@@ -359,7 +359,7 @@ impl LootView {
                         .on_click(cx.listener(move |v, _, _, cx| v.open(name.clone(), cx)));
                     // The card on every list, not only All: the renderer's
                     // Session and Motes rows carry `data-item` but were
-                    // never wired (a3bphvj).
+                    // never wired.
                     item_tip(row, &self.items, &m.item).into_any_element()
                 })
                 .collect()

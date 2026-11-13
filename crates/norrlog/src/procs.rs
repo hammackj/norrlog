@@ -1,6 +1,6 @@
 //! Procs: how often weapon, buff and worn-item effects fire, per minute of
 //! combat. Ports `loadProcs` (experience.js); the checklist is the Procs
-//! section of `docs/parity/encounters-and-procs.md`.
+//! section of the parity inventory.
 //!
 //! Fetched when the tab opens and again as snapshots arrive, at most every
 //! ten seconds, while it is the tab on screen: the renderer's shared refresh.

@@ -1,5 +1,5 @@
 //! Encounters: every fight in the log, filterable, newest first, and one
-//! fight opened up. `docs/parity/encounters-and-procs.md` is the checklist.
+//! fight opened up. The parity inventory is the checklist.
 //!
 //! The list is fetched when the tab is opened and when a filter changes
 //! (text after 220 ms of quiet, the rest at once), and again when a fight

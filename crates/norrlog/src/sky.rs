@@ -1,6 +1,6 @@
 //! Sky: the Plane of Sky quests, `loadSky` and `renderSky` (sky.js), with
 //! the item icons and links of itemdata.js. The checklist is the Sky section
-//! of `docs/parity/sky-and-quests.md`.
+//! of the parity inventory.
 //!
 //! `/api/sky` is fetched when the tab opens and every ten seconds while it is
 //! on screen; `?refresh=1` from the Refresh button. The bundled item data is

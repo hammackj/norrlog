@@ -1,6 +1,6 @@
 //! The fight's two charts: DPS over time and the timeline. Ports
 //! `dpsOverTimeHtml` and `timelineHtml` from panels.js; the rules are in the
-//! Formatting section of `docs/parity/encounters-and-procs.md`.
+//! Formatting section of the parity inventory.
 //!
 //! Electron draws both as SVG. Here the marks are painted on a canvas (a long
 //! fight is thousands of them) and everything that wants text or a tooltip,

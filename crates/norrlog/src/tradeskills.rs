@@ -1,6 +1,6 @@
 //! Tradeskills: `loadTradeskills` and the panels under it (tradeskills.js).
 //! The checklist is the Tradeskills section of
-//! `docs/parity/tradeskills-and-forage.md`.
+//! the parity inventory.
 //!
 //! `/api/tradeskills` is fetched when the tab opens and every ten seconds
 //! while it is on screen, and `/api/drops` after each of those. Selecting a
@@ -8,7 +8,7 @@
 //! report already in hand: no fetch.
 //!
 //! "What it cost to raise" charges every combine attributed to a skill,
-//! including recipes that earned no skill-up. That is open bug `4h0jwjy`; the
+//! including recipes that earned no skill-up. That is an open bug; the
 //! port keeps the renderer's arithmetic until it is decided.
 
 use crate::api::Api;

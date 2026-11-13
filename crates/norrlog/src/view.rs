@@ -1,7 +1,7 @@
 //! The shell: header, navigation and the frame each tab draws into.
 //!
-//! Tabs arrive one port card at a time. Until a tab is ported it says so,
-//! and names the file in `docs/parity/` that lists what it has to do.
+//! Every tab is ported. One the app does not know says so, which only a
+//! stale saved tab id can reach.
 
 use crate::daemon::Msg;
 use crate::state::{Rect, State};
@@ -414,11 +414,8 @@ impl Shell {
             "sky" => self.sky.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             "settings" => self.settings.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             id => {
-                let (_, label, file) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
-                notice(
-                    &format!("{label} is not ported yet"),
-                    format!("What it has to do is listed in docs/parity/{file}. The Electron app still has it."),
-                )
+                let (_, label, _) = TABS.iter().find(|t| t.0 == id).copied().unwrap_or(TABS[0]);
+                notice(&format!("{label} is not ported yet"), "The Electron app still has it.".to_string())
                 .into_any_element()
             }
         }

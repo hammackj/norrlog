@@ -2,7 +2,7 @@
 //! damage, healing or damage taken), the week's lockouts and Sky progress by
 //! class. Ports `renderScope`/`showMetric`/`setTabCounts` (app.js),
 //! `lockouts.js` and `skyprogress.js`; the checklist is the Dashboard
-//! section of `docs/parity/shell-and-dashboard.md`.
+//! section of the parity inventory.
 //!
 //! Every snapshot, whichever tab is open: the live fight is taken from it,
 //! `/api/session` is asked again (at most every 2 s, and only while Session

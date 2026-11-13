@@ -1,6 +1,6 @@
 //! One fight opened up: the Encounters detail. Ports `showEncounter` in
 //! `encounters.js` and the panels it draws with (`panels.js`); the checklist
-//! is the Layout and Formatting sections of `docs/parity/encounters-and-procs.md`.
+//! is the Layout and Formatting sections of the parity inventory.
 //!
 //! Fetched once when opened and never refreshed: a closed fight does not
 //! change. The two charts are in `charts.rs`.
@@ -815,8 +815,7 @@ fn deaths_card(deaths: &[norrlog_api::DeathRecord]) -> Div {
     c.child(table_box(DEATH_COLS, rows))
 }
 
-/// With the item card on each name, which the renderer's table lacks
-/// (a3bphvj).
+/// With the item card on each name, which the renderer's table lacks.
 fn loot_card(e: &norrlog_api::Encounter, items: &Entity<crate::item_tip::ItemCards>) -> Div {
     let c = card("Loot & coin");
     if e.loot.is_empty() && e.coin_copper == 0 {

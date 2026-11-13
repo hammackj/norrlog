@@ -1,6 +1,6 @@
 //! Settings: what the daemon follows, the export, and the daemon's own log
 //! (settings.js). The checklist is the Settings section of
-//! `docs/parity/tells-alerts-settings.md`.
+//! the parity inventory.
 //!
 //! The config is the Electron app's `config.json`, patched rather than
 //! rewritten (see `config`). A change to something the daemon reads only at
@@ -14,7 +14,7 @@
 //! log is polled every 1.5 s for as long as there is a daemon, so it is all
 //! there when the tab is opened.
 //!
-//! The overlay cards are not here: the overlay is its own port (lull3r1).
+//! The overlay cards are not here: the overlay is its own port.
 
 use crate::api::{Api, query};
 use crate::config::{self, ParserConfig};

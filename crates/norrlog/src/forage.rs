@@ -1,5 +1,5 @@
 //! Forage: `loadForage` and `draw` (forage.js). The checklist is the Forage
-//! section of `docs/parity/tradeskills-and-forage.md`.
+//! section of the parity inventory.
 //!
 //! `/api/forage` is fetched when the tab opens and every ten seconds while it
 //! is on screen. Clicking a zone narrows "What it yields" to it.
@@ -140,8 +140,7 @@ impl ForageView {
                 None,
             )
             .cursor_pointer()
-            // The renderer sets an `on` class here that nothing styles
-            // (a3bphvj); the selected zone is marked.
+            // The renderer sets an `on` class here that nothing styles; the selected zone is marked.
             .when(self.open.as_deref() == Some(z.zone.as_str()), |d| d.border_1().border_color(hex(ACCENT)))
             .on_click(cx.listener(move |v, _, _, cx| v.select(Some(zone.clone()), cx)))
         }))
