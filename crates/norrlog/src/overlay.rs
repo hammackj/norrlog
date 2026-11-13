@@ -148,6 +148,9 @@ pub struct Options {
     pub show_crit: bool,
     pub scope: Option<String>,
     pub keep_idle: bool,
+    /// `alerts=0`: no banners or countdowns, for a capture that should not
+    /// show them.
+    pub alerts: bool,
 }
 
 impl Options {
@@ -197,6 +200,7 @@ impl Options {
                 .filter(|v| *v == "session" || *v == "zone")
                 .cloned(),
             keep_idle: get.get("idle").is_some_and(|v| v == "1"),
+            alerts: get.get("alerts").is_none_or(|v| v != "0"),
         }
     }
 
@@ -482,7 +486,7 @@ impl OverlayView {
     /// Alerts that have just fired, from the shell, which has already played
     /// them.
     pub fn on_alerts(&mut self, fires: &[norrlog_api::AlertFire], cx: &mut Context<Self>) {
-        if fires.is_empty() {
+        if fires.is_empty() || !self.opts.alerts {
             return;
         }
         for f in fires {
@@ -502,6 +506,10 @@ impl OverlayView {
     pub fn set_options(&mut self, options: String, cx: &mut Context<Self>) {
         self.opts = Options::parse(&options);
         self.saved.options = options;
+        if !self.opts.alerts {
+            self.banners.clear();
+            self.timers.clear();
+        }
         // A panel that polls starts at once, not on its interval.
         self.ticks = 0;
         cx.notify();
@@ -2269,6 +2277,10 @@ mod tests {
         );
         let e = Options::parse("enemies=0&crit=0&self=1&idle=1&scope=zone&panels=meter%2Cbuffs");
         assert!(!e.show_enemies && !e.show_crit && e.self_only && e.keep_idle);
+        assert!(
+            d.alerts && !Options::parse("alerts=0").alerts,
+            "on unless turned off"
+        );
         assert_eq!(e.scope.as_deref(), Some("zone"));
         assert_eq!(e.panels, ["meter", "buffs"]);
         assert_eq!(Options::parse("scope=week").scope, None);

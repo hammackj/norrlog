@@ -8,6 +8,13 @@
   </head>
   <body>
     <div id="app">
+      <!-- Alerts that fired lately, then their countdowns; see overlay.js. -->
+      <div id="alert-banners"></div>
+      <div id="timer-panel" class="panel hidden">
+        <div class="head"><span class="title">Timers</span></div>
+        <div id="timer-rows" class="rows"></div>
+      </div>
+
       <div id="meter" class="panel">
         <div class="head">
           <span id="enc-title" class="title idle">Connecting…</span>

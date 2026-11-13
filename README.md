@@ -30,7 +30,8 @@ overlay.
 - **Fight detail.** Each fight's breakdown per ability, who cast what, the
   hits that landed before you died, and a one-line parse to paste into chat.
 - **Tells and alerts.** A tell log, and alerts built from any line: a sound,
-  speech, a banner on the overlay, and optionally a countdown there.
+  speech, a banner on the overlay, and optionally a countdown there. The OBS
+  overlay shows the banners and countdowns too (`alerts=0` hides them).
 
 ## Two games
 

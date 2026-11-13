@@ -17,6 +17,7 @@
  *   ?crit=0               hide the crit % column in the meter
  *   ?scope=session        meter the whole session, or ?scope=zone for the zone
  *   ?idle=1               keep the last fight on screen when combat ends
+ *   ?alerts=0             hide alert banners and their countdowns
  */
 
 (() => {
@@ -42,6 +43,7 @@
     // Anything else, including absent, means the fight in progress.
     scope: ["session", "zone"].includes(params.get("scope")) ? params.get("scope") : null,
     keepIdle: params.get("idle") === "1",
+    alerts: params.get("alerts") !== "0",
   };
 
   function int(v, d) {
@@ -112,6 +114,9 @@
     skyMeta: document.getElementById("sky-meta"),
     skyRows: document.getElementById("sky-rows"),
     status: document.getElementById("status"),
+    banners: document.getElementById("alert-banners"),
+    timerPanel: document.getElementById("timer-panel"),
+    timerRows: document.getElementById("timer-rows"),
   };
 
   if (!opt.panels.includes("meter")) el.meter.classList.add("hidden");
@@ -549,12 +554,78 @@
     })[c]);
   }
 
+  /* Alerts.
+   *
+   * The same as the desktop overlay: a rule that fires puts a banner above
+   * every panel for a few seconds, and one with a countdown keeps a bar in
+   * Timers until it runs out. The page plays no sound; the app does that,
+   * and a capture that also played it would double it on stream.
+   *
+   * Each snapshot carries the last few fires and the daemon's sequence. The
+   * first one only sets the baseline, so opening the page, or OBS reloading
+   * a source, does not replay what fired before it was looking. Times are the
+   * page's own clock from when a fire arrived, since a countdown is about
+   * now, not about the log line's timestamp. */
+  const BANNER_MS = 8000;
+  const BANNERS_MAX = 3;
+  let alertSeq = null;
+  let banners = []; // { until, name, detail }
+  let timers = new Map(); // rule id -> { name, start, secs }
+
+  function takeAlerts(snap) {
+    if (!opt.alerts || snap.alert_seq == null) return;
+    const seq = snap.alert_seq;
+    if (alertSeq === null || seq < alertSeq) {
+      // First sight, or a daemon that restarted and counts from zero again.
+      alertSeq = seq;
+      return;
+    }
+    const now = Date.now();
+    const fresh = (snap.alerts || []).filter((f) => f.seq > alertSeq).sort((a, b) => a.seq - b.seq);
+    alertSeq = seq;
+    for (const f of fresh) {
+      banners.unshift({ until: now + BANNER_MS, name: f.name, detail: f.detail });
+      if (f.timer > 0) timers.set(f.rule_id, { name: f.name, start: now, secs: f.timer });
+    }
+    banners = banners.slice(0, BANNERS_MAX);
+    if (fresh.length) renderAlerts();
+  }
+
+  function renderAlerts() {
+    const now = Date.now();
+    banners = banners.filter((b) => b.until > now);
+    el.banners.innerHTML = banners
+      .map(
+        (b) => `<div class="banner"><div class="banner-name">${esc(b.name)}</div>${
+          b.detail && b.detail !== b.name ? `<div class="banner-detail">${esc(b.detail)}</div>` : ""
+        }</div>`
+      )
+      .join("");
+    const left = [];
+    for (const [id, t] of timers) {
+      const remaining = t.secs - (now - t.start) / 1000;
+      if (remaining <= 0) timers.delete(id);
+      else left.push({ ...t, remaining });
+    }
+    left.sort((a, b) => a.remaining - b.remaining);
+    el.timerPanel.classList.toggle("hidden", left.length === 0);
+    el.timerRows.innerHTML = left
+      .map(
+        (t) => `<div class="row timer" style="--share:${((t.remaining / t.secs) * 100).toFixed(1)}%">
+          <span class="name">${esc(t.name)}</span>
+          <span class="nums"><span class="dps">${dur(Math.ceil(t.remaining))}</span></span>
+        </div>`
+      )
+      .join("");
+  }
+
   // ---- rendering --------------------------------------------------------
 
   let lastSnapshot = null;
 
   function render(snap) {
     lastSnapshot = snap;
+    takeAlerts(snap);
     // With a scope set, the meter is the running total rather than the pull.
     // Everything else on the page — buffs, auras, xp — is still about now.
     const enc = opt.scope
@@ -1027,6 +1098,7 @@
      visibly stutter at the push interval. Re-render locally each second,
      decrementing from the last known snapshot. */
   setInterval(() => {
+    if (opt.alerts) renderAlerts();
     if (!lastSnapshot || !lastSnapshot.buffs) return;
     if (lastSnapshot.debuffs) {
       lastSnapshot.debuffs = lastSnapshot.debuffs.map((b) =>

@@ -433,3 +433,42 @@ body.clipped::after {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
   pointer-events: none;
 }
+
+/* ---- alerts ---- */
+
+#alert-banners {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+#alert-banners:empty {
+  display: none;
+}
+
+.banner {
+  background: rgb(var(--scrim-rgb) / 0.9);
+  border: 2px solid rgb(var(--accent-rgb) / 0.95);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+.banner-name {
+  color: var(--accent);
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+.banner-detail {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A countdown's bar is the time left, draining. */
+.row.timer::before {
+  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.4), rgb(var(--accent-rgb) / 0.12));
+  transition: width 1s linear;
+}
+.row.timer .name {
+  color: var(--accent);
+}

@@ -479,7 +479,7 @@ impl AlertBook {
         // later can warn once more.
         let present: Vec<&String> = buffs.iter().map(|(n, _)| n).collect();
         self.warned
-            .retain(|(_, buff), _| present.iter().any(|p| *p == buff));
+            .retain(|(_, buff), _| present.contains(&buff));
     }
 
     /// Record a fire, honouring the per-subject cooldown.
