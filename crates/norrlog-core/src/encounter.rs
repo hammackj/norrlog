@@ -1613,10 +1613,14 @@ impl EncounterTracker {
                 .insert(key.clone(), actor.display(&self.player));
             // Re-landing a charm that never broke must not restart the clock,
             // or a fight of constant refreshes would report almost no uptime.
-            self.charm_since.entry(key).or_insert(timestamp);
+            self.charm_since.entry(key.clone()).or_insert(timestamp);
+            // A charm spell landing is proof the creature is no summon, so a
+            // brand from an earlier `/pet leader` was wrong; lift it.
+            self.summoned.remove(&key);
             if let Some(enc) = self.current.as_mut() {
                 let player = self.player.clone();
                 let st = enc.entry(actor, &player);
+                st.summoned = false;
                 st.charmed_by_you = true;
                 // This path is only reached when the caller resolved a charm
                 // spell against the database, so the charm is a fact here.
@@ -1834,8 +1838,14 @@ impl EncounterTracker {
                 // catches the case this was for — a magician's pet whose
                 // generated name matches no convention, which `/pet leader` is
                 // the only way to identify at all.
+                //
+                // Not held is not enough: asked in the moment a charm has
+                // lapsed, the answer comes from a creature outside the charmed
+                // set, and the brand is permanent. One that has ever hit you
+                // was a mob first, and nothing you summoned has done that.
                 let owner = leader.display(&self.player);
-                let summoned = !self.charmed.contains_key(&pet.key());
+                let key = pet.key();
+                let summoned = !self.charmed.contains_key(&key) && !self.hostile.contains(&key);
                 self.set_pet_owner(pet, &owner, summoned);
             }
             // Deliberately does *not* end a charm. Which spell wore off decides
@@ -4385,6 +4395,64 @@ mod tests {
         assert!(!st.summoned, "the pet window does not make it summoned");
         assert!(st.charm_seen, "and the charm still reads as a charm");
         assert_eq!(st.owner.as_deref(), Some("Tharn"), "whose it is, though");
+    }
+
+    /// Asked in the moment a charm has lapsed, the command still answers —
+    /// and the creature is not held right then. It has hit you, though, and
+    /// nothing you summoned ever has. Branding it summoned stopped its charm
+    /// being counted for the rest of the session.
+    #[test]
+    fn pet_leader_in_a_lapsed_charm_does_not_make_it_summoned() {
+        let mut t = EncounterTracker::new("Tharn");
+        let giant = Actor::Named("A fire giant warrior".into());
+        for e in &entries(&[
+            (99, "A fire giant warrior hits YOU for 10 points of damage."),
+            (100, "You slash a rat for 1 point of damage."),
+            (
+                101,
+                "A fire giant warrior told you, 'Attacking a rat Master.'",
+            ),
+        ]) {
+            t.push(e);
+        }
+        t.set_charmed(103, &giant, false);
+        for e in &entries(&[
+            (104, "A fire giant warrior says, 'My leader is Tharn.'"),
+            (
+                106,
+                "A fire giant warrior told you, 'Attacking a rat Master.'",
+            ),
+            (110, "You slash a rat for 1 point of damage."),
+        ]) {
+            t.push(e);
+        }
+        let enc = t.flush().expect("fight");
+        let st = &enc.actors["a fire giant warrior"];
+        assert!(!st.summoned, "it has hit you; it was charmed");
+        assert_eq!(st.charmed_seconds, 2 + 4, "both holds are timed");
+    }
+
+    /// A creature branded summoned before it ever hit you loses the brand
+    /// when a charm spell is seen to land on it.
+    #[test]
+    fn a_charm_landing_lifts_a_summoned_brand() {
+        let mut t = EncounterTracker::new("Tharn");
+        let bat = Actor::Named("A cave bat".into());
+        for e in &entries(&[
+            (100, "You slash a rat for 1 point of damage."),
+            (101, "A cave bat says, 'My leader is Tharn.'"),
+        ]) {
+            t.push(e);
+        }
+        assert!(t.current().unwrap().actors["a cave bat"].summoned);
+        t.set_charmed(102, &bat, true);
+        for e in &entries(&[(108, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        let enc = t.flush().expect("fight");
+        let st = &enc.actors["a cave bat"];
+        assert!(!st.summoned, "the charm landed; it is no summon");
+        assert_eq!(st.charmed_seconds, 6);
     }
 
     /// A generated-name pet that never fought you is summoned, and the command
