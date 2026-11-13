@@ -349,8 +349,17 @@ pub struct OverlayView {
     /// pointer is now, in the window's coordinates.
     drag: Option<(Point<Pixels>, Point<Pixels>)>,
     api: Option<crate::api::Api>,
+    /// Alerts that fired lately, newest first, with when they arrived. Shown
+    /// above the panels for [`BANNER_FOR`]: an alert is heard, and now also
+    /// seen where the eye already is.
+    banners: Vec<(Instant, String, String)>,
     _tick: Task<()>,
 }
+
+/// How long an alert's banner stays up.
+const BANNER_FOR: Duration = Duration::from_secs(8);
+/// At most this many at once; a burst shows its newest.
+const BANNERS_MAX: usize = 3;
 
 /// Damage per log-second for the dps panel (`renderDps`): the difference
 /// between successive snapshots' running totals, put in the second the log
@@ -412,6 +421,7 @@ impl OverlayView {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let Ok(()) = this.update(cx, |v, cx| {
                     v.poll(cx);
+                    v.banners.retain(|(at, _, _)| at.elapsed() < BANNER_FOR);
                     v.ticks += 1;
                     cx.notify();
                 }) else {
@@ -435,6 +445,7 @@ impl OverlayView {
             clipped: false,
             drag: None,
             api: None,
+            banners: Vec::new(),
             _tick: tick,
         }
     }
@@ -459,6 +470,20 @@ impl OverlayView {
         self.snap = Some(snap);
         self.at = Instant::now();
         self.lost = false;
+        cx.notify();
+    }
+
+    /// Alerts that have just fired, from the shell, which has already played
+    /// them.
+    pub fn on_alerts(&mut self, fires: &[norrlog_api::AlertFire], cx: &mut Context<Self>) {
+        if fires.is_empty() {
+            return;
+        }
+        for f in fires {
+            self.banners
+                .insert(0, (Instant::now(), f.name.clone(), f.detail.clone()));
+        }
+        self.banners.truncate(BANNERS_MAX);
         cx.notify();
     }
 
@@ -658,8 +683,14 @@ impl OverlayView {
         )
     }
 
-    /// The panels, in the page's order, then the status line.
+    /// The panels, in the page's order, then the status line. Alerts that
+    /// fired lately go first, above everything.
     fn panels(&self, mut col: Div) -> Div {
+        col = col.children(
+            self.banners
+                .iter()
+                .map(|(_, name, detail)| banner(name, detail)),
+        );
         let o = &self.opts;
         let Some(snap) = self.snap.clone() else {
             // "Connecting…", with nothing else drawn yet.
@@ -1664,6 +1695,36 @@ fn more_below() -> Div {
 
 /// A panel: title and meta over its rows. A title in the idle style when the
 /// fight has ended.
+/// An alert that fired: its name, and what set it off, in a box that stands
+/// out from the panels around it.
+fn banner(name: &str, detail: &str) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(u(2.))
+        .px(u(8.))
+        .py(u(5.))
+        .rounded(u(6.))
+        .bg(rgba_of(SCRIM, 0.9))
+        .border_2()
+        .border_color(rgba_of(ACCENT, 0.95))
+        .child(
+            div()
+                .font_weight(FontWeight::BOLD)
+                .text_color(gpui::rgb(ACCENT))
+                .child(name.to_string()),
+        )
+        .children((!detail.is_empty() && detail != name).then(|| {
+            div()
+                .text_size(u(11.))
+                .text_color(gpui::rgb(TEXT))
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(detail.to_string())
+        }))
+}
+
 fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>) -> Div {
     div()
         .flex()

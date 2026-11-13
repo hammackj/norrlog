@@ -332,11 +332,18 @@ impl Shell {
                     .and_then(|a| serde_json::from_value(a.clone()).ok())
                     .unwrap_or_default();
                 let seq = s.get("alert_seq").and_then(Value::as_u64).unwrap_or(0);
-                self.alerts.update(cx, |v, cx| v.on_fires(fires, seq, cx));
+                let fresh = self.alerts.update(cx, |v, cx| v.on_fires(fires, seq, cx));
                 let tells_open = self.tab == "tells";
                 self.tells.update(cx, |v, cx| v.on_snapshot(tells_open, cx));
-                for (_, _, o) in &self.overlays {
-                    o.update(cx, |v, cx| v.on_snapshot(s.clone(), cx));
+                for (kind, _, o) in &self.overlays {
+                    o.update(cx, |v, cx| {
+                        // Alerts on the main overlay, where the eye already
+                        // is in game; the charm window has one job.
+                        if *kind == crate::overlay::Kind::Main {
+                            v.on_alerts(&fresh, cx);
+                        }
+                        v.on_snapshot(s.clone(), cx)
+                    });
                 }
                 self.snapshot = Some(s);
             }

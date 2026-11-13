@@ -410,9 +410,16 @@ impl AlertsView {
         }));
     }
 
-    /// A snapshot arrived, whichever tab is open: play what is new.
-    pub fn on_fires(&mut self, fires: Vec<AlertFire>, seq: u64, cx: &mut Context<Self>) {
+    /// A snapshot arrived, whichever tab is open: play what is new, and
+    /// return it, for the overlay to show.
+    pub fn on_fires(
+        &mut self,
+        fires: Vec<AlertFire>,
+        seq: u64,
+        cx: &mut Context<Self>,
+    ) -> Vec<AlertFire> {
         let fresh = self.cursors.fresh(fires, seq);
+        let shown = fresh.clone();
         if !fresh.is_empty() {
             let gain = self.prefs.gain();
             for f in &fresh {
@@ -429,6 +436,7 @@ impl AlertsView {
             self.fires.truncate(FIRES_MAX);
             cx.notify();
         }
+        shown
     }
 
     fn value(&self, i: &Entity<InputState>, cx: &App) -> String {
