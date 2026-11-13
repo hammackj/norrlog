@@ -120,11 +120,51 @@ impl Prefs {
     }
 
     fn load() -> Self {
-        Self::path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let Some(p) = Self::path() else { return Prefs::default() };
+        Self::load_from(&p, crate::config::path().as_deref())
+    }
+
+    /// This app's file if there is one; else, once, the Electron app's
+    /// `alertMute` and `alertVolume`, saved as this app's own, so an install
+    /// that was muted does not start ringing after the move.
+    ///
+    /// A file that is there but unreadable is not "no preference": the
+    /// Electron values are used if there are any, and otherwise alerts stay
+    /// silent, and the file is left for the user to see rather than
+    /// overwritten.
+    fn load_from(path: &std::path::Path, legacy: Option<&std::path::Path>) -> Self {
+        let old = || -> Option<Prefs> {
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(legacy?).ok()?).ok()?;
+            let mute = v.get("alertMute").and_then(serde_json::Value::as_bool);
+            let volume = v.get("alertVolume").and_then(serde_json::Value::as_f64);
+            if mute.is_none() && volume.is_none() {
+                return None;
+            }
+            let d = Prefs::default();
+            Some(Prefs { mute: mute.unwrap_or(d.mute), volume: volume.map_or(d.volume, |v| v.clamp(0., 100.).round() as u32) })
+        };
+        match std::fs::read(path) {
+            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+                eprintln!("[norrlog] {} is unreadable ({e}); alerts are silent until it is fixed or removed", path.display());
+                old().unwrap_or(Prefs { mute: true, ..Prefs::default() })
+            }),
+            Err(_) => match old() {
+                Some(p) => {
+                    p.save_to(path);
+                    p
+                }
+                None => Prefs::default(),
+            },
+        }
     }
 
     fn save(&self) {
-        let Some(p) = Self::path() else { return };
+        if let Some(p) = Self::path() {
+            self.save_to(&p);
+        }
+    }
+
+    fn save_to(&self, p: &std::path::Path) {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
@@ -132,7 +172,7 @@ impl Prefs {
         if let Ok(b) = serde_json::to_vec_pretty(self)
             && std::fs::write(&tmp, b).is_ok()
         {
-            let _ = std::fs::rename(&tmp, &p);
+            let _ = std::fs::rename(&tmp, p);
         }
     }
 
@@ -891,6 +931,34 @@ impl Cursors {
 #[cfg(test)]
 mod tests {
     use super::{line_name, new_id, parse_int, summary, Cursors};
+
+    #[test]
+    fn electrons_mute_and_volume_carry_over_once() {
+        use super::Prefs;
+        let d = std::env::temp_dir().join(format!("norrlog-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (new, old) = (d.join("alerts.json"), d.join("config.json"));
+        let load = || Prefs::load_from(&new, Some(&old));
+
+        assert!(!load().mute && load().volume == 70, "neither file: the defaults");
+        std::fs::write(&old, r#"{"alertMute":true,"alertVolume":12}"#).unwrap();
+        let p = load();
+        assert!(p.mute && p.volume == 12);
+        assert!(new.exists(), "saved as this app's own");
+        std::fs::write(&old, r#"{"alertMute":false,"alertVolume":0}"#).unwrap();
+        assert!(load().mute, "this app's own file wins once there is one");
+        std::fs::remove_file(&new).unwrap();
+        assert_eq!(load().gain(), 0., "volume 0 is silence");
+        std::fs::remove_file(&new).unwrap();
+        std::fs::write(&old, r#"{"alertVolume":250}"#).unwrap();
+        assert_eq!(load().volume, 100, "clamped");
+        std::fs::write(&new, "{not json").unwrap();
+        std::fs::write(&old, "{}").unwrap();
+        assert!(load().mute, "an unreadable file is not taken as permission to ring");
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "{not json", "and is not overwritten");
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     fn fire(seq: u64) -> norrlog_api::AlertFire {
         serde_json::from_value(serde_json::json!({
