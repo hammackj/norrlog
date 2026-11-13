@@ -2173,7 +2173,7 @@ impl Engine {
             .encounters
             .iter()
             .chain(self.tracker.current())
-            .filter(|e| e.is_significant())
+            .filter(|e| e.is_significant() && e.involves_you())
             .map(|e| self.summarise(e, false))
         {
             encs.push(crate::store::StoredEncounter {

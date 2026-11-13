@@ -1569,6 +1569,30 @@ impl Store {
         Ok(encs.len())
     }
 
+    /// Store a log's fights read from its start, replacing what is on file
+    /// for the span they cover.
+    ///
+    /// A whole read is every fight the log holds, so anything else stored in
+    /// that span for this character came from an older reading of the same
+    /// lines: a fight since dropped (other people's damage you were not in),
+    /// or one since renamed (titled after you, or "Unknown encounter"), which
+    /// the title in the key left behind as a twin. A partial read proves
+    /// nothing about what it skipped, and goes through `put_encounters`.
+    pub fn replace_encounters(&mut self, encs: &[StoredEncounter]) -> Result<usize> {
+        let (Some(lo), Some(hi)) = (
+            encs.iter().map(|e| e.start).min(),
+            encs.iter().map(|e| e.start).max(),
+        ) else {
+            return Ok(0);
+        };
+        self.conn.execute(
+            "DELETE FROM encounters
+             WHERE character = ?1 AND server = ?2 AND start >= ?3 AND start <= ?4",
+            params![self.character, self.server, lo, hi],
+        )?;
+        self.put_encounters(encs)
+    }
+
     pub fn put_levels(&mut self, levels: &[StoredLevel]) -> Result<usize> {
         let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
@@ -4552,6 +4576,67 @@ mod tests {
         );
         drop(a);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log read again from its start replaces its span: the fight titled
+    /// after you, and the one you were never in, go; a fight outside the
+    /// span, from another log, stays.
+    #[test]
+    fn a_whole_read_replaces_its_span_of_fights() {
+        let fight = |start: i64, title: &str| StoredEncounter {
+            start,
+            end: start + 10,
+            title: title.into(),
+            zone: "Guild Lobby".into(),
+            duration: 10,
+            your_damage: 0,
+            your_dps: 0.0,
+            total_damage: 10,
+            kills: 0,
+            deaths: 0,
+            build: String::new(),
+            difficulty: 0,
+        };
+        let mut s = Store::in_memory().unwrap();
+        s.put_encounters(&[
+            fight(50, "a rat"),
+            fight(100, "Unknown encounter"),
+            fight(200, "Tharn"),
+            fight(300, "a bat"),
+        ])
+        .unwrap();
+        s.replace_encounters(&[fight(200, "a goblin"), fight(300, "a bat")])
+            .unwrap();
+        let mut got: Vec<(i64, String)> = s
+            .conn
+            .prepare("SELECT start, title FROM encounters ORDER BY start")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (50, "a rat".to_string()),
+                (100, "Unknown encounter".to_string()),
+                (200, "a goblin".to_string()),
+                (300, "a bat".to_string()),
+            ],
+            "100 is before this read's first fight, so it is not this read's to judge"
+        );
+        s.replace_encounters(&[fight(100, "a goblin"), fight(300, "a bat")])
+            .unwrap();
+        let n: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM encounters WHERE title IN ('Unknown encounter', 'Tharn')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "both stale rows sat inside the span");
     }
 
     #[test]

@@ -1281,7 +1281,13 @@ pub(crate) fn flush_history(
     let mut st = store.locked("history");
     let keyed = st
         .put_kills(&kills)
-        .and_then(|_| st.put_encounters(&encs))
+        .and_then(|_| {
+            if whole {
+                st.replace_encounters(&encs)
+            } else {
+                st.put_encounters(&encs)
+            }
+        })
         .and_then(|_| st.put_levels(&levels))
         .and_then(|_| st.put_aa(game.slug(), &aa))
         .and_then(|_| st.put_sky_turnins(&sky_turn_ins))
