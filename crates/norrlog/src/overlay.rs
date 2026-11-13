@@ -269,10 +269,57 @@ pub struct OverlayView {
     at: Instant,
     /// The daemon is gone; the page shows "Reconnecting…".
     lost: bool,
-    /// `/api/charm`, polled while the charm panel is shown.
+    /// What the page polls for, each at the page's own interval, and only
+    /// while its panel is shown: `/api/charm`, `/api/incoming`, `/api/sky`,
+    /// `/api/panels` and `/api/session`.
     charm: Option<Value>,
+    incoming: Option<Value>,
+    sky: Option<Value>,
+    apps: Vec<Value>,
+    session: Option<Value>,
+    dps: Dps,
+    /// Seconds since the overlay opened, to space the polls.
+    ticks: u64,
     api: Option<crate::api::Api>,
     _tick: Task<()>,
+}
+
+/// Damage per log-second for the dps panel (`renderDps`): the difference
+/// between successive snapshots' running totals, put in the second the log
+/// reported it. On the log clock, so a backlog caught up in one instant is
+/// not read as a burst.
+#[derive(Default)]
+struct Dps {
+    fight: Option<u64>,
+    prev: Option<f64>,
+    per_second: std::collections::BTreeMap<i64, f64>,
+}
+
+const DPS_ROLL: i64 = 10;
+const DPS_SPARK: i64 = 60;
+
+impl Dps {
+    fn on_snapshot(&mut self, now: Option<i64>, enc: Option<&Value>) {
+        let (Some(now), Some(enc)) = (now, enc) else { return };
+        let id = enc.get("id").and_then(Value::as_u64);
+        // A new fight starts a new history.
+        if id != self.fight {
+            *self = Dps { fight: id, ..Default::default() };
+        }
+        let total = f(enc, "your_damage");
+        if let Some(prev) = self.prev
+            && total > prev
+        {
+            *self.per_second.entry(now).or_default() += total - prev;
+        }
+        self.prev = Some(total);
+        self.per_second.retain(|t, _| now - t <= DPS_SPARK);
+    }
+
+    /// The last minute, a bucket a second, idle seconds as real zeroes.
+    fn buckets(&self, now: i64) -> Vec<f64> {
+        (now - DPS_SPARK + 1..=now).map(|t| self.per_second.get(&t).copied().unwrap_or(0.)).collect()
+    }
 }
 
 /// How long a meter row stays at full strength once it goes quiet, how long
@@ -288,13 +335,30 @@ impl OverlayView {
         let tick = cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let Ok(()) = this.update(cx, |v, cx| {
-                v.poll_charm(cx);
+                v.poll(cx);
+                v.ticks += 1;
                 cx.notify();
             }) else {
                 break;
             };
         });
-        OverlayView { kind, saved, opts, snap: None, at: Instant::now(), lost: false, charm: None, api: None, _tick: tick }
+        OverlayView {
+            kind,
+            saved,
+            opts,
+            snap: None,
+            at: Instant::now(),
+            lost: false,
+            charm: None,
+            incoming: None,
+            sky: None,
+            apps: Vec::new(),
+            session: None,
+            dps: Dps::default(),
+            ticks: 0,
+            api: None,
+            _tick: tick,
+        }
     }
 
     pub fn set_api(&mut self, api: Option<crate::api::Api>, cx: &mut Context<Self>) {
@@ -304,6 +368,11 @@ impl OverlayView {
     }
 
     pub fn on_snapshot(&mut self, snap: Arc<Value>, cx: &mut Context<Self>) {
+        if self.opts.has("dps") {
+            // Not under a scope: a session has no "now".
+            let enc = if self.opts.scope.is_some() { None } else { snap.get("current").filter(|c| !c.is_null()) };
+            self.dps.on_snapshot(snap.get("log_time").and_then(Value::as_i64), enc);
+        }
         self.snap = Some(snap);
         self.at = Instant::now();
         self.lost = false;
@@ -317,16 +386,46 @@ impl OverlayView {
         cx.notify();
     }
 
-    fn poll_charm(&mut self, cx: &mut Context<Self>) {
-        if !self.opts.has("charm") {
-            return;
+    /// The page's polls, on its intervals: charm every second, incoming
+    /// and the session every two, other apps' panels every five, Sky every
+    /// twenty. Each starts on the first tick.
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        let n = self.ticks;
+        let o = &self.opts;
+        if o.has("charm") {
+            self.fetch("/api/charm".into(), cx, |me, v| me.charm = Some(v));
         }
+        if o.has("incoming") && n % 2 == 0 {
+            // The fight in progress, or nothing: between fights the panel
+            // hides rather than show a dead one.
+            match self.snap.as_ref().and_then(|s| s.get("current")).and_then(|c| c.get("id")).and_then(Value::as_u64) {
+                Some(id) => self.fetch(format!("/api/incoming?encounter={id}"), cx, |me, v| me.incoming = Some(v)),
+                None => self.incoming = None,
+            }
+        }
+        if let Some(scope) = o.scope.clone()
+            && n % 2 == 0
+        {
+            self.fetch(format!("/api/session?scope={scope}"), cx, |me, v| me.session = Some(v));
+        }
+        if o.has("apps") && n % 5 == 0 {
+            self.fetch("/api/panels".into(), cx, |me, v| {
+                me.apps = v.get("panels").and_then(Value::as_array).cloned().unwrap_or_default();
+            });
+        }
+        if o.has("sky") && n % 20 == 0 && crate::features::has("sky") {
+            self.fetch("/api/sky".into(), cx, |me, v| me.sky = Some(v));
+        }
+    }
+
+    /// A GET whose answer `put` keeps. A failure is silent, as in the page:
+    /// the last answer stands until the next tick.
+    fn fetch(&self, path: String, cx: &mut Context<Self>, put: impl FnOnce(&mut Self, Value) + 'static) {
         let Some(api) = self.api.clone() else { return };
         cx.spawn(async move |this, cx| {
-            // Fetch failures are silent, as in the page: the last answer stands.
-            if let Ok(v) = api.get::<Value>("/api/charm".into()).await {
+            if let Ok(v) = api.get::<Value>(path).await {
                 let _ = this.update(cx, |me, cx| {
-                    me.charm = Some(v);
+                    put(me, v);
                     cx.notify();
                 });
             }
@@ -343,7 +442,14 @@ impl OverlayView {
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let o = &self.opts;
-        let mut col = div().flex().flex_col().gap(px(6.)).w_full().text_color(gpui::rgb(TEXT)).text_size(px(13. * o.scale));
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .w_full()
+            .text_color(gpui::rgb(TEXT))
+            .text_size(px(13. * o.scale))
+            .on_children_prepainted(fit_height);
         let Some(snap) = self.snap.clone() else {
             // "Connecting…", with nothing else drawn yet.
             if o.has("meter") {
@@ -353,7 +459,10 @@ impl Render for OverlayView {
         };
         let snap = &*snap;
         // The page's fixed order, whatever order `panels=` names them in.
-        for p in ["meter", "xp", "heals", "taken", "motes", "auras", "debuffs", "buffs", "charm"] {
+        for p in [
+            "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras", "debuffs", "buffs", "charm", "apps",
+            "sky",
+        ] {
             if !o.has(p) {
                 continue;
             }
@@ -367,6 +476,11 @@ impl Render for OverlayView {
                 "debuffs" => Some(self.debuffs(snap)),
                 "buffs" => Some(self.buffs(snap)),
                 "charm" => self.charm_panel(),
+                "dps" => self.dps_panel(snap),
+                "outgoing" => self.outgoing(snap),
+                "incoming" => self.incoming_panel(),
+                "apps" => self.app_panels(),
+                "sky" => self.sky_panel(),
                 _ => None,
             };
             if let Some(el) = el {
@@ -379,9 +493,14 @@ impl Render for OverlayView {
 }
 
 impl OverlayView {
-    /// The encounter the meter shows: the fight in progress, or the last one
-    /// with `idle=1` (`render` in the page).
-    fn encounter<'a>(&self, snap: &'a Value) -> Option<&'a Value> {
+    /// The encounter the meter shows: the session or zone total under a
+    /// scope, else the fight in progress, or the last one with `idle=1`
+    /// (`render` in the page).
+    fn encounter<'a>(&'a self, snap: &'a Value) -> Option<&'a Value> {
+        if self.opts.scope.is_some() {
+            let s = self.session.as_ref()?;
+            return (s.get("fights").and_then(Value::as_u64).unwrap_or(0) > 0).then(|| s.get("summary")).flatten();
+        }
         snap.get("current").filter(|c| !c.is_null()).or_else(|| {
             self.opts.keep_idle.then(|| snap.get("recent").and_then(|r| r.get(0))).flatten()
         })
@@ -389,11 +508,20 @@ impl OverlayView {
 
     /// `render`'s meter half and `renderRows`, `renderSub`.
     fn meter(&self, snap: &Value) -> Div {
+        let scoped = self.opts.scope.is_some();
         let Some(enc) = self.encounter(snap) else {
-            return panel("Waiting for combat".into(), None, true, vec![empty("No active encounter")]);
+            let title = if scoped { "Nothing fought yet" } else { "Waiting for combat" };
+            return panel(title.into(), None, true, vec![empty("No active encounter")]);
         };
-        let idle = snap.get("current").is_none_or(Value::is_null);
-        let meta = format!("{} dps · {}", num(Some(f(enc, "your_dps"))), dur(f(enc, "duration")));
+        // A session total is never idle: it is not waiting on anything.
+        let idle = !scoped && snap.get("current").is_none_or(Value::is_null);
+        let meta = if scoped {
+            // Combat time, said as such, so it does not read as time played.
+            let fights = self.session.as_ref().and_then(|s| s.get("fights")).and_then(Value::as_u64).unwrap_or(0);
+            format!("{} dps · {} fighting · {fights} fights", num(Some(f(enc, "your_dps"))), dur(f(enc, "duration")))
+        } else {
+            format!("{} dps · {}", num(Some(f(enc, "your_dps"))), dur(f(enc, "duration")))
+        };
         let mut rows: Vec<Value> = fold_pets(enc.get("meter").and_then(Value::as_array).cloned().unwrap_or_default());
         if self.opts.self_only {
             rows.retain(|r| flag(r, "is_you"));
@@ -646,8 +774,8 @@ impl OverlayView {
                 bar_row(
                     div().flex().gap_1().child(s(fl, "target").to_string()).child(div().text_color(gpui::rgb(ENEMY)).child(s(fl, "kind").to_string())),
                     vec![(format!("{ago}s ago"), DIM)],
-                    0.,
-                    Side::Plain.bar(),
+                    1.,
+                    Side::Enemy.bar(),
                     1.,
                 )
                 .into_any_element(),
@@ -657,9 +785,148 @@ impl OverlayView {
             "no charm".to_string()
         } else {
             let breaks = c.get("breaks").and_then(Value::as_u64).unwrap_or(0);
-            format!("{:.0}% uptime · {breaks} break{}", f(c, "uptime") * 100., if breaks == 1 { "" } else { "s" })
+            let up = format!("{:.0}% uptime", f(c, "uptime") * 100.);
+            if breaks == 0 { up } else { format!("{up} · {breaks} break{}", if breaks == 1 { "" } else { "s" }) }
         };
         Some(panel("Charm".into(), Some(meta), held.is_empty(), rows))
+    }
+}
+
+impl OverlayView {
+    /// `renderDps`: damage over the last ten seconds, against the fight's
+    /// average and the minute's peak, over a bar a second.
+    fn dps_panel(&self, snap: &Value) -> Option<Div> {
+        let enc = snap.get("current").filter(|c| !c.is_null() && self.opts.scope.is_none())?;
+        let now = snap.get("log_time").and_then(Value::as_i64)?;
+        let buckets = self.dps.buckets(now);
+        let rolled: f64 = buckets[buckets.len() - DPS_ROLL as usize..].iter().sum();
+        // Divided by the seconds the window covers, so a fight three seconds
+        // old is not averaged over ten.
+        let covered = f(enc, "duration").clamp(1., DPS_ROLL as f64);
+        let peak = buckets.iter().copied().fold(1., f64::max);
+        let meta = format!("{} now · {} avg · peak {}", num(Some((rolled / covered).round())), num(Some(f(enc, "your_dps"))), num(Some(peak)));
+        let spark = div().w_full().flex().items_end().gap(px(1.)).h(px(24.)).children(buckets.into_iter().map(|v| {
+            div().flex_1().h(relative((v / peak) as f32)).bg(rgba_of(YOU, if v > 0. { 0.7 } else { 0. }))
+        }));
+        Some(panel("Damage".into(), Some(meta), false, vec![spark.into_any_element()]))
+    }
+
+    /// `renderOutgoing`: your abilities across their groups, ranked together,
+    /// each a share of everything you dealt.
+    fn outgoing(&self, snap: &Value) -> Option<Div> {
+        let enc = self.encounter(snap)?;
+        let total = f(enc, "your_damage");
+        let mut abilities: Vec<&Value> = enc
+            .get("outgoing_groups")
+            .and_then(Value::as_array)?
+            .iter()
+            .filter_map(|g| g.get("abilities").and_then(Value::as_array))
+            .flatten()
+            .collect();
+        if abilities.is_empty() || total <= 0. {
+            return None;
+        }
+        abilities.sort_by(|a, b| f(b, "damage").total_cmp(&f(a, "damage")));
+        abilities.truncate(self.opts.rows);
+        let rows = abilities
+            .iter()
+            .map(|a| {
+                bar_row(
+                    div().child(s(a, "name").to_string()),
+                    vec![(format!("{}× max {}", num(Some(f(a, "hits"))), num(Some(f(a, "max")))), DIM), (num(Some(f(a, "damage"))), TEXT)],
+                    f(a, "damage") / total,
+                    Side::You.bar(),
+                    1.,
+                )
+                .into_any_element()
+            })
+            .collect();
+        Some(panel("Your damage".into(), Some(format!("{} dealt · {} dps", num(Some(total)), num(Some(f(enc, "your_dps"))))), false, rows))
+    }
+
+    /// `pollIncoming`: what is landing on you in this fight.
+    fn incoming_panel(&self) -> Option<Div> {
+        let d = self.incoming.as_ref()?;
+        let total = f(d, "total");
+        if total <= 0. {
+            return None;
+        }
+        let rows = d
+            .get("by_ability")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().take(self.opts.rows).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| {
+                bar_row(
+                    div().child(s(a, "name").to_string()),
+                    vec![(format!("{}× max {}", num(Some(f(a, "hits"))), num(Some(f(a, "max")))), DIM), (num(Some(f(a, "total"))), TEXT)],
+                    f(a, "share"),
+                    Side::Enemy.bar(),
+                    1.,
+                )
+                .into_any_element()
+            })
+            .collect();
+        let worst = f(d, "biggest_hit");
+        let meta = if worst > 0. { format!("{} taken · worst {}", num(Some(total)), num(Some(worst))) } else { format!("{} taken", num(Some(total))) };
+        Some(panel("Hitting you".into(), Some(meta), false, rows))
+    }
+
+    /// `pollSky`: turn-ins that are ready, with who takes them and what to
+    /// say. Hidden while none is.
+    fn sky_panel(&self) -> Option<Div> {
+        let d = self.sky.as_ref()?;
+        let ready: Vec<&Value> =
+            d.get("quests").and_then(Value::as_array)?.iter().filter(|q| flag(q, "relevant") && flag(q, "complete")).collect();
+        if ready.is_empty() {
+            return None;
+        }
+        let meta = format!("{} of {}", ready.len(), d.get("relevant_count").and_then(Value::as_u64).unwrap_or(0));
+        let mut rows = Vec::new();
+        for q in ready.iter().take(self.opts.rows) {
+            rows.push(bar_row(div().text_color(gpui::rgb(YOU)).child(s(q, "name").to_string()), vec![(s(q, "giver").to_string(), TEXT)], 1., Side::You.bar(), 1.).into_any_element());
+            rows.push(
+                bar_row(
+                    div().text_color(gpui::rgb(DIM)).child(format!("→ {}", s(q, "reward"))),
+                    vec![(format!("say \"{}\"", s(q, "phrase")), TEXT)],
+                    0.,
+                    Side::Plain.bar(),
+                    1.,
+                )
+                .into_any_element(),
+            );
+        }
+        Some(panel("Sky turn-ins ready".into(), Some(meta), false, rows))
+    }
+
+    /// `pollAppPanels`: what other apps put up through `/api/panels`, such
+    /// as the eqldb collector's "worth a picture".
+    fn app_panels(&self) -> Option<Div> {
+        let panels: Vec<&Value> = self
+            .apps
+            .iter()
+            .map(|p| p.get("panel").unwrap_or(p))
+            .filter(|p| p.get("rows").and_then(Value::as_array).is_some_and(|r| !r.is_empty()))
+            .collect();
+        if panels.is_empty() {
+            return None;
+        }
+        Some(div().flex().flex_col().gap(px(6.)).children(panels.into_iter().map(|p| {
+            let mut rows = Vec::new();
+            for r in p.get("rows").and_then(Value::as_array).into_iter().flatten() {
+                let side = if flag(r, "highlight") { Side::Enemy } else { Side::You };
+                rows.push(bar_row(div().child(s(r, "name").to_string()), vec![(s(r, "value").to_string(), TEXT)], 1., side.bar(), 1.).into_any_element());
+                if !s(r, "note").is_empty() || !s(r, "note_value").is_empty() {
+                    rows.push(
+                        bar_row(div().text_color(gpui::rgb(DIM)).child(s(r, "note").to_string()), vec![(s(r, "note_value").to_string(), TEXT)], 0., Side::Plain.bar(), 1.)
+                            .into_any_element(),
+                    );
+                }
+            }
+            let meta = s(p, "meta");
+            panel(s(p, "title").to_string(), (!meta.is_empty()).then(|| meta.to_string()), false, rows)
+        })))
     }
 }
 
@@ -747,6 +1014,24 @@ pub fn long_dur(sec: f64, coarse: bool) -> String {
     }
     let (d, r) = (h / 24, h % 24);
     if r > 0 { format!("{d}d {r}h") } else { format!("{d}d") }
+}
+
+/// Keep the window as tall as what it shows (`fitOverlayToContent`): the
+/// user picks where it sits and how wide it is, the panels decide how tall.
+/// Never past the bottom of the screen, and with a dead band so a rounding
+/// pixel does not resize it forever.
+fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) {
+    let Some(bottom) = children.iter().map(|b| b.bottom()).max() else { return };
+    let have = window.viewport_size();
+    let room = window
+        .display(cx)
+        .map(|d| d.bounds().bottom() - window.bounds().top() - px(8.))
+        .unwrap_or(px(2000.))
+        .max(px(120.));
+    let want = bottom.max(px(60.)).min(room).ceil();
+    if (want - have.height).abs() > px(4.) {
+        window.resize(size(have.width, want));
+    }
 }
 
 // ---- pieces ------------------------------------------------------------------
@@ -974,6 +1259,23 @@ mod tests {
         assert_eq!(f(&out[0], "damage"), 140.);
         assert_eq!(out[0]["folded_pets"], 1);
         assert!(out.iter().any(|r| s(r, "name") == "Xabarn"), "your own pet is left alone");
+    }
+
+    #[test]
+    fn dps_goes_in_the_second_the_log_reported_it_and_a_new_fight_starts_over() {
+        let mut d = Dps::default();
+        let enc = |id: u64, dmg: f64| serde_json::json!({"id": id, "your_damage": dmg});
+        d.on_snapshot(Some(100), Some(&enc(1, 50.)));
+        d.on_snapshot(Some(100), Some(&enc(1, 80.)));
+        d.on_snapshot(Some(100), Some(&enc(1, 100.)));
+        d.on_snapshot(Some(102), Some(&enc(1, 160.)));
+        let b = d.buckets(102);
+        assert_eq!(b.len(), 60);
+        // The first snapshot only sets the baseline; two more in one second
+        // add into one bucket; the idle second between is a zero.
+        assert_eq!(&b[57..], &[50., 0., 60.]);
+        d.on_snapshot(Some(200), Some(&enc(2, 10.)));
+        assert!(d.buckets(200).iter().all(|v| *v == 0.), "the last fight's burst is not carried over");
     }
 
     #[test]
