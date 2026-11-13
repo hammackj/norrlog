@@ -207,3 +207,57 @@ async fn two_apps_starting_at_once_share_one_daemon() {
     gone(port).await;
     let _ = std::fs::remove_dir_all(&s.dir);
 }
+
+/// A raw request's status line, with the headers given.
+async fn status_of(port: u16, path: &str, headers: &[(&str, String)]) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut req = format!("GET {path} HTTP/1.1\r\n");
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("connection")) {
+        req.push_str("Connection: close\r\n");
+    }
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 512];
+    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf)).await.unwrap().unwrap();
+    String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string()
+}
+
+/// Another website, through the user's browser, gets nothing: not the live
+/// snapshot over /ws, not the events, not the API. The daemon's own overlay
+/// page and native clients are let through.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_from_another_site_is_refused() {
+    let s = scratch("origin");
+    let port = free_port();
+    let c = Client::attach_or_spawn(port, &spawn(&s)).await.unwrap();
+    let host = ("Host", format!("127.0.0.1:{port}"));
+    let ws = [
+        ("Upgrade", "websocket".to_string()),
+        ("Connection", "Upgrade".to_string()),
+        ("Sec-WebSocket-Version", "13".to_string()),
+        ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+    ];
+    let with = |extra: &[(&'static str, String)]| -> Vec<(&'static str, String)> { [&[host.clone()][..], &ws[..], extra].concat() };
+    for path in ["/ws", "/api/events"] {
+        let foreign = status_of(port, path, &with(&[("Origin", "http://untrusted.example".into())])).await;
+        assert!(foreign.contains(" 403 "), "{path} from a foreign site: {foreign}");
+        let own = status_of(port, path, &with(&[("Origin", format!("http://127.0.0.1:{port}"))])).await;
+        assert!(own.contains(" 101 "), "{path} from the overlay page: {own}");
+        let native = status_of(port, path, &with(&[])).await;
+        assert!(native.contains(" 101 "), "{path} from a native client: {native}");
+    }
+    let api = status_of(port, "/api/snapshot", &[host.clone(), ("Origin", "http://untrusted.example".into())]).await;
+    assert!(api.contains(" 403 "), "the API from a foreign site: {api}");
+    let rebound = status_of(port, "/api/snapshot", &[("Host", format!("rebound.example:{port}"))]).await;
+    assert!(rebound.contains(" 403 "), "a rebound host name: {rebound}");
+    // The client the apps use still attaches.
+    c.bags().await.unwrap();
+    let port = c.port();
+    drop(c);
+    gone(port).await;
+    let _ = std::fs::remove_dir_all(&s.dir);
+}

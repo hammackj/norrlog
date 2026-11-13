@@ -112,6 +112,11 @@ pub fn router(state: AppState) -> Router {
             Arc::clone(&state.life),
             touch,
         ))
+        // Outermost, so a refused request is not counted as activity.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state.life),
+            local_only,
+        ))
         .with_state(state)
 }
 
@@ -215,6 +220,57 @@ async fn touch(
 ) -> Response {
     life.touch();
     next.run(req).await
+}
+
+/// Refuse requests that a web page elsewhere made through the user's browser.
+///
+/// Listening on loopback keeps other machines out, not other websites: any
+/// page the user has open can open a WebSocket to 127.0.0.1, and the snapshot
+/// it would be sent names the character, the zone, the tells. So:
+///
+/// * **Origin**, when a browser sends one, must be one of this daemon's own
+///   pages (the overlay, in OBS or a browser), or `file://`, which is how
+///   the Electron app's pages are loaded while it lasts. `null` is refused:
+///   a sandboxed frame on any site sends it.
+/// * **Host** must name this daemon. A page on a domain re-pointed at
+///   127.0.0.1 (DNS rebinding) is same-origin with itself, and sends its own
+///   name here.
+///
+/// Native clients (Norrlog, the collector, curl) send no Origin and a Host
+/// of `127.0.0.1:port`, and pass.
+async fn local_only(
+    State(life): State<Arc<Life>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(why) = refusal(req.headers(), life.hello.port) {
+        return api_error(StatusCode::FORBIDDEN, why);
+    }
+    next.run(req).await
+}
+
+/// Why a request is refused, or `None` to let it through.
+fn refusal(headers: &axum::http::HeaderMap, port: u16) -> Option<String> {
+    // A header that is not text cannot name this daemon either.
+    let text = |name| headers.get(name).map(|v: &axum::http::HeaderValue| v.to_str().unwrap_or("?").to_string());
+    if let Some(host) = text(axum::http::header::HOST).filter(|h| !is_local_host(h, port)) {
+        return Some(format!("refused: Host {host} is not this daemon"));
+    }
+    if let Some(origin) = text(axum::http::header::ORIGIN).filter(|o| !is_local_origin(o, port)) {
+        return Some(format!("refused: requests from {origin} are not accepted"));
+    }
+    None
+}
+
+fn is_local_host(host: &str, port: u16) -> bool {
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| host.eq_ignore_ascii_case(&format!("{h}:{port}")))
+}
+
+fn is_local_origin(origin: &str, port: u16) -> bool {
+    origin == "file://"
+        || origin
+            .strip_prefix("http://")
+            .is_some_and(|host| is_local_host(host, port))
 }
 
 /// Exit once nobody has needed this daemon for `secs` seconds.
@@ -2699,6 +2755,22 @@ type QueryMap = HashMap<String, String>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_this_daemons_own_pages_and_hosts_are_local() {
+        assert!(is_local_origin("http://127.0.0.1:8777", 8777));
+        assert!(is_local_origin("http://localhost:8777", 8777));
+        assert!(is_local_origin("http://[::1]:8777", 8777));
+        assert!(is_local_origin("file://", 8777), "the Electron app's pages");
+        assert!(!is_local_origin("null", 8777), "a sandboxed frame on any site");
+        assert!(!is_local_origin("http://untrusted.example", 8777));
+        assert!(!is_local_origin("http://127.0.0.1:9999", 8777), "another local server's page");
+        assert!(!is_local_origin("https://127.0.0.1:8777", 8777));
+        assert!(!is_local_origin("http://127.0.0.1:8777.evil.example", 8777));
+        assert!(is_local_host("LOCALHOST:8777", 8777));
+        assert!(!is_local_host("rebound.example:8777", 8777), "DNS rebinding");
+        assert!(!is_local_host("127.0.0.1", 8777));
+    }
     use norrlog_core::spell::SpellDb;
 
 
