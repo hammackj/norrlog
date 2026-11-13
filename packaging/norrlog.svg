@@ -1,38 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- Two-line wordmark: EQL over Parser.
+  <!-- An N built from two meter bars and the stroke between them.
 
-       The name is the icon. At desktop size a glyph would be guesswork about
-       what the app "looks like"; the two words are legible at 48px and read
-       instantly in a launcher list, which is the only place this is ever seen.
+       A letter rather than the name: the name is unreadable at 16 and 32 px,
+       which is where the title bar and the task switcher draw it. The bars
+       are the one visual the app is about.
 
-       Colours are the app's own: the dark card background and the amber accent
-       from app.css, so the launcher and the window agree. -->
+       Colours are hammackj.com's: its gray-900 to gray-950 background, its
+       gray-700 edge, and its cyan scale (600 to 400 up the bars, 100 for
+       the stroke). -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1b1f27"/>
-      <stop offset="100%" stop-color="#12151b"/>
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#030712"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#0891b2"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
     </linearGradient>
   </defs>
 
-  <rect x="8" y="8" width="240" height="240" rx="44" fill="url(#bg)"/>
-  <rect x="8.5" y="8.5" width="239" height="239" rx="43.5"
-        fill="none" stroke="#2c323d" stroke-width="3"/>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+  <rect x="9.5" y="9.5" width="237" height="237" rx="46.5"
+        fill="none" stroke="#374151" stroke-width="3"/>
 
-  <!-- EQL: the loud half, in the accent. Tracking is wide because three
-       capitals at this size otherwise read as one blob. -->
-  <text x="128" y="122"
-        font-family="'DejaVu Sans', 'Liberation Sans', Arial, Helvetica, sans-serif"
-        font-size="76" font-weight="700" letter-spacing="4"
-        text-anchor="middle" fill="#ffc857">EQL</text>
+  <rect x="58" y="62" width="34" height="132" rx="7" fill="url(#bar)"/>
+  <polygon points="64,62 100,62 192,194 156,194" fill="#cffafe"/>
+  <rect x="164" y="62" width="34" height="132" rx="7" fill="url(#bar)"/>
 
-  <!-- Parser: the quiet half. Smaller and lighter so the two lines are a
-       hierarchy rather than a collision. -->
-  <text x="128" y="178"
-        font-family="'DejaVu Sans', 'Liberation Sans', Arial, Helvetica, sans-serif"
-        font-size="44" font-weight="500" letter-spacing="1"
-        text-anchor="middle" fill="#e6e9ef">Parser</text>
-
-  <!-- A meter bar, the one visual the app is actually about. -->
-  <rect x="56" y="200" width="144" height="8" rx="4" fill="#2c323d"/>
-  <rect x="56" y="200" width="96" height="8" rx="4" fill="#ffc857"/>
+  <!-- The meter's track, under the letter. -->
+  <rect x="58" y="206" width="140" height="6" rx="3" fill="#1f2937"/>
 </svg>
