@@ -207,6 +207,52 @@ impl NpcProfile {
     }
 }
 
+/// One spell or ability a creature was seen to use, by the three ways the
+/// log shows one.
+///
+/// The three counts are different events and are never added together. An
+/// announced cast is the creature starting a spell; a hit is a spell's
+/// damage landing on somebody; a tick is one beat of a spell over time.
+/// Cazic-Thule's Avatar Power is announced 173 times and lands 323 times,
+/// and both are true. Nor is any one of them the record: a dragon's breath
+/// is never announced and only ever lands, and Scourge only ever ticks, so
+/// a list built from announced casts alone looks complete and is missing
+/// exactly the abilities a creature is known for.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NpcCast {
+    /// As the log wrote it. A name can match several spells in the game's
+    /// tables (`Harm Touch` matches four), and which one it was is the
+    /// reader's question, not the parser's.
+    pub spell: String,
+    /// `begins casting` (or `begins singing`) lines.
+    pub casts: u64,
+    /// Direct damage landing, on anyone.
+    pub hits: u64,
+    pub damage_total: u64,
+    /// The spread of `hits`; 0 with no hits.
+    pub damage_min: u64,
+    pub damage_max: u64,
+    /// The resist the damage line named: fire, cold, magic, unresistable.
+    /// Read off the line rather than assumed per spell.
+    pub element: Option<String>,
+    /// Damage-over-time ticks, on anyone.
+    pub ticks: u64,
+    pub tick_damage: u64,
+}
+
+/// How a creature's spell showed itself in the log. See [`NpcCast`].
+#[derive(Debug, Clone, Copy)]
+pub enum CastSeen<'a> {
+    Announced,
+    Landed {
+        amount: u64,
+        element: Option<&'a str>,
+    },
+    Tick {
+        amount: u64,
+    },
+}
+
 /// Everything one log can say about one creature in one place.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NpcProfile {
@@ -250,6 +296,10 @@ pub struct NpcProfile {
     pub max_hit: u64,
     /// Melee per character and level, never pooled.
     pub melee: Vec<MeleeAgainst>,
+    /// What it cast, per spell, by name. Empty for a creature nobody saw
+    /// cast, which is "no casts recorded", not "casts nothing".
+    #[serde(default)]
+    pub casts: Vec<NpcCast>,
     pub first_seen: i64,
     pub last_seen: i64,
 }
@@ -381,6 +431,7 @@ impl Bestiary {
             health_max: 0,
             max_hit: 0,
             melee: Vec::new(),
+            casts: Vec::new(),
             first_seen: at,
             last_seen: at,
         })
@@ -458,6 +509,62 @@ impl Bestiary {
             }
             Swing::Missed => m.misses += 1,
             Swing::Avoided => m.avoided += 1,
+        }
+    }
+
+    /// A creature's spell, in whichever of the three forms the log showed it.
+    ///
+    /// `on_you` says the spell hit you, which proves the caster was fighting
+    /// you and so may open a profile; everything else is filed only against
+    /// a creature already on record here. A cast line cannot tell a monster
+    /// from the cleric in your group, and the bestiary is no place for the
+    /// group's heals; something that has fought is a creature.
+    ///
+    /// A hit on you is also a hit from it, so it counts towards `max_hit`,
+    /// as it did when spell damage was read as melee.
+    pub fn on_npc_cast(&mut self, at: i64, npc: &str, spell: &str, seen: CastSeen, on_you: bool) {
+        let spell = spell.trim();
+        if spell.is_empty() || npc.eq_ignore_ascii_case(crate::event::UNSEEN_ATTACKER) {
+            return;
+        }
+        let Some(key) = self.key(npc) else { return };
+        if !on_you && !self.npcs.contains_key(&key) {
+            return;
+        }
+        let p = self.profile(key, at);
+        p.last_seen = at;
+        let c = match p.casts.iter().position(|c| c.spell == spell) {
+            Some(i) => &mut p.casts[i],
+            None => {
+                p.casts.push(NpcCast {
+                    spell: spell.to_string(),
+                    ..Default::default()
+                });
+                p.casts.last_mut().unwrap()
+            }
+        };
+        match seen {
+            CastSeen::Announced => c.casts += 1,
+            CastSeen::Landed { amount, element } => {
+                c.damage_min = if c.hits == 0 {
+                    amount
+                } else {
+                    c.damage_min.min(amount)
+                };
+                c.hits += 1;
+                c.damage_total += amount;
+                c.damage_max = c.damage_max.max(amount);
+                if c.element.is_none() {
+                    c.element = element.map(str::to_string);
+                }
+                if on_you {
+                    p.max_hit = p.max_hit.max(amount);
+                }
+            }
+            CastSeen::Tick { amount } => {
+                c.ticks += 1;
+                c.tick_damage += amount;
+            }
         }
     }
 
@@ -557,6 +664,7 @@ impl Bestiary {
             })
             .collect();
         for p in &mut npcs {
+            p.casts.sort_by(|a, b| a.spell.cmp(&b.spell));
             p.melee.sort_by(|a, b| {
                 a.character
                     .cmp(&b.character)
@@ -618,6 +726,7 @@ pub fn merge(
         // of a database has no such guarantee — the duplicates would then
         // survive every later merge untouched.
         let incoming = std::mem::take(&mut p.melee);
+        let casts = std::mem::take(&mut p.casts);
         match merged.get_mut(&key) {
             None => {
                 merged.insert(key.clone(), p);
@@ -641,6 +750,26 @@ pub fn merge(
             }
         }
         let into = merged.get_mut(&key).expect("just inserted");
+        // Casts fold per spell, each count into its own count.
+        for c in casts {
+            match into.casts.iter_mut().find(|e| e.spell == c.spell) {
+                Some(e) => {
+                    e.damage_min = match (e.hits, c.hits) {
+                        (0, _) => c.damage_min,
+                        (_, 0) => e.damage_min,
+                        _ => e.damage_min.min(c.damage_min),
+                    };
+                    e.casts += c.casts;
+                    e.hits += c.hits;
+                    e.damage_total += c.damage_total;
+                    e.damage_max = e.damage_max.max(c.damage_max);
+                    e.element = e.element.take().or(c.element);
+                    e.ticks += c.ticks;
+                    e.tick_damage += c.tick_damage;
+                }
+                None => into.casts.push(c),
+            }
+        }
         for m in incoming {
             match into
                 .melee
@@ -684,6 +813,7 @@ pub fn merge(
         p.health_min = min;
         p.health_median = median;
         p.health_max = max;
+        p.casts.sort_by(|a, b| a.spell.cmp(&b.spell));
         p.melee.sort_by(|a, b| {
             a.character
                 .cmp(&b.character)
@@ -1026,6 +1156,44 @@ mod tests {
         assert_eq!((tharn.swings, tharn.hits, tharn.level), (1, 1, 50));
         // The creature's own record still spans everyone.
         assert_eq!(p.max_hit, 45);
+    }
+
+    /// Casts from two logs fold per spell, each count into its own, and the
+    /// damage spread spans both.
+    #[test]
+    fn merging_folds_casts_per_spell() {
+        let land = |amount| CastSeen::Landed {
+            amount,
+            element: Some("fire"),
+        };
+        let mut a = Bestiary::new(Game::EverQuestLegends, "Tharn");
+        a.on_zone("Nagafen's Lair");
+        a.on_npc_cast(1, "Lord Nagafen", "Lava Breath", land(600), true);
+        a.on_npc_cast(
+            2,
+            "Lord Nagafen",
+            "Scourge",
+            CastSeen::Tick { amount: 125 },
+            true,
+        );
+
+        let mut b = Bestiary::new(Game::EverQuestLegends, "Grimhide");
+        b.on_zone("Nagafen's Lair");
+        b.on_npc_cast(3, "Lord Nagafen", "Lava Breath", land(3), true);
+        b.on_npc_cast(4, "Lord Nagafen", "Lava Breath", CastSeen::Announced, false);
+
+        let merged = merge(a.report().npcs.into_iter().chain(b.report().npcs), &[]);
+        let p = &merged[0];
+        assert_eq!(p.casts.len(), 2);
+        let breath = p.casts.iter().find(|c| c.spell == "Lava Breath").unwrap();
+        assert_eq!((breath.casts, breath.hits), (1, 2));
+        assert_eq!((breath.damage_min, breath.damage_max), (3, 600));
+        assert_eq!(breath.damage_total, 603);
+        let scourge = p.casts.iter().find(|c| c.spell == "Scourge").unwrap();
+        assert_eq!(
+            (scourge.ticks, scourge.tick_damage, scourge.hits),
+            (1, 125, 0)
+        );
     }
 
     /// Merging respects the identity rule: different tiers stay different

@@ -1169,6 +1169,31 @@ impl Store {
                              level, stance)
             );
 
+            -- What a creature cast, per spell: announced casts, direct hits
+            -- and damage-over-time ticks, each counted apart. They are
+            -- different events and are never summed (see NpcCast).
+            CREATE TABLE IF NOT EXISTS npc_casts (
+                game         TEXT NOT NULL,
+                character    TEXT NOT NULL,
+                server       TEXT NOT NULL,
+                source       TEXT NOT NULL,
+                zone         TEXT NOT NULL,
+                mode         TEXT NOT NULL,
+                difficulty   INTEGER NOT NULL,
+                npc          TEXT NOT NULL,
+                spell        TEXT NOT NULL,
+                casts        INTEGER NOT NULL,
+                hits         INTEGER NOT NULL,
+                damage_total INTEGER NOT NULL,
+                damage_min   INTEGER NOT NULL,
+                damage_max   INTEGER NOT NULL,
+                element      TEXT NOT NULL DEFAULT '',
+                ticks        INTEGER NOT NULL,
+                tick_damage  INTEGER NOT NULL,
+                PRIMARY KEY (game, character, server, source, zone, mode, difficulty, npc,
+                             spell)
+            );
+
             -- One row per death that measured anything.
             --
             -- The summary is deliberately *not* stored. A median cannot be
@@ -2805,7 +2830,35 @@ impl Store {
                   level, stance, swings, hits, misses, avoided, damage, max_hit)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             )?;
+            let mut cast_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO npc_casts
+                 (game, character, server, source, zone, mode, difficulty, npc, spell,
+                  casts, hits, damage_total, damage_min, damage_max, element, ticks,
+                  tick_damage)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            )?;
             for p in &report.npcs {
+                for k in &p.casts {
+                    cast_stmt.execute(params![
+                        game,
+                        c,
+                        sv,
+                        source,
+                        p.zone,
+                        p.mode.as_str(),
+                        p.difficulty,
+                        p.name,
+                        k.spell,
+                        k.casts as i64,
+                        k.hits as i64,
+                        k.damage_total as i64,
+                        k.damage_min as i64,
+                        k.damage_max as i64,
+                        k.element.as_deref().unwrap_or(""),
+                        k.ticks as i64,
+                        k.tick_damage as i64,
+                    ])?;
+                }
                 npc_stmt.execute(params![
                     game,
                     c,
@@ -2890,7 +2943,7 @@ impl Store {
         Vec<norrlog_core::bestiary::NpcProfile>,
         Vec<norrlog_core::bestiary::HealthSample>,
     )> {
-        use norrlog_core::bestiary::{HealthSample, MeleeAgainst, NpcProfile};
+        use norrlog_core::bestiary::{HealthSample, MeleeAgainst, NpcCast, NpcProfile};
         use norrlog_core::game::Game;
         use norrlog_core::zone::Mode;
 
@@ -2943,6 +2996,42 @@ impl Store {
                 .push(m);
         }
 
+        // Casts, grouped the same way and for the same reason.
+        let mut casts: std::collections::HashMap<MeleeKey, Vec<NpcCast>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT source, zone, mode, difficulty, npc, spell, casts, hits, damage_total,
+                    damage_min, damage_max, element, ticks, tick_damage
+             FROM npc_casts WHERE game = ?1 AND source <> ?2",
+        )?;
+        let rows = stmt.query_map(params![game, source], |r| {
+            let element: String = r.get(11)?;
+            Ok((
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, u8>(3)?,
+                    r.get::<_, String>(4)?,
+                ),
+                NpcCast {
+                    spell: r.get(5)?,
+                    casts: r.get::<_, i64>(6)? as u64,
+                    hits: r.get::<_, i64>(7)? as u64,
+                    damage_total: r.get::<_, i64>(8)? as u64,
+                    damage_min: r.get::<_, i64>(9)? as u64,
+                    damage_max: r.get::<_, i64>(10)? as u64,
+                    element: (!element.is_empty()).then_some(element),
+                    ticks: r.get::<_, i64>(12)? as u64,
+                    tick_damage: r.get::<_, i64>(13)? as u64,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (key, k) = row?;
+            casts.entry(key).or_default().push(k);
+        }
+
         let mut stmt = self.conn.prepare(
             "SELECT source, zone, mode, difficulty, npc, kills, deaths_to_it, max_hit,
                     first_seen, last_seen, kind
@@ -2974,10 +3063,10 @@ impl Store {
             let Some(parsed_mode) = Mode::from_str(&mode) else {
                 continue;
             };
+            let key = (src, zone.clone(), mode, difficulty, npc.clone());
             profiles.push(NpcProfile {
-                melee: melee
-                    .remove(&(src, zone.clone(), mode, difficulty, npc.clone()))
-                    .unwrap_or_default(),
+                casts: casts.remove(&key).unwrap_or_default(),
+                melee: melee.remove(&key).unwrap_or_default(),
                 // The daemon's table stores the canonical name and has no
                 // column for the article, so the two are the same here. A
                 // profile read back out of it is identified correctly and

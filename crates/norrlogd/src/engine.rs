@@ -973,7 +973,21 @@ impl Engine {
         // spells sharing a landing message is the one that just landed.
         match &entry.event {
             Event::CastStart { source, spell, .. } if !source.is_you() => {
-                self.resolver.note_cast_by_other(entry.timestamp, spell)
+                self.resolver.note_cast_by_other(entry.timestamp, spell);
+                // A creature's announced cast, if it is one: the bestiary
+                // files it only against something already on record as
+                // having fought.
+                if let norrlog_core::event::Actor::Named(npc) = source {
+                    if !self.is_a_player(npc) {
+                        self.bestiary.on_npc_cast(
+                            entry.timestamp,
+                            npc,
+                            spell,
+                            norrlog_core::bestiary::CastSeen::Announced,
+                            false,
+                        );
+                    }
+                }
             }
             Event::Heal {
                 spell: Some(spell), ..
@@ -1184,6 +1198,8 @@ impl Engine {
                 target,
                 amount,
                 ability,
+                kind,
+                damage_type,
                 ..
             } => {
                 // A person is not a creature, however much a melee line
@@ -1205,10 +1221,18 @@ impl Engine {
                         }
                     }
                 }
-                if target.is_you() {
-                    if let norrlog_core::event::Actor::Named(npc) = source {
-                        self.bestiary
-                            .on_swing(entry.timestamp, npc, Swing::Hit(*amount));
+                if let norrlog_core::event::Actor::Named(npc) = source {
+                    if !self.is_a_player(npc) {
+                        norrlog_core::collect::file_npc_damage(
+                            &mut self.bestiary,
+                            entry.timestamp,
+                            npc,
+                            target.is_you(),
+                            *amount,
+                            *kind,
+                            ability.as_deref(),
+                            damage_type.as_deref(),
+                        );
                     }
                 }
                 // What your own procs actually did. Only the total: an area
@@ -4879,6 +4903,77 @@ mod tests {
             rows,
             [("solo".to_string(), 1, 1, 2), ("solo".to_string(), 4, 1, 1)]
         );
+    }
+
+    /// A creature's spells, in the three forms the log shows them, kept as
+    /// three counts. Lava Breath is never announced, Scourge only ever ticks,
+    /// and a spell seen all three ways keeps three distinct numbers.
+    #[test]
+    fn a_creatures_casts_are_counted_three_ways_and_never_summed() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered Nagafen's Lair.",
+                // The breath lands and is never announced.
+                "[Tue Jul 28 14:00:01 2026] Lord Nagafen hit you for 600 points of fire damage by Lava Breath.",
+                "[Tue Jul 28 14:00:05 2026] Lord Nagafen hit you for 420 points of fire damage by Lava Breath.",
+                // Scourge only ticks.
+                "[Tue Jul 28 14:00:06 2026] You have taken 125 damage from Scourge by Lord Nagafen.",
+                "[Tue Jul 28 14:00:12 2026] You have taken 125 damage from Scourge by Lord Nagafen.",
+                // Announced, landed and ticking.
+                "[Tue Jul 28 14:00:13 2026] Lord Nagafen begins casting Ignite Blood.",
+                "[Tue Jul 28 14:00:16 2026] Lord Nagafen hit you for 300 points of fire damage by Ignite Blood.",
+                "[Tue Jul 28 14:00:22 2026] You have taken 50 damage from Ignite Blood by Lord Nagafen.",
+                // Somebody casting near you who never fought: not a creature.
+                "[Tue Jul 28 14:00:23 2026] Soandso begins casting Superior Healing.",
+                "[Tue Jul 28 14:00:24 2026] Lord Nagafen hits YOU for 200 points of damage.",
+            ],
+        );
+        let npcs = e.bestiary_report().npcs;
+        assert!(
+            !npcs
+                .iter()
+                .any(|n| n.identity().eq_ignore_ascii_case("soandso")),
+            "a cast alone does not make a creature"
+        );
+        let nag = npcs
+            .iter()
+            .find(|n| n.identity() == "Lord Nagafen")
+            .expect("Nagafen fought");
+        let get = |s: &str| nag.casts.iter().find(|c| c.spell == s).unwrap();
+        let breath = get("Lava Breath");
+        assert_eq!((breath.casts, breath.hits, breath.ticks), (0, 2, 0));
+        assert_eq!((breath.damage_min, breath.damage_max), (420, 600));
+        assert_eq!(breath.damage_total, 1020);
+        assert_eq!(breath.element.as_deref(), Some("fire"));
+        let scourge = get("Scourge");
+        assert_eq!((scourge.casts, scourge.hits, scourge.ticks), (0, 0, 2));
+        assert_eq!(scourge.tick_damage, 250);
+        let ignite = get("Ignite Blood");
+        assert_eq!((ignite.casts, ignite.hits, ignite.ticks), (1, 1, 1));
+        // Spell damage is not a swing: melee holds the one melee hit only.
+        let swings: u64 = nag.melee.iter().map(|m| m.swings).sum();
+        assert_eq!(swings, 1);
+        // A hit from it is still a hit from it.
+        assert_eq!(nag.max_hit, 600);
+    }
+
+    /// A creature nobody saw cast has no cast rows: absence stays absence.
+    #[test]
+    fn a_creature_that_cast_nothing_has_no_cast_rows() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered Befallen.",
+                "[Tue Jul 28 14:00:01 2026] A skeleton hits YOU for 20 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You slash a skeleton for 100 points of damage.",
+                "[Tue Jul 28 14:00:03 2026] You have slain a skeleton!",
+            ],
+        );
+        let npcs = e.bestiary_report().npcs;
+        assert!(npcs.iter().all(|n| n.casts.is_empty()));
     }
 
     /// Grouped with a mercenary, most kills are finished by somebody else on

@@ -760,6 +760,37 @@ pub struct Player {
     pub race: String,
 }
 
+/// A creature's damage, filed by what kind it was: a melee hit on you is a
+/// swing, a spell landing or ticking on anyone is a cast. Shared with the
+/// daemon's engine, so the two read a line the same way.
+///
+/// Spell damage used to be counted as a melee hit, which put a dragon's
+/// breath into its hit rate.
+#[allow(clippy::too_many_arguments)]
+pub fn file_npc_damage(
+    bestiary: &mut crate::bestiary::Bestiary,
+    at: i64,
+    npc: &str,
+    on_you: bool,
+    amount: u64,
+    kind: crate::event::DamageKind,
+    ability: Option<&str>,
+    element: Option<&str>,
+) {
+    use crate::bestiary::{CastSeen, Swing};
+    use crate::event::DamageKind;
+    match (kind, ability) {
+        (DamageKind::DirectSpell, Some(spell)) => {
+            bestiary.on_npc_cast(at, npc, spell, CastSeen::Landed { amount, element }, on_you)
+        }
+        (DamageKind::DamageOverTime, Some(spell)) => {
+            bestiary.on_npc_cast(at, npc, spell, CastSeen::Tick { amount }, on_you)
+        }
+        (DamageKind::Melee, _) if on_you => bestiary.on_swing(at, npc, Swing::Hit(amount)),
+        _ => {}
+    }
+}
+
 /// The roster of player characters a log has seen.
 ///
 /// Its job is to keep people out of the bestiary. A melee line does not know
@@ -1691,18 +1722,38 @@ impl Observer for CombatCollector {
                 source,
                 target,
                 amount,
+                kind,
+                ability,
+                damage_type,
                 ..
             } => {
                 if let Actor::Named(npc) = target {
                     self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
                 }
-                if target.is_you() {
-                    if let Actor::Named(npc) = source {
-                        self.bestiary
-                            .on_swing(entry.timestamp, npc, Swing::Hit(*amount));
-                    }
+                if let Actor::Named(npc) = source {
+                    file_npc_damage(
+                        &mut self.bestiary,
+                        entry.timestamp,
+                        npc,
+                        target.is_you(),
+                        *amount,
+                        *kind,
+                        ability.as_deref(),
+                        damage_type.as_deref(),
+                    );
                 }
             }
+            Event::CastStart {
+                source: Actor::Named(npc),
+                spell,
+                ..
+            } => self.bestiary.on_npc_cast(
+                entry.timestamp,
+                npc,
+                spell,
+                crate::bestiary::CastSeen::Announced,
+                false,
+            ),
             Event::Miss { source, target, .. } => {
                 if target.is_you() {
                     if let Actor::Named(npc) = source {

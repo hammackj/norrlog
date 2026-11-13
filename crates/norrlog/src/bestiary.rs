@@ -548,6 +548,7 @@ mod tests {
             health_max: 0,
             max_hit: 0,
             melee: vec![],
+            casts: vec![],
             first_seen: 0,
             last_seen: 0,
         }
