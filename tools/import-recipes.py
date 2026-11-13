@@ -41,9 +41,8 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / (
-    "crates/norrlog-core/assets/recipes.json"
-)
+# The daemon reads the book from its config directory; it is not shipped.
+DEFAULT_OUT = Path.home() / ".config/norrlog/recipes.json"
 
 # Slugs shared with crates/norrlog-core/src/game.rs.
 GAMES = {

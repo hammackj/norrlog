@@ -294,7 +294,7 @@ crates/norrlog-core/    parsing, encounters, spells, class inference
   src/class.rs              class inference
   src/tradeskill.rs         combines, skill-ups, component use, recipe costs
   src/recipe.rs             recipe book: what a combine makes, and from what
-  assets/recipes.json       the book itself (tools/import-recipes.py)
+  assets/recipe-tools.json  the tools a combine hands back
 crates/norrlogd/        daemon: follower, HTTP/WebSocket API, overlay assets
 gui/                      Electron desktop app
   main.js                   window and overlay lifecycle, config, IPC
@@ -338,7 +338,9 @@ attribution comes from the skill-up beside it — which it prints *before* a
 success and *after* a failure, so both orders are read. The `Consumed` lines
 follow the same asymmetry, and are attributed the same way. What is left is the
 recipe that never skills you up at all, which no reading of the log can reach;
-those come from the recipe book in `assets/recipes.json`. The book also lists
+those come from a recipe book, which is not shipped: `tools/import-recipes.py`
+builds one from EQTraders' listings into `~/.config/norrlog/recipes.json`, and
+the daemon reads it from there. The build does carry the list of
 **tools**, because a combine hands its tools back and the client announces that
 with the same line it uses for the thing you made — on one character's log that
 was 113 combines that never happened.
@@ -430,6 +432,15 @@ Fixes come with a test that reproduces the bug and fails without it, and
 changes to what the parser counts are checked against real logs from both
 games before they are committed. Commits don't carry AI co-author trailers;
 this section is the disclosure instead.
+
+## Bundled data
+
+`crates/norrlog-read/atlas` and `crates/norrlog-vision/templates` hold small
+glyph and label crops taken from screenshots of the EverQuest client. They let
+the reader match the game's own UI text in an item screenshot, and are kept for
+that alone; EverQuest and its interface are © Daybreak Game Company. Nothing
+else from the game ships: spells and item data are read from your own install
+while the daemon runs. The recipe book is not shipped either (see above).
 
 ## Licence
 

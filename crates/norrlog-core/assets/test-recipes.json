@@ -1,0 +1,130 @@
+{
+ "note": "Test fixture: the few recipes core's unit tests rely on. Not shipped; the real book lives in the config directory.",
+ "tools": [],
+ "recipes": [
+  {
+   "product": "Elixir of Greater Concentration",
+   "skill": "Alchemy",
+   "game": "everquest",
+   "yield": 1,
+   "trivial": 244,
+   "containers": [
+    "Medicine Bag"
+   ],
+   "components": [
+    {
+     "item": "Violet Tri-Tube Sap",
+     "qty": 1,
+     "vendor": true
+    },
+    {
+     "item": "Duskglow Vine",
+     "qty": 1,
+     "vendor": true
+    }
+   ],
+   "notes": [
+    "TLP Only"
+   ]
+  },
+  {
+   "product": "Kilva's Skin of Flame",
+   "skill": "Alchemy",
+   "game": "everquest-legends"
+  },
+  {
+   "product": "Small Brick of High Quality Ore",
+   "skill": "Blacksmithing",
+   "yield": 1,
+   "trivial": 21,
+   "containers": [
+    "Forge",
+    "Tanaan Forge",
+    "Forge - Floor (Placeable)",
+    "Forge - Standing (Placeable)",
+    "Guild Forge (Placeable)"
+   ],
+   "components": [
+    {
+     "item": "Water Flask",
+     "qty": 1,
+     "vendor": true
+    },
+    {
+     "item": "Fine Steel Dagger",
+     "qty": 1
+    }
+   ],
+   "game": "everquest"
+  },
+  {
+   "product": "Small Piece of High Quality Ore",
+   "skill": "Blacksmithing",
+   "yield": 1,
+   "trivial": 21,
+   "containers": [
+    "Forge",
+    "Tanaan Forge"
+   ],
+   "components": [
+    {
+     "item": "Water Flask",
+     "qty": 1,
+     "vendor": true
+    },
+    {
+     "item": "Fine Steel Spear",
+     "qty": 1
+    }
+   ],
+   "game": "everquest"
+  },
+  {
+   "product": "Water Flask",
+   "skill": "Brewing",
+   "yield": 1,
+   "trivial": 21,
+   "containers": [
+    "Brew Barrel",
+    "Tanaan Brew Barrel"
+   ],
+   "components": [
+    {
+     "item": "Bottle",
+     "qty": 1,
+     "vendor": true
+    },
+    {
+     "item": "Pod of Water",
+     "qty": 4
+    }
+   ],
+   "game": "everquest"
+  },
+  {
+   "product": "Small Brick of High Quality Ore",
+   "skill": "Blacksmithing",
+   "yield": 1,
+   "trivial": 21,
+   "containers": [
+    "Forge",
+    "Tanaan Forge",
+    "Forge - Floor (Placeable)",
+    "Forge - Standing (Placeable)",
+    "Guild Forge (Placeable)"
+   ],
+   "components": [
+    {
+     "item": "Water Flask",
+     "qty": 1,
+     "vendor": true
+    },
+    {
+     "item": "Fine Steel Jutte",
+     "qty": 1
+    }
+   ],
+   "game": "everquest"
+  }
+ ]
+}

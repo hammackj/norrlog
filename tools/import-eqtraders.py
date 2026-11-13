@@ -67,7 +67,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_OUT = HERE.parent / "crates/norrlog-core/assets/recipes.json"
+# The daemon reads the book from its config directory; it is not shipped.
+DEFAULT_OUT = Path.home() / ".config/norrlog/recipes.json"
 DEFAULT_CACHE = HERE.parent / ".eqtraders-cache"
 
 BASE = "https://www.eqtraders.com"

@@ -458,6 +458,11 @@ fn main() -> anyhow::Result<()> {
     // Before the runtime exists, so that nothing closed here is one of its.
     #[cfg(unix)]
     close_inherited_fds();
+    // The recipe book is not shipped; one placed in the config directory is
+    // read on first use.
+    if let Some(p) = paths::config_file("recipes.json") {
+        norrlog_core::recipe::RecipeBook::use_file(p);
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?

@@ -13,6 +13,11 @@
 //! `tools/import-recipes.py` from EQTraders recipe listings, and a product
 //! found in it is declared rather than guessed at.
 //!
+//! The book is not shipped, since the listings are EQTraders' work, not this
+//! project's. The daemon reads one from its config directory if it is there
+//! ([`RecipeBook::use_file`]); without it, combines are attributed from the
+//! log alone. Only the list of tools is built in.
+//!
 //! # Tools are not products
 //!
 //! A combine hands back the tools it used, and the client announces that with
@@ -34,8 +39,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// The book that ships with the build.
-const EMBEDDED: &str = include_str!("../assets/recipes.json");
+/// What ships with the build: the tools, and no recipes.
+const EMBEDDED: &str = include_str!("../assets/recipe-tools.json");
+
+/// A full book to read on first use, set by [`RecipeBook::use_file`].
+static EXTRA: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// One input to a recipe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,19 +139,51 @@ impl RecipeBook {
         self.skill_by_product = seen.into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
     }
 
-    /// The book compiled into this build.
+    /// Read a full book from `path` as well, if there is one there. Takes
+    /// effect only before the first [`RecipeBook::embedded`].
+    pub fn use_file(path: std::path::PathBuf) {
+        let _ = EXTRA.set(path);
+    }
+
+    /// The tools compiled into this build, plus the book [`use_file`] named
+    /// when it exists.
+    ///
+    /// [`use_file`]: RecipeBook::use_file
     pub fn embedded() -> &'static RecipeBook {
         static BOOK: OnceLock<RecipeBook> = OnceLock::new();
-        BOOK.get_or_init(|| match RecipeBook::parse(EMBEDDED) {
-            Ok(b) => b,
-            Err(e) => {
+        BOOK.get_or_init(|| {
+            let mut book = RecipeBook::parse(EMBEDDED).unwrap_or_else(|e| {
                 // Shipping a broken asset is a build-time mistake, caught by
                 // the test below; carry on without it rather than taking the
                 // daemon down over reference data.
-                eprintln!("recipes.json is not valid: {e}");
+                eprintln!("recipe-tools.json is not valid: {e}");
                 RecipeBook::default()
+            });
+            if let Some(path) = EXTRA.get().filter(|p| p.is_file()) {
+                match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|s| {
+                    RecipeBook::parse(&s).map_err(|e| e.to_string())
+                }) {
+                    Ok(extra) => book.merge(extra),
+                    Err(e) => eprintln!("{} is not a usable recipe book: {e}", path.display()),
+                }
             }
+            // The few recipes the unit tests are written against, in place of
+            // the book a user would have.
+            #[cfg(test)]
+            book.merge(RecipeBook::parse(include_str!("../assets/test-recipes.json")).unwrap());
+            book
         })
+    }
+
+    /// Fold another book's tools and recipes into this one.
+    fn merge(&mut self, other: RecipeBook) {
+        for t in other.tools {
+            if !self.tools.contains(&t) {
+                self.tools.push(t);
+            }
+        }
+        self.recipes.extend(other.recipes);
+        self.index();
     }
 
     /// The tradeskill that makes this item, when the book knows it.
@@ -179,13 +219,15 @@ impl RecipeBook {
 mod tests {
     use super::*;
 
-    /// The shipped book has to parse, since [`RecipeBook::embedded`]
-    /// deliberately does not panic when it does not.
+    /// The shipped tools have to parse, since [`RecipeBook::embedded`]
+    /// deliberately does not panic when they do not, and the build carries
+    /// no recipes of anybody else's.
     #[test]
     fn the_embedded_book_is_valid() {
-        let b = RecipeBook::parse(EMBEDDED).expect("assets/recipes.json should parse");
-        assert!(!b.recipes.is_empty());
-        for r in &b.recipes {
+        let b = RecipeBook::parse(EMBEDDED).expect("assets/recipe-tools.json should parse");
+        assert!(b.is_tool("Smithing Chisel"));
+        assert!(b.recipes.is_empty(), "recipes are not shipped");
+        for r in &RecipeBook::embedded().recipes {
             assert!(!r.product.is_empty(), "a recipe with no product: {r:?}");
             assert!(
                 crate::tradeskill::is_tradeskill(&r.skill),
