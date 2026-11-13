@@ -71,8 +71,12 @@ cargo build --release
 ```
 
 Norrlog is used daily on Linux, with the game running under Wine or CrossOver.
-It builds and its tests pass on Windows and macOS, but it has not been tried
-there by hand yet.
+
+**Windows and macOS support is experimental.** It builds and its tests pass
+on both, but it has not been tried there by hand yet. Expect rough edges, the
+overlay and spoken alerts above all. If something breaks, please
+[open an issue](https://github.com/hammackj/norrlog/issues) with your OS
+version and what you saw.
 
 ## First run
 
