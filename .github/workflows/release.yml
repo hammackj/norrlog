@@ -53,5 +53,129 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes ""
+            gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes "" || true
           gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
+
+  # macOS and Windows are built on their own runners: GPUI's macOS build
+  # needs Apple's Metal shader compiler, and Windows wants MSVC for the
+  # bundled SQLite. Both experimental: CI-built, not yet run on real
+  # hardware. The packaging follows Bard's (github.com/hammackj/bard).
+  macos:
+    name: macOS disk image
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked -p norrlog -p norrlogd
+
+      - name: Bundle Norrlog.app
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          app=dist/Norrlog.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          install -m 755 target/release/norrlog target/release/norrlogd "$app/Contents/MacOS/"
+
+          iconset="$RUNNER_TEMP/norrlog.iconset"
+          mkdir -p "$iconset"
+          for s in 16 32 128 256 512; do
+            cp "packaging/norrlog-$s.png" "$iconset/icon_${s}x${s}.png"
+            cp "packaging/norrlog-$((s * 2)).png" "$iconset/icon_${s}x${s}@2x.png"
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/norrlog.icns"
+
+          cp LICENSE README.md "$app/Contents/Resources/"
+          install -m 755 packaging/macos/uninstall.command "$app/Contents/Resources/uninstall.command"
+
+          sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+
+          # Not notarised: an ad-hoc signature only, which Apple Silicon
+          # needs to run the binaries at all.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose "$app"
+
+      - name: Disk image
+        run: |
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          cp -R dist/Norrlog.app "$stage/"
+          ln -s /Applications "$stage/Applications"
+          install -m 755 packaging/macos/uninstall.command "$stage/Uninstall Norrlog.command"
+          name="norrlog-$VERSION-aarch64-macos"
+          hdiutil create -volname "Norrlog $VERSION" -srcfolder "$stage" \
+            -fs HFS+ -format UDZO -ov "dist/$name.dmg"
+          hdiutil verify "dist/$name.dmg"
+          rm -r dist/Norrlog.app
+          (cd dist && shasum -a 256 "$name.dmg" > "$name.dmg.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Norrlog-macos-aarch64
+          path: dist/*
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes "" || true
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+  windows:
+    name: Windows installer
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked -p norrlog -p norrlogd
+
+      - name: Portable zip
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          name="norrlog-$version-x86_64-windows"
+          mkdir -p "dist/$name"
+          cp target/release/norrlog.exe target/release/norrlogd.exe README.md LICENSE "dist/$name/"
+          (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+          (cd dist && sha256sum "$name.zip" > "$name.zip.sha256")
+          echo "STAGE=dist/$name" >> "$GITHUB_ENV"
+
+      - name: Installer
+        run: |
+          choco install innosetup --no-progress -y >/dev/null
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          "$iscc" -DAppVersion="$VERSION" -DStage="$(cygpath -w "$PWD/$STAGE")" \
+            -O"$(cygpath -w "$PWD/dist")" packaging/windows/norrlog.iss
+          rm -r "$STAGE"
+          setup="norrlog-$VERSION-x86_64-windows-setup.exe"
+          test -f "dist/$setup"
+          (cd dist && sha256sum "$setup" > "$setup.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Norrlog-windows-x86_64
+          path: dist/*
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes "" || true
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

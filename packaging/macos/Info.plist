@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Norrlog.app's Info.plist. The release workflow fills in @VERSION@.
+     Contents/MacOS holds both norrlog and norrlogd; the app starts the
+     daemon from beside itself. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Norrlog</string>
+    <key>CFBundleDisplayName</key>
+    <string>Norrlog</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.hammackj.norrlog</string>
+    <key>CFBundleExecutable</key>
+    <string>norrlog</string>
+    <key>CFBundleIconFile</key>
+    <string>norrlog</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.games</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright (c) 2026 hammackj. MIT licence.</string>
+</dict>
+</plist>

@@ -74,9 +74,18 @@ To add it to your desktop's menu, run `packaging/install-launcher.sh`.
 
 Norrlog is used daily on Linux, with the game running under Wine or CrossOver.
 
-**Windows and macOS support is experimental.** It builds and its tests pass
-on both, but it has not been tried there by hand yet. Expect rough edges, the
-overlay and spoken alerts above all. If something breaks, please
+**Windows and macOS support is experimental.** The app compiles for both,
+the release workflow packages a Windows installer and a macOS disk image, and
+neither has been run on real hardware yet. Expect rough edges, the overlay
+and spoken alerts above all. Neither package is code-signed:
+
+- **Windows:** SmartScreen may ask you to confirm. Choose **More info**, then
+  **Run anyway**.
+- **macOS (Apple Silicon):** the app is not notarised. The first time, right-click
+  it and choose **Open**, or run
+  `xattr -dr com.apple.quarantine /Applications/Norrlog.app`.
+
+If something breaks, please
 [open an issue](https://github.com/hammackj/norrlog/issues) with your OS
 version and what you saw.
 
