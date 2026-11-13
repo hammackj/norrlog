@@ -107,7 +107,7 @@ impl Follower {
         }
 
         // Bisect on byte offset for the first line at or after the cutoff.
-        let mut find = |file: &mut File| -> anyhow::Result<u64> {
+        let find = |file: &mut File| -> anyhow::Result<u64> {
             let (mut lo, mut hi) = (0u64, len);
             while lo < hi {
                 let mid = lo + (hi - lo) / 2;
