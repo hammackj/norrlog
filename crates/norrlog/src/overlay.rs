@@ -764,13 +764,13 @@ impl OverlayView {
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             format!(
-                "{} dps · {} fighting · {fights} fights",
+                "**{}** dps · {} fighting · {fights} fights",
                 num(Some(f(enc, "your_dps"))),
                 dur(f(enc, "duration"))
             )
         } else {
             format!(
-                "{} dps · {}",
+                "**{}** dps · {}",
                 num(Some(f(enc, "your_dps"))),
                 dur(f(enc, "duration"))
             )
@@ -898,13 +898,13 @@ impl OverlayView {
         let rate = f(x, "rate_per_hour");
         let mut bits = Vec::new();
         if !capped && rate > 0. {
-            bits.push(format!("{rate:.1} %/hr"));
+            bits.push(format!("**{rate:.1}** %/hr"));
         }
         if f(x, "aa_per_hour") > 0. {
-            bits.push(format!("{:.1} AA/hr", f(x, "aa_per_hour")));
+            bits.push(format!("**{:.1}** AA/hr", f(x, "aa_per_hour")));
         }
         if !capped && rate > 0. {
-            bits.push(format!("{}/level", long_dur(100. / rate * 3600., true)));
+            bits.push(format!("**{}**/level", long_dur(100. / rate * 3600., true)));
         }
         let mut rows = Vec::new();
         if !capped {
@@ -1128,7 +1128,14 @@ impl OverlayView {
                         } else {
                             (left / total).clamp(0., 1.)
                         };
-                        Some((b.clone(), left, share))
+                        let mut b = b.clone();
+                        // Past its listed time the count runs up, not down:
+                        // the page's tick adds a second to `overrun` as it
+                        // takes one off a timer.
+                        if let Some(o) = b.get("overrun").and_then(Value::as_f64) {
+                            b["overrun"] = serde_json::json!((o + gone).floor());
+                        }
+                        Some((b, left, share))
                     })
                     .take(self.opts.buffs)
                     .collect()
@@ -1192,10 +1199,11 @@ impl OverlayView {
             );
         }
         let meta = if held.is_empty() {
-            "no charm".to_string()
+            // Failures and nothing held: the charm broke or never took.
+            "!no charm".to_string()
         } else {
             let breaks = c.get("breaks").and_then(Value::as_u64).unwrap_or(0);
-            let up = format!("{:.0}% uptime", f(c, "uptime") * 100.);
+            let up = format!("**{:.0}%** uptime", f(c, "uptime") * 100.);
             if breaks == 0 {
                 up
             } else {
@@ -1224,7 +1232,7 @@ impl OverlayView {
         let covered = f(enc, "duration").clamp(1., DPS_ROLL as f64);
         let peak = buckets.iter().copied().fold(1., f64::max);
         let meta = format!(
-            "{} now · {} avg · peak {}",
+            "**{}** now · {} avg · peak {}",
             num(Some((rolled / covered).round())),
             num(Some(f(enc, "your_dps"))),
             num(Some(peak))
@@ -1292,7 +1300,7 @@ impl OverlayView {
         Some(panel(
             "Your damage".into(),
             Some(format!(
-                "{} dealt · {} dps",
+                "**{}** dealt · {} dps",
                 num(Some(total)),
                 num(Some(f(enc, "your_dps")))
             )),
@@ -1337,7 +1345,11 @@ impl OverlayView {
             .collect();
         let worst = f(d, "biggest_hit");
         let meta = if worst > 0. {
-            format!("{} taken · worst {}", num(Some(total)), num(Some(worst)))
+            format!(
+                "**{}** taken · worst {}",
+                num(Some(total)),
+                num(Some(worst))
+            )
         } else {
             format!("{} taken", num(Some(total)))
         };
@@ -1674,11 +1686,45 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
                         .text_color(gpui::rgb(if idle { DIM } else { TEXT }))
                         .child(title),
                 )
-                .children(
-                    meta.map(|m| div().text_size(u(11.)).text_color(gpui::rgb(DIM)).child(m)),
-                ),
+                .children(meta.map(|m| {
+                    div()
+                        .text_size(u(11.))
+                        .text_color(gpui::rgb(DIM))
+                        .child(meta_text(&m))
+                })),
         )
         .children(rows)
+}
+
+/// A panel's meta line, with the figures marked `**N**` set bold in the
+/// accent, as the page's `.meta b` does: the number the panel is about reads
+/// first. A line that starts with `!` is a warning, drawn whole in the enemy
+/// colour as the page's `.offline` meta is.
+fn meta_text(m: &str) -> StyledText {
+    if let Some(warning) = m.strip_prefix('!') {
+        let style = HighlightStyle {
+            color: Some(gpui::rgb(ENEMY).into()),
+            ..Default::default()
+        };
+        return StyledText::new(warning.to_string()).with_highlights([(0..warning.len(), style)]);
+    }
+    let mut text = String::new();
+    let mut marks = Vec::new();
+    for (i, part) in m.split("**").enumerate() {
+        let start = text.len();
+        text.push_str(part);
+        if i % 2 == 1 && !part.is_empty() {
+            marks.push((
+                start..text.len(),
+                HighlightStyle {
+                    color: Some(gpui::rgb(ACCENT).into()),
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    StyledText::new(text).with_highlights(marks)
 }
 
 /// A bar row: the share as a filled background, the name, and its numbers.
@@ -1725,18 +1771,42 @@ fn timer_row(b: &Value, left: f64, share: f64, bar: Rgba, time: u32) -> Div {
         .get("confidence")
         .and_then(Value::as_f64)
         .is_some_and(|c| c < 0.8);
-    let name = format!("{}{}", s(b, "name"), if unsure { " ?" } else { "" });
+    // Coloured by what it does, as the page's `.cat-*` rules colour the name:
+    // a heal green, a buff or cure in the accent, anything else plain. The
+    // "?" is in the accent too, so a guess is marked rather than hidden.
+    let colour = match s(b, "category") {
+        "heal" => HEAL,
+        "buff" | "cure" => ACCENT,
+        _ => TEXT,
+    };
+    let base = s(b, "name").to_string();
+    let mut marks = Vec::new();
+    let mut text = base.clone();
+    if unsure {
+        text.push_str(" ?");
+        marks.push((
+            base.len() + 1..text.len(),
+            HighlightStyle {
+                color: Some(gpui::rgb(ACCENT).into()),
+                font_weight: Some(FontWeight::BOLD),
+                ..Default::default()
+            },
+        ));
+    }
+    let name = div()
+        .text_color(gpui::rgb(colour))
+        .child(StyledText::new(text).with_highlights(marks));
     // Past the time the spell file gives it, and still taken to be on:
     // how long past, dimmed, rather than a timer stuck at zero.
     let overrun = b.get("overrun").and_then(Value::as_f64);
-    let (t, colour) = if flag(b, "permanent") {
+    let (t, time_colour) = if flag(b, "permanent") {
         ("∞".to_string(), time)
     } else if let Some(o) = overrun {
         (format!("+{}", long_dur(o, true)), DIM)
     } else {
         (dur(left), time)
     };
-    bar_row(div().child(name), vec![(t, colour)], share, bar, 1.)
+    bar_row(name, vec![(t, time_colour)], share, bar, 1.)
 }
 
 fn empty(text: &str) -> AnyElement {

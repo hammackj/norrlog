@@ -272,7 +272,8 @@ pub fn with_panels(options: &str, panels: &[&str]) -> String {
 const OPTIONS_HINT: &str = "The same settings as text, plus what the tickboxes do not cover: rows, buffs, scale, \
     self=1, enemies=0, crit=0, idle=1, scope=session or scope=zone.";
 const BOUNDS_HINT: &str = "Where the overlay sits and how wide it is. Its height follows what it shows. A position \
-    on no display is moved onto the one the app is on when the overlay opens.";
+    on no display, after a monitor is unplugged, say, is moved onto your main display when the overlay \
+    opens.";
 const CLICK_HINT: &str =
     "With click-through on, clicks go to the game underneath. Off, the overlay takes them.";
 const CHARM_HINT: &str = "A second overlay, placed apart from the first. Its default, panels=charm, shows charm \
