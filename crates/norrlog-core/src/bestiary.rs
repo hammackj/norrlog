@@ -517,6 +517,22 @@ impl Bestiary {
         out
     }
 
+    /// Kills of a creature at one mode and tier, across every zone.
+    ///
+    /// The denominator a per-tier drop rate needs: the drop tracker counts
+    /// kills by name alone, which pools an Awakened goblin with a Refined
+    /// one.
+    pub fn kills_in_tier(&self, npc: &str, mode: Mode, difficulty: u8) -> u64 {
+        let name = canonical_npc(npc).trim();
+        self.npcs
+            .iter()
+            .filter(|(k, _)| {
+                k.mode == mode && k.difficulty == difficulty && k.name.eq_ignore_ascii_case(name)
+            })
+            .map(|(_, p)| p.kills)
+            .sum()
+    }
+
     pub fn report(&self) -> BestiaryReport {
         let mut npcs: Vec<NpcProfile> = self
             .npcs

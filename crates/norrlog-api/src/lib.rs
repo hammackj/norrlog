@@ -694,6 +694,18 @@ pub struct LootSource {
     pub rate: Option<f64>,
     pub zones: Vec<String>,
     pub last: i64,
+    /// The instance mode this row is about: `open`, `solo`, `group` or
+    /// `instance`, or empty when the drop happened outside any fight with a
+    /// zone, which leaves its tier unknown.
+    ///
+    /// A creature at two tiers is two rows. Its loot and its kill count both
+    /// differ between them, and one rate over the pair would describe
+    /// neither. Empty from older daemons.
+    #[serde(default)]
+    pub mode: String,
+    /// The instance tier, 0 in the open world.
+    #[serde(default)]
+    pub difficulty: u8,
 }
 
 /// A looted item aggregated across the log.

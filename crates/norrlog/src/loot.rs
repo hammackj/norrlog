@@ -532,7 +532,10 @@ impl LootView {
                     SOURCE_COLS,
                     vec![
                         v_flex()
-                            .child(s.mob.clone())
+                            .child(h_flex().gap_1().child(s.mob.clone()).when_some(
+                                crate::bestiary::tier_label(&s.mode, s.difficulty),
+                                |d, t| d.child(table::tag(t, ACCENT)),
+                            ))
                             .child(
                                 div()
                                     .text_xs()

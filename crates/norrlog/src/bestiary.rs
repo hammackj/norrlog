@@ -21,7 +21,7 @@ use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{Sizable, h_flex, v_flex};
-use norrlog_api::{BestiaryReport, MeleeAgainst, Mode, NpcProfile, TIER_NAMES};
+use norrlog_api::{BestiaryReport, MeleeAgainst, NpcProfile, TIER_NAMES};
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(30);
@@ -415,27 +415,37 @@ fn entry_key(n: &NpcProfile) -> String {
 /// The zone, and for an instance its mode and tier: "Nagafen's Lair · Solo,
 /// Refined". The world zone is just its name.
 fn place(n: &NpcProfile) -> String {
-    let mode = match n.mode {
-        Mode::Open => None,
-        Mode::Solo => Some("Solo"),
-        Mode::Group => Some("Group"),
-        Mode::Instance => Some("Instance"),
-    };
-    let tier = TIER_NAMES
-        .iter()
-        .find(|t| t.0 == n.difficulty)
-        .map(|t| t.1.to_string())
-        .or_else(|| (n.difficulty > 0).then(|| format!("tier {}", n.difficulty)));
     let zone = if n.zone.is_empty() {
         "Unknown zone"
     } else {
         n.zone.as_str()
     };
+    match tier_label(n.mode.as_str(), n.difficulty) {
+        Some(t) => format!("{zone} · {t}"),
+        None => zone.to_string(),
+    }
+}
+
+/// An instance's mode and tier as words, "Solo, Refined"; `None` for the
+/// open world, or for a mode nobody recorded. Shared with the loot drill-down,
+/// which splits its sources the same way.
+pub(crate) fn tier_label(mode: &str, difficulty: u8) -> Option<String> {
+    let mode = match mode {
+        "solo" => Some("Solo"),
+        "group" => Some("Group"),
+        "instance" => Some("Instance"),
+        _ => None,
+    };
+    let tier = TIER_NAMES
+        .iter()
+        .find(|t| t.0 == difficulty)
+        .map(|t| t.1.to_string())
+        .or_else(|| (difficulty > 0).then(|| format!("tier {difficulty}")));
     match (mode, tier) {
-        (None, None) => zone.to_string(),
-        (Some(m), None) => format!("{zone} · {m}"),
-        (None, Some(t)) => format!("{zone} · {t}"),
-        (Some(m), Some(t)) => format!("{zone} · {m}, {t}"),
+        (None, None) => None,
+        (Some(m), None) => Some(m.to_string()),
+        (None, Some(t)) => Some(t),
+        (Some(m), Some(t)) => Some(format!("{m}, {t}")),
     }
 }
 

@@ -482,7 +482,9 @@ pub struct Engine {
     ///
     /// The parsed place name, not the client's label, so it can be compared
     /// with a list of zones from anywhere else. See [`Snapshot::zone_place`].
-    zone_log: Vec<(i64, String)>,
+    /// The label rides along for what the place name drops: the instance's
+    /// mode and tier.
+    zone_log: Vec<(i64, String, String)>,
     /// Typed events for `/api/events`, drained after each batch. Only live
     /// lines add to it: see [`Engine::emit`].
     events: VecDeque<norrlog_api::Event>,
@@ -1527,8 +1529,8 @@ impl Engine {
                     zone: (!place.is_empty()).then(|| place.clone()),
                     raw: zone.clone(),
                 });
-                if self.zone_log.last().map(|(_, z)| z.as_str()) != Some(place.as_str()) {
-                    self.zone_log.push((entry.timestamp, place));
+                if self.zone_log.last().map(|(_, _, l)| l.as_str()) != Some(zone.as_str()) {
+                    self.zone_log.push((entry.timestamp, place, zone.clone()));
                 }
                 // Everything the bestiary records is keyed on where you are,
                 // and a zone line also ends any fight still in progress.
@@ -2251,8 +2253,17 @@ impl Engine {
         self.zone_log
             .iter()
             .rev()
-            .find(|(at, _)| *at <= ts)
-            .map(|(_, z)| z.clone())
+            .find(|(at, _, _)| *at <= ts)
+            .map(|(_, z, _)| z.clone())
+    }
+
+    /// [`Engine::zone_at`] as the client wrote it, mode and tier included.
+    fn zone_label_at(&self, ts: i64) -> Option<String> {
+        self.zone_log
+            .iter()
+            .rev()
+            .find(|(at, _, _)| *at <= ts)
+            .map(|(_, _, l)| l.clone())
     }
 
     /// Whether a named effect wearing off a creature ends its charm.
@@ -3001,6 +3012,8 @@ impl Engine {
     pub fn loot_detail(&self, item: &str) -> Option<LootDetail> {
         use norrlog_core::encounter::LootFate;
         use std::collections::HashMap;
+        /// An instance mode and tier, or `None` where no zone was known.
+        type Tier = Option<(norrlog_core::zone::Mode, u8)>;
 
         let wanted = item.to_lowercase();
         let drops: Vec<_> = self
@@ -3024,13 +3037,25 @@ impl Engine {
         // Deaths per creature in your fights, keyed with the article stripped
         // so "a scaled wolf tracker" from a death line meets the drop
         // tracker's "scaled wolf tracker". Built once, not per source.
+        //
+        // Counted per tier as well as in all, because a source row is per
+        // tier: an Awakened and a Refined goblin are different creatures with
+        // different loot, and the rate for each needs its own kills.
+        let tier_of = |zone: Option<&String>| {
+            zone.map(|z| {
+                let z = norrlog_core::zone::Zone::parse(z);
+                (z.mode, z.difficulty)
+            })
+        };
         let mut deaths: HashMap<String, u64> = HashMap::new();
+        let mut deaths_in: HashMap<(String, Tier), u64> = HashMap::new();
         for enc in self.encounters.iter().chain(self.tracker.current()) {
+            let tier = tier_of(enc.zone.as_ref());
             for d in &enc.deaths {
                 if !d.victim.eq_ignore_ascii_case(&self.player) {
-                    *deaths
-                        .entry(norrlog_core::drops::canonical_npc(&d.victim).to_lowercase())
-                        .or_default() += 1;
+                    let key = norrlog_core::drops::canonical_npc(&d.victim).to_lowercase();
+                    *deaths_in.entry((key.clone(), tier)).or_default() += 1;
+                    *deaths.entry(key).or_default() += 1;
                 }
             }
         }
@@ -3043,17 +3068,18 @@ impl Engine {
         // dropped somewhere, and a zone count of 0 beside a creature row
         // naming the zone contradicted itself.
         let mut zones: HashMap<String, u64> = HashMap::new();
-        let mut left_behind: HashMap<String, (String, u64, Vec<String>)> = HashMap::new();
+        let mut left_behind: HashMap<(String, Tier), (String, u64, Vec<String>)> = HashMap::new();
         for l in &left {
             if let Some(src) = &l.source {
+                let zone = self.zone_label_at(l.timestamp);
                 let e = left_behind
-                    .entry(norrlog_core::drops::canonical_npc(src).to_lowercase())
+                    .entry((
+                        norrlog_core::drops::canonical_npc(src).to_lowercase(),
+                        tier_of(zone.as_ref()),
+                    ))
                     .or_insert_with(|| (src.clone(), 0, Vec::new()));
                 e.1 += 1;
-                if let Some(z) = self
-                    .encounter_containing(l.timestamp)
-                    .and_then(|e| e.zone.clone())
-                {
+                if let Some(z) = zone {
                     *zones.entry(z.clone()).or_default() += 1;
                     if !e.2.contains(&z) {
                         e.2.push(z);
@@ -3062,7 +3088,7 @@ impl Engine {
             }
         }
 
-        let mut by_mob: HashMap<String, LootSource> = HashMap::new();
+        let mut by_mob: HashMap<(String, Tier), LootSource> = HashMap::new();
         let mut stacks: HashMap<u64, u64> = HashMap::new();
         let (mut kept, mut sold, mut stored, mut transmuted) = (0u64, 0u64, 0u64, 0u64);
         let (mut sold_total, mut sales, mut best_sale) = (0u64, 0u64, 0u64);
@@ -3080,9 +3106,9 @@ impl Engine {
                 sales += 1;
                 best_sale = best_sale.max(c);
             }
-            let zone = self
-                .encounter_containing(l.timestamp)
-                .and_then(|e| e.zone.clone());
+            // The zone you were in, whether or not a fight was open: the
+            // last fight's corpse is looted before that fight closes.
+            let zone = self.zone_label_at(l.timestamp);
             if let Some(z) = &zone {
                 *zones.entry(z.clone()).or_default() += 1;
             }
@@ -3090,8 +3116,9 @@ impl Engine {
                 // Keyed the way `left_behind` and `kills` are, article
                 // stripped, or a creature both looted and left on would meet
                 // itself as two rows.
+                let tier = tier_of(zone.as_ref());
                 let e = by_mob
-                    .entry(norrlog_core::drops::canonical_npc(src).to_lowercase())
+                    .entry((norrlog_core::drops::canonical_npc(src).to_lowercase(), tier))
                     .or_insert_with(|| LootSource {
                         mob: src.clone(),
                         drops: 0,
@@ -3101,6 +3128,8 @@ impl Engine {
                         rate: None,
                         zones: Vec::new(),
                         last: 0,
+                        mode: String::new(),
+                        difficulty: 0,
                     });
                 e.drops += 1;
                 e.quantity += l.quantity;
@@ -3132,6 +3161,8 @@ impl Engine {
                         // left on the corpse.
                         zones: seen_in.clone(),
                         last: 0,
+                        mode: String::new(),
+                        difficulty: 0,
                     },
                 );
             }
@@ -3139,7 +3170,7 @@ impl Engine {
 
         let mut sources: Vec<LootSource> = by_mob
             .into_iter()
-            .map(|(key, mut s)| {
+            .map(|((key, tier), mut s)| {
                 // The larger of two counts that see different kills. Deaths
                 // in your fights include a groupmate's kill you never hit,
                 // whose corpse you could still loot; the drop tracker counts
@@ -3149,16 +3180,33 @@ impl Engine {
                 // first runs larger (108 against 75 for one skeleton), so
                 // taking the tracker's alone would shrink the denominator and
                 // inflate the figure. The larger keeps it a floor.
-                s.kills = deaths
-                    .get(key.as_str())
-                    .copied()
-                    .unwrap_or(0)
-                    .max(self.drops.kills_of(&key));
+                //
+                // Per tier where the tier is known, from the bestiary, which
+                // counts kills by zone variant as the tracker does by name.
+                // Where it is not (a drop outside any fight with a zone), the
+                // row is about the creature at large and takes the pooled
+                // counts, as every row did before tiers were split.
+                s.kills = match tier {
+                    Some((mode, difficulty)) => deaths_in
+                        .get(&(key.clone(), tier))
+                        .copied()
+                        .unwrap_or(0)
+                        .max(self.bestiary.kills_in_tier(&key, mode, difficulty)),
+                    None => deaths
+                        .get(key.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .max(self.drops.kills_of(&key)),
+                };
+                if let Some((mode, difficulty)) = tier {
+                    s.mode = mode.as_str().to_string();
+                    s.difficulty = difficulty;
+                }
                 // The times you walked away from it are in the drop tracker,
                 // not in the loot log — the loot log only ever records what
                 // you actually took.
                 s.left = left_behind
-                    .get(norrlog_core::drops::canonical_npc(&key))
+                    .get(&(key.clone(), tier))
                     .map(|(_, n, _)| *n)
                     .unwrap_or(0);
                 s.rate = (s.kills > 0).then(|| (s.drops + s.left) as f64 / s.kills as f64);
@@ -4797,6 +4845,40 @@ mod tests {
             .collect();
         assert_eq!(rows, [("a black wolf", 1, 1, 2)]);
         assert_eq!(d.sources[0].rate, Some(1.0), "two sightings over two kills");
+    }
+
+    /// One creature at two tiers is two rows, each over its own kills. The
+    /// name is the same and the creature is not: pooling them gave one rate
+    /// that described neither tier.
+    #[test]
+    fn a_creature_at_two_tiers_is_two_rows() {
+        let mut e = Engine::new("Tharn".to_string(), SpellDb::empty());
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have entered Nagafen's Lair - Solo 1 (Awakened).",
+                "[Tue Jul 28 14:00:01 2026] You slash a fire goblin for 100 points of damage.",
+                "[Tue Jul 28 14:00:02 2026] You have slain a fire goblin!",
+                "[Tue Jul 28 14:00:03 2026] --You have looted a Goblin Ear from a fire goblin's corpse.--",
+                "[Tue Jul 28 14:00:10 2026] You slash a fire goblin for 100 points of damage.",
+                "[Tue Jul 28 14:00:11 2026] You have slain a fire goblin!",
+                "[Tue Jul 28 15:00:00 2026] You have entered Nagafen's Lair - Solo 4 (Refined).",
+                "[Tue Jul 28 15:00:01 2026] You slash a fire goblin for 100 points of damage.",
+                "[Tue Jul 28 15:00:02 2026] You have slain a fire goblin!",
+                "[Tue Jul 28 15:00:03 2026] --You have looted a Goblin Ear from a fire goblin's corpse.--",
+            ],
+        );
+        let d = e.loot_detail("Goblin Ear").expect("looted twice");
+        let mut rows: Vec<(String, u8, u64, u64)> = d
+            .sources
+            .iter()
+            .map(|s| (s.mode.clone(), s.difficulty, s.drops, s.kills))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [("solo".to_string(), 1, 1, 2), ("solo".to_string(), 4, 1, 1)]
+        );
     }
 
     /// Grouped with a mercenary, most kills are finished by somebody else on
