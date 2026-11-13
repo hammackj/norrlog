@@ -94,6 +94,8 @@ pub struct SettingsView {
     build: Option<String>,
     cfg_status: String,
     exp_status: String,
+    /// Effects on you now and those already marked, with their marks.
+    marks: Vec<MarkRow>,
     /// Why the last theme or scale change could not be saved.
     display_err: Option<String>,
     /// Bumped by every status message, so a timer clears only its own.
@@ -180,6 +182,7 @@ impl SettingsView {
             build: None,
             cfg_status: String::new(),
             exp_status: String::new(),
+            marks: Vec::new(),
             display_err: None,
             cfg_gen: 0,
             exp_gen: 0,
@@ -238,9 +241,11 @@ impl SettingsView {
             self.load_history(cx);
             if self.visible {
                 self.load_status(cx);
+                self.load_marks(cx);
             }
         } else {
             self.logs = None;
+            self.marks.clear();
         }
         cx.notify();
     }
@@ -253,7 +258,31 @@ impl SettingsView {
             self.load_logs(cx);
             self.load_history(cx);
             self.load_status(cx);
+            self.load_marks(cx);
         }
+    }
+
+    /// What is on you now, and what is marked: a mark is set while the
+    /// effect is up, and kept after it fades.
+    fn load_marks(&mut self, cx: &mut Context<Self>) {
+        let Some(api) = self.api.clone() else { return };
+        self.track(cx.spawn(async move |this, cx| {
+            let snap = api.get::<serde_json::Value>("/api/snapshot".into()).await;
+            let marks = api.get::<serde_json::Value>("/api/buff-marks".into()).await;
+            let _ = this.update(cx, |v, cx| {
+                v.marks = mark_rows(snap.ok().as_ref(), marks.ok().as_ref());
+                cx.notify();
+            });
+        }));
+    }
+
+    fn set_mark(&mut self, name: String, mark: Option<&'static str>, cx: &mut Context<Self>) {
+        let Some(api) = self.api.clone() else { return };
+        self.track(cx.spawn(async move |this, cx| {
+            let body = serde_json::json!({ "name": name, "mark": mark });
+            let _ = api.post_json("/api/buff-marks".into(), body).await;
+            let _ = this.update(cx, |v, cx| v.load_marks(cx));
+        }));
     }
 
     fn track(&mut self, t: Task<()>) {
@@ -676,6 +705,75 @@ const THEME_HINT: &str = "The default matches eqldb and hammackj.com, so the too
     this window; the overlay keeps its own palette, tuned against game footage rather than a desktop.";
 const SCALE_HINT: &str =
     "Scales the whole window, text and spacing alike, to taste. Applies immediately.";
+const MARKS_HINT: &str = "How the overlay lists an effect. Auto leaves it to detection, \
+which recognises an aura or song only after it has pulsed a few times. Aura lists it \
+with auras from the start, never counting down; Until zoned shows it as permanent. \
+Effects on you now are bright; marked ones not on you are dim.";
+
+/// One effect in the marks list.
+#[derive(Debug, Clone, PartialEq)]
+struct MarkRow {
+    name: String,
+    /// "aura", "permanent", or none.
+    mark: Option<String>,
+    /// On you right now.
+    live: bool,
+}
+
+/// Effects on you now (buffs and auras, as the snapshot has them), then
+/// marked ones that are not, each named once.
+fn mark_rows(snap: Option<&serde_json::Value>, marks: Option<&serde_json::Value>) -> Vec<MarkRow> {
+    let marked: Vec<(String, String)> = marks
+        .and_then(|m| m.get("marks"))
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some((
+                        m.get("name")?.as_str()?.to_string(),
+                        m.get("mark")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mark_of = |name: &str| {
+        marked
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, m)| m.clone())
+    };
+    let mut rows: Vec<MarkRow> = Vec::new();
+    for key in ["auras", "buffs"] {
+        let Some(list) = snap.and_then(|s| s.get(key)).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for b in list {
+            let Some(name) = b.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            if rows.iter().any(|r| r.name.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            rows.push(MarkRow {
+                name: name.to_string(),
+                mark: mark_of(name),
+                live: true,
+            });
+        }
+    }
+    for (name, mark) in &marked {
+        if !rows.iter().any(|r| r.name.eq_ignore_ascii_case(name)) {
+            rows.push(MarkRow {
+                name: name.clone(),
+                mark: Some(mark.clone()),
+                live: false,
+            });
+        }
+    }
+    rows
+}
+
 fn field(label: &str) -> Div {
     v_flex().gap_1().child(
         div()
@@ -699,6 +797,7 @@ impl Render for SettingsView {
                         v_flex()
                             .gap_3()
                             .child(self.render_display(cx))
+                            .child(self.render_marks(cx))
                             .child(self.render_export(cx))
                             .child(self.overlay.clone()),
                     ))
@@ -1103,6 +1202,56 @@ impl SettingsView {
             )))
     }
 
+    /// Declare an effect an aura or until-zoned, for the overlay's buff
+    /// panels. Detection gets there on its own, but late: a song is not known
+    /// for an aura until it has pulsed a few times.
+    fn render_marks(&self, cx: &mut Context<Self>) -> Div {
+        let mut list = v_flex().gap_1();
+        if self.marks.is_empty() {
+            list = list.child(hint("Nothing on you, and nothing marked."));
+        }
+        for (i, row) in self.marks.iter().enumerate() {
+            let choice = |id: &str, label: &'static str, value: Option<&'static str>| {
+                let name = row.name.clone();
+                let on = row.mark.as_deref() == value;
+                // The ghost style's selected state is too faint to read as
+                // "this one"; the chosen mark is drawn filled.
+                Button::new(SharedString::from(format!("mark-{id}-{i}")))
+                    .label(label)
+                    .xsmall()
+                    .when(on, |b| b.primary())
+                    .when(!on, |b| b.ghost())
+                    .on_click(cx.listener(move |v, _, _, cx| v.set_mark(name.clone(), value, cx)))
+            };
+            list = list.child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(hex(if row.live { TEXT } else { MUTED }))
+                            .child(row.name.clone()),
+                    )
+                    .child(choice("a", "Aura", Some("aura")))
+                    .child(choice("p", "Until zoned", Some("permanent")))
+                    .child(choice("n", "Auto", None)),
+            );
+        }
+        card("Buff marks")
+            .child(list)
+            .child(hint(MARKS_HINT))
+            .child(
+                h_flex().child(
+                    Button::new("marks-reload")
+                        .label("Refresh")
+                        .xsmall()
+                        .on_click(cx.listener(|v, _, _, cx| v.load_marks(cx))),
+                ),
+            )
+    }
+
     fn render_export(&self, cx: &mut Context<Self>) -> Div {
         let this = cx.entity().downgrade();
         let all = format!(
@@ -1236,5 +1385,41 @@ mod tests {
         for (v, want) in [(1.3f32, 1.3f64), (0.85, 0.85), (1.15, 1.15), (1.5, 1.5)] {
             assert_eq!(scale_json(v), want);
         }
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    // Not `super::*`: that brings in gpui's own `test` attribute.
+    use super::mark_rows;
+
+    /// On you now first (auras, then buffs), each once, with its mark; then
+    /// what is marked but not up, dim.
+    #[test]
+    fn rows_are_what_is_on_you_then_what_is_marked() {
+        let snap: serde_json::Value = serde_json::from_str(
+            r#"{"auras": [{"name": "Aura of the Muse"}],
+                "buffs": [{"name": "Chant of Battle"}, {"name": "aura of the muse"}]}"#,
+        )
+        .unwrap();
+        let marks: serde_json::Value = serde_json::from_str(
+            r#"{"marks": [{"name": "Chant of Battle", "mark": "aura"},
+                          {"name": "Illusion: Skeleton", "mark": "permanent"}]}"#,
+        )
+        .unwrap();
+        let rows = mark_rows(Some(&snap), Some(&marks));
+        let got: Vec<(&str, Option<&str>, bool)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.mark.as_deref(), r.live))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Aura of the Muse", None, true),
+                ("Chant of Battle", Some("aura"), true),
+                ("Illusion: Skeleton", Some("permanent"), false),
+            ]
+        );
+        assert!(mark_rows(None, None).is_empty());
     }
 }
