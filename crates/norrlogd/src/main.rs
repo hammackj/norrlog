@@ -458,6 +458,9 @@ fn main() -> anyhow::Result<()> {
     // Before the runtime exists, so that nothing closed here is one of its.
     #[cfg(unix)]
     close_inherited_fds();
+    // Arguments first: `--help` or a bad one exits before anything below
+    // resolves a path, and with it moves an old config directory.
+    let cfg = parse_args();
     // The recipe book is not shipped; one placed in the config directory is
     // read on first use.
     if let Some(p) = paths::config_file("recipes.json") {
@@ -466,7 +469,7 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run(cfg))
 }
 
 /// Close every descriptor this process was handed beyond stdin, stdout and
@@ -499,8 +502,7 @@ fn close_inherited_fds() {
     }
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cfg = parse_args();
+async fn run(cfg: Config) -> anyhow::Result<()> {
     // Before anything slow: a parent that dies during a long initial parse
     // should still take this with it.
     if cfg.exit_with_parent {
