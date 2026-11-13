@@ -68,7 +68,7 @@ use crate::drops::canonical_npc;
 use crate::game::Game;
 use crate::zone::{Mode, Zone};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A creature's body type, where the log has proved one.
 ///
@@ -300,8 +300,53 @@ pub struct NpcProfile {
     /// cast, which is "no casts recorded", not "casts nothing".
     #[serde(default)]
     pub casts: Vec<NpcCast>,
+    /// Every level a consider showed it at, lowest first, with how often.
+    ///
+    /// A consider line names no zone, so this belongs to the name rather than
+    /// to this place: every profile of one creature carries the same levels.
+    /// More than one level is a creature that spawns at several, or a name
+    /// several creatures share. Empty when nobody considered it, which says
+    /// nothing about its level. Filled from the record by
+    /// [`attach_considers`], never by the bestiary itself.
+    #[serde(default)]
+    pub considered: Vec<ConsideredLevel>,
+    /// The client marked it rare on some consider.
+    #[serde(default)]
+    pub rare: bool,
     pub first_seen: i64,
     pub last_seen: i64,
+}
+
+/// One level a consider showed a creature at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsideredLevel {
+    pub level: u32,
+    pub times: u64,
+}
+
+/// What considers said about a creature: the levels seen, with counts, and
+/// whether one was marked rare. Keyed for [`attach_considers`] by
+/// [`consider_key`].
+pub type ConsiderSeen = HashMap<String, (BTreeMap<u32, u64>, bool)>;
+
+/// The join key between a consider and a profile: the name with the article
+/// off, lower-cased. The consider record lower-cases names that the bestiary
+/// keeps as written, so neither side's own key matches the other's.
+pub fn consider_key(name: &str) -> String {
+    crate::drops::canonical_npc(name).to_lowercase()
+}
+
+/// Give each profile the levels its creature was considered at.
+pub fn attach_considers(npcs: &mut [NpcProfile], seen: &ConsiderSeen) {
+    for p in npcs {
+        if let Some((levels, rare)) = seen.get(&consider_key(&p.identity())) {
+            p.considered = levels
+                .iter()
+                .map(|(&level, &times)| ConsideredLevel { level, times })
+                .collect();
+            p.rare = *rare;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -432,6 +477,8 @@ impl Bestiary {
             max_hit: 0,
             melee: Vec::new(),
             casts: Vec::new(),
+            considered: Vec::new(),
+            rare: false,
             first_seen: at,
             last_seen: at,
         })
@@ -1156,6 +1203,38 @@ mod tests {
         assert_eq!((tharn.swings, tharn.hits, tharn.level), (1, 1, 50));
         // The creature's own record still spans everyone.
         assert_eq!(p.max_hit, 45);
+    }
+
+    /// A consider record keeps names lower-cased and with the article; the
+    /// bestiary keeps them as printed. The join meets in the middle, and a
+    /// creature nobody considered stays without a level.
+    #[test]
+    fn considers_join_the_profile_by_its_identity() {
+        let mut a = Bestiary::new(Game::EverQuestLegends, "Tharn");
+        a.on_zone("Befallen");
+        a.on_npc_cast(1, "A gnoll scout", "Gnoll Howl", CastSeen::Announced, true);
+        a.on_npc_cast(1, "Lord Nagafen", "Lava Breath", CastSeen::Announced, true);
+        let mut npcs = a.report().npcs;
+        let mut seen = ConsiderSeen::new();
+        seen.insert(
+            consider_key("a gnoll scout"),
+            (BTreeMap::from([(4, 2), (5, 1)]), true),
+        );
+        attach_considers(&mut npcs, &seen);
+        let scout = npcs.iter().find(|p| p.identity() == "gnoll scout").unwrap();
+        assert_eq!(
+            scout.considered,
+            vec![
+                ConsideredLevel { level: 4, times: 2 },
+                ConsideredLevel { level: 5, times: 1 }
+            ]
+        );
+        assert!(scout.rare);
+        let naggy = npcs
+            .iter()
+            .find(|p| p.identity() == "Lord Nagafen")
+            .unwrap();
+        assert!(naggy.considered.is_empty() && !naggy.rare);
     }
 
     /// Casts from two logs fold per spell, each count into its own, and the

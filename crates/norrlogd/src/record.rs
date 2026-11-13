@@ -125,6 +125,14 @@ impl Default for Record {
 }
 
 impl Record {
+    /// Every creature considered so far in this log. Nothing in it is pending,
+    /// so it is read in place rather than through [`Record::settle`].
+    pub fn considered(
+        &self,
+    ) -> &std::collections::BTreeMap<String, norrlog_core::collect::Considered> {
+        self.consider.seen()
+    }
+
     pub fn new() -> Record {
         Record {
             consider: ConsiderCollector::new(),

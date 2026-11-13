@@ -3069,6 +3069,42 @@ impl Store {
         Ok(n)
     }
 
+    /// What considers said in every log but `source`, for `game`, keyed to
+    /// join the bestiary. The record's game tag, not the slug: see
+    /// `record::tag`.
+    pub fn considers_excluding(
+        &self,
+        game: norrlog_core::game::Game,
+        source: &str,
+    ) -> Result<norrlog_core::bestiary::ConsiderSeen> {
+        let mut out = norrlog_core::bestiary::ConsiderSeen::new();
+        let mut st = self.conn.prepare(
+            "SELECT creature, level, times, rare FROM considers
+             WHERE game = ?1 AND source <> ?2",
+        )?;
+        let rows = st.query_map(params![crate::record::tag(game), source], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)? != 0,
+            ))
+        })?;
+        for row in rows {
+            let (creature, level, times, rare) = row?;
+            let e = out
+                .entry(norrlog_core::bestiary::consider_key(&creature))
+                .or_default();
+            // Minus one is the placeholder row for a creature with marks and
+            // no level; see `put_record`.
+            if level >= 0 {
+                *e.0.entry(level as u32).or_default() += times as u64;
+            }
+            e.1 |= rare;
+        }
+        Ok(out)
+    }
+
     /// Every creature on file for one game, except those from one log.
     ///
     /// The exclusion is the whole point. The log being followed is flushed
@@ -3235,6 +3271,9 @@ impl Store {
                 health_median: 0,
                 health_max: 0,
                 max_hit,
+                // Attached after the merge, from the record.
+                considered: Vec::new(),
+                rare: false,
                 first_seen: first,
                 last_seen: last,
             });

@@ -1349,5 +1349,7 @@ pub struct LinesReply {
 // Bestiary: `GET /api/bestiary` is core's report, merged across every log on
 // file for the game being followed.
 
-pub use norrlog_core::bestiary::{BestiaryReport, CreatureKind, MeleeAgainst, NpcCast, NpcProfile};
+pub use norrlog_core::bestiary::{
+    BestiaryReport, ConsideredLevel, CreatureKind, MeleeAgainst, NpcCast, NpcProfile,
+};
 pub use norrlog_core::zone::{Mode, TIER_NAMES};

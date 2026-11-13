@@ -2703,6 +2703,21 @@ impl Engine {
     }
 
     /// Creature profiles, keyed by zone, mode and difficulty.
+    /// What considers in this log said, keyed to join the bestiary.
+    pub fn considers_seen(&self) -> norrlog_core::bestiary::ConsiderSeen {
+        let mut out = norrlog_core::bestiary::ConsiderSeen::new();
+        for c in self.record.considered().values() {
+            let e = out
+                .entry(norrlog_core::bestiary::consider_key(&c.name))
+                .or_default();
+            for (&level, &times) in &c.levels {
+                *e.0.entry(level).or_default() += times;
+            }
+            e.1 |= c.rare;
+        }
+        out
+    }
+
     pub fn bestiary_report(&self) -> BestiaryReport {
         self.bestiary.report()
     }

@@ -1251,29 +1251,47 @@ async fn items(State(s): State<AppState>) -> Json<crate::engine::ItemDatabase> {
 /// plus the engine for this one, which also keeps the figures current between
 /// flushes rather than up to a flush interval stale.
 async fn bestiary(State(s): State<AppState>) -> Json<norrlog_core::bestiary::BestiaryReport> {
-    let (live, live_health, game) = {
+    let (mut live, live_health, game, mut seen) = {
         let e = s.engine.locked("engine");
-        (e.bestiary_report(), e.bestiary_health_samples(), e.game())
+        (
+            e.bestiary_report(),
+            e.bestiary_health_samples(),
+            e.game(),
+            e.considers_seen(),
+        )
     };
 
     let Some(store) = &s.store else {
+        norrlog_core::bestiary::attach_considers(&mut live.npcs, &seen);
         return Json(live);
     };
     let Ok(st) = store.lock() else {
+        norrlog_core::bestiary::attach_considers(&mut live.npcs, &seen);
         return Json(live);
     };
     let source = s.log_path.to_string_lossy().to_string();
     // Rows for other games are left out rather than pooled: the same creature
     // need not have the same health or hit as hard in both.
     let Ok((stored, stored_health)) = st.bestiary_excluding(game.slug(), &source) else {
+        norrlog_core::bestiary::attach_considers(&mut live.npcs, &seen);
         return Json(live);
     };
 
+    // The live log's considers are not on file until the next flush, and
+    // once they are, this excludes them, so nothing is counted twice.
+    if let Ok(stored_seen) = st.considers_excluding(game, &source) {
+        for (k, (levels, rare)) in stored_seen {
+            let e = seen.entry(k).or_default();
+            for (level, times) in levels {
+                *e.0.entry(level).or_default() += times;
+            }
+            e.1 |= rare;
+        }
+    }
     let health = [live_health, stored_health].concat();
-    Json(norrlog_core::bestiary::BestiaryReport {
-        game,
-        npcs: norrlog_core::bestiary::merge(live.npcs.into_iter().chain(stored), &health),
-    })
+    let mut npcs = norrlog_core::bestiary::merge(live.npcs.into_iter().chain(stored), &health);
+    norrlog_core::bestiary::attach_considers(&mut npcs, &seen);
+    Json(norrlog_core::bestiary::BestiaryReport { game, npcs })
 }
 
 /// What was seen dropping from what, with the kill counts behind it.

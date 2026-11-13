@@ -268,7 +268,8 @@ impl BestiaryView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(n.name.clone()),
                             )
-                            .when_some(n.kind, |d, k| d.child(tag(k.as_str(), ACCENT))),
+                            .when_some(n.kind, |d, k| d.child(tag(k.as_str(), ACCENT)))
+                            .when(n.rare, |d| d.child(tag("rare", GOLD))),
                     )
                     .child(hint(place(n)))
                     .child(hint(format!(
@@ -282,6 +283,10 @@ impl BestiaryView {
                     .gap_2()
                     .flex_wrap()
                     .items_stretch()
+                    .child({
+                        let (figure, note) = level_figure(n);
+                        stat("Level", figure, Some(note))
+                    })
                     .child(stat("Health", health_figure(n), Some(health_spread(n))))
                     .child(stat("Killed", n.kills.to_string(), None))
                     .child(stat("Killed you", n.deaths_to_it.to_string(), None))
@@ -567,6 +572,27 @@ fn health_spread(n: &NpcProfile) -> String {
     }
 }
 
+/// The level a consider showed, as a range when it showed more than one,
+/// and what that rests on. Considers name no zone, so the note says the
+/// figure is the creature's rather than this place's.
+fn level_figure(n: &NpcProfile) -> (String, String) {
+    let (Some(lo), Some(hi)) = (n.considered.first(), n.considered.last()) else {
+        return ("—".into(), "never considered".into());
+    };
+    let times: u64 = n.considered.iter().map(|c| c.times).sum();
+    let figure = if lo.level == hi.level {
+        lo.level.to_string()
+    } else {
+        format!("{}–{}", lo.level, hi.level)
+    };
+    let considers = if times == 1 {
+        "1 consider".to_string()
+    } else {
+        format!("{times} considers")
+    };
+    (figure, format!("{considers}, any zone"))
+}
+
 /// The list's second figure: the median and how many deaths it rests on.
 fn health_short(n: &NpcProfile) -> String {
     if n.health_samples == 0 {
@@ -609,8 +635,10 @@ fn summary(r: &BestiaryReport, matched: usize, needle: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cast_cells, entry_key, health_short, health_spread, melee_cells, place};
-    use norrlog_api::{Game, MeleeAgainst, Mode, NpcCast, NpcProfile};
+    use super::{
+        cast_cells, entry_key, health_short, health_spread, level_figure, melee_cells, place,
+    };
+    use norrlog_api::{ConsideredLevel, Game, MeleeAgainst, Mode, NpcCast, NpcProfile};
 
     fn npc(zone: &str, mode: Mode, difficulty: u8) -> NpcProfile {
         NpcProfile {
@@ -630,6 +658,8 @@ mod tests {
             max_hit: 0,
             melee: vec![],
             casts: vec![],
+            considered: vec![],
+            rare: false,
             first_seen: 0,
             last_seen: 0,
         }
@@ -702,6 +732,28 @@ mod tests {
         assert_eq!(
             melee_cells(&m),
             ["Tharn", "?", "unknown", "4", "75%", "1", "0", "10", "12"]
+        );
+    }
+
+    #[test]
+    fn a_level_is_a_range_only_when_considers_disagree() {
+        let mut n = npc("Befallen", Mode::Open, 0);
+        assert_eq!(level_figure(&n).0, "—");
+        n.considered = vec![ConsideredLevel {
+            level: 12,
+            times: 1,
+        }];
+        assert_eq!(
+            level_figure(&n),
+            ("12".into(), "1 consider, any zone".into())
+        );
+        n.considered.push(ConsideredLevel {
+            level: 14,
+            times: 3,
+        });
+        assert_eq!(
+            level_figure(&n),
+            ("12–14".into(), "4 considers, any zone".into())
         );
     }
 }
