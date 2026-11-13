@@ -5,9 +5,9 @@
 //! skill card narrows every panel below it to that tradeskill, from the
 //! report already in hand: no fetch.
 //!
-//! "What it cost to raise" charges every combine attributed to a skill,
-//! including recipes that earned no skill-up. That is an open bug; the
-//! port keeps the renderer's arithmetic until it is decided.
+//! "What it cost to raise" counts only recipes that earned a skill-up. What
+//! went on recipes that raised nothing, a potion made to use, is shown beside
+//! it rather than mixed in.
 
 use crate::api::Api;
 use crate::parts::{
@@ -564,82 +564,118 @@ impl TradeskillsView {
                 None => "No combines have been priced yet".into(),
             }));
         }
-        // (name, from the book, copper, attempts, no price)
-        let rows: Vec<(&str, bool, u64, u64, bool)> = if only.is_some() {
+        // One row per recipe for a single skill, else one per skill. The bar
+        // and the figure are what went on raising it; `other` is what went on
+        // recipes that earned no skill-up, shown beside it rather than mixed
+        // in -- a potion made to use is not part of the raise.
+        struct Row<'a> {
+            name: &'a str,
+            from_book: bool,
+            raising: u64,
+            other: u64,
+            attempts: u64,
+            unknown: bool,
+            raised_nothing: bool,
+        }
+        let rows: Vec<Row> = if only.is_some() {
             shown[0]
                 .recipes
                 .iter()
-                .map(|x| {
-                    (
-                        x.item.as_str(),
-                        x.from_book,
-                        x.copper,
-                        x.attempts,
-                        x.unit_copper.is_none(),
-                    )
+                .map(|x| Row {
+                    name: x.item.as_str(),
+                    from_book: x.from_book,
+                    raising: if x.skill_ups > 0 { x.copper } else { 0 },
+                    other: if x.skill_ups > 0 { 0 } else { x.copper },
+                    attempts: x.attempts,
+                    unknown: x.unit_copper.is_none(),
+                    raised_nothing: x.skill_ups == 0,
                 })
                 .collect()
         } else {
             shown
                 .iter()
-                .map(|s| {
-                    (
-                        s.skill.as_str(),
-                        false,
-                        s.copper,
-                        s.attempts,
-                        s.priced_attempts == 0,
-                    )
+                .map(|s| Row {
+                    name: s.skill.as_str(),
+                    from_book: false,
+                    raising: s.raising_copper,
+                    other: s.copper - s.raising_copper,
+                    attempts: s.attempts,
+                    unknown: s.priced_attempts == 0,
+                    raised_nothing: false,
                 })
                 .collect()
         };
-        let max = rows.iter().map(|r| r.2).max().unwrap_or(1).max(1) as f64;
+        let max = rows
+            .iter()
+            .map(|r| r.raising.max(r.other))
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
+        let raising: u64 = shown.iter().map(|s| s.raising_copper).sum();
+        let raising_attempts: u64 = shown.iter().map(|s| s.raising_attempts).sum();
         let copper: u64 = shown.iter().map(|s| s.copper).sum();
         let attempts: u64 = shown.iter().map(|s| s.attempts).sum();
         let priced: u64 = shown.iter().map(|s| s.priced_attempts).sum();
         let book: u64 = shown.iter().map(|s| s.book_priced_attempts).sum();
         let how = if book > 0 {
             format!(
-                "{} of them priced from components the log announced, and {book} from the recipe book",
+                "{} of all {attempts} combines priced from components the log announced, and {book} from the recipe book",
                 priced - book
             )
         } else {
-            format!("{priced} of them priced from components the log announced")
+            format!("{priced} of all {attempts} combines priced from components the log announced")
         };
-        let at_least = format!("at least {}", plat(copper));
-        let rest = format!(" to raise, over {attempts} combines — {how}.");
+        let at_least = format!("at least {}", plat(raising));
+        let plural = |n: u64| if n == 1 { "" } else { "s" };
+        let rest = format!(
+            " to raise, over {raising_attempts} combine{} at recipes that earned a skill-up",
+            plural(raising_attempts)
+        );
+        let besides = if copper > raising {
+            let n = attempts - raising_attempts;
+            format!(
+                ". Another {} went on {n} combine{} at recipes that raised nothing — made to use or sell. {how}.",
+                plat(copper - raising),
+                plural(n)
+            )
+        } else {
+            format!(". {how}.")
+        };
         let who = format!("{} cost ", only.unwrap_or("Every tradeskill"));
-        card.child(
-            v_flex().gap_1().children(rows.iter().map(
-                |&(name, from_book, copper, attempts, unknown)| {
-                    bar_row(
-                        copper as f64 / max,
-                        fill(ROW_YOU),
-                        h_flex()
-                            .gap_1()
-                            .child(name.to_string())
-                            .when(from_book, |d| {
-                                d.child(tag("from the recipe", ACCENT).flex_none())
-                            }),
-                        h_flex()
-                            .gap_3()
-                            .child(dim(format!(
-                                "{attempts} combine{}",
-                                if attempts == 1 { "" } else { "s" }
-                            )))
-                            .child(if unknown {
-                                figure("").child(dim("no price"))
-                            } else {
-                                figure(format!("≥ {}", plat(copper)))
-                            }),
-                    )
-                },
-            )),
-        )
+        card.child(v_flex().gap_1().children(rows.iter().map(|r| {
+            let share = if r.raised_nothing { r.other } else { r.raising };
+            bar_row(
+                share as f64 / max,
+                fill(if r.raised_nothing { ROW } else { ROW_YOU }),
+                h_flex()
+                    .gap_1()
+                    .child(r.name.to_string())
+                    .when(r.from_book, |d| {
+                        d.child(tag("from the recipe", ACCENT).flex_none())
+                    })
+                    .when(r.raised_nothing, |d| {
+                        d.child(tag("raised nothing", MUTED).flex_none())
+                    }),
+                h_flex()
+                    .gap_3()
+                    .child(dim(format!("{} combine{}", r.attempts, plural(r.attempts))))
+                    .when(!r.raised_nothing && r.other > 0, |d| {
+                        d.child(dim(format!("+ {} raised nothing", plat(r.other))))
+                    })
+                    .child(if r.unknown {
+                        figure("").child(dim("no price"))
+                    } else if r.raised_nothing {
+                        figure("").child(dim(format!("≥ {}", plat(r.other))))
+                    } else {
+                        figure(format!("≥ {}", plat(r.raising)))
+                    }),
+            )
+        })))
         .child(div().text_sm().text_color(hex(MUTED)).child(rich(&[
             (&who, false),
             (&at_least, true),
             (&rest, false),
+            (&besides, false),
         ])))
         .child(
             div()

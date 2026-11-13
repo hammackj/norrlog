@@ -279,6 +279,14 @@ pub struct SkillCost {
     /// checked.
     #[serde(default)]
     pub book_priced_attempts: u64,
+    /// Of `copper`, what went on recipes that earned at least one skill-up:
+    /// the cost of raising the skill, as against a potion made to use. The
+    /// rest of `copper` went on recipes that raised nothing.
+    #[serde(default)]
+    pub raising_copper: u64,
+    /// Attempts at recipes that earned at least one skill-up.
+    #[serde(default)]
+    pub raising_attempts: u64,
     /// Per recipe, dearest first.
     pub recipes: Vec<RecipeSpend>,
 }
@@ -295,6 +303,10 @@ pub struct RecipeSpend {
     #[serde(default)]
     pub from_book: bool,
     pub copper: u64,
+    /// Skill-ups this recipe earned. Zero is a recipe worked for what it
+    /// makes, not to raise the skill.
+    #[serde(default)]
+    pub skill_ups: u64,
 }
 
 /// Everything the tradeskill tab shows.
@@ -1283,9 +1295,12 @@ impl TradeskillTracker {
             }
         }
 
-        // What each tradeskill cost to raise. Built from the combine record
-        // rather than from the segments: a recipe worked long after the last
-        // skill-up still cost what it cost.
+        // What each tradeskill cost. Built from the combine record rather
+        // than from the segments: a recipe worked long after the last
+        // skill-up still cost what it cost. Split by whether the recipe
+        // earned any skill-up, because "what it cost to raise" and "what
+        // this skill has cost you" are different questions: a potion made to
+        // use, never raising anything, is the second and not the first.
         let mut by_skill: HashMap<String, SkillCost> = HashMap::new();
         for c in &crafts {
             let Some(skill) = c.skill.as_ref() else {
@@ -1301,6 +1316,7 @@ impl TradeskillTracker {
                 unit_copper,
                 from_book: matches!(priced, Some((_, CostBasis::Recipe))),
                 copper: unit_copper.unwrap_or(0) * attempts,
+                skill_ups: c.skill_ups as u64,
             };
             let e = by_skill
                 .entry(skill.to_lowercase())
@@ -1310,10 +1326,16 @@ impl TradeskillTracker {
                     attempts: 0,
                     priced_attempts: 0,
                     book_priced_attempts: 0,
+                    raising_copper: 0,
+                    raising_attempts: 0,
                     recipes: Vec::new(),
                 });
             e.copper += spend.copper;
             e.attempts += attempts;
+            if spend.skill_ups > 0 {
+                e.raising_copper += spend.copper;
+                e.raising_attempts += attempts;
+            }
             if unit_copper.is_some() {
                 e.priced_attempts += attempts;
             }
@@ -1327,7 +1349,13 @@ impl TradeskillTracker {
             s.recipes
                 .sort_by_key(|r| std::cmp::Reverse((r.copper, r.attempts)));
         }
-        skill_costs.sort_by(|a, b| b.copper.cmp(&a.copper).then_with(|| a.skill.cmp(&b.skill)));
+        // Dearest to raise first; what went on recipes that raised nothing
+        // only breaks ties.
+        skill_costs.sort_by(|a, b| {
+            (b.raising_copper, b.copper)
+                .cmp(&(a.raising_copper, a.copper))
+                .then_with(|| a.skill.cmp(&b.skill))
+        });
 
         TradeskillReport {
             game: crate::game::Game::Unknown,
@@ -1625,6 +1653,40 @@ mod tests {
 
         let c = &t.report().costs[0];
         assert_eq!(c.unit_copper, 400, "two flasks; the chisel comes back");
+    }
+
+    /// A potion made to use, never earning a point, is what the skill has
+    /// cost you but not what it cost to raise. The report keeps both: the
+    /// whole spend, and the part on recipes that earned a skill-up.
+    #[test]
+    fn a_recipe_that_raised_nothing_is_not_part_of_the_raise() {
+        let mut t = TradeskillTracker::new();
+        t.on_purchase(50, "Water Flask", 10, 2000); // 0.2p each
+                                                    // Labelled by the recipe book, not by a skill-up.
+        t.set_item_skill("Skin of Flame", "Alchemy");
+
+        t.on_component(100, "Water Flask", 1, Some(9));
+        t.on_craft(100, "Elixir", true);
+        t.on_skill_up(100, "Alchemy", 101);
+        for at in [200i64, 210, 220] {
+            t.on_component(at, "Water Flask", 1, Some(8));
+            t.on_craft(at, "Skin of Flame", true);
+        }
+
+        let cost = &t.report().skill_costs[0];
+        assert_eq!(cost.skill, "Alchemy");
+        assert_eq!((cost.copper, cost.attempts), (800, 4), "everything spent");
+        assert_eq!(
+            (cost.raising_copper, cost.raising_attempts),
+            (200, 1),
+            "only the elixir raised it"
+        );
+        let skin = cost
+            .recipes
+            .iter()
+            .find(|r| r.item == "Skin of Flame")
+            .unwrap();
+        assert_eq!(skin.skill_ups, 0);
     }
 
     /// A recipe nothing is known about contributes nothing, and the total has
