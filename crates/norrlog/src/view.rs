@@ -33,8 +33,20 @@ pub const TABS: &[(&str, &str)] = &[
 
 enum Link {
     Attaching,
-    Attached { hello: Box<Hello>, started: bool },
+    Attached {
+        hello: Box<Hello>,
+        started: bool,
+    },
     Lost(String),
+    /// No log chosen yet, so no daemon: the first run.
+    Unset,
+}
+
+impl Link {
+    /// Nothing to talk to, for whatever reason.
+    fn down(&self) -> bool {
+        matches!(self, Link::Lost(_) | Link::Unset)
+    }
 }
 
 pub struct Shell {
@@ -157,7 +169,7 @@ impl Shell {
     fn on_msg(&mut self, msg: Msg, window: &mut Window, cx: &mut Context<Self>) {
         match msg {
             Msg::Attaching => {
-                if !matches!(self.link, Link::Lost(_)) {
+                if !self.link.down() {
                     self.link = Link::Attaching;
                 }
             }
@@ -315,9 +327,20 @@ impl Shell {
                 }
                 self.snapshot = Some(s);
             }
-            Msg::Lost(why) => {
-                eprintln!("[norrlog] lost the daemon: {why}");
-                self.link = Link::Lost(why);
+            Msg::Unset | Msg::Lost(_) => {
+                self.link = match msg {
+                    Msg::Lost(why) => {
+                        eprintln!("[norrlog] lost the daemon: {why}");
+                        Link::Lost(why)
+                    }
+                    _ => {
+                        // The first run: Settings is the only useful place.
+                        if !matches!(self.link, Link::Unset) {
+                            self.select("settings", window, cx);
+                        }
+                        Link::Unset
+                    }
+                };
                 self.snapshot = None;
                 self.api = None;
                 for (_, _, o) in &self.overlays {
@@ -334,6 +357,9 @@ impl Shell {
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
                 self.alerts.update(cx, |v, cx| v.set_api(None, cx));
                 self.settings.update(cx, |v, cx| v.set_api(None, cx));
+                if matches!(self.link, Link::Unset) {
+                    self.settings.update(cx, |v, cx| v.set_unset(cx));
+                }
                 self.dashboard.update(cx, |v, cx| v.set_api(None, cx));
             }
         }
@@ -500,6 +526,7 @@ impl Shell {
             (Link::Attached { .. }, Some(false)) => ("parsing…", MUTED),
             (Link::Attached { .. }, None) | (Link::Attaching, _) => ("connecting", ACCENT),
             (Link::Lost(_), _) => ("offline", ENEMY),
+            (Link::Unset, _) => ("no log chosen", MUTED),
         };
         pills = pills.child(pill(status, color, color));
         let on = self.overlay_open(crate::overlay::Kind::Main);
@@ -591,6 +618,16 @@ impl Shell {
             && self.tab != "settings"
         {
             return notice("The daemon is not answering", why.clone()).into_any_element();
+        }
+        if matches!(self.link, Link::Unset) && self.tab != "settings" {
+            return notice(
+                "Choose your log in Settings",
+                "Norrlog reads the log EverQuest writes as you play. Pick the \
+                 log file, or the game's Logs folder, in Settings. Turn \
+                 logging on in game with /log on."
+                    .into(),
+            )
+            .into_any_element();
         }
         match self.tab {
             "dashboard" => self
@@ -695,7 +732,7 @@ impl Render for Shell {
                         | "tells"
                         | "alerts"
                         | "dashboard"
-                ) && !matches!(self.link, Link::Lost(_))
+                ) && !self.link.down()
                     || self.tab == "settings"
                 {
                     // These scroll themselves, and are drawn cached: each redraws

@@ -106,7 +106,10 @@ impl ParserConfig {
     /// a chosen log could be the other game's install (it looks for Legends),
     /// and the daemon takes the game and its spell file from the game
     /// folder before the log, so a live EverQuest log was read as Legends.
-    fn daemon_args_with(&self, guess: impl FnOnce() -> Option<PathBuf>) -> Vec<OsString> {
+    pub(crate) fn daemon_args_with(
+        &self,
+        guess: impl FnOnce() -> Option<PathBuf>,
+    ) -> Vec<OsString> {
         let mut a: Vec<OsString> = Vec::new();
         let source = if !self.log_file.is_empty() {
             std::path::Path::new(&self.log_file)

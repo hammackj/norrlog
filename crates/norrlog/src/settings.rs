@@ -76,6 +76,9 @@ struct Inputs {
 
 pub struct SettingsView {
     api: Option<Api>,
+    /// No log chosen and no daemon: the first run. Nothing is waiting on a
+    /// daemon then, so nothing should say it is.
+    unset: bool,
     visible: bool,
     restart: Restart,
     inputs: Inputs,
@@ -160,6 +163,7 @@ impl SettingsView {
         };
         SettingsView {
             api: None,
+            unset: false,
             visible: false,
             restart,
             inputs,
@@ -191,7 +195,16 @@ impl SettingsView {
 
     /// Attached (with the daemon's hello and whether this app started it)
     /// or lost.
+    /// The first run: no log is chosen, so no daemon was started.
+    pub fn set_unset(&mut self, cx: &mut Context<Self>) {
+        self.unset = true;
+        cx.notify();
+    }
+
     pub fn set_api(&mut self, api: Option<Api>, cx: &mut Context<Self>) {
+        if api.is_some() {
+            self.unset = false;
+        }
         if let Some(a) = &api {
             let h = a.client.hello();
             let what = if a.client.started_daemon() {
@@ -779,6 +792,9 @@ impl SettingsView {
 
         // The log dropdown.
         let (pick_label, logs): (String, Vec<LogFile>) = match &self.logs {
+            None | Some(Err(_)) if self.unset => {
+                ("Choose a log below, then save".into(), Vec::new())
+            }
             None | Some(Err(_)) => ("Waiting for the daemon…".into(), Vec::new()),
             Some(Ok(r)) if r.logs.is_empty() => ("No eqlog_*.txt found".into(), Vec::new()),
             Some(Ok(r)) => (
@@ -1011,6 +1027,7 @@ impl SettingsView {
     fn render_status(&self) -> Div {
         let r = match &self.status {
             None => return div(),
+            Some(Err(_)) if self.unset => return div(),
             Some(Err(_)) => {
                 return hint("The daemon is not answering, so how far it has read is unknown.");
             }

@@ -33,6 +33,9 @@ pub enum Msg {
     },
     Snapshot(Arc<serde_json::Value>),
     Lost(String),
+    /// No log is chosen and no daemon is running to attach to. Nothing is
+    /// started until Settings sends a setup that names one.
+    Unset,
 }
 
 /// What travels on the channel. Snapshots do not: they wait in [`Latest`],
@@ -279,6 +282,28 @@ async fn session(
     retry: &mut u64,
     generation: u64,
 ) -> End {
+    // With no log chosen the daemon refuses to start, and retrying it every
+    // few seconds read to a new user as a broken install. A daemon already
+    // running is still worth attaching to; otherwise wait for Settings.
+    if !names_a_log(&setup.args) {
+        let attached = tokio::select! {
+            got = Client::attach(setup.port) => got.ok(),
+            Ok(next) = ctl.recv() => return End::Restart(next),
+        };
+        if attached.is_none() {
+            if tx
+                .send(Wire::Life(Msg::Unset, Generation::Clear))
+                .await
+                .is_err()
+            {
+                return End::Closed;
+            }
+            return match ctl.recv().await {
+                Ok(next) => End::Restart(next),
+                Err(_) => End::Closed,
+            };
+        }
+    }
     let mut spawn = Spawn::new(&setup.daemon);
     spawn.args = setup.args.clone();
     spawn.idle_exit = IDLE_EXIT;
@@ -321,6 +346,11 @@ async fn session(
             None => return End::Lost("the daemon closed the connection".into()),
         }
     }
+}
+
+/// Whether daemon arguments tell it which log to read.
+fn names_a_log(args: &[OsString]) -> bool {
+    args.iter().any(|a| a == "--log" || a == "--logs-dir")
 }
 
 /// Stop the daemon on `port`, if one answers, and wait up to five seconds
@@ -409,6 +439,7 @@ mod mailbox_tests {
                 Msg::Attaching => "attaching".to_string(),
                 Msg::Attached { .. } => "attached".to_string(),
                 Msg::Lost(_) => "lost".to_string(),
+                Msg::Unset => "unset".to_string(),
                 Msg::Snapshot(v) => v.to_string(),
             });
         }
@@ -464,5 +495,22 @@ mod mailbox_tests {
             // taken late and dropped; nothing of attachment 1 follows Lost.
             assert_eq!(drain(&mut inbox).await, ["lost", "attaching", "2000"]);
         });
+    }
+}
+
+#[cfg(test)]
+mod first_run_tests {
+    use super::*;
+
+    /// A fresh install has no log, no folder and no install to guess from:
+    /// nothing is started, rather than a daemon that exits and is retried.
+    #[test]
+    fn a_fresh_config_names_no_log() {
+        let none = crate::config::ParserConfig::default().daemon_args_with(|| None);
+        assert!(!names_a_log(&none), "{none:?}");
+        let log = vec![OsString::from("--log"), OsString::from("/l/eqlog_A_b.txt")];
+        assert!(names_a_log(&log));
+        let dir = vec![OsString::from("--logs-dir"), OsString::from("/g/Logs")];
+        assert!(names_a_log(&dir));
     }
 }
