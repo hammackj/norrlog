@@ -17,30 +17,44 @@ use std::time::Duration;
 /// without spinning the disk.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Identity of a file, used to notice replacement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileId {
-    len: u64,
+/// What a file is, as opposed to what it is called, so a log replaced at
+/// the same path is noticed. A length is not an identity: a new file at
+/// least as long as what had been read looked like the old one growing.
+type Ident = Option<(u64, u64)>;
+
+/// The open file's identity: device and inode on Unix, volume serial and
+/// file index on Windows. `None` where neither is known, which leaves only
+/// the length check.
+fn ident(file: &File) -> Ident {
     #[cfg(unix)]
-    inode: u64,
+    {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().ok().map(|m| (m.dev(), m.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is open for as long as `file` is borrowed, and
+        // `info` is a valid out-pointer of the right type.
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+        (ok != 0).then(|| (info.dwVolumeSerialNumber as u64, ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        None
+    }
 }
 
-impl FileId {
-    fn of(path: &Path) -> Option<FileId> {
-        let md = std::fs::metadata(path).ok()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Some(FileId {
-                len: md.len(),
-                inode: md.ino(),
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            Some(FileId { len: md.len() })
-        }
-    }
+/// The file now at a path: its length and identity.
+fn at_path(path: &Path) -> Option<(u64, Ident)> {
+    // Opened rather than stat'ed, for the Windows identity, which is read
+    // from a handle. std opens with every sharing flag, so this does not get
+    // in the client's way.
+    let f = File::open(path).ok()?;
+    Some((f.metadata().ok()?.len(), ident(&f)))
 }
 
 /// Follows a log file, invoking a callback for each complete line.
@@ -48,25 +62,19 @@ pub struct Follower {
     path: PathBuf,
     reader: BufReader<File>,
     position: u64,
-    #[cfg(unix)]
-    inode: u64,
+    ident: Ident,
 }
 
 impl Follower {
     pub fn open(path: impl Into<PathBuf>) -> anyhow::Result<Follower> {
         let path = path.into();
         let file = File::open(&path)?;
-        #[cfg(unix)]
-        let inode = {
-            use std::os::unix::fs::MetadataExt;
-            file.metadata()?.ino()
-        };
+        let ident = ident(&file);
         Ok(Follower {
             path,
             reader: BufReader::with_capacity(1 << 20, file),
             position: 0,
-            #[cfg(unix)]
-            inode,
+            ident,
         })
     }
 
@@ -220,31 +228,18 @@ impl Follower {
 
     /// Detect truncation or replacement and reopen from the start when needed.
     fn handle_rotation(&mut self) -> anyhow::Result<()> {
-        let Some(id) = FileId::of(&self.path) else {
+        let Some((len, now)) = at_path(&self.path) else {
             return Ok(()); // File temporarily missing; try again next poll.
         };
 
-        let replaced = {
-            #[cfg(unix)]
-            {
-                id.inode != self.inode
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        };
+        let replaced = now.is_some() && now != self.ident;
         // A file that shrank was truncated in place — a new session reusing the
         // same name. Either way we must start over rather than seek past the end.
-        let truncated = id.len < self.position;
+        let truncated = len < self.position;
 
         if replaced || truncated {
             let file = File::open(&self.path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                self.inode = file.metadata()?.ino();
-            }
+            self.ident = ident(&file);
             self.reader = BufReader::with_capacity(1 << 20, file);
             self.position = 0;
         }
@@ -357,6 +352,36 @@ mod tests {
         f.read_available(|l| got.push(l.to_string())).unwrap();
         assert_eq!(got.first(), Some(&lines[30]));
         assert_eq!(got.len(), 20);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A log replaced at the same path by a file at least as long is
+    /// followed from its start: a length is not an identity.
+    #[test]
+    fn a_replacement_as_long_as_the_old_log_is_followed() {
+        let dir = tmpdir();
+        let path = dir.join("replaced.txt");
+        std::fs::write(&path, "aaaa\n").unwrap();
+        let mut f = Follower::open(&path).unwrap();
+        let mut got = Vec::new();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert_eq!(got, ["aaaa"]);
+
+        for (aside, new) in [("old1.txt", "bbbb\n"), ("old2.txt", "cccccccc\n")] {
+            std::fs::rename(&path, dir.join(aside)).unwrap();
+            std::fs::write(&path, new).unwrap();
+            got.clear();
+            f.read_available(|l| got.push(l.to_string())).unwrap();
+            assert_eq!(got, [new.trim_end()], "the replacement, once");
+        }
+        let mut w = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(w, "more").unwrap();
+        got.clear();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert_eq!(got, ["more"], "an append is not a replacement");
+        got.clear();
+        f.read_available(|l| got.push(l.to_string())).unwrap();
+        assert!(got.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
