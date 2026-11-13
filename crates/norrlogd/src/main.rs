@@ -1123,13 +1123,13 @@ fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<
     let skills = record::SkillsReport {
         note: record::SKILLS_NOTE,
         source: "logs",
-        game: record::GAME_TAG,
+        game: record::tag(game),
         skills: best
             .into_iter()
             .map(|(skill, at_least)| record::SkillRow {
                 skill,
                 at_least,
-                game: record::GAME_TAG,
+                game: record::tag(game),
             })
             .collect(),
     };
@@ -1359,7 +1359,7 @@ pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store
             .and_then(|_| st.put_drops(game.slug(), &source, &drops))
             .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
             .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))
-            .and_then(|_| st.put_record(record::GAME_TAG, &source, &record))
+            .and_then(|_| st.put_record(game, &source, &record))
     } else {
         keyed
     };

@@ -1938,9 +1938,10 @@ async fn forage(State(s): State<AppState>) -> Json<crate::record::ForageReport> 
     // The history, not the live engine: a forage record is the whole of what
     // has ever been seen, and the engine holds only the log it is following.
     // The engine is the fallback for a daemon started without a store.
+    let game = s.engine.locked("engine").game();
     if let Some(store) = &s.store {
         let st = store.locked("history");
-        if let Ok(r) = st.record_reports(crate::record::GAME_TAG) {
+        if let Ok(r) = st.record_reports(game) {
             return Json(r.forage);
         }
     }

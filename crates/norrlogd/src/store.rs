@@ -30,6 +30,7 @@
 //! a quest is true whoever is reading it.
 
 use anyhow::Result;
+use norrlog_core::game::Game;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -1156,6 +1157,40 @@ impl Store {
             );
             ",
         )?;
+        self.retag_live_record()?;
+        Ok(())
+    }
+
+    /// Move live EverQuest's record rows off the Legends tag.
+    ///
+    /// Until live EverQuest was folded in, every record row was tagged `eql`
+    /// whatever game its log came from (see `record::tag`). A row whose
+    /// source is a log under a live EverQuest install is that game's, and is
+    /// moved to `eq`; that is read from the path, not guessed. Rows from a
+    /// path that names neither game stay where they are, as do the two
+    /// tables with no source (`skills`, `map_zones`), which cannot be
+    /// attributed. Cheap and idempotent, so it runs on every open.
+    fn retag_live_record(&self) -> Result<()> {
+        const SOURCED: &[&str] = &[
+            "considers", "faction_bursts", "faction_hits", "faction_offers", "faction_turnins", "forage", "markers",
+            "players", "spots",
+        ];
+        let (from, to) = (crate::record::tag(Game::EverQuestLegends), crate::record::tag(Game::EverQuest));
+        for table in SOURCED {
+            let sources: Vec<String> = self
+                .conn
+                .prepare(&format!("SELECT DISTINCT source FROM {table} WHERE game = ?1"))?
+                .query_map(params![from], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for source in sources {
+                if Game::from_path(Path::new(&source)) == Game::EverQuest {
+                    self.conn.execute(
+                        &format!("UPDATE OR REPLACE {table} SET game = ?1 WHERE game = ?2 AND source = ?3"),
+                        params![to, from, source],
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1544,11 +1579,12 @@ impl Store {
     /// flush likes.
     pub fn put_record(
         &mut self,
-        game: &str,
+        game: Game,
         source: &str,
         r: &crate::record::Settled,
     ) -> Result<usize> {
         let (c, sv) = (self.character.clone(), self.server.clone());
+        let tag = crate::record::tag(game);
         let tx = self.conn.transaction()?;
         let mut n = 0usize;
         {
@@ -1560,7 +1596,7 @@ impl Store {
             // so a placeholder carrying a count would inflate every total.
             tx.execute(
                 "DELETE FROM considers WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
-                params![game, c, sv, source],
+                params![tag, c, sv, source],
             )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO considers
@@ -1571,7 +1607,7 @@ impl Store {
                 if con.levels.is_empty() {
                     if con.rare || con.raid {
                         stmt.execute(params![
-                            game, c, sv, source, con.name, -1i64, 0i64,
+                            tag, c, sv, source, con.name, -1i64, 0i64,
                             con.rare as i64, con.raid as i64
                         ])?;
                         n += 1;
@@ -1580,7 +1616,7 @@ impl Store {
                 }
                 for (level, times) in &con.levels {
                     stmt.execute(params![
-                        game, c, sv, source, con.name, *level as i64, *times as i64,
+                        tag, c, sv, source, con.name, *level as i64, *times as i64,
                         con.rare as i64, con.raid as i64
                     ])?;
                     n += 1;
@@ -1593,7 +1629,7 @@ impl Store {
             // is the only way "foraged here, got nothing" is recorded.
             tx.execute(
                 "DELETE FROM forage WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
-                params![game, c, sv, source],
+                params![tag, c, sv, source],
             )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO forage
@@ -1603,13 +1639,13 @@ impl Store {
             for (zone, z) in r.forage.zones() {
                 for (item, times) in &z.found {
                     stmt.execute(params![
-                        game, c, sv, source, zone, item, *times as i64, z.first, z.last
+                        tag, c, sv, source, zone, item, *times as i64, z.first, z.last
                     ])?;
                     n += 1;
                 }
                 if z.empty > 0 {
                     stmt.execute(params![
-                        game, c, sv, source, zone, "", z.empty as i64, z.first, z.last
+                        tag, c, sv, source, zone, "", z.empty as i64, z.first, z.last
                     ])?;
                     n += 1;
                 }
@@ -1623,7 +1659,7 @@ impl Store {
                     &format!(
                         "DELETE FROM {t} WHERE game=?1 AND character=?2 AND server=?3 AND source=?4"
                     ),
-                    params![game, c, sv, source],
+                    params![tag, c, sv, source],
                 )?;
             }
             let f = &r.faction;
@@ -1642,7 +1678,7 @@ impl Store {
                     match cause {
                         norrlog_core::collect::FactionCause::Kill { creature, zone } => {
                             hit.execute(params![
-                                game, c, sv, source,
+                                tag, c, sv, source,
                                 f.creature_display(creature).unwrap_or(creature),
                                 f.zone_display(zone).unwrap_or(zone),
                                 faction, *amount, *times as i64
@@ -1650,7 +1686,7 @@ impl Store {
                         }
                         norrlog_core::collect::FactionCause::TurnIn { npc, item } => {
                             turn.execute(params![
-                                game, c, sv, source, npc, item, faction, *amount, *times as i64
+                                tag, c, sv, source, npc, item, faction, *amount, *times as i64
                             ])?;
                         }
                     }
@@ -1667,7 +1703,7 @@ impl Store {
             pairs.extend(f.handins.keys().cloned());
             for (npc, item) in pairs {
                 offer.execute(params![
-                    game, c, sv, source, npc, item,
+                    tag, c, sv, source, npc, item,
                     f.offered.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64,
                     f.handins.get(&(npc.clone(), item.clone())).copied().unwrap_or(0) as i64
                 ])?;
@@ -1678,7 +1714,7 @@ impl Store {
                  (game, character, server, source, seen, attributed, to_turnins)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
-                    game, c, sv, source,
+                    tag, c, sv, source,
                     f.bursts as i64, f.to_kill as i64, f.to_turnin as i64
                 ],
             )?;
@@ -1686,7 +1722,7 @@ impl Store {
         {
             tx.execute(
                 "DELETE FROM players WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
-                params![game, c, sv, source],
+                params![tag, c, sv, source],
             )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO players
@@ -1695,7 +1731,7 @@ impl Store {
             )?;
             for p in r.players.seen().values() {
                 stmt.execute(params![
-                    game, c, sv, source, p.name, p.level as i64,
+                    tag, c, sv, source, p.name, p.level as i64,
                     p.classes.join("|"), p.race
                 ])?;
                 n += 1;
@@ -1712,14 +1748,14 @@ impl Store {
                  DO UPDATE SET at_least = MAX(at_least, excluded.at_least)",
             )?;
             for (skill, at_least) in r.skills.best() {
-                stmt.execute(params![game, c, sv, skill, *at_least as i64])?;
+                stmt.execute(params![tag, c, sv, skill, *at_least as i64])?;
                 n += 1;
             }
         }
         {
             tx.execute(
                 "DELETE FROM markers WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
-                params![game, c, sv, source],
+                params![tag, c, sv, source],
             )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO markers
@@ -1729,7 +1765,7 @@ impl Store {
             )?;
             for m in r.markers.spawn_points(crate::record::SPAWN_RADIUS) {
                 stmt.execute(params![
-                    game, c, sv, source, m.name,
+                    tag, c, sv, source, m.name,
                     crate::record::marker_kind(m.kind),
                     m.role, m.zone, m.zone_short, m.x, m.y, m.z,
                     m.level.map(|l| l as i64)
@@ -1740,14 +1776,14 @@ impl Store {
                 "INSERT OR REPLACE INTO map_zones (game, zone, zone_short) VALUES (?1,?2,?3)",
             )?;
             for (z, short) in r.markers.zones() {
-                zone.execute(params![game, z, short])?;
+                zone.execute(params![tag, z, short])?;
                 n += 1;
             }
         }
         {
             tx.execute(
                 "DELETE FROM spots WHERE game=?1 AND character=?2 AND server=?3 AND source=?4",
-                params![game, c, sv, source],
+                params![tag, c, sv, source],
             )?;
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO spots
@@ -1756,7 +1792,7 @@ impl Store {
             )?;
             for sp in r.spots.spots() {
                 stmt.execute(params![
-                    game, c, sv, source, sp.name, sp.zone, sp.zone_short,
+                    tag, c, sv, source, sp.name, sp.zone, sp.zone_short,
                     sp.x, sp.y, sp.z, sp.at, sp.gap
                 ])?;
                 n += 1;
@@ -1775,7 +1811,8 @@ impl Store {
     ///
     /// `source` on each report reads `history` rather than a log's stem, for
     /// the same reason: there is no one log this came from.
-    pub fn record_reports(&self, game: &str) -> Result<crate::record::Reports> {
+    pub fn record_reports(&self, game: Game) -> Result<crate::record::Reports> {
+        let tag = crate::record::tag(game);
         use crate::record::*;
         const SOURCE: &str = "history";
 
@@ -1789,7 +1826,7 @@ impl Store {
                  GROUP BY zone, item ORDER BY zone, item",
             )?;
             let rows = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -1805,7 +1842,7 @@ impl Store {
                     _ => {
                         forage_zones.push(ForageZoneRow {
                             zone: zone.clone(),
-                            game: GAME_TAG.into(),
+                            game: tag.into(),
                             attempts: 0,
                             hits: 0,
                             empty: 0,
@@ -1838,7 +1875,7 @@ impl Store {
                  GROUP BY creature, level ORDER BY creature, level",
             )?;
             let rows = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)?,
@@ -1854,7 +1891,7 @@ impl Store {
                     _ => {
                         considers.push(ConsiderRow {
                             creature,
-                            game: GAME_TAG,
+                            game: tag,
                             levels: Vec::new(),
                             rare: false,
                             raid: false,
@@ -1888,7 +1925,7 @@ impl Store {
                  ORDER BY creature, zone, faction, amount",
             )?;
             let rows = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -1908,7 +1945,7 @@ impl Store {
                             faction,
                             adjustments: Vec::new(),
                             kills: 0,
-                            game: GAME_TAG,
+                            game: tag,
                         });
                         hits.last_mut().expect("just pushed")
                     }
@@ -1930,7 +1967,7 @@ impl Store {
                  ORDER BY npc, item, faction, amount",
             )?;
             let rows = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -1951,7 +1988,7 @@ impl Store {
                             adjustments: Vec::new(),
                             offered: 0,
                             handins: 0,
-                            game: GAME_TAG,
+                            game: tag,
                         });
                         turnins.last_mut().expect("just pushed")
                     }
@@ -1966,7 +2003,7 @@ impl Store {
                  FROM faction_offers WHERE game = ?1 GROUP BY npc, item",
             )?;
             let counts = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok((
                         (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
                         (r.get::<_, i64>(2)?, r.get::<_, i64>(3)?),
@@ -1984,7 +2021,7 @@ impl Store {
         let (bursts_seen, bursts_attributed, bursts_to_turnins) = self.conn.query_row(
             "SELECT COALESCE(SUM(seen),0), COALESCE(SUM(attributed),0),
                     COALESCE(SUM(to_turnins),0) FROM faction_bursts WHERE game = ?1",
-            params![game],
+            params![tag],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )?;
 
@@ -1998,7 +2035,7 @@ impl Store {
                  ORDER BY name, level",
             )?;
             let rows = stmt
-                .query_map(params![game], |r| {
+                .query_map(params![tag], |r| {
                     Ok(PlayerRow {
                         name: r.get(0)?,
                         level: r.get::<_, i64>(1)? as u32,
@@ -2029,11 +2066,11 @@ impl Store {
                 "SELECT skill, MAX(at_least) FROM skills WHERE game = ?1
                  GROUP BY skill ORDER BY skill",
             )?;
-            let rows = stmt.query_map(params![game], |r| {
+            let rows = stmt.query_map(params![tag], |r| {
                 Ok(SkillRow {
                     skill: r.get(0)?,
                     at_least: r.get::<_, i64>(1)? as u32,
-                    game: GAME_TAG,
+                    game: tag,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2045,7 +2082,7 @@ impl Store {
                 "SELECT DISTINCT name, kind, role, zone, zone_short, x, y, z, level
                  FROM markers WHERE game = ?1 ORDER BY zone, name, x, y",
             )?;
-            let rows = stmt.query_map(params![game], |r| {
+            let rows = stmt.query_map(params![tag], |r| {
                 Ok(MarkerRow {
                     name: r.get(0)?,
                     kind: crate::record::kind_of(&r.get::<_, String>(1)?),
@@ -2056,7 +2093,7 @@ impl Store {
                     y: r.get(6)?,
                     z: r.get(7)?,
                     level: r.get::<_, Option<i64>>(8)?.map(|l| l as u32),
-                    game: GAME_TAG,
+                    game: tag,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2067,11 +2104,11 @@ impl Store {
             let mut stmt = self
                 .conn
                 .prepare("SELECT zone, zone_short FROM map_zones WHERE game = ?1 ORDER BY zone")?;
-            let rows = stmt.query_map(params![game], |r| {
+            let rows = stmt.query_map(params![tag], |r| {
                 Ok(ZoneRow {
                     zone: r.get(0)?,
                     zone_short: r.get(1)?,
-                    game: GAME_TAG,
+                    game: tag,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2083,7 +2120,7 @@ impl Store {
                 "SELECT name, zone, zone_short, x, y, z, at, gap FROM spots
                  WHERE game = ?1 ORDER BY name, at",
             )?;
-            let rows = stmt.query_map(params![game], |r| {
+            let rows = stmt.query_map(params![tag], |r| {
                 Ok(SpotRow {
                     name: r.get(0)?,
                     zone: r.get(1)?,
@@ -2093,7 +2130,7 @@ impl Store {
                     z: r.get(5)?,
                     at: r.get(6)?,
                     gap: r.get(7)?,
-                    game: GAME_TAG,
+                    game: tag,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2104,7 +2141,7 @@ impl Store {
             players: PlayersReport {
                 note: PLAYERS_NOTE,
                 source: SOURCE.to_string(),
-                game: GAME_TAG,
+                game: tag,
                 players,
             },
             forage: ForageReport {
@@ -2144,7 +2181,7 @@ impl Store {
             skills: SkillsReport {
                 note: SKILLS_NOTE,
                 source: "logs",
-                game: GAME_TAG,
+                game: tag,
                 skills,
             },
         })
@@ -3153,12 +3190,52 @@ mod tests {
 [Tue Jul 28 15:03:16 2026] You have become better at Baking! (42)
 ";
 
+    /// The same log read as each game files two sets of rows, and rows filed
+    /// as Legends before the games were told apart move when their log's
+    /// path says it was live EverQuest.
+    #[test]
+    fn the_two_games_records_are_kept_apart_and_old_live_rows_move() {
+        let dir = std::env::temp_dir().join(format!("eqlp-retag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("history.db");
+        let live = "/games/Everquest/Logs/eqlog_Dorrak_drinal.txt";
+        let legends = "/games/EverquestLegends/Logs/eqlog_Dorrak_drinal.txt";
+        let nameless = "/tmp/eqlog_Dorrak_drinal.txt";
+        {
+            let mut st = Store::open_as(&db, "Dorrak", "drinal").unwrap();
+            let rec = record_over(RIVERVALE);
+            st.put_record(Game::EverQuest, live, &rec).unwrap();
+            st.put_record(Game::EverQuestLegends, legends, &rec).unwrap();
+            let n = |g| st.record_reports(g).unwrap().consider.considers.len();
+            assert!(n(Game::EverQuest) > 0);
+            assert_eq!(n(Game::EverQuest), n(Game::EverQuestLegends), "the same inputs, kept apart");
+            assert_eq!(n(Game::Unknown), 0, "neither game's rows read as unknown");
+            // Rows filed before the games were told apart: all `eql`.
+            st.put_record(Game::EverQuestLegends, live, &rec).unwrap();
+            st.put_record(Game::EverQuestLegends, nameless, &rec).unwrap();
+        }
+        let st = Store::open_as(&db, "Dorrak", "drinal").unwrap();
+        let sources = |g: &str| -> Vec<String> {
+            st.conn
+                .prepare("SELECT DISTINCT source FROM considers WHERE game = ?1 ORDER BY source")
+                .unwrap()
+                .query_map(params![g], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(sources("eq"), [live], "the live install's rows moved off eql");
+        assert_eq!(sources("eql"), [legends, nameless], "a path naming neither game is not guessed at");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What went in comes back out.
     #[test]
     fn the_record_survives_a_round_trip() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(RIVERVALE)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         assert_eq!(r.players.source, "history");
         assert!(r.players.players.iter().any(|p| p.name == "Tharn"));
@@ -3180,10 +3257,10 @@ mod tests {
     fn re_reading_one_log_replaces_only_its_own_rows() {
         let mut st = Store::in_memory().unwrap();
         let rec = record_over(RIVERVALE);
-        st.put_record("eql", "log-a", &rec).unwrap();
-        let once = st.record_reports("eql").unwrap();
-        st.put_record("eql", "log-a", &rec).unwrap();
-        let twice = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &rec).unwrap();
+        let once = st.record_reports(Game::EverQuestLegends).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &rec).unwrap();
+        let twice = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
             once.consider.considers[0].considers, twice.consider.considers[0].considers,
             "a second read of the same log is the same reading, not twice as much"
@@ -3191,8 +3268,8 @@ mod tests {
         assert_eq!(once.carto.markers.len(), twice.carto.markers.len());
 
         // A second log adds to it.
-        st.put_record("eql", "log-b", &rec).unwrap();
-        let both = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-b", &rec).unwrap();
+        let both = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
             both.consider.considers[0].considers,
             twice.consider.considers[0].considers * 2,
@@ -3346,10 +3423,10 @@ mod tests {
     #[test]
     fn a_skill_ceiling_never_falls() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(RIVERVALE)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(RIVERVALE)).unwrap();
         let lower = "[Tue Jul 28 15:03:16 2026] You have become better at Baking! (7)\n";
-        st.put_record("eql", "log-a", &record_over(lower)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(lower)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
         assert_eq!(
             r.skills.skills.iter().find(|s| s.skill == "Baking").map(|s| s.at_least),
             Some(42),
@@ -3373,8 +3450,8 @@ mod tests {
 ";
         let settled = record_over(log);
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &settled).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &settled).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let row = r.consider.considers.first().expect("the rat");
         assert_eq!(row.creature, "rat");
@@ -4184,8 +4261,8 @@ mod forage_tests {
     #[test]
     fn the_forage_record_survives_a_round_trip() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
@@ -4199,8 +4276,8 @@ mod forage_tests {
     #[test]
     fn a_zone_that_yielded_nothing_still_comes_back() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let nl = r.forage.zones.iter().find(|z| z.zone == "Nagafen's Lair").unwrap();
         assert_eq!((nl.hits, nl.empty, nl.attempts), (0, 2, 2));
@@ -4211,9 +4288,9 @@ mod forage_tests {
     #[test]
     fn two_logs_pool_into_one_zone() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
-        st.put_record("eql", "log-b", &record_over(FORAGING)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-b", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (4, 2, 6));
@@ -4225,9 +4302,9 @@ mod forage_tests {
     #[test]
     fn a_second_pass_over_the_same_log_does_not_double_it() {
         let mut st = Store::in_memory().unwrap();
-        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
-        st.put_record("eql", "log-a", &record_over(FORAGING)).unwrap();
-        let r = st.record_reports("eql").unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        st.put_record(Game::EverQuestLegends, "log-a", &record_over(FORAGING)).unwrap();
+        let r = st.record_reports(Game::EverQuestLegends).unwrap();
 
         let ef = r.forage.zones.iter().find(|z| z.zone == "Everfrost Peaks").unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));

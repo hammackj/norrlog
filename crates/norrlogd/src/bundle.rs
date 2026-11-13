@@ -111,7 +111,7 @@ pub fn build(
     // Everything below reads through these views; see `Store::played_only`.
     let _played = store.played_only()?;
 
-    let reports = store.record_reports(crate::record::GAME_TAG)?;
+    let reports = store.record_reports(Game::EverQuestLegends)?;
 
     // Forage. Zones with no successes travel too: see `ZoneForaged`.
     b.forage = reports

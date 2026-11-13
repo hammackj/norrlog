@@ -41,13 +41,21 @@ use norrlog_core::game::Game;
 use norrlog_core::LogEntry;
 use serde::Serialize;
 
-/// The game tag these rows carry to the site.
+/// The game tag the record's rows are keyed and reported on.
 ///
-/// Not [`Game::slug`], which is `everquest-legends`. The site has said `eql`
-/// since before the slug existed and every row already filed says `eql`, so
-/// this is the tag the record is keyed on rather than a name for the game.
-/// Changing it is a data migration, not an edit.
-pub const GAME_TAG: &str = "eql";
+/// Not [`Game::slug`], which is `everquest-legends`. eqldb has said `eql`
+/// since before the slug existed and every Legends row already filed says
+/// `eql`, so Legends keeps it. The record was Legends-only until live
+/// EverQuest was folded in, and every row was tagged `eql` whatever game it
+/// came from; live EverQuest is `eq` now, and a log whose game is unknown is
+/// `unknown`, never one of the two. See `Store::retag_live_record`.
+pub fn tag(game: Game) -> &'static str {
+    match game {
+        Game::EverQuestLegends => "eql",
+        Game::EverQuest => "eq",
+        Game::Unknown => "unknown",
+    }
+}
 
 /// How far apart two `/loc` readings may be and still be one spawn point.
 ///
@@ -164,6 +172,7 @@ impl Record {
     /// live collectors.
     pub fn settle(&self, player: &str, game: Game, zone: Option<&str>) -> Settled {
         let mut s = Settled {
+            game,
             consider: self.consider.clone(),
             forage: self.forage.clone(),
             faction: self.faction.clone(),
@@ -196,6 +205,8 @@ impl Record {
 
 /// A settled copy of the record, safe to report off.
 pub struct Settled {
+    /// The game the log was of, which every row is tagged with.
+    pub game: Game,
     pub consider: ConsiderCollector,
     pub forage: ForageCollector,
     pub faction: FactionCollector,
@@ -226,7 +237,7 @@ impl Settled {
         PlayersReport {
             note: PLAYERS_NOTE,
             source: source.to_string(),
-            game: GAME_TAG,
+            game: tag(self.game),
             players: self
                 .players
                 .seen()
@@ -251,7 +262,7 @@ impl Settled {
                 .values()
                 .map(|r| ConsiderRow {
                     creature: r.name.clone(),
-                    game: GAME_TAG,
+                    game: tag(self.game),
                     levels: r
                         .levels
                         .iter()
@@ -284,7 +295,7 @@ impl Settled {
                 .iter()
                 .map(|(zone, z)| ForageZoneRow {
                     zone: zone.clone(),
-                    game: GAME_TAG.into(),
+                    game: tag(self.game).into(),
                     attempts: z.attempts(),
                     hits: z.hits(),
                     empty: z.empty,
@@ -323,7 +334,7 @@ impl Settled {
                     faction: faction_name.clone(),
                     adjustments,
                     kills: moves.times(),
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 }),
                 FactionCause::TurnIn { npc, item } => turnins.push(FactionTurnIn {
                     npc: npc.clone(),
@@ -340,7 +351,7 @@ impl Settled {
                         .get(&(npc.clone(), item.clone()))
                         .copied()
                         .unwrap_or(0),
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 }),
             }
         }
@@ -372,7 +383,7 @@ impl Settled {
                     z: s.z,
                     at: s.at,
                     gap: s.gap,
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 })
                 .collect(),
         }
@@ -389,7 +400,7 @@ impl Settled {
                 .map(|(zone, short)| ZoneRow {
                     zone: zone.clone(),
                     zone_short: short.clone(),
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 })
                 .collect(),
             markers: self
@@ -406,7 +417,7 @@ impl Settled {
                     y: m.y,
                     z: m.z,
                     level: m.level,
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 })
                 .collect(),
         }
@@ -419,7 +430,7 @@ impl Settled {
         SkillsReport {
             note: SKILLS_NOTE,
             source: "logs",
-            game: GAME_TAG,
+            game: tag(self.game),
             skills: self
                 .skills
                 .best()
@@ -427,7 +438,7 @@ impl Settled {
                 .map(|(skill, at_least)| SkillRow {
                     skill: skill.clone(),
                     at_least: *at_least,
-                    game: GAME_TAG,
+                    game: tag(self.game),
                 })
                 .collect(),
         }
