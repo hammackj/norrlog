@@ -299,7 +299,11 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
+        if s.repairs_pending()? {
+            s.back_up_before_repair(path)?;
+        }
         s.repair_rule_notice_zones()?;
+        s.drop_graded_duplicates()?;
         Ok(s)
     }
 
@@ -320,6 +324,7 @@ impl Store {
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
         s.repair_rule_notice_zones()?;
+        s.drop_graded_duplicates()?;
         Ok(s)
     }
 
@@ -469,6 +474,72 @@ impl Store {
                 "ALTER TABLE item_drops ADD COLUMN left_behind INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        Ok(())
+    }
+
+    /// Whether opening this history will change anything already on file:
+    /// a place that is a rule announcement, or a graded drop counted twice.
+    fn repairs_pending(&self) -> Result<bool> {
+        let notice = |col: &str| {
+            format!(
+                "({col} GLOB 'an area *' OR {col} GLOB 'a area *' \
+                 OR {col} GLOB 'an zone *' OR {col} GLOB 'a zone *')"
+            )
+        };
+        let mut checks: Vec<String> = [
+            "npc_profiles",
+            "npc_melee",
+            "npc_health_samples",
+            "item_drop_places",
+            "forage",
+            "markers",
+            "faction_hits",
+            "encounters",
+            "boss_kills",
+            "spots",
+            "map_zones",
+        ]
+        .iter()
+        .map(|t| format!("SELECT 1 FROM {t} WHERE {}", notice("zone")))
+        .collect();
+        for t in ["item_drops", "levels"] {
+            checks.push(format!(
+                "SELECT 1 FROM {t} WHERE zones LIKE '%area %' OR zones LIKE '%zone %'"
+            ));
+        }
+        for q in &checks {
+            if self
+                .conn
+                .query_row(&format!("SELECT EXISTS({q})"), [], |r| r.get(0))?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(!self.graded_duplicates()?.is_empty())
+    }
+
+    /// A copy of the history beside it, taken once before a repair deletes
+    /// anything: `history.db.before-repair-<unix seconds>`. The repairs only
+    /// remove what they can prove is a duplicate, but a deleted row cannot
+    /// be read back, and this is somebody's whole history.
+    fn back_up_before_repair(&self, path: &Path) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = format!(
+            "{}.before-repair-{now}",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("history.db")
+        );
+        let to = path.with_file_name(name);
+        self.conn
+            .execute("VACUUM INTO ?1", params![to.to_string_lossy()])?;
+        eprintln!(
+            "[norrlogd] repairing history; a copy from before is at {}",
+            to.display()
+        );
         Ok(())
     }
 
@@ -671,6 +742,88 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Delete drop rows still filed under a graded name that a later read of
+    /// the same log has counted again under the item's own name.
+    ///
+    /// Before f24fa31 a drop was keyed on the roll, `White Satin Gloves +1`,
+    /// so a log read then left one row per grade. Since then the same log
+    /// read again writes one row, `White Satin Gloves`, counting every grade
+    /// -- and the graded rows, keyed differently, stay. `all_drops` folds
+    /// names on the way out and sums both, so those loots counted twice.
+    ///
+    /// A graded row goes only when that is proved:
+    ///
+    /// - the same log has a row under the ungraded name with places behind it
+    ///   in `item_drop_places`, which only code newer than the fold writes
+    ///   (1e5fa68), so that row counts every grade it read; and
+    /// - that row's first and last sightings span the graded row's, so the
+    ///   read it came from covered those loots.
+    ///
+    /// Anything else stays: a graded row with no such twin is the only record
+    /// of its loots, and the fold on the way out counts it once. Before the
+    /// fold an ungraded row was a separate fact, the drops with no roll, and
+    /// it has no places, so it is never mistaken for a twin.
+    fn drop_graded_duplicates(&mut self) -> Result<()> {
+        let ids = self.graded_duplicates()?;
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM item_drops WHERE rowid = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The rows `drop_graded_duplicates` deletes, by rowid.
+    fn graded_duplicates(&self) -> Result<Vec<i64>> {
+        let graded: Vec<(i64, [String; 6], i64, i64)> = {
+            let mut st = self.conn.prepare(
+                "SELECT rowid, game, character, server, source, item, npc, first_seen, last_seen
+                 FROM item_drops WHERE item GLOB '*+[0-9]*'",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    [
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ],
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let mut twin = self.conn.prepare(
+            "SELECT EXISTS(SELECT 1 FROM item_drops d
+                 WHERE d.game = ?1 AND d.character = ?2 AND d.server = ?3
+                   AND d.source = ?4 AND lower(d.item) = lower(?5)
+                   AND lower(d.npc) = lower(?6)
+                   AND d.first_seen <= ?7 AND d.last_seen >= ?8
+                   AND EXISTS(SELECT 1 FROM item_drop_places p
+                       WHERE p.game = d.game AND p.character = d.character
+                         AND p.server = d.server AND p.source = d.source
+                         AND p.item = d.item AND p.npc = d.npc))",
+        )?;
+        let mut out = Vec::new();
+        for (id, [game, character, server, source, item, npc], first, last) in graded {
+            let (base, Some(_)) = norrlog_core::drops::split_grade(&item) else {
+                continue;
+            };
+            let found: bool = twin.query_row(
+                params![game, character, server, source, base, npc, first, last],
+                |r| r.get(0),
+            )?;
+            if found {
+                out.push(id);
+            }
+        }
+        Ok(out)
     }
 
     /// Add the creature body type to the bestiary, once.
@@ -4960,5 +5113,112 @@ mod notice_repair_tests {
         let once = (zones(&s, "npc_profiles"), zones(&s, "encounters"));
         repair(&mut s);
         assert_eq!((zones(&s, "npc_profiles"), zones(&s, "encounters")), once);
+    }
+}
+
+#[cfg(test)]
+mod graded_duplicate_tests {
+    use super::*;
+
+    const LOG: &str = "/logs/eqlog_Test_test.txt";
+
+    fn put_drop(s: &Store, item: &str, looted: i64, span: (i64, i64)) {
+        s.conn
+            .execute(
+                "INSERT INTO item_drops (game, character, server, source, item, npc, zones,
+                     looted, quantity, first_seen, last_seen)
+                 VALUES ('everquest-legends','Test','test',?1,?2,'Bazzt Zzzt',
+                         'The Plane of Sky',?3,?3,?4,?5)",
+                params![LOG, item, looted, span.0, span.1],
+            )
+            .unwrap();
+    }
+
+    fn places(s: &Store, item: &str, looted: i64) {
+        s.conn
+            .execute(
+                "INSERT INTO item_drop_places (game, character, server, source, item, npc,
+                     zone, mode, difficulty, looted, quantity)
+                 VALUES ('everquest-legends','Test','test',?1,?2,'Bazzt Zzzt',
+                         'The Plane of Sky','open',0,?3,?3)",
+                params![LOG, item, looted],
+            )
+            .unwrap();
+    }
+
+    fn looted(s: &Store) -> u64 {
+        s.all_drops()
+            .unwrap()
+            .iter()
+            .filter(|d| d.item.starts_with("White Satin Gloves"))
+            .map(|d| d.looted)
+            .sum()
+    }
+
+    /// The case on file: one +1 loot from before the fold, and the same log
+    /// read again since, counting it among four. Four, not five.
+    #[test]
+    fn a_graded_row_read_again_is_not_counted_twice() {
+        let mut s = Store::in_memory().unwrap();
+        put_drop(&s, "White Satin Gloves +1", 1, (150, 150));
+        put_drop(&s, "White Satin Gloves", 4, (100, 300));
+        places(&s, "White Satin Gloves", 4);
+        assert_eq!(looted(&s), 5, "the double count this repairs");
+        s.drop_graded_duplicates().unwrap();
+        assert_eq!(looted(&s), 4);
+    }
+
+    /// From before the fold, an ungraded row is the loots with no roll and
+    /// the graded row is the rest. No places, so both stay.
+    #[test]
+    fn rows_from_before_the_fold_are_both_kept() {
+        let mut s = Store::in_memory().unwrap();
+        put_drop(&s, "White Satin Gloves +1", 1, (150, 150));
+        put_drop(&s, "White Satin Gloves", 4, (100, 300));
+        s.drop_graded_duplicates().unwrap();
+        assert_eq!(looted(&s), 5);
+    }
+
+    /// A later read that began after the graded loot did not count it.
+    #[test]
+    fn a_read_that_did_not_cover_it_keeps_it() {
+        let mut s = Store::in_memory().unwrap();
+        put_drop(&s, "White Satin Gloves +1", 1, (50, 50));
+        put_drop(&s, "White Satin Gloves", 4, (100, 300));
+        places(&s, "White Satin Gloves", 4);
+        s.drop_graded_duplicates().unwrap();
+        assert_eq!(looted(&s), 5);
+    }
+
+    /// The open that repairs leaves a copy from before; an open with nothing
+    /// to repair leaves none.
+    #[test]
+    fn a_repair_is_backed_up_once() {
+        let dir = std::env::temp_dir().join(format!("norrlog-repair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("history.db");
+        let copies = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().contains(".before-repair-"))
+                .count()
+        };
+        {
+            let s = Store::open_as(&db, "Test", "test").unwrap();
+            assert_eq!(copies(), 0, "a new history has nothing to repair");
+            put_drop(&s, "White Satin Gloves +1", 1, (150, 150));
+            put_drop(&s, "White Satin Gloves", 4, (100, 300));
+            places(&s, "White Satin Gloves", 4);
+        }
+        let s = Store::open_as(&db, "Test", "test").unwrap();
+        assert_eq!(copies(), 1);
+        assert_eq!(looted(&s), 4);
+        drop(s);
+        let s = Store::open_as(&db, "Test", "test").unwrap();
+        assert_eq!(copies(), 1, "nothing left to repair, so no second copy");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
