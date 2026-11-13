@@ -238,6 +238,10 @@ pub struct AlertRule {
     /// first, but should not repeat itself about the same one.
     #[serde(default = "default_cooldown")]
     pub cooldown: i64,
+    /// Seconds to count down on the overlay when it fires, or 0 for none:
+    /// "the breath comes again in 30s". Firing again restarts it.
+    #[serde(default)]
+    pub timer: u32,
     /// Why this rule can never fire, when that is the case — a regular
     /// expression that would not compile. Reported rather than swallowed, so a
     /// typo shows up as a broken rule instead of silence.
@@ -263,6 +267,9 @@ pub struct AlertFire {
     pub sound: Sound,
     /// Text to speak, already resolved from the rule.
     pub say: Option<String>,
+    /// The rule's countdown, in seconds; 0 for none.
+    #[serde(default)]
+    pub timer: u32,
 }
 
 /// The rule set, its compiled patterns, and what has fired recently.
@@ -501,6 +508,7 @@ impl AlertBook {
             detail,
             sound: rule.sound,
             say,
+            timer: rule.timer,
         });
         if self.fires.len() > FIRE_HISTORY {
             let drop = self.fires.len() - FIRE_HISTORY;
@@ -576,6 +584,7 @@ mod tests {
             speak: false,
             say: None,
             cooldown: DEFAULT_COOLDOWN,
+            timer: 0,
             error: None,
         }
     }
@@ -604,6 +613,32 @@ mod tests {
         assert_eq!(b.since(0).len(), 1);
         // The timestamp is stripped from what gets shown and spoken.
         assert_eq!(b.since(0)[0].detail, "Your charm spell has worn off.");
+    }
+
+    /// A rule's countdown travels with each fire, and a rule saved before
+    /// countdowns existed reads back with none.
+    #[test]
+    fn a_fire_carries_its_rules_countdown() {
+        let mut r = rule(
+            "r1",
+            Trigger::Contains {
+                text: "rears back".to_string(),
+            },
+        );
+        r.timer = 30;
+        let mut b = armed(vec![r]);
+        b.on_line(
+            100,
+            "[x] Lord Nagafen rears back and inhales deeply.",
+            &Event::Unknown,
+            "Tharn",
+        );
+        assert_eq!(b.since(0)[0].timer, 30);
+        let old: AlertRule = serde_json::from_str(
+            r#"{"id":"a","name":"a","trigger":{"type":"contains","text":"x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.timer, 0);
     }
 
     /// An unfinished rule with an empty substring would otherwise match every

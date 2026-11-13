@@ -353,6 +353,9 @@ pub struct OverlayView {
     /// above the panels for [`BANNER_FOR`]: an alert is heard, and now also
     /// seen where the eye already is.
     banners: Vec<(Instant, String, String)>,
+    /// Countdowns started by alerts that carry a timer: (rule id, name,
+    /// started, seconds). One per rule; firing again restarts it.
+    timers: Vec<(String, String, Instant, u32)>,
     _tick: Task<()>,
 }
 
@@ -422,6 +425,8 @@ impl OverlayView {
                 let Ok(()) = this.update(cx, |v, cx| {
                     v.poll(cx);
                     v.banners.retain(|(at, _, _)| at.elapsed() < BANNER_FOR);
+                    v.timers
+                        .retain(|(_, _, at, secs)| at.elapsed().as_secs_f64() < *secs as f64);
                     v.ticks += 1;
                     cx.notify();
                 }) else {
@@ -446,6 +451,7 @@ impl OverlayView {
             drag: None,
             api: None,
             banners: Vec::new(),
+            timers: Vec::new(),
             _tick: tick,
         }
     }
@@ -482,6 +488,11 @@ impl OverlayView {
         for f in fires {
             self.banners
                 .insert(0, (Instant::now(), f.name.clone(), f.detail.clone()));
+            if f.timer > 0 {
+                self.timers.retain(|(id, ..)| *id != f.rule_id);
+                self.timers
+                    .push((f.rule_id.clone(), f.name.clone(), Instant::now(), f.timer));
+            }
         }
         self.banners.truncate(BANNERS_MAX);
         cx.notify();
@@ -691,6 +702,40 @@ impl OverlayView {
                 .iter()
                 .map(|(_, name, detail)| banner(name, detail)),
         );
+        // Alert countdowns, soonest out first, beneath the banners that
+        // started them.
+        let mut timers: Vec<(f64, &str, u32)> = self
+            .timers
+            .iter()
+            .map(|(_, name, at, secs)| {
+                (
+                    (*secs as f64 - at.elapsed().as_secs_f64()).max(0.),
+                    name.as_str(),
+                    *secs,
+                )
+            })
+            .collect();
+        timers.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if !timers.is_empty() {
+            col = col.child(panel(
+                "Timers".into(),
+                None,
+                false,
+                timers
+                    .into_iter()
+                    .map(|(left, name, secs)| {
+                        bar_row(
+                            div().text_color(gpui::rgb(ACCENT)).child(name.to_string()),
+                            vec![(dur(left.ceil()), TEXT)],
+                            left / secs.max(1) as f64,
+                            rgba_of(ACCENT, 0.35),
+                            1.,
+                        )
+                        .into_any_element()
+                    })
+                    .collect(),
+            ));
+        }
         let o = &self.opts;
         let Some(snap) = self.snap.clone() else {
             // "Connecting…", with nothing else drawn yet.

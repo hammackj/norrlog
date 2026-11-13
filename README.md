@@ -27,7 +27,10 @@ overlay.
 - **Classes.** Read from what the game states (`/who`, the class channel) and
   from the spells you cast.
 - **Plane of Sky** quest progress, for EverQuest Legends.
-- **Tells and alerts.** A tell log, and sound alerts built from any line.
+- **Fight detail.** Each fight's breakdown per ability, who cast what, the
+  hits that landed before you died, and a one-line parse to paste into chat.
+- **Tells and alerts.** A tell log, and alerts built from any line: a sound,
+  speech, a banner on the overlay, and optionally a countdown there.
 
 ## Two games
 

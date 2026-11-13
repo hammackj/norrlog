@@ -5963,6 +5963,7 @@ mod tests {
             speak: false,
             say: None,
             cooldown: 0,
+            timer: 0,
             error: None,
         }
     }

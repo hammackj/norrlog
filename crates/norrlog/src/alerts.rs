@@ -203,6 +203,7 @@ struct Inputs {
     seconds: Entity<InputState>,
     subject: Entity<InputState>,
     cooldown: Entity<InputState>,
+    timer: Entity<InputState>,
     say: Entity<InputState>,
 }
 
@@ -275,6 +276,7 @@ impl AlertsView {
             seconds: input(window, cx, "", "30"),
             subject: input(window, cx, "any", ""),
             cooldown: input(window, cx, "", "10"),
+            timer: input(window, cx, "", "0"),
             say: input(window, cx, "words to say (defaults to the name)", ""),
         };
         // Whether speech can be heard, asked once and off the UI thread.
@@ -458,6 +460,7 @@ impl AlertsView {
             (&self.inputs.seconds, "30"),
             (&self.inputs.subject, ""),
             (&self.inputs.cooldown, "10"),
+            (&self.inputs.timer, ""),
             (&self.inputs.say, ""),
         ] {
             self.set(i, v, window, cx);
@@ -516,6 +519,11 @@ impl AlertsView {
         self.signal = signal;
         self.sound = r.sound;
         self.speak = r.speak;
+        let timer = if r.timer > 0 {
+            r.timer.to_string()
+        } else {
+            String::new()
+        };
         let (n, t, p, sec, sub, cd, say) = (
             r.name.clone(),
             text,
@@ -531,6 +539,7 @@ impl AlertsView {
         self.set(&self.inputs.seconds.clone(), &sec, window, cx);
         self.set(&self.inputs.subject.clone(), &sub, window, cx);
         self.set(&self.inputs.cooldown.clone(), &cd, window, cx);
+        self.set(&self.inputs.timer.clone(), &timer, window, cx);
         self.set(&self.inputs.say.clone(), &say, window, cx);
         cx.notify();
     }
@@ -612,6 +621,9 @@ impl AlertsView {
             cooldown: parse_int(&self.value(&self.inputs.cooldown, cx))
                 .unwrap_or(0)
                 .max(0),
+            timer: parse_int(&self.value(&self.inputs.timer, cx))
+                .unwrap_or(0)
+                .clamp(0, 24 * 3600) as u32,
             error: None,
         };
         self.put(rule, Some(id), window, cx);
@@ -833,6 +845,9 @@ impl AlertsView {
                     .when(r.sound == Sound::None && !r.speak, |d| {
                         d.child(tag("silent", PET).flex_none())
                     })
+                    .when(r.timer > 0, |d| {
+                        d.child(tag(format!("{}s timer", r.timer), ACCENT).flex_none())
+                    })
                     .child(
                         dim(summary(&r.trigger))
                             .min_w_0()
@@ -975,6 +990,13 @@ impl AlertsView {
                             // Expiry warnings are edge-triggered: a cooldown would only confuse.
                             .child(div().w(px(70.)).child(Input::new(&self.inputs.cooldown).small().disabled(kind == Kind::BuffExpiring)))
                             .child("s"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child("Count down")
+                            .child(div().w(px(70.)).child(Input::new(&self.inputs.timer).small()))
+                            .child("s on the overlay"),
                     ),
             )
             .child(
