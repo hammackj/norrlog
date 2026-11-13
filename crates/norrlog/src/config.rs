@@ -87,10 +87,30 @@ impl ParserConfig {
     /// `ensureDaemon` in `gui/main.js` builds them. With nothing configured,
     /// the install is guessed and its Logs folder followed.
     pub fn daemon_args(&self) -> Vec<OsString> {
+        self.daemon_args_with(norrlog_client::install::guess_game_dir)
+    }
+
+    /// The game folder: the one set, else the install the chosen log sits
+    /// in, else, only when no log was chosen either, a guess. A guess beside
+    /// a chosen log could be the other game's install (it looks for Legends),
+    /// and the daemon takes the game and its spell file from the game
+    /// folder before the log, so a live EverQuest log was read as Legends.
+    fn daemon_args_with(&self, guess: impl FnOnce() -> Option<PathBuf>) -> Vec<OsString> {
         let mut a: Vec<OsString> = Vec::new();
-        let game_dir = (!self.game_dir.is_empty())
-            .then(|| PathBuf::from(&self.game_dir))
-            .or_else(norrlog_client::install::guess_game_dir);
+        let source = if !self.log_file.is_empty() {
+            std::path::Path::new(&self.log_file).parent().map(PathBuf::from)
+        } else if !self.logs_dir.is_empty() {
+            Some(PathBuf::from(&self.logs_dir))
+        } else {
+            None
+        };
+        let game_dir = if !self.game_dir.is_empty() {
+            Some(PathBuf::from(&self.game_dir))
+        } else if let Some(logs) = &source {
+            install_of(logs)
+        } else {
+            guess()
+        };
         if !self.log_file.is_empty() {
             a.extend(["--log".into(), (&self.log_file).into()]);
         } else if !self.logs_dir.is_empty() {
@@ -111,9 +131,42 @@ impl ParserConfig {
     }
 }
 
+/// The install a Logs folder belongs to: its parent, when that holds the
+/// game's spell file. Anything else is not taken as an install.
+fn install_of(logs: &std::path::Path) -> Option<PathBuf> {
+    let name = logs.file_name()?.to_string_lossy().to_lowercase();
+    let dir = logs.parent()?;
+    (name == "logs" && dir.join("spells_us.txt").is_file()).then(|| dir.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chosen_log_is_not_given_some_other_install() {
+        let root = std::env::temp_dir().join(format!("norrlog-gamedir-{}", std::process::id()));
+        let live = root.join("EverQuest");
+        std::fs::create_dir_all(live.join("Logs")).unwrap();
+        let log = live.join("Logs/eqlog_Dorrak_drinal.txt");
+        let legends = || Some(PathBuf::from("/somewhere/EverQuest Legends"));
+        let args = |c: &ParserConfig| c.daemon_args_with(legends).into_iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let mut c = ParserConfig { log_file: log.display().to_string(), ..Default::default() };
+
+        // No spell file beside the log: no game folder at all, not the guess.
+        assert!(!args(&c).iter().any(|a| a == "--game-dir"), "{:?}", args(&c));
+        // The install the log sits in, once it looks like one.
+        std::fs::write(live.join("spells_us.txt"), "").unwrap();
+        let a = args(&c);
+        assert_eq!(a[a.iter().position(|x| x == "--game-dir").unwrap() + 1], live.display().to_string());
+        // A folder that was set still wins.
+        c.game_dir = "/set/by/hand".into();
+        assert!(args(&c).contains(&"/set/by/hand".to_string()));
+        // Nothing chosen at all: the guess, and its Logs folder.
+        let a = args(&ParserConfig::default());
+        assert!(a.contains(&"/somewhere/EverQuest Legends".to_string()), "{a:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn a_patch_keeps_the_keys_it_does_not_name() {
