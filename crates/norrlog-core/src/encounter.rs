@@ -1422,6 +1422,11 @@ pub struct EncounterTracker {
     charmed: std::collections::HashMap<String, String>,
     /// When the charm currently held on each creature began.
     charm_since: std::collections::HashMap<String, i64>,
+    /// Held spans that ended past the open fight's last blow, as (actor key,
+    /// the fight's end when it broke, when it broke). Whether that stretch was
+    /// fighting or quiet is only known once the fight closes, so `close`
+    /// settles it: counted as far as the fight reached, the rest dropped.
+    charm_tails: Vec<(String, i64, i64)>,
     /// When the stun currently on you began, if one is.
     stunned_since: Option<i64>,
     /// Pet actor key -> the display name of the player it belongs to.
@@ -1466,6 +1471,7 @@ impl EncounterTracker {
             last_combat: 0,
             charmed: std::collections::HashMap::new(),
             charm_since: std::collections::HashMap::new(),
+            charm_tails: Vec::new(),
             stunned_since: None,
             pet_owners: std::collections::HashMap::new(),
             summoned: std::collections::HashSet::new(),
@@ -1647,9 +1653,18 @@ impl EncounterTracker {
         // and nothing to count.
         if let Some(since) = self.charm_since.remove(&key) {
             if let Some(enc) = self.current.as_mut() {
+                // A wear-off is not a combat line and does not move the
+                // fight's end. One landing in the quiet before the fight
+                // times out billed that quiet as charmed time: Heart harpie
+                // read 56 charmed seconds in a 49-second fight. Count up to
+                // the last blow now; `close` decides the rest.
+                let until = timestamp.min(enc.end).max(since);
+                if timestamp > until {
+                    self.charm_tails.push((key.clone(), until, timestamp));
+                }
                 let player = self.player.clone();
                 let st = enc.entry(actor, &player);
-                st.charmed_seconds += (timestamp - since).max(0);
+                st.charmed_seconds += (until - since).max(0);
                 if was_break {
                     st.charm_breaks += 1;
                 }
@@ -2368,10 +2383,18 @@ impl EncounterTracker {
         // otherwise the most common case — charming right through to the kill
         // — would report zero uptime.
         let ends_at = self.current.as_ref().map(|e| e.end);
+        let tails = std::mem::take(&mut self.charm_tails);
         if let (Some(end), Some(enc)) = (ends_at, self.current.as_mut()) {
             for (key, since) in self.charm_since.iter() {
                 if let Some(st) = enc.actors.get_mut(key) {
                     st.charmed_seconds += (end - *since).max(0);
+                }
+            }
+            // A break the fight went on past was held right up to it; one
+            // after the last blow was held to the last blow.
+            for (key, from, broke) in tails {
+                if let Some(st) = enc.actors.get_mut(&key) {
+                    st.charmed_seconds += (broke.min(end) - from).max(0);
                 }
             }
         }
@@ -4254,6 +4277,30 @@ mod tests {
             st.charmed_seconds, 11,
             "held from the first order, not the last"
         );
+    }
+
+    /// A charm that wears off in the quiet after the last blow, before the
+    /// fight has timed out, ends the span at the fight's end. Counting to the
+    /// wear-off billed the lull as charmed time: Heart harpie read 56 charmed
+    /// seconds in a 49-second fight, the break landing seven seconds after
+    /// the last hit.
+    #[test]
+    fn a_charm_breaking_after_the_last_blow_stops_at_the_fight_end() {
+        let mut t = EncounterTracker::new("Tharn");
+        let pet = Actor::Named("An imp protector".into());
+        for e in &entries(&[(100, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        t.set_charmed(101, &pet, true);
+        for e in &entries(&[(110, "You slash a rat for 1 point of damage.")]) {
+            t.push(e);
+        }
+        t.set_charmed(117, &pet, false);
+        let enc = t.flush().expect("fight");
+        let st = enc.actors.get("an imp protector").expect("pet");
+        assert_eq!(st.charm_breaks, 1, "it still broke");
+        assert_eq!(st.charmed_seconds, 9, "101 to the last blow at 110");
+        assert!(st.charmed_seconds <= enc.end - enc.start);
     }
 
     /// A creature you hold does not attack you. When one does, that is the
