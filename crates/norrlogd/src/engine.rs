@@ -12,7 +12,7 @@ use norrlog_core::class::{ClassDetector, ClassScore};
 use norrlog_core::drops::{DropReport, DropTracker};
 use norrlog_core::encounter::{Encounter, EncounterTracker};
 use norrlog_core::experience::{ExpTracker, LevelRecord};
-use norrlog_core::feed::Context;
+use norrlog_core::feed::{Context, Observer};
 use norrlog_core::game::Game;
 use norrlog_core::lockout::{LockoutReport, LockoutTracker};
 use norrlog_core::npc::NpcTracker;
@@ -21,7 +21,7 @@ use norrlog_core::skyquest::{SkyQuestDef, SkyReport, SkyTracker};
 use norrlog_core::spell::{BuffMark, SpellDb, SpellResolver};
 use norrlog_core::task::{TaskDef, TaskReport, TaskTracker};
 use norrlog_core::tells::{TellReport, TellTracker};
-use norrlog_core::tradeskill::{TradeskillReport, TradeskillTracker};
+use norrlog_core::tradeskill::TradeskillReport;
 use norrlog_core::{Event, LogEntry, Parser, SpellbookChangeKind};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -426,7 +426,9 @@ pub struct Engine {
     /// Whether a `Description:` has been read and its `Cost per Level:` has
     /// not. Only inside that window does an unstamped line mean anything.
     aa_description_open: bool,
-    trades: TradeskillTracker,
+    /// Driven as an [`Observer`], the same collector eqldb runs, so there is
+    /// one set of tradeskill rules rather than a copy here.
+    trades: norrlog_core::collect::TradeCollector,
     /// Where items were seen coming from, tagged with the game they were seen
     /// in — see [`norrlog_core::game`] for why that tag is not optional.
     drops: DropTracker,
@@ -611,7 +613,7 @@ impl Engine {
             last_charm_attempt: None,
             aa_pending_desc: String::new(),
             aa_description_open: false,
-            trades: TradeskillTracker::new(),
+            trades: norrlog_core::collect::TradeCollector::new(game),
             drops: DropTracker::new(game),
             bestiary: Bestiary::new(game, &player),
             tasks: TaskTracker::new(),
@@ -1036,45 +1038,8 @@ impl Engine {
                     self.pending_grants.push((entry.timestamp, spell.clone()));
                 }
             }
-            Event::SkillUp { skill, value } => {
-                self.classes.observe_skill(entry.timestamp, skill);
-                self.trades.on_skill_up(entry.timestamp, skill, *value);
-            }
-            Event::Craft { item, success } => self.trades.on_craft(entry.timestamp, item, *success),
-            Event::ComponentConsumed {
-                item,
-                quantity,
-                remaining,
-            } => self
-                .trades
-                .on_component(entry.timestamp, item, *quantity, Some(*remaining)),
-            Event::ItemPurchased {
-                item,
-                quantity,
-                coin,
-                merchant,
-            } => self.trades.on_purchase_from(
-                entry.timestamp,
-                item,
-                *quantity,
-                coin.as_copper(),
-                Some(merchant.as_str()),
-                // Where you are standing is where the merchant is.
-                self.tracker.current_zone(),
-            ),
-            Event::ItemQuoted {
-                item,
-                merchant,
-                coin,
-            } => self.trades.on_quote_from(
-                entry.timestamp,
-                item,
-                coin.as_copper(),
-                Some(merchant.as_str()),
-                // Where you are standing is where the merchant is.
-                self.tracker.current_zone(),
-            ),
-            Event::RecipeLearned { recipe } => self.trades.on_recipe_learned(recipe),
+            // Tradeskill lines go to `trades`, with the record's collectors.
+            Event::SkillUp { skill, .. } => self.classes.observe_skill(entry.timestamp, skill),
             Event::Chat {
                 speaker,
                 channel,
@@ -1266,7 +1231,6 @@ impl Engine {
                     self.npcs.on_faction(entry.timestamp, faction, *adj);
                 }
             }
-            Event::SkillTrained { skill, .. } => self.trades.on_trained(skill),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
                 // An invocation swap changes what you are, so a fight either
@@ -1627,6 +1591,7 @@ impl Engine {
         {
             let Engine {
                 record,
+                trades,
                 tracker,
                 player,
                 feed_zone,
@@ -1641,6 +1606,7 @@ impl Engine {
                 encounter: tracker.current(),
             };
             record.on_entry(&entry, &cx);
+            trades.on_entry(&entry, &cx);
         }
 
         if let Some(done) = self.tracker.push(&entry) {
@@ -2689,12 +2655,8 @@ impl Engine {
 
     /// Tradeskill activity: skill progress, combines and components.
     pub fn tradeskill_report(&self) -> TradeskillReport {
-        let mut r = self.trades.report();
-        // The tracker knows nothing about which game it is reading; the cost
-        // totals mean different things in the two, so the tag is stamped on
-        // here where it is known.
-        r.game = self.game();
-        r
+        // Tagged with the game by the collector.
+        self.trades.report()
     }
 
     /// Where items were seen coming from, and how often.
