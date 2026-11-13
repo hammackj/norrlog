@@ -1910,6 +1910,11 @@ impl EncounterTracker {
             // opens a fight nor keeps a dying one alive, so it is recorded on
             // the encounter in progress and otherwise ignored. Outside a fight
             // there is nothing to attach it to.
+            // "You resist a goblin's Root!" -- their spell, which you shrugged
+            // off. It is no resist of yours: filing it with them put the
+            // creature's spells in your resist table under your own name, and
+            // gave your timeline lanes for spells you never cast.
+            Event::Resisted { target, .. } if target.is_you() => {}
             Event::Resisted { target, spell } => {
                 if let Some(enc) = self.current.as_mut() {
                     let who = target.display(&self.player);
@@ -1918,8 +1923,9 @@ impl EncounterTracker {
                         .or_default()
                         .entry(spell.clone())
                         .or_default() += 1;
-                    // The client only reports resists of your own spells, so
-                    // this needs no source check.
+                    // Apart from the arm above, the client reports only
+                    // resists of your own spells, so this needs no source
+                    // check.
                     enc.note_timeline(entry.timestamp, spell, Outcome::Resist, 0, "");
                 }
             }
@@ -2527,6 +2533,14 @@ impl EncounterTracker {
             if !(s.damaged_by_you || s.fought_you) {
                 continue;
             }
+            // A creature's pet dies with it, and the log never says so: "A
+            // greater mummy pet" simply stops once the mummy is slain. Waiting
+            // for its death held one fight open for four minutes and fourteen
+            // kills, every later pull folding into it. Its owner's death is
+            // the one to wait for.
+            if s.summoned && owner_died(enc, &s.name) {
+                continue;
+            }
             if s.deaths == 0 {
                 return false;
             }
@@ -2684,6 +2698,13 @@ fn fold_heal_casts(st: &mut ActorStats) {
             .map(|(_, a)| a.casts)
             .sum();
     }
+}
+
+/// Whether the creature a pet is named for has died in this fight.
+fn owner_died(enc: &Encounter, pet: &str) -> bool {
+    crate::event::pet_owner_in_name(pet)
+        .and_then(|owner| enc.actors.get(&owner.to_lowercase()))
+        .is_some_and(|o| o.deaths > 0)
 }
 
 fn kind_label(k: DamageKind) -> &'static str {
@@ -3477,6 +3498,48 @@ mod tests {
             !encs[0].actors.contains_key("a wandering shaman"),
             "a passing caster is not a combatant"
         );
+    }
+
+    /// A creature's pet vanishes with it, unannounced. Once the owner is
+    /// dead the fight is won, and the next pull is a fight of its own.
+    #[test]
+    fn a_creatures_pet_does_not_hold_the_fight_open_after_its_owner_dies() {
+        let encs = run(&[
+            (100, "A greater mummy hits YOU for 20 points of damage."),
+            (
+                101,
+                "A greater mummy pet bashes YOU for 2 points of damage.",
+            ),
+            (102, "You shoot a greater mummy for 500 points of damage."),
+            (103, "You have slain a greater mummy!"),
+            // Seven seconds on, the next pull.
+            (110, "You shoot an elf skeleton for 200 points of damage."),
+            (112, "You have slain an elf skeleton!"),
+            (130, "You shoot a bat for 20 points of damage."),
+        ]);
+        assert!(
+            !encs[0].actors.contains_key("an elf skeleton"),
+            "the next pull folded into the last: {:?}",
+            encs[0].actors.keys().collect::<Vec<_>>()
+        );
+        assert!(encs[1].actors.contains_key("an elf skeleton"));
+
+        // While the owner lives, its pet is still part of the fight.
+        let encs = run(&[
+            (
+                100,
+                "A greater mummy pet bashes YOU for 2 points of damage.",
+            ),
+            (
+                101,
+                "You shoot a greater mummy pet for 50 points of damage.",
+            ),
+            (102, "A greater mummy hits YOU for 20 points of damage."),
+            (103, "You have slain a greater mummy pet!"),
+            (104, "You shoot a greater mummy for 500 points of damage."),
+            (105, "You have slain a greater mummy!"),
+        ]);
+        assert_eq!(encs.len(), 1);
     }
 
     /// Anyone already in the fight has their casts counted, the creature
@@ -5069,8 +5132,12 @@ mod tests {
             (100, "You slash a lesser mummy for 100 points of damage."),
             (101, "A lesser mummy hits YOU for 40 points of damage."),
             (102, "A lesser mummy tries to hit YOU, but misses!"),
+            // Its spell, which you shrugged off: not one of your actions,
+            // and no resist of yours.
+            (103, "You resist a lesser mummy's Root!"),
             (110, "You have slain a lesser mummy!"),
         ]);
+        assert!(encs[0].resists.is_empty(), "{:?}", encs[0].resists);
         assert_eq!(encs[0].timeline.len(), 1);
         assert_eq!(encs[0].timeline[0].amount, 100);
     }
