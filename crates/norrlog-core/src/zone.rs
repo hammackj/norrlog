@@ -256,6 +256,19 @@ impl Zone {
     }
 }
 
+/// Whether a "zone" is one of the client's rule announcements rather than a
+/// place: "an area where Bind Affinity is allowed", from "You have entered an
+/// area where Bind Affinity is allowed."
+///
+/// The parser has read those lines as `ZoneRuleNotice` since the rule went in,
+/// so nothing new is filed under one. This exists for history written before
+/// then, which `norrlogd`'s store repairs on open. It matches what the parser
+/// rule captures: `an? (area|zone) ` at the start of the name.
+pub fn is_rule_notice(zone: &str) -> bool {
+    let rest = zone.strip_prefix("an ").or_else(|| zone.strip_prefix("a "));
+    rest.is_some_and(|r| r.starts_with("area ") || r.starts_with("zone "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +514,31 @@ mod tests {
             z.variant_key(Game::EverQuest),
             z.variant_key(Game::EverQuestLegends)
         );
+    }
+
+    #[test]
+    fn rule_notices_are_not_places() {
+        for z in [
+            "an area where Bind Affinity is allowed",
+            "an area where levitation effects do not function",
+            "a zone where something is so",
+        ] {
+            assert!(super::is_rule_notice(z), "{z}");
+        }
+        for z in [
+            "West Commonlands",
+            "Arena",
+            "an",
+            "Ak'Anon",
+            "a",
+            "The Plane of Sky",
+        ] {
+            assert!(!super::is_rule_notice(z), "{z}");
+        }
+        // The fixture of every real zone string holds no notice.
+        const OBSERVED: &str = include_str!("../assets/zones-observed.txt");
+        for l in OBSERVED.lines().filter(|l| !l.starts_with('#')) {
+            assert!(!super::is_rule_notice(l.trim()), "{l}");
+        }
     }
 }

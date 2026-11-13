@@ -299,6 +299,7 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
+        s.repair_rule_notice_zones()?;
         Ok(s)
     }
 
@@ -318,6 +319,7 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
+        s.repair_rule_notice_zones()?;
         Ok(s)
     }
 
@@ -467,6 +469,207 @@ impl Store {
                 "ALTER TABLE item_drops ADD COLUMN left_behind INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        Ok(())
+    }
+
+    /// Take the client's rule announcements back out of the places on file.
+    ///
+    /// "You have entered an area where Bind Affinity is allowed." was once
+    /// read as entering a zone called "an area where Bind Affinity is
+    /// allowed", so history written then files kills, drops and fights under
+    /// a place that does not exist. The parser no longer does that
+    /// (`ZoneRuleNotice`); this repairs what it left behind, and runs on
+    /// every open because it costs one indexed-free scan and finds nothing
+    /// once the history is clean.
+    ///
+    /// A log is read once, from a watermark, so a stretch filed under a
+    /// notice is usually never read again. Whether it was decides the
+    /// repair, per log and per notice:
+    ///
+    /// - **Read again since the fix:** the same creatures are on file again
+    ///   under the real zone. A health sample, keyed to the second and the
+    ///   hit points, filed twice proves it; failing that, every creature under
+    ///   the notice having a real-zone row whose first and last sightings
+    ///   span its own. The rows under the notice are duplicates and go.
+    /// - **Not read again:** they are the only record, so they stay, under
+    ///   the empty zone, which every reader shows as an unknown place.
+    ///   Nothing says which zone it really was. Should a row with the empty
+    ///   zone and the same key already exist, the notice row is dropped
+    ///   rather than summed into it -- a creature already filed under no zone
+    ///   in the same log, at the same mode and tier, which no history on
+    ///   file has.
+    ///
+    /// Fights carry no log path, so each is judged alone: one that a fight
+    /// in a real zone overlaps is a duplicate, and the rest lose the zone.
+    /// Rows whose key leaves the zone out (`item_drops`, `spots`, `levels`)
+    /// were rewritten in place by any re-read, so only their zone value needs
+    /// cleaning.
+    fn repair_rule_notice_zones(&mut self) -> Result<()> {
+        // The SQL form of `norrlog_core::zone::is_rule_notice`; a test holds
+        // the two to the same answers.
+        fn notice(col: &str) -> String {
+            format!(
+                "({col} GLOB 'an area *' OR {col} GLOB 'a area *' \
+                 OR {col} GLOB 'an zone *' OR {col} GLOB 'a zone *')"
+            )
+        }
+        // Per-log tables with the zone in the key.
+        const KEYED: &[&str] = &[
+            "npc_profiles",
+            "npc_melee",
+            "npc_health_samples",
+            "item_drop_places",
+            "forage",
+            "markers",
+            "faction_hits",
+        ];
+        const LOG: &str = "game, character, server, source";
+
+        let tx = self.conn.transaction()?;
+
+        // Which (log, notice) stretches there are.
+        let union = KEYED
+            .iter()
+            .map(|t| format!("SELECT {LOG}, zone FROM {t} WHERE {}", notice("zone")))
+            .collect::<Vec<_>>()
+            .join(" UNION ");
+        let stretches: Vec<[String; 5]> = {
+            let mut st = tx.prepare(&union)?;
+            let rows = st.query_map([], |r| {
+                Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?])
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+
+        let same_log = "o.game = n.game AND o.character = n.character \
+                        AND o.server = n.server AND o.source = n.source";
+        let at = "n.game = ?1 AND n.character = ?2 AND n.server = ?3 \
+                  AND n.source = ?4 AND n.zone = ?5";
+        for key in &stretches {
+            let p = rusqlite::params![key[0], key[1], key[2], key[3], key[4]];
+            let sample_twice: bool = tx.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM npc_health_samples n WHERE {at} AND EXISTS(
+                         SELECT 1 FROM npc_health_samples o WHERE {same_log}
+                           AND o.mode = n.mode AND o.difficulty = n.difficulty
+                           AND o.npc = n.npc AND o.at = n.at AND o.hp = n.hp
+                           AND NOT {}))",
+                    notice("o.zone")
+                ),
+                p,
+                |r| r.get(0),
+            )?;
+            let (creatures, spanned): (i64, i64) = tx.query_row(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(SUM(EXISTS(
+                         SELECT 1 FROM npc_profiles o WHERE {same_log}
+                           AND o.npc = n.npc AND NOT {}
+                           AND o.first_seen <= n.first_seen
+                           AND o.last_seen >= n.last_seen)), 0)
+                     FROM npc_profiles n WHERE {at}",
+                    notice("o.zone")
+                ),
+                p,
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let read_again = sample_twice || (creatures > 0 && spanned == creatures);
+            let here = "game = ?1 AND character = ?2 AND server = ?3 \
+                        AND source = ?4 AND zone = ?5";
+            for t in KEYED {
+                if !read_again {
+                    tx.execute(
+                        &format!("UPDATE OR IGNORE {t} SET zone = '' WHERE {here}"),
+                        p,
+                    )?;
+                }
+                // Read again: all of it. Not: only what collided with an
+                // existing unknown-zone row and so could not be moved.
+                tx.execute(&format!("DELETE FROM {t} WHERE {here}"), p)?;
+            }
+        }
+
+        // Fights.
+        tx.execute(
+            &format!(
+                "DELETE FROM encounters WHERE {} AND EXISTS(
+                     SELECT 1 FROM encounters o
+                     WHERE o.character = encounters.character
+                       AND o.server = encounters.server
+                       AND o.start <= encounters.end AND o.end >= encounters.start
+                       AND o.zone <> '' AND NOT {})",
+                notice("zone"),
+                notice("o.zone")
+            ),
+            [],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE OR IGNORE encounters SET zone = '' WHERE {}",
+                notice("zone")
+            ),
+            [],
+        )?;
+        tx.execute(
+            &format!("UPDATE boss_kills SET zone = '' WHERE {}", notice("zone")),
+            [],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE spots SET zone = '', zone_short = '' WHERE {}",
+                notice("zone")
+            ),
+            [],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM map_zones WHERE {}", notice("zone")),
+            [],
+        )?;
+
+        // Sets of places, `|`-joined in item_drops and a JSON list in levels.
+        let drops: Vec<(i64, String)> = {
+            let mut st = tx.prepare(
+                "SELECT rowid, zones FROM item_drops \
+                 WHERE zones LIKE '%area %' OR zones LIKE '%zone %'",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for (id, zones) in drops {
+            let kept: Vec<&str> = zones
+                .split('|')
+                .filter(|z| !norrlog_core::zone::is_rule_notice(z))
+                .collect();
+            if kept.len() != zones.split('|').count() {
+                tx.execute(
+                    "UPDATE item_drops SET zones = ?1 WHERE rowid = ?2",
+                    rusqlite::params![kept.join("|"), id],
+                )?;
+            }
+        }
+        let levels: Vec<(i64, String)> = {
+            let mut st = tx.prepare(
+                "SELECT rowid, zones FROM levels \
+                 WHERE zones LIKE '%area %' OR zones LIKE '%zone %'",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for (id, zones) in levels {
+            let Ok(list) = serde_json::from_str::<Vec<String>>(&zones) else {
+                continue;
+            };
+            let kept: Vec<&String> = list
+                .iter()
+                .filter(|z| !norrlog_core::zone::is_rule_notice(z))
+                .collect();
+            if kept.len() != list.len() {
+                tx.execute(
+                    "UPDATE levels SET zones = ?1 WHERE rowid = ?2",
+                    rusqlite::params![serde_json::to_string(&kept)?, id],
+                )?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -4533,5 +4736,229 @@ mod forage_tests {
             .find(|z| z.zone == "Everfrost Peaks")
             .unwrap();
         assert_eq!((ef.hits, ef.empty, ef.attempts), (2, 1, 3));
+    }
+}
+
+#[cfg(test)]
+mod notice_repair_tests {
+    use super::*;
+
+    const BIND: &str = "an area where Bind Affinity is allowed";
+    const LOG: &str = "/logs/eqlog_Test_test.txt";
+
+    fn profile(s: &Store, source: &str, zone: &str, npc: &str, kills: i64, span: (i64, i64)) {
+        s.conn
+            .execute(
+                "INSERT INTO npc_profiles (game, character, server, source, zone, mode,
+                     difficulty, npc, kills, deaths_to_it, max_hit, first_seen, last_seen, kind)
+                 VALUES ('everquest-legends','Test','test',?1,?2,'open',0,?3,?4,0,0,?5,?6,'')",
+                params![source, zone, npc, kills, span.0, span.1],
+            )
+            .unwrap();
+    }
+
+    fn sample(s: &Store, source: &str, zone: &str, npc: &str, at: i64) {
+        s.conn
+            .execute(
+                "INSERT INTO npc_health_samples (game, character, server, source, zone, mode,
+                     difficulty, npc, at, hp)
+                 VALUES ('everquest-legends','Test','test',?1,?2,'open',0,?3,?4,100)",
+                params![source, zone, npc, at],
+            )
+            .unwrap();
+    }
+
+    fn zones(s: &Store, table: &str) -> Vec<(String, i64)> {
+        let mut st = s
+            .conn
+            .prepare(&format!(
+                "SELECT zone, COUNT(*) FROM {table} GROUP BY zone ORDER BY zone"
+            ))
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    fn repair(s: &mut Store) {
+        s.repair_rule_notice_zones().unwrap();
+    }
+
+    /// The SQL and the Rust say the same thing about every shape.
+    #[test]
+    fn the_sql_test_agrees_with_is_rule_notice() {
+        let s = Store::in_memory().unwrap();
+        for z in [
+            BIND,
+            "an area where levitation effects do not function",
+            "a zone where x",
+            "an zone y",
+            "a area z",
+            "West Commonlands",
+            "Arena",
+            "an",
+            "an area",
+            "An area where capitals differ",
+            "",
+        ] {
+            let sql: bool = s
+                .conn
+                .query_row(
+                    "SELECT ?1 GLOB 'an area *' OR ?1 GLOB 'a area *'
+                         OR ?1 GLOB 'an zone *' OR ?1 GLOB 'a zone *'",
+                    params![z],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(sql, norrlog_core::zone::is_rule_notice(z), "{z:?}");
+        }
+    }
+
+    /// A stretch read again since the fix is on file twice; the copy under
+    /// the notice goes, and the real one is left exactly as it was.
+    #[test]
+    fn a_stretch_read_again_loses_its_duplicate() {
+        let mut s = Store::in_memory().unwrap();
+        profile(&s, LOG, BIND, "black bear", 7, (100, 200));
+        sample(&s, LOG, BIND, "black bear", 150);
+        profile(&s, LOG, "West Commonlands", "black bear", 9, (50, 300));
+        sample(&s, LOG, "West Commonlands", "black bear", 150);
+        repair(&mut s);
+        assert_eq!(
+            zones(&s, "npc_profiles"),
+            vec![("West Commonlands".into(), 1)]
+        );
+        assert_eq!(
+            zones(&s, "npc_health_samples"),
+            vec![("West Commonlands".into(), 1)]
+        );
+        let kills: i64 = s
+            .conn
+            .query_row("SELECT kills FROM npc_profiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kills, 9);
+    }
+
+    /// A stretch never read again is the only record of those kills. They
+    /// stay, under no zone, rather than under a place that does not exist.
+    #[test]
+    fn a_stretch_not_read_again_is_kept_under_no_zone() {
+        let mut s = Store::in_memory().unwrap();
+        profile(&s, LOG, BIND, "black bear", 7, (100, 200));
+        sample(&s, LOG, BIND, "black bear", 150);
+        // The same creature elsewhere in the log, at other times: not a
+        // re-read, and not a reason to throw the seven kills away.
+        profile(&s, LOG, "East Commonlands", "black bear", 2, (400, 500));
+        repair(&mut s);
+        assert_eq!(
+            zones(&s, "npc_profiles"),
+            vec![(String::new(), 1), ("East Commonlands".into(), 1)]
+        );
+        assert_eq!(zones(&s, "npc_health_samples"), vec![(String::new(), 1)]);
+        let kills: i64 = s
+            .conn
+            .query_row("SELECT kills FROM npc_profiles WHERE zone = ''", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kills, 7);
+    }
+
+    /// One log's re-read says nothing about another's.
+    #[test]
+    fn each_log_is_judged_on_its_own() {
+        let mut s = Store::in_memory().unwrap();
+        let other = "/logs/eqlog_Alt_test.txt";
+        profile(&s, LOG, BIND, "black bear", 7, (100, 200));
+        profile(&s, LOG, "West Commonlands", "black bear", 9, (50, 300));
+        profile(&s, other, BIND, "black bear", 3, (100, 200));
+        repair(&mut s);
+        let mut st = s
+            .conn
+            .prepare("SELECT source, zone FROM npc_profiles ORDER BY source, zone")
+            .unwrap();
+        let rows: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (other.into(), String::new()),
+                (LOG.into(), "West Commonlands".into()),
+            ]
+        );
+    }
+
+    /// A fight overlapped by one in a real zone is that fight twice; one
+    /// nothing overlaps keeps its numbers and loses the place.
+    #[test]
+    fn fights_under_a_notice_are_dropped_or_unplaced() {
+        let mut s = Store::in_memory().unwrap();
+        let fight = |start: i64, end: i64, title: &str, zone: &str| {
+            s.conn
+                .execute(
+                    "INSERT INTO encounters (character, server, start, end, title, zone)
+                     VALUES ('Test','test',?1,?2,?3,?4)",
+                    params![start, end, title, zone],
+                )
+                .unwrap();
+        };
+        fight(100, 200, "Bzzzt (+2 more)", BIND);
+        fight(100, 150, "Bzzzt", "The Plane of Sky");
+        fight(500, 508, "Unknown encounter", BIND);
+        repair(&mut s);
+        let mut st = s
+            .conn
+            .prepare("SELECT title, zone FROM encounters ORDER BY start")
+            .unwrap();
+        let rows: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Bzzzt".into(), "The Plane of Sky".into()),
+                ("Unknown encounter".into(), String::new()),
+            ]
+        );
+    }
+
+    /// A set of places loses the notice and keeps the rest.
+    #[test]
+    fn a_drop_forgets_the_notice_among_its_zones() {
+        let mut s = Store::in_memory().unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO item_drops (game, character, server, source, item, npc, zones,
+                     looted, quantity, first_seen, last_seen)
+                 VALUES ('everquest-legends','Test','test',?1,'Giant Snake Fang',
+                         'darkweed snake',?2,1,1,1,1)",
+                params![LOG, format!("East Commonlands|{BIND}")],
+            )
+            .unwrap();
+        repair(&mut s);
+        let z: String = s
+            .conn
+            .query_row("SELECT zones FROM item_drops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(z, "East Commonlands");
+    }
+
+    /// Opening a repaired history again changes nothing.
+    #[test]
+    fn the_repair_is_idempotent() {
+        let mut s = Store::in_memory().unwrap();
+        profile(&s, LOG, BIND, "black bear", 7, (100, 200));
+        profile(&s, LOG, "West Commonlands", "black bear", 9, (50, 300));
+        profile(&s, "/logs/b.txt", BIND, "orc pawn", 1, (1, 2));
+        repair(&mut s);
+        let once = (zones(&s, "npc_profiles"), zones(&s, "encounters"));
+        repair(&mut s);
+        assert_eq!((zones(&s, "npc_profiles"), zones(&s, "encounters")), once);
     }
 }
