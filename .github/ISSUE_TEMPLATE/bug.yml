@@ -1,0 +1,35 @@
+name: Bug report
+description: Something Norrlog showed wrong, or did not do
+labels: [bug]
+body:
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - EverQuest Legends
+        - EverQuest
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS, and how the game runs
+      placeholder: "Windows 11 / Linux with CrossOver / macOS 15 with Wine"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: lines
+    attributes:
+      label: Log lines
+      description: >
+        A few lines around the problem, if it is about a number or a fight.
+        Take out tells, other players' names and anything else you would
+        rather not publish.
+      render: text

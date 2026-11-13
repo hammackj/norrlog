@@ -184,6 +184,11 @@ else from the game ships: spells and item data are read from your own install
 while the daemon runs. The recipe book is not shipped either; see
 [How it works](docs/how-it-works.md).
 
+## Contributing
+
+Bug reports and fixes are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) covers
+building, testing and what a change comes with.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
