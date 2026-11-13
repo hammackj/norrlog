@@ -381,7 +381,21 @@ fn http() -> Result<reqwest::Client> {
 /// How long `/api/hello` gets to answer before the port counts as busy.
 const HELLO_WAIT: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(5) };
 
+/// How long a bare connection gets. Windows retries a refused connection to
+/// a closed local port for about two seconds before saying so.
+const CONNECT_WAIT: Duration = Duration::from_secs(4);
+
 async fn hello_at(http: &reqwest::Client, port: u16) -> Result<Hello> {
+    // Whether anything is listening, asked on its own. A daemon in its
+    // initial parse is listening and accepts the connection; it just does not
+    // answer yet, which is what Busy means. Asked through the HTTP request
+    // alone, Windows' slow refusal of a closed port outlasted the reply
+    // deadline, and nothing at all read as a daemon starting up.
+    match tokio::time::timeout(CONNECT_WAIT, tokio::net::TcpStream::connect(("127.0.0.1", port))).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return Err(Error::Unreachable { port, why: e.to_string() }),
+        Err(_) => return Err(Error::Unreachable { port, why: "the connection was never accepted".into() }),
+    }
     let url = format!("http://127.0.0.1:{port}/api/hello");
     let resp = match http.get(&url).timeout(HELLO_WAIT).send().await {
         Ok(r) => r,
