@@ -665,7 +665,7 @@ impl OverlayView {
             if o.has("meter") {
                 col = col.child(panel("Connecting…".into(), None, true, vec![]));
             }
-            return col.child(status(self.lost));
+            return col.child(status(self.lost.then_some(RECONNECTING)));
         };
         let snap = &*snap;
         // The page's fixed order, whatever order `panels=` names them in.
@@ -712,7 +712,13 @@ impl OverlayView {
             }
         }
         let live = snap.get("live").and_then(Value::as_bool) != Some(false);
-        col.child(status(self.lost || !live))
+        col.child(status(if self.lost {
+            Some(RECONNECTING)
+        } else if !live {
+            Some(READING)
+        } else {
+            None
+        }))
     }
 }
 
@@ -1741,19 +1747,26 @@ fn empty(text: &str) -> AnyElement {
         .into_any_element()
 }
 
-/// "Reconnecting…", while the daemon is gone or still reading the backlog.
-fn status(show: bool) -> Div {
+/// The daemon is gone, and the window is trying it again.
+const RECONNECTING: &str = "Reconnecting…";
+/// The daemon is there but still reading the log's backlog (`live: false`),
+/// so the numbers are not current yet. Not "Reconnecting…": nothing is lost,
+/// and a long log can take a minute to read.
+const READING: &str = "Reading the log…";
+
+/// A line saying why the panels are not current, or nothing when they are.
+fn status(text: Option<&'static str>) -> Div {
     let d = div();
-    if !show {
+    let Some(text) = text else {
         return d;
-    }
+    };
     d.px(u(6.))
         .py(u(2.))
         .rounded(u(4.))
         .bg(rgba_of(SCRIM, 0.74))
         .text_size(u(11.))
         .text_color(gpui::rgb(ACCENT))
-        .child("Reconnecting…")
+        .child(text)
 }
 
 // ---- the window ------------------------------------------------------------

@@ -607,6 +607,9 @@
     renderAuras(snap.auras || []);
     renderDebuffs(snap.debuffs || []);
     renderBuffs(snap.buffs || []);
+    // `live: false` is the daemon still reading the log's backlog, not a lost
+    // connection: say so, since a long log can take a minute.
+    if (snap.live === false) el.status.textContent = "Reading the log…";
     el.status.classList.toggle("hidden", snap.live !== false);
   }
 
