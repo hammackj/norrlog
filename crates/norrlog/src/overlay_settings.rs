@@ -54,8 +54,21 @@ struct Card {
     stale: bool,
 }
 
+/// A box on the placement map being dragged: which overlay, where the
+/// pointer went down, and the geometry it started from.
+struct MapDrag {
+    kind: Kind,
+    from: Point<Pixels>,
+    start: Geometry,
+    /// Map pixels per desktop pixel, as the map was drawn when it started.
+    scale: f32,
+}
+
 pub struct OverlayControls {
     cards: Vec<Card>,
+    drag: Option<MapDrag>,
+    /// The placement map zoomed in to one display, by its index.
+    zoom: Option<usize>,
     /// The daemon's origin, for the OBS URL.
     base: Option<String>,
     err: Option<String>,
@@ -85,6 +98,8 @@ impl OverlayControls {
             .collect();
         OverlayControls {
             cards,
+            drag: None,
+            zoom: None,
             base: None,
             err: None,
         }
@@ -112,6 +127,13 @@ impl OverlayControls {
             c.saved = s;
             c.stale = true;
         }
+        cx.notify();
+    }
+
+    /// The height an open overlay fitted itself to. Not saved: it follows
+    /// the panels, and the map only draws it.
+    pub fn set_height(&mut self, kind: Kind, height: f32, cx: &mut Context<Self>) {
+        self.card_mut(kind).saved.bounds.height = height;
         cx.notify();
     }
 
@@ -265,7 +287,7 @@ impl Render for OverlayControls {
                 e.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
             }
         }
-        let mut col = v_flex().gap_3();
+        let mut col = v_flex().gap_3().child(self.render_map(cx));
         for c in &self.cards {
             col = col.child(self.render_card(c, cx));
         }
@@ -275,7 +297,223 @@ impl Render for OverlayControls {
     }
 }
 
+/// How wide the placement map is drawn, in layout pixels.
+const MAP_WIDTH: f32 = 520.;
+/// How close to a display's edge a dragged box snaps to it, in map pixels,
+/// so a corner is as easy to hit zoomed out as in.
+const SNAP_ON_MAP: f32 = 8.;
+
+/// Where a dragged box lands: moved by the drag, and flush against any edge
+/// of the display it is over that it comes within `snap` desktop pixels of.
+fn dropped(start: Geometry, dx: f32, dy: f32, displays: &[Bounds<Pixels>], snap: f32) -> Geometry {
+    let mut g = Geometry {
+        x: (start.x + dx).round(),
+        y: (start.y + dy).round(),
+        ..start
+    };
+    for d in displays {
+        let (l, t) = (f32::from(d.origin.x), f32::from(d.origin.y));
+        let (r, b) = (l + f32::from(d.size.width), t + f32::from(d.size.height));
+        // Only edges of the display the box is over.
+        if g.x + g.width < l || g.x > r || g.y + g.height < t || g.y > b {
+            continue;
+        }
+        if (g.x - l).abs() <= snap {
+            g.x = l;
+        } else if (g.x + g.width - r).abs() <= snap {
+            g.x = r - g.width;
+        }
+        if (g.y - t).abs() <= snap {
+            g.y = t;
+        } else if (g.y + g.height - b).abs() <= snap {
+            g.y = b - g.height;
+        }
+    }
+    g
+}
+
 impl OverlayControls {
+    /// Every display at its place in the desktop, scaled down, with the
+    /// overlays on it as boxes to drag; or one display, zoomed, for placing
+    /// one exactly. The overlays themselves can't be moved while they are
+    /// open, so this is where they are placed: the window moves when the box
+    /// is let go.
+    fn render_map(&self, cx: &mut Context<Self>) -> Div {
+        let displays: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.bounds()).collect();
+        let Some(first) = displays.first().copied() else {
+            return div();
+        };
+        let zoomed = self.zoom.and_then(|i| displays.get(i).copied());
+        let view = zoomed.unwrap_or_else(|| displays.iter().fold(first, |a, d| a.union(d)));
+        let (ox, oy) = (f32::from(view.origin.x), f32::from(view.origin.y));
+        let scale = MAP_WIDTH / f32::from(view.size.width).max(1.);
+        let at = |x: f32, y: f32| (px((x - ox) * scale), px((y - oy) * scale));
+        let mut map = div()
+            .id("overlay-map")
+            .relative()
+            .overflow_hidden()
+            .w(px(MAP_WIDTH))
+            .h(px(f32::from(view.size.height) * scale))
+            .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, _, cx| {
+                let Some(d) = v.drag.as_ref() else { return };
+                if e.pressed_button != Some(MouseButton::Left) {
+                    v.drag = None;
+                    cx.notify();
+                    return;
+                }
+                let (dx, dy) = (
+                    f32::from(e.position.x - d.from.x) / d.scale,
+                    f32::from(e.position.y - d.from.y) / d.scale,
+                );
+                let (kind, start, snap) = (d.kind, d.start, SNAP_ON_MAP / d.scale);
+                let displays: Vec<Bounds<Pixels>> =
+                    cx.displays().iter().map(|d| d.bounds()).collect();
+                v.card_mut(kind).saved.bounds = dropped(start, dx, dy, &displays, snap);
+                v.card_mut(kind).stale = true;
+                cx.notify();
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::map_drop))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::map_drop));
+        for (i, d) in displays.iter().enumerate() {
+            if zoomed.is_some() && self.zoom != Some(i) {
+                continue;
+            }
+            let (x, y) = at(f32::from(d.origin.x), f32::from(d.origin.y));
+            map = map.child(
+                div()
+                    .id(SharedString::from(format!("map-display-{i}")))
+                    .absolute()
+                    .left(x)
+                    .top(y)
+                    .w(px(f32::from(d.size.width) * scale))
+                    .h(px(f32::from(d.size.height) * scale))
+                    .border_1()
+                    .border_color(hex(BORDER))
+                    .bg(hex(PANEL_2))
+                    .p(px(4.))
+                    .text_xs()
+                    .text_color(hex(MUTED))
+                    .child(format!(
+                        "{} · {}×{}",
+                        i + 1,
+                        f32::from(d.size.width),
+                        f32::from(d.size.height)
+                    ))
+                    // Zoomed out, a click on a screen zooms in to it.
+                    .when(zoomed.is_none(), |d| {
+                        d.cursor(CursorStyle::PointingHand).on_click(cx.listener(
+                            move |v, _, _, cx| {
+                                v.zoom = Some(i);
+                                cx.notify();
+                            },
+                        ))
+                    }),
+            );
+        }
+        for c in &self.cards {
+            // The charm overlay only once it is wanted.
+            if c.kind == Kind::Charm && !c.open {
+                continue;
+            }
+            let kind = c.kind;
+            let g = c.saved.bounds;
+            let (x, y) = at(g.x, g.y);
+            let dragging = self.drag.as_ref().is_some_and(|d| d.kind == kind);
+            let (colour, label) = match kind {
+                Kind::Main => (ACCENT, "overlay"),
+                Kind::Charm => (PET, "charm"),
+            };
+            map = map.child(
+                div()
+                    .id(match kind {
+                        Kind::Main => "map-main",
+                        Kind::Charm => "map-charm",
+                    })
+                    .absolute()
+                    .left(x)
+                    .top(y)
+                    .w(px((g.width * scale).max(6.)))
+                    .h(px((g.height * scale).max(6.)))
+                    .border_1()
+                    .border_color(hex(colour))
+                    .bg(wash(colour, if dragging { 0.55 } else { 0.3 }))
+                    .overflow_hidden()
+                    .px(px(2.))
+                    .text_xs()
+                    .text_color(hex(TEXT))
+                    .child(label)
+                    .when(!c.open, |d| d.opacity(0.6))
+                    .cursor(if dragging {
+                        CursorStyle::ClosedHand
+                    } else {
+                        CursorStyle::OpenHand
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                            // The screen under it must not zoom as well.
+                            cx.stop_propagation();
+                            v.drag = Some(MapDrag {
+                                kind,
+                                from: e.position,
+                                start: v.card_mut(kind).saved.bounds,
+                                scale,
+                            });
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        let now = self.drag.as_ref().map(|d| {
+            let g = self
+                .cards
+                .iter()
+                .find(|c| c.kind == d.kind)
+                .map(|c| c.saved.bounds);
+            g.map_or(String::new(), |g| format!("{}, {}", g.x, g.y))
+        });
+        let help = match (now, zoomed.is_some()) {
+            (Some(at), _) => format!("Release to move it to {at}."),
+            (None, false) => {
+                "Drag a box to place that overlay; it moves when you let go. Click a screen to \
+                zoom in to it, for placing exactly."
+                    .to_string()
+            }
+            (None, true) => {
+                "Drag the box; it snaps flush to the screen's edges, and moves when you let go. \
+                X and Y below are exact."
+                    .to_string()
+            }
+        };
+        card("Overlay placement")
+            .when(zoomed.is_some(), |d| {
+                d.child(
+                    h_flex().child(
+                        Button::new("map-all")
+                            .label("All screens")
+                            .small()
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.zoom = None;
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .child(map)
+            .child(hint(help))
+    }
+
+    fn map_drop(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.drag.take() else { return };
+        let c = self.card_mut(d.kind);
+        if c.saved.bounds == d.start {
+            cx.notify();
+            return;
+        }
+        let saved = c.saved.clone();
+        self.apply(d.kind, saved, cx);
+    }
+
     fn render_card(&self, c: &Card, cx: &mut Context<Self>) -> Div {
         let kind = c.kind;
         let tag = match kind {
@@ -386,6 +624,44 @@ mod tests {
             "wanted ticks Other apps, once"
         );
         assert_eq!(panels_of(""), ["meter", "buffs"]);
+    }
+
+    #[test]
+    fn a_dragged_box_snaps_to_the_edges_of_the_display_it_is_on() {
+        let screen = |x: f32, w: f32, h: f32| {
+            Bounds::new(
+                point(gpui::px(x), gpui::px(0.)),
+                size(gpui::px(w), gpui::px(h)),
+            )
+        };
+        let displays = [screen(0., 2560., 1440.), screen(2560., 1920., 1080.)];
+        let g = Geometry {
+            x: 100.,
+            y: 100.,
+            width: 400.,
+            height: 300.,
+        };
+        // Near the top left: flush with it.
+        assert_eq!(
+            dropped(g, -95., -91., &displays, 12.),
+            Geometry { x: 0., y: 0., ..g }
+        );
+        // Near the right edge of the first display: flush with it, from the
+        // inside, though the second display starts there.
+        let r = dropped(g, 2055., 0., &displays, 12.);
+        assert_eq!((r.x, r.y), (2160., 100.));
+        // Near the bottom of the second, shorter display.
+        let b = dropped(Geometry { x: 2700., ..g }, 0., 675., &displays, 12.);
+        assert_eq!(b.y, 780.);
+        // Nowhere near an edge: where it was dropped.
+        assert_eq!(
+            dropped(g, 400.4, 300., &displays, 12.),
+            Geometry {
+                x: 500.,
+                y: 400.,
+                ..g
+            }
+        );
     }
 
     #[test]

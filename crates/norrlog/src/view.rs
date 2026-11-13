@@ -409,6 +409,22 @@ impl Shell {
             if let Some(s) = self.snapshot.clone() {
                 v.update(cx, |v, cx| v.on_snapshot(s, cx));
             }
+            // Dragged with click-through off: save where it was dropped,
+            // and reopen it there.
+            cx.subscribe(&v, move |shell, v, e: &crate::overlay::Moved, cx| {
+                let mut saved = v.read(cx).saved.clone();
+                saved.bounds = e.0;
+                if let Err(err) = saved.save(kind) {
+                    eprintln!("[norrlog] overlay: could not save its position: {err}");
+                }
+                shell.apply_overlay(kind, saved, cx);
+            })
+            .detach();
+            cx.subscribe(&v, move |shell, _, e: &crate::overlay::Fitted, cx| {
+                let controls = shell.settings.read(cx).overlay.clone();
+                controls.update(cx, |c, cx| c.set_height(kind, e.0, cx));
+            })
+            .detach();
             self.overlays.push((kind, h, v));
         }
         let opened = self

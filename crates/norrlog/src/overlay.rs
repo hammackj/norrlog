@@ -305,6 +305,22 @@ fn u(v: f32) -> Rems {
 
 // ---- the view --------------------------------------------------------------
 
+/// Where the user dragged an overlay to. The shell saves it and reopens the
+/// window there: neither a layer surface nor an override-redirect popup can
+/// be moved by the window manager, or by GPUI once it exists.
+pub struct Moved(pub Geometry);
+
+impl EventEmitter<Moved> for OverlayView {}
+
+/// The height the overlay fitted itself to, for the placement map in
+/// Settings to draw it at its real size.
+pub struct Fitted(pub f32);
+
+impl EventEmitter<Fitted> for OverlayView {}
+
+/// Movement under this is a click, not a drag.
+const DRAG_SLOP: f32 = 4.;
+
 pub struct OverlayView {
     /// What it was opened with, for the shell to tell what changed.
     pub saved: Saved,
@@ -328,6 +344,9 @@ pub struct OverlayView {
     ticks: u64,
     /// More panels than the screen has room for; the bottom edge says so.
     clipped: bool,
+    /// A drag in progress: where the button went down, and where the
+    /// pointer is now, in the window's coordinates.
+    drag: Option<(Point<Pixels>, Point<Pixels>)>,
     api: Option<crate::api::Api>,
     _tick: Task<()>,
 }
@@ -413,6 +432,7 @@ impl OverlayView {
             dps: Dps::default(),
             ticks: 0,
             clipped: false,
+            drag: None,
             api: None,
             _tick: tick,
         }
@@ -534,25 +554,109 @@ impl Render for OverlayView {
             .text_color(gpui::rgb(TEXT))
             .text_size(u(13.))
             .on_children_prepainted(move |children, window, cx| {
-                let over = fit_height(children, window, cx);
+                let (over, height) = fit_height(children, window, cx);
                 let _ = me.update(cx, |v, cx| {
                     if v.clipped != over {
                         v.clipped = over;
                         cx.notify();
                     }
+                    if let Some(h) = height
+                        && (v.saved.bounds.height - h).abs() > 4.
+                    {
+                        v.saved.bounds.height = h;
+                        cx.emit(Fitted(h));
+                    }
                 });
             });
         let col = self.panels(col);
-        div()
+        let root = div()
             .relative()
             .size_full()
             .overflow_hidden()
             .child(col)
-            .children(self.clipped.then(more_below))
+            .children(self.clipped.then(more_below));
+        // With click-through on the mouse never reaches the window.
+        if self.saved.click_through {
+            return root;
+        }
+        root.cursor(if self.drag.is_some() {
+            CursorStyle::ClosedHand
+        } else {
+            CursorStyle::OpenHand
+        })
+        .children(self.drag_hint())
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, e: &MouseDownEvent, _, cx| {
+                v.drag = Some((e.position, e.position));
+                cx.notify();
+            }),
+        )
+        .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _, cx| {
+            if let Some((_, at)) = v.drag.as_mut() {
+                if e.pressed_button == Some(MouseButton::Left) {
+                    *at = e.position;
+                } else {
+                    // The release happened somewhere we did not hear it.
+                    v.drag = None;
+                }
+                cx.notify();
+            }
+        }))
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::drop_at))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::drop_at))
     }
 }
 
 impl OverlayView {
+    /// Where the window goes once the drag ends.
+    fn dragged_to(&self) -> Option<Geometry> {
+        let (from, to) = self.drag?;
+        let (dx, dy) = (f32::from(to.x - from.x), f32::from(to.y - from.y));
+        (dx.abs() >= DRAG_SLOP || dy.abs() >= DRAG_SLOP).then(|| Geometry {
+            x: (self.saved.bounds.x + dx).round(),
+            y: (self.saved.bounds.y + dy).round(),
+            ..self.saved.bounds
+        })
+    }
+
+    fn drop_at(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, at)) = self.drag.as_mut() {
+            *at = e.position;
+        }
+        let to = self.dragged_to();
+        self.drag = None;
+        cx.notify();
+        if let Some(g) = to {
+            cx.emit(Moved(g));
+        }
+    }
+
+    /// An outline and where the overlay will land, while it is dragged.
+    fn drag_hint(&self) -> Option<Div> {
+        let g = self.dragged_to()?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .border_2()
+                .border_color(rgba_of(ACCENT, 0.9))
+                .rounded(u(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .px(u(8.))
+                        .py(u(4.))
+                        .rounded(u(4.))
+                        .bg(rgba_of(SCRIM, 0.92))
+                        .text_color(gpui::rgb(ACCENT))
+                        .child(format!("release to move to {}, {}", g.x, g.y)),
+                ),
+        )
+    }
+
     /// The panels, in the page's order, then the status line.
     fn panels(&self, mut col: Div) -> Div {
         let o = &self.opts;
@@ -1488,10 +1592,15 @@ pub fn long_dur(sec: f64, coarse: bool) -> String {
 /// Keep the window as tall as what it shows (`fitOverlayToContent`): the
 /// user picks where it sits and how wide it is, the panels decide how tall.
 /// Never past the bottom of the screen, and with a dead band so a rounding
-/// pixel does not resize it forever. Says whether the panels were cut.
-fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) -> bool {
+/// pixel does not resize it forever. Says whether the panels were cut, and
+/// the height it wants.
+fn fit_height(
+    children: Vec<Bounds<Pixels>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (bool, Option<f32>) {
     let Some(bottom) = children.iter().map(|b| b.bottom()).max() else {
-        return false;
+        return (false, None);
     };
     let have = window.viewport_size();
     let room = window
@@ -1504,7 +1613,7 @@ fn fit_height(children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App) 
         window.resize(size(have.width, want));
     }
     // The children are measured from the window's top.
-    bottom.max(px(60.)) > room + px(1.)
+    (bottom.max(px(60.)) > room + px(1.), Some(f32::from(want)))
 }
 
 /// The page's `body.clipped::after`: a panel that is simply absent reads as
@@ -1669,6 +1778,27 @@ pub fn open(
         .map(|d| d.1.origin)
         .unwrap_or_default();
     let margin = (f32::from(origin.x), f32::from(origin.y));
+    eprintln!(
+        "[norrlog] overlay at {},{} {}x{}, on display {:?} at {},{} (displays: {})",
+        g.x,
+        g.y,
+        g.width,
+        g.height,
+        display,
+        margin.0,
+        margin.1,
+        displays
+            .iter()
+            .map(|(id, b)| format!(
+                "{id:?} {},{} {}x{}",
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height)
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
     let click = saved.click_through;
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && cfg!(target_os = "linux");
     let mut attempts = Vec::new();
