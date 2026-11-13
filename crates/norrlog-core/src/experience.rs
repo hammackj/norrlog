@@ -282,6 +282,10 @@ pub struct ExpTracker {
     /// a legitimate value, and using it as a sentinel silently moved the start
     /// of the level to the *second* event.
     current_started: bool,
+    /// The current record began at a level change the log did not ding for
+    /// (a loadout switch), so where in the level it began is unknown and it
+    /// is never a whole level, even if it ends with a level-up.
+    current_from_switch: bool,
 }
 
 impl Default for ExpTracker {
@@ -333,6 +337,7 @@ impl ExpTracker {
             aa_potion_charges: 0,
             aa_doubled_unaccounted: 0,
             current_started: false,
+            current_from_switch: false,
         }
     }
 
@@ -807,6 +812,51 @@ impl ExpTracker {
     }
 
     /// Note a level-up. The level just reached closes the previous record.
+    /// The game stated your level (`/who`). In Legends the level belongs to
+    /// the loadout, so changing classes changes it with no level-up line:
+    /// Tharn went from 50 to 10, and the 50's progress carried on into the
+    /// 10's, reading 120% of a level. A different level closes the record
+    /// as partial and starts another; the same level changes nothing.
+    pub fn on_level_stated(&mut self, timestamp: i64, level: u32) {
+        // Compared with the record's level, not `current_level`: that one
+        // says a level-up has been seen, which is what makes the next record
+        // whole, and a statement is not a level-up.
+        let Some(was) = self.current.level else {
+            self.current.level = Some(level);
+            return;
+        };
+        if was == level {
+            return;
+        }
+        if self.current.events > 0 {
+            self.current.ended = Some(timestamp);
+            self.current.level = Some(was);
+            self.current.complete = false;
+            self.current.zones = self.zone_shares();
+            self.completed.push(self.current.clone());
+        }
+        self.current_level = Some(level);
+        self.current = LevelRecord {
+            level: Some(level),
+            started: timestamp,
+            ended: None,
+            percent: 0.0,
+            events: 0,
+            kills: 0,
+            seconds: 0,
+            complete: false,
+            zones: Vec::new(),
+            build: String::new(),
+            bonus_percent: 0.0,
+            bonus_events: 0,
+        };
+        self.level_zones.clear();
+        // Where in the level this starts is unknown, so its clock waits for
+        // the first gain rather than claiming the switch as a start.
+        self.current_started = false;
+        self.current_from_switch = true;
+    }
+
     pub fn on_level_up(&mut self, timestamp: i64, level: u32) {
         self.current.ended = Some(timestamp);
         if !self.current_started {
@@ -819,7 +869,8 @@ impl ExpTracker {
         self.current.level = Some(level.saturating_sub(1));
         // Only a record that both started and ended with a level-up covers a
         // whole level; the first one begins wherever the log happens to start.
-        self.current.complete = self.current_level.is_some();
+        self.current.complete = self.current_level.is_some() && !self.current_from_switch;
+        self.current_from_switch = false;
         self.current.zones = self.zone_shares();
         self.completed.push(self.current.clone());
 
@@ -925,6 +976,47 @@ impl ExpTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A loadout switch in Legends changes the level with no level-up line.
+    #[test]
+    fn a_stated_level_change_starts_a_new_record() {
+        let mut t = ExpTracker::new();
+        t.on_level_up(50, 50);
+        t.on_experience(100, 60.0, false);
+        t.on_level_stated(200, 50);
+        assert!(
+            (t.current_percent() - 60.0).abs() < 1e-9,
+            "same level: no change"
+        );
+        t.on_level_stated(300, 10);
+        assert_eq!(t.current_level(), Some(10));
+        assert_eq!(t.current_percent(), 0.0);
+        t.on_experience(310, 19.0, false);
+        assert!((t.current_percent() - 19.0).abs() < 1e-9, "not 79");
+        let last = t.completed_levels().last().unwrap();
+        assert_eq!(last.level, Some(50));
+        assert!(!last.complete, "a level left, not finished");
+        t.on_level_up(400, 11);
+        assert!(
+            !t.completed_levels().last().unwrap().complete,
+            "began mid-level at the switch, so not a whole level"
+        );
+        t.on_experience(410, 1.0, false);
+        t.on_level_up(500, 12);
+        assert!(t.completed_levels().last().unwrap().complete, "this one is");
+    }
+
+    /// A statement at the start of a log is not a level-up: the first
+    /// record still begins wherever the log does.
+    #[test]
+    fn a_stated_level_does_not_make_the_first_record_whole() {
+        let mut t = ExpTracker::new();
+        t.on_level_stated(10, 20);
+        t.on_experience(20, 30.0, false);
+        t.on_level_up(30, 21);
+        assert!(!t.completed_levels()[0].complete);
+        assert_eq!(t.completed_levels()[0].level, Some(20));
+    }
 
     #[test]
     fn percent_accumulates_within_a_level() {

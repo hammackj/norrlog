@@ -1307,6 +1307,9 @@ impl Engine {
                     let trio = norrlog_core::class::parse_class_list(classes);
                     if !trio.is_empty() {
                         self.class_levels.on_who(entry.timestamp, *level, &trio);
+                        if *level > 0 {
+                            self.exp.on_level_stated(entry.timestamp, *level as u32);
+                        }
                         // The game naming your own loadout beats any inference
                         // from spell set names or cast history.
                         self.classes.observe_who(entry.timestamp, &trio);
