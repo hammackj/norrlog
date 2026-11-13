@@ -28,6 +28,7 @@ mod format;
 mod item_tip;
 mod loot;
 mod overlay;
+mod overlay_settings;
 mod parts;
 mod procs;
 mod sky;

@@ -103,6 +103,11 @@ impl Shell {
         let tells = cx.new(|_| crate::tells::TellsView::new());
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
+        let controls = settings.read(cx).overlay.clone();
+        subs.push(cx.subscribe(&controls, |v: &mut Self, _, e: &crate::overlay_settings::OverlayRequest, cx| match e {
+            crate::overlay_settings::OverlayRequest::Toggle(kind) => v.toggle_overlay(*kind, cx),
+            crate::overlay_settings::OverlayRequest::Apply(kind, saved) => v.apply_overlay(*kind, saved.clone(), cx),
+        }));
         Shell {
             link: Link::Attaching,
             rt,
@@ -146,6 +151,9 @@ impl Shell {
                 self.link = Link::Attached { hello, started };
                 let api = crate::api::Api { rt: self.rt.clone(), client: *client };
                 self.api = Some(api.clone());
+                let base = api.base();
+                let controls = self.settings.read(cx).overlay.clone();
+                controls.update(cx, |c, cx| c.set_base(Some(base), cx));
                 for (_, _, o) in &self.overlays {
                     o.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 }
@@ -335,7 +343,23 @@ impl Shell {
             }
             self.overlays.push((kind, h, v));
         }
+        let opened = self.overlays.iter().find(|(k, _, _)| *k == kind).map(|(_, _, v)| v.read(cx).saved.clone());
+        let controls = self.settings.read(cx).overlay.clone();
+        controls.update(cx, |c, cx| c.set_open(kind, opened.is_some(), opened, cx));
         cx.notify();
+    }
+
+    /// New settings for an overlay. Options apply in place; a move, or a
+    /// change to click-through, reopens the window, as Electron rebuilt it.
+    fn apply_overlay(&mut self, kind: crate::overlay::Kind, saved: crate::overlay::Saved, cx: &mut Context<Self>) {
+        let Some((_, _, v)) = self.overlays.iter().find(|(k, _, _)| *k == kind) else { return };
+        let was = v.read(cx).saved.clone();
+        if was.bounds.x != saved.bounds.x || was.bounds.y != saved.bounds.y || was.bounds.width != saved.bounds.width || was.click_through != saved.click_through {
+            self.toggle_overlay(kind, cx);
+            self.toggle_overlay(kind, cx);
+        } else {
+            v.update(cx, |v, cx| v.set_options(saved.options, cx));
+        }
     }
 
     pub fn overlay_open(&self, kind: crate::overlay::Kind) -> bool {

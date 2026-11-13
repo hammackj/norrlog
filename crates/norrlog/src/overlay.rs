@@ -260,7 +260,7 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 // ---- the view --------------------------------------------------------------
 
 pub struct OverlayView {
-    pub kind: Kind,
+    /// What it was opened with, for the shell to tell what changed.
     pub saved: Saved,
     opts: Options,
     snap: Option<Arc<Value>>,
@@ -329,7 +329,7 @@ const STALE_FADE: f64 = 22.;
 const STALE_FLOOR: f64 = 0.34;
 
 impl OverlayView {
-    pub fn new(kind: Kind, saved: Saved, cx: &mut Context<Self>) -> Self {
+    pub fn new(saved: Saved, cx: &mut Context<Self>) -> Self {
         let opts = Options::parse(&saved.options);
         // The page's one-second tick for buff timers, and the charm poll.
         let tick = cx.spawn(async move |this, cx| loop {
@@ -343,7 +343,6 @@ impl OverlayView {
             };
         });
         OverlayView {
-            kind,
             saved,
             opts,
             snap: None,
@@ -383,6 +382,8 @@ impl OverlayView {
     pub fn set_options(&mut self, options: String, cx: &mut Context<Self>) {
         self.opts = Options::parse(&options);
         self.saved.options = options;
+        // A panel that polls starts at once, not on its interval.
+        self.ticks = 0;
         cx.notify();
     }
 
@@ -395,7 +396,7 @@ impl OverlayView {
         if o.has("charm") {
             self.fetch("/api/charm".into(), cx, |me, v| me.charm = Some(v));
         }
-        if o.has("incoming") && n % 2 == 0 {
+        if o.has("incoming") && n.is_multiple_of(2) {
             // The fight in progress, or nothing: between fights the panel
             // hides rather than show a dead one.
             match self.snap.as_ref().and_then(|s| s.get("current")).and_then(|c| c.get("id")).and_then(Value::as_u64) {
@@ -404,16 +405,16 @@ impl OverlayView {
             }
         }
         if let Some(scope) = o.scope.clone()
-            && n % 2 == 0
+            && n.is_multiple_of(2)
         {
             self.fetch(format!("/api/session?scope={scope}"), cx, |me, v| me.session = Some(v));
         }
-        if o.has("apps") && n % 5 == 0 {
+        if o.has("apps") && n.is_multiple_of(5) {
             self.fetch("/api/panels".into(), cx, |me, v| {
                 me.apps = v.get("panels").and_then(Value::as_array).cloned().unwrap_or_default();
             });
         }
-        if o.has("sky") && n % 20 == 0 && crate::features::has("sky") {
+        if o.has("sky") && n.is_multiple_of(20) && crate::features::has("sky") {
             self.fetch("/api/sky".into(), cx, |me, v| me.sky = Some(v));
         }
     }
@@ -1111,8 +1112,18 @@ fn status(show: bool) -> Div {
 /// overlay layer, placed by margins from the top left of the output; failing
 /// that, or under X11, an undecorated popup.
 pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(AnyWindowHandle, Entity<OverlayView>)> {
-    let saved = Saved::load(kind);
-    let g = saved.bounds;
+    let mut saved = Saved::load(kind);
+    let displays: Vec<(DisplayId, Bounds<Pixels>)> = cx.displays().iter().map(|d| (d.id(), d.bounds())).collect();
+    let (display, g) = place(saved.bounds, &displays, cx.primary_display().map(|d| d.id()));
+    if g != saved.bounds {
+        eprintln!("[norrlog] overlay: saved position {},{} is on no display; moving to {},{}", saved.bounds.x, saved.bounds.y, g.x, g.y);
+        saved.bounds = g;
+        let _ = saved.save(kind);
+    }
+    // A layer surface is placed on its output, by margins from that
+    // output's corner; a popup by the desktop's coordinates.
+    let origin = displays.iter().find(|d| Some(d.0) == display).map(|d| d.1.origin).unwrap_or_default();
+    let margin = (f32::from(origin.x), f32::from(origin.y));
     let click = saved.click_through;
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && cfg!(target_os = "linux");
     let mut attempts = Vec::new();
@@ -1126,7 +1137,8 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
             titlebar: None,
             focus: false,
             show: true,
-            kind: window_kind(kind, layer, g),
+            kind: window_kind(kind, layer, Geometry { x: g.x - margin.0, y: g.y - margin.1, ..g }),
+            display_id: display,
             is_movable: false,
             is_resizable: false,
             window_background: WindowBackgroundAppearance::Transparent,
@@ -1140,7 +1152,7 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
         let opened = cx.open_window(opts, |window, cx| {
             set_click_through(window, click);
             let v = cx.new(|cx| {
-                let mut o = OverlayView::new(kind, saved, cx);
+                let mut o = OverlayView::new(saved, cx);
                 o.api = api;
                 o
             });
@@ -1154,6 +1166,30 @@ pub fn open(kind: Kind, api: Option<crate::api::Api>, cx: &mut App) -> Option<(A
         }
     }
     None
+}
+
+/// Where an overlay goes: where it was saved if a useful part of it is on
+/// some display, or else just inside the fallback display
+/// (`visibleOverlayBounds`). Monitors can be arranged with gaps, and a
+/// window placed in one is created and never seen.
+fn place(g: Geometry, displays: &[(DisplayId, Bounds<Pixels>)], fallback: Option<DisplayId>) -> (Option<DisplayId>, Geometry) {
+    const MIN_VISIBLE: f32 = 40.;
+    let overlap = |d: &Bounds<Pixels>| {
+        let (dx, dy, dw, dh) = (f32::from(d.origin.x), f32::from(d.origin.y), f32::from(d.size.width), f32::from(d.size.height));
+        let w = (g.x + g.width).min(dx + dw) - g.x.max(dx);
+        let h = (g.y + g.height).min(dy + dh) - g.y.max(dy);
+        (w >= MIN_VISIBLE && h >= MIN_VISIBLE).then_some(w * h)
+    };
+    // The display holding most of it.
+    if let Some((id, _)) = displays.iter().filter_map(|(id, b)| Some((*id, overlap(b)?))).max_by(|a, b| a.1.total_cmp(&b.1)) {
+        return (Some(id), g);
+    }
+    let Some((id, d)) = displays.iter().find(|d| Some(d.0) == fallback).or(displays.first()) else {
+        // Nothing to check against; trust it.
+        return (None, g);
+    };
+    let (dx, dy, dw, dh) = (f32::from(d.origin.x), f32::from(d.origin.y), f32::from(d.size.width), f32::from(d.size.height));
+    (Some(*id), Geometry { x: dx + 40., y: dy + 40., width: g.width.min(dw), height: g.height.min(dh) })
 }
 
 #[cfg(target_os = "linux")]
@@ -1276,6 +1312,19 @@ mod tests {
         assert_eq!(&b[57..], &[50., 0., 60.]);
         d.on_snapshot(Some(200), Some(&enc(2, 10.)));
         assert!(d.buckets(200).iter().all(|v| *v == 0.), "the last fight's burst is not carried over");
+    }
+
+    #[test]
+    fn an_overlay_in_a_gap_between_monitors_is_brought_back() {
+        let screen = |x: f32, w: f32| Bounds::new(point(px(x), px(0.)), size(px(w), px(1080.)));
+        // Two monitors with a gap between them, at 1920..2560.
+        let ds = [(DisplayId::new(1), screen(0., 1920.)), (DisplayId::new(2), screen(2560., 1920.))];
+        let g = |x: f32, y: f32| Geometry { x, y, width: 380., height: 460. };
+        assert_eq!(place(g(100., 100.), &ds, Some(ds[0].0)), (Some(ds[0].0), g(100., 100.)));
+        assert_eq!(place(g(3000., 100.), &ds, Some(ds[0].0)), (Some(ds[1].0), g(3000., 100.)), "on the second, kept");
+        assert_eq!(place(g(2000., 100.), &ds, Some(ds[0].0)), (Some(ds[0].0), g(40., 40.)), "in the gap");
+        assert_eq!(place(g(1900., 100.), &ds, None).1, g(40., 40.), "20 px showing is not enough to find it by");
+        assert_eq!(place(g(2000., 100.), &[], None), (None, g(2000., 100.)));
     }
 
     #[test]

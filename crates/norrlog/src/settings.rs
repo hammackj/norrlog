@@ -14,7 +14,8 @@
 //! log is polled every 1.5 s for as long as there is a daemon, so it is all
 //! there when the tab is opened.
 //!
-//! The overlay cards are not here: the overlay is its own port.
+//! The overlay cards are `overlay_settings`, rendered here and heard by the
+//! shell, which holds the overlay windows.
 
 use crate::api::{Api, query};
 use crate::config::{self, ParserConfig};
@@ -105,6 +106,8 @@ pub struct SettingsView {
     log_scroll: ScrollHandle,
     tasks: Vec<Task<()>>,
     _poll: Option<Task<()>>,
+    /// The overlay cards. The shell listens to them.
+    pub overlay: Entity<crate::overlay_settings::OverlayControls>,
 }
 
 fn input(window: &mut Window, cx: &mut Context<SettingsView>, placeholder: &str, value: &str) -> Entity<InputState> {
@@ -162,6 +165,7 @@ impl SettingsView {
             log_scroll: ScrollHandle::new(),
             tasks: Vec::new(),
             _poll: None,
+            overlay: cx.new(|cx| crate::overlay_settings::OverlayControls::new(window, cx)),
         }
     }
 
@@ -572,9 +576,6 @@ fn scale_json(v: f32) -> f64 {
 const THEME_HINT: &str = "The default matches eqldb and hammackj.com, so the tools read as one family. Applies to \
     this window; the overlay keeps its own palette, tuned against game footage rather than a desktop.";
 const SCALE_HINT: &str = "Scales the whole window, text and spacing alike, to taste. Applies immediately.";
-const OVERLAY_HINT: &str = "The overlay windows and their settings (panels, click-through, position, the OBS URL) \
-    come with Norrlog's overlay. Until then the Electron app's overlay reads the same daemon.";
-
 fn field(label: &str) -> Div {
     v_flex().gap_1().child(div().text_sm().text_color(hex(MUTED)).child(label.to_string()))
 }
@@ -590,7 +591,7 @@ impl Render for SettingsView {
                         .gap_3()
                         .child(self.render_display(cx))
                         .child(self.render_export(cx))
-                        .child(card("Overlay").child(hint(OVERLAY_HINT))),
+                        .child(self.overlay.clone()),
                 ))
                 .child(self.render_daemon_log(cx)),
         )

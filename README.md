@@ -95,15 +95,23 @@ To run the daemon on its own, for the overlay alone:
 
 ## Overlay
 
-Add an **OBS Browser Source** pointing at:
+**Over the game.** Click **overlay** in the header, or **Show overlay** in
+Settings. The overlay is a transparent window that stays above the game, even
+a fullscreen one, and lets clicks through to it. Settings chooses its panels,
+its position and width, and a second overlay for charm. The height follows
+what it shows. On Wayland it needs a compositor with the layer-shell protocol
+(KDE, Sway, Hyprland and most others; not GNOME), and on X11 any window
+manager.
+
+**In OBS.** Add a **Browser Source** pointing at:
 
 ```
 http://127.0.0.1:8777/overlay
 ```
 
 About 360×420, transparent background. The page paints no background of its
-own, so it composites cleanly. A desktop overlay window that sits over the game
-is being built into the app.
+own, so it composites cleanly. Both overlays take the same options; in the app
+they are typed into Settings, for OBS they go on the URL:
 
 | Parameter | Effect |
 |---|---|
