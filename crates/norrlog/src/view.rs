@@ -56,6 +56,10 @@ pub struct Shell {
     dashboard: Entity<crate::dashboard::DashboardView>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
+    /// The daemon, once attached, for an overlay opened later.
+    api: Option<crate::api::Api>,
+    /// The overlay windows that are open.
+    overlays: Vec<(crate::overlay::Kind, AnyWindowHandle, Entity<crate::overlay::OverlayView>)>,
     state: State,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
@@ -117,6 +121,8 @@ impl Shell {
             dashboard,
             tab,
             snapshot: None,
+            api: None,
+            overlays: Vec::new(),
             state,
             _tasks: vec![task],
             _subs: subs,
@@ -139,6 +145,10 @@ impl Shell {
                 }
                 self.link = Link::Attached { hello, started };
                 let api = crate::api::Api { rt: self.rt.clone(), client: *client };
+                self.api = Some(api.clone());
+                for (_, _, o) in &self.overlays {
+                    o.update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
+                }
                 let open = self.tab;
                 self.encounters.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
@@ -236,12 +246,19 @@ impl Shell {
                 self.alerts.update(cx, |v, cx| v.on_fires(fires, seq, cx));
                 let tells_open = self.tab == "tells";
                 self.tells.update(cx, |v, cx| v.on_snapshot(tells_open, cx));
+                for (_, _, o) in &self.overlays {
+                    o.update(cx, |v, cx| v.on_snapshot(s.clone(), cx));
+                }
                 self.snapshot = Some(s);
             }
             Msg::Lost(why) => {
                 eprintln!("[norrlog] lost the daemon: {why}");
                 self.link = Link::Lost(why);
                 self.snapshot = None;
+                self.api = None;
+                for (_, _, o) in &self.overlays {
+                    o.update(cx, |v, cx| v.set_api(None, cx));
+                }
                 self.encounters.update(cx, |v, cx| v.set_api(None, cx));
                 self.procs.update(cx, |v, cx| v.set_api(None, cx));
                 self.loot.update(cx, |v, cx| v.set_api(None, cx));
@@ -307,7 +324,25 @@ impl Shell {
         cx.notify();
     }
 
-    fn render_header(&self) -> Div {
+    /// Open an overlay, or close it if it is open.
+    pub fn toggle_overlay(&mut self, kind: crate::overlay::Kind, cx: &mut Context<Self>) {
+        if let Some(i) = self.overlays.iter().position(|(k, _, _)| *k == kind) {
+            let (_, h, _) = self.overlays.remove(i);
+            let _ = h.update(cx, |_, window, _| window.remove_window());
+        } else if let Some((h, v)) = crate::overlay::open(kind, self.api.clone(), cx) {
+            if let Some(s) = self.snapshot.clone() {
+                v.update(cx, |v, cx| v.on_snapshot(s, cx));
+            }
+            self.overlays.push((kind, h, v));
+        }
+        cx.notify();
+    }
+
+    pub fn overlay_open(&self, kind: crate::overlay::Kind) -> bool {
+        self.overlays.iter().any(|(k, _, _)| *k == kind)
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let s = self.snapshot.as_deref();
         let mut pills = div().flex().flex_row().items_center().gap_2().ml_auto();
         let str_of = |k: &str| s.and_then(|s| s.get(k)).and_then(Value::as_str).unwrap_or("");
@@ -335,6 +370,14 @@ impl Shell {
             (Link::Lost(_), _) => ("offline", ENEMY),
         };
         pills = pills.child(pill(status, color, color));
+        let on = self.overlay_open(crate::overlay::Kind::Main);
+        pills = pills.child(
+            div()
+                .id("overlay-toggle")
+                .cursor_pointer()
+                .child(pill(if on { "overlay on" } else { "overlay" }, if on { ACCENT } else { MUTED }, if on { ACCENT } else { BORDER }))
+                .on_click(cx.listener(|v, _, _, cx| v.toggle_overlay(crate::overlay::Kind::Main, cx))),
+        );
 
         div()
             .flex()
@@ -431,7 +474,7 @@ impl Render for Shell {
             .text_color(hex(TEXT))
             .text_sm()
             .child(crate::parts::scroll_watch())
-            .child(self.render_header())
+            .child(self.render_header(cx))
             .child(self.render_nav(cx))
             .child(if matches!(self.tab, "encounters" | "procs" | "loot" | "classes" | "character" | "experience" | "tradeskills" | "forage" | "sky" | "tells" | "alerts" | "dashboard") && !matches!(self.link, Link::Lost(_)) || self.tab == "settings" {
                 // These scroll themselves, and are drawn cached: each redraws

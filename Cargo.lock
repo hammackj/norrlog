@@ -4144,10 +4144,12 @@ dependencies = [
  "image",
  "norrlog-api",
  "norrlog-client",
+ "raw-window-handle",
  "rodio",
  "serde",
  "serde_json",
  "tokio",
+ "x11rb",
 ]
 
 [[package]]

@@ -27,6 +27,7 @@ mod forage;
 mod format;
 mod item_tip;
 mod loot;
+mod overlay;
 mod parts;
 mod procs;
 mod sky;
@@ -94,14 +95,18 @@ fn main() {
             app_id: Some("norrlog".into()),
             ..Default::default()
         };
-        cx.open_window(options, move |window, cx| {
-            let restart = settings::Restart { ctl: ctl_tx, daemon: daemon_bin };
-            let view = cx.new(|cx| view::Shell::new(rx, rt, state, restart, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("could not open the window");
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+        let main = cx
+            .open_window(options, move |window, cx| {
+                let restart = settings::Restart { ctl: ctl_tx, daemon: daemon_bin };
+                let view = cx.new(|cx| view::Shell::new(rx, rt, state, restart, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .expect("could not open the window");
+        // Closing the main window quits, overlays or not: an overlay left
+        // over a game with nothing to close it from would be stranded.
+        let main_id = main.window_id();
+        cx.on_window_closed(move |cx, closed| {
+            if closed == main_id || cx.windows().is_empty() {
                 cx.quit();
             }
         })
