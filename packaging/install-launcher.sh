@@ -53,10 +53,9 @@ done
 if [ -d "$DESKTOP_DIR" ]; then
     cp -f "$APPS/norrlog.desktop" "$DESKTOP_DIR/norrlog.desktop"
     chmod +x "$DESKTOP_DIR/norrlog.desktop"
-    # KDE will not launch a desktop file it does not trust, and there is no
-    # way to set that from inside the file itself.
-    command -v kioclient5 >/dev/null 2>&1 &&
-        kioclient5 --noninteractive exec "$DESKTOP_DIR/norrlog.desktop" >/dev/null 2>&1 || true
+    # A desktop file on the desktop runs only once trusted: KDE takes the
+    # executable bit above, GNOME this flag. (`kioclient5 exec` was here
+    # once; it does not mark the file trusted, it launches the app.)
     gio set "$DESKTOP_DIR/norrlog.desktop" metadata::trusted true 2>/dev/null || true
 fi
 
