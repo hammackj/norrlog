@@ -478,8 +478,7 @@ impl AlertBook {
         // Forget buffs that are no longer up, so the same song landing again
         // later can warn once more.
         let present: Vec<&String> = buffs.iter().map(|(n, _)| n).collect();
-        self.warned
-            .retain(|(_, buff), _| present.contains(&buff));
+        self.warned.retain(|(_, buff), _| present.contains(&buff));
     }
 
     /// Record a fire, honouring the per-subject cooldown.
