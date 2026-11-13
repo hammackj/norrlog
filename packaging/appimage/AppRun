@@ -1,0 +1,35 @@
+#!/bin/sh
+# The AppImage's entry point: start Norrlog with the daemon beside it.
+#
+# The daemon is not run from inside the AppImage. The image is a mount that
+# disappears when the app exits, and the daemon is meant to outlive the app:
+# for a minute after it closes, and for as long as an OBS overlay is
+# attached. So it is copied out to the cache first, once per build, and the
+# app is pointed at the copy.
+set -eu
+HERE=$(dirname "$(readlink -f "$0")")
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/norrlog/bin
+# One copy per build, each in a directory of its own so the process is
+# still called norrlogd. A daemon still running from an older copy is left
+# alone, and its file with it.
+SUM=$(cksum <"$HERE/usr/bin/norrlogd" | cut -d' ' -f1)
+DAEMON=$CACHE/$SUM/norrlogd
+if [ ! -x "$DAEMON" ]; then
+    mkdir -p "$CACHE/$SUM"
+    # A temporary name and a rename, so a half-written copy is never run.
+    cp "$HERE/usr/bin/norrlogd" "$DAEMON.tmp.$$"
+    chmod 755 "$DAEMON.tmp.$$"
+    mv -f "$DAEMON.tmp.$$" "$DAEMON"
+fi
+# Older builds' copies, once nothing runs them.
+for dir in "$CACHE"/*/; do
+    dir=${dir%/}
+    [ "$dir" = "$CACHE/$SUM" ] && continue
+    busy=
+    for exe in /proc/[0-9]*/exe; do
+        [ "$(readlink "$exe" 2>/dev/null)" = "$dir/norrlogd" ] && busy=1 && break
+    done
+    [ -n "$busy" ] || rm -rf "$dir"
+done
+export NORRLOG_DAEMON="$DAEMON"
+exec "$HERE/usr/bin/norrlog" "$@"

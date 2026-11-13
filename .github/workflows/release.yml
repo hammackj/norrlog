@@ -1,0 +1,57 @@
+name: Release
+
+# A tag like v0.2.0 builds the downloads and attaches them to that tag's
+# GitHub release, creating it as a draft if there is none yet. Run by hand,
+# it builds them and keeps them as workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: Linux AppImage
+    # An AppImage runs where glibc is at least the build machine's, so the
+    # oldest supported runner, not the newest.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig-dev libfreetype-dev \
+            libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libfuse2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: appimagetool
+        run: |
+          curl -fsSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: packaging/appimage/build.sh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Norrlog-linux-x86_64
+          path: dist/*.AppImage
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
