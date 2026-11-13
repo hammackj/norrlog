@@ -912,7 +912,9 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
             store::Store::open_as(&db, &player, &server)
                 .with_context(|| format!("opening {}", db.display()))?,
         ));
-        flush_history(&engine, &store, path);
+        if let Err(e) = flush_history(&engine, &store, path, true) {
+            anyhow::bail!("writing the history of {}: {e}", path.display());
+        }
         eprintln!("{lines} lines in {:.1}s", started.elapsed().as_secs_f64());
         identity = Some((player, server));
     }
@@ -1315,7 +1317,18 @@ fn history_path() -> Option<PathBuf> {
 /// safe to call as often as we like: re-flushing unchanged history is a no-op
 /// in effect, and a flush that now knows more (a build label that needed later
 /// evidence) improves the stored row.
-pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path) {
+/// Write what the engine has learnt to the history database.
+///
+/// `whole` says the engine read `path` from its first byte. Drops, vendor
+/// prices, the bestiary and the record are written by replacing everything
+/// stored for the source, so an engine that saw only part of the log (a
+/// `--since` window) must not write them: it would swap the log's totals for
+/// the window's. The keyed rows (kills, encounters, levels, AA, grants, Sky)
+/// are upserts and safe either way.
+///
+/// An error means nothing after the failed write was stored, and the caller
+/// must not record the source as read.
+pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store::Store>>, path: &Path, whole: bool) -> Result<(), String> {
     let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
     let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
     let grants = { engine.locked("engine").grants_to_persist() };
@@ -1334,27 +1347,33 @@ pub(crate) fn flush_history(engine: &Arc<Mutex<Engine>>, store: &Arc<Mutex<store
     };
     let source = path.to_string_lossy().to_string();
     let mut st = store.locked("history");
-    if let Err(e) = st
+    let keyed = st
         .put_kills(&kills)
         .and_then(|_| st.put_encounters(&encs))
         .and_then(|_| st.put_levels(&levels))
         .and_then(|_| st.put_aa(game.slug(), &aa))
         .and_then(|_| st.put_sky_turnins(&sky_turn_ins))
-        .and_then(|_| st.put_grants(&grants))
-        .and_then(|_| st.put_drops(game.slug(), &source, &drops))
-        .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
-        .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))
-        .and_then(|_| st.put_record(record::GAME_TAG, &source, &record))
-    {
+        .and_then(|_| st.put_grants(&grants));
+    let written = if whole {
+        keyed
+            .and_then(|_| st.put_drops(game.slug(), &source, &drops))
+            .and_then(|_| st.put_vendors(game.slug(), &source, &prices))
+            .and_then(|_| st.put_bestiary(game.slug(), &source, &bestiary, &health))
+            .and_then(|_| st.put_record(record::GAME_TAG, &source, &record))
+    } else {
+        keyed
+    };
+    if let Err(e) = written {
         eprintln!("[norrlogd] history write failed: {e}");
-        return;
+        return Err(e.to_string());
     }
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let _ = st.note_source(&path.to_string_lossy(), bytes, now);
+    st.note_source(&path.to_string_lossy(), bytes, now).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn spawn_follower_since(
@@ -1376,6 +1395,8 @@ fn spawn_follower_since(
                 .flatten()
                 .map(|end| end - secs)
         });
+        // Only a log read from its start may replace what is stored for it.
+        let whole = cutoff.is_none();
         let opened = match cutoff {
             Some(c) => tail::Follower::open_since(&path, c),
             None => tail::Follower::open(&path),
@@ -1407,7 +1428,7 @@ fn spawn_follower_since(
             start.elapsed().as_secs_f64()
         );
         if let Some(st) = &store {
-            flush_history(&engine, st, &path);
+            let _ = flush_history(&engine, st, &path, whole);
         }
 
         // Follow.
@@ -1432,7 +1453,7 @@ fn spawn_follower_since(
             if last_flush.elapsed() >= HISTORY_FLUSH_INTERVAL {
                 last_flush = std::time::Instant::now();
                 if let Some(st) = &store {
-                    flush_history(&engine, st, &path);
+                    let _ = flush_history(&engine, st, &path, whole);
                 }
             }
         }

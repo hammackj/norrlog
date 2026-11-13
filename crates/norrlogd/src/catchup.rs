@@ -101,8 +101,9 @@ pub struct Caught {
     pub path: String,
     pub player: String,
     pub server: String,
-    /// The watermark this run started from. Zero for a log never read, and
-    /// also for one that shrank — see [`resume_at`].
+    /// Where the new bytes began: the watermark, or zero for a log never
+    /// read or one that shrank (see [`resume_at`]). The whole log is read
+    /// either way; see [`catch_up_one`].
     pub from: u64,
     /// Where it now stands, which is the file's length.
     pub to: u64,
@@ -170,7 +171,13 @@ pub fn catch_up_one(
     if from >= len {
         return None;
     }
-    file.seek(SeekFrom::Start(from)).ok()?;
+    // Read from the start, not from the watermark. The history writers for
+    // drops, vendors, the bestiary and the record replace everything stored
+    // for a source, so an engine that saw only the new tail would swap a
+    // log's totals for the tail's: three sightings became one. An unfollowed
+    // log grows only when that character is played elsewhere, so this is one
+    // parse per session played, not one per sweep.
+    file.seek(SeekFrom::Start(0)).ok()?;
 
     let started = std::time::Instant::now();
     let spells = Engine::load_spell_db(game_dir);
@@ -186,7 +193,9 @@ pub fn catch_up_one(
     }
     let st = store::Store::open_as(db, &player, &server).ok()?;
     let store = Arc::new(Mutex::new(st));
-    crate::flush_history(&engine, &store, path);
+    // A failed write leaves the watermark where it was, so the next sweep
+    // tries again rather than taking the log as read.
+    crate::flush_history(&engine, &store, path, true).ok()?;
     // The watermark is the file's length as measured *before* the read, not
     // its length now. The log may have grown while this ran -- an alt's log
     // will not, but a log that turns out to be the one being played would --
@@ -401,20 +410,43 @@ mod tests {
         assert_eq!(caught[0].lines, 2);
     }
 
-    /// Only the new tail is read, not the whole file again.
-    ///
-    /// The property the whole design rests on: a 352 MB log that gained one
-    /// line costs one line, not 352 MB. Without it a sweep on a timer is a
-    /// re-parse on a timer.
+    /// A log that grew is read again from the start, so what is stored for it
+    /// is the whole log's, not the new tail's.
     #[test]
-    fn a_catch_up_reads_only_what_arrived_since() {
+    fn a_grown_log_is_read_whole() {
         let d = scratch("tail");
         let p = d.join("eqlog_Mirela_freeport.txt");
         write(&p, &format!("{A}{B}"));
         let c = catch_up_one(&p, &d.join("history.db"), None, Game::Unknown, A.len() as u64, 0)
             .expect("something to read");
-        assert_eq!(c.lines, 1, "it re-read lines it had already read");
-        assert_eq!(c.from, A.len() as u64);
+        assert_eq!(c.lines, 2);
+        assert_eq!(c.from, A.len() as u64, "where the new bytes began");
+    }
+
+    /// Two sightings, then one more appended and caught up, are three; and a
+    /// sweep with nothing new leaves them at three.
+    #[test]
+    fn catching_up_keeps_what_was_stored_before() {
+        let d = scratch("keeps");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        let loot = |s: u32| format!("[Tue Jul 28 14:00:{s:02} 2026] --You have looted a Stale Bread from a rat's corpse.--\n");
+        let zone = "[Tue Jul 28 13:59:00 2026] You have entered West Commonlands.\n";
+        write(&p, &format!("{zone}{}{}", loot(1), loot(2)));
+        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        let looted = || {
+            let st = store::Store::open_as(&db, "Mirela", "freeport").unwrap();
+            st.all_drops().unwrap().iter().filter(|r| r.item == "Stale Bread").map(|r| r.looted).sum::<u64>()
+        };
+        assert_eq!(looted(), 2);
+
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(loot(3).as_bytes()).unwrap();
+        catch_up_one(&p, &db, None, Game::Unknown, first.to, 0).expect("the appended line");
+        assert_eq!(looted(), 3, "the catch-up replaced the log's totals with the tail's");
+
+        let len = std::fs::metadata(&p).unwrap().len();
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, len, 0).is_none());
+        assert_eq!(looted(), 3);
     }
 
     /// The status readout says how far behind each log is, worst first.
