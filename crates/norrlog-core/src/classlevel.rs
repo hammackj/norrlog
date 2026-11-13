@@ -429,6 +429,34 @@ impl ClassLevelTracker {
         }
     }
 
+    /// The character's level now: the lowest class in the loadout, unless a
+    /// level-up has said otherwise since.
+    ///
+    /// "Welcome to level 21!" states the level outright even when it cannot
+    /// say whose it was. With two classes at 20 the ding is unattributed, the
+    /// lowest stays 20, and the overlay said 20 to a player looking at 21. So
+    /// a ding newer than every reading of the loadout's levels, and than the
+    /// last swap, is the level; anything after it -- a `/who`, a swap --
+    /// takes over again.
+    fn effective(&self, loadout: &[Class]) -> Option<u32> {
+        let lowest = loadout.iter().filter_map(|c| self.level_of(*c)).min();
+        let newest_reading = loadout
+            .iter()
+            .filter_map(|c| self.levels.get(c).map(|(_, _, at)| *at))
+            .max()
+            .unwrap_or(0);
+        match self.last_level_up {
+            Some((at, level))
+                if at > newest_reading
+                    && at >= self.loadout_changed_at
+                    && lowest.is_none_or(|l| level > l) =>
+            {
+                Some(level)
+            }
+            _ => lowest,
+        }
+    }
+
     pub fn level_of(&self, class: Class) -> Option<u32> {
         self.levels.get(&class).map(|(l, _, _)| *l)
     }
@@ -520,7 +548,7 @@ impl ClassLevelTracker {
             classes,
             unknown,
             needs_who,
-            effective: loadout.iter().filter_map(|c| self.level_of(*c)).min(),
+            effective: self.effective(loadout),
             unattributed: self.pending.len(),
             cap: self.cap,
         }
@@ -554,6 +582,26 @@ mod tests {
         // And it keeps going up from there in the ordinary way.
         t.on_level_up(300, 4, &loadout);
         assert_eq!(t.report(&loadout, &loadout).effective, Some(4));
+    }
+
+    /// The player's report: "overlay says im level 20 and im level 21". A
+    /// `/who` put two classes at 20, so the ding to 21 could not say whose it
+    /// was -- but it still said 21.
+    #[test]
+    fn a_ding_that_cannot_be_attributed_still_states_the_level() {
+        let mut t = ClassLevelTracker::new();
+        let loadout = [Class::Ranger, Class::Rogue, Class::Necromancer];
+        t.note_loadout(0, &loadout);
+        t.on_who(100, 20, &loadout);
+        assert_eq!(t.report(&loadout, &loadout).effective, Some(20));
+        assert_eq!(t.on_level_up(200, 21, &loadout), None, "two classes at 20");
+        assert_eq!(t.report(&loadout, &loadout).effective, Some(21));
+        // A swap after it is newer than the ding, and the loadout's own
+        // readings take over again.
+        let other = [Class::Warrior, Class::Rogue, Class::Necromancer];
+        t.note_loadout(300, &other);
+        t.on_who(310, 18, &other);
+        assert_eq!(t.report(&other, &other).effective, Some(18));
     }
 
     /// A `/who` below the baseline is the game's own answer, and was thrown
