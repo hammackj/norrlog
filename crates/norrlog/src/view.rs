@@ -518,10 +518,15 @@ impl Shell {
         if !str_of("zone").is_empty() {
             pills = pills.child(pill(str_of("zone").to_string(), TEXT, BORDER));
         }
+        let missing = s
+            .and_then(|s| s.get("log_missing"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let (status, color) = match (
             &self.link,
             s.and_then(|s| s.get("live")).and_then(Value::as_bool),
         ) {
+            (Link::Attached { .. }, _) if missing => ("waiting for the log", ACCENT),
             (Link::Attached { .. }, Some(true)) => ("following live", HEAL),
             (Link::Attached { .. }, Some(false)) => ("parsing…", MUTED),
             (Link::Attached { .. }, None) | (Link::Attaching, _) => ("connecting", ACCENT),
@@ -618,6 +623,28 @@ impl Shell {
             && self.tab != "settings"
         {
             return notice("The daemon is not answering", why.clone()).into_any_element();
+        }
+        let missing = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.get("log_missing"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if missing && self.tab == "dashboard" {
+            let log = match &self.link {
+                Link::Attached { hello, .. } => hello.log.clone(),
+                _ => String::new(),
+            };
+            return notice(
+                "Waiting for the log",
+                format!(
+                    "{log} does not exist yet. EverQuest creates it when you turn \
+                     logging on in game with /log on; Norrlog starts reading \
+                     the moment it appears. If the path is wrong, fix it in \
+                     Settings."
+                ),
+            )
+            .into_any_element();
         }
         if matches!(self.link, Link::Unset) && self.tab != "settings" {
             return notice(

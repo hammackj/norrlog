@@ -1319,6 +1319,19 @@ fn spawn_follower_since(
     store: Option<Arc<Mutex<store::Store>>>,
 ) {
     std::thread::spawn(move || {
+        // EverQuest creates the log at `/log on`, so a chosen log that is not
+        // there yet is normal on a first run. Wait for it, and say so: giving
+        // up here left the app reading "parsing…" for ever, and never
+        // followed the file once the game made it.
+        if !path.exists() {
+            eprintln!("[norrlogd] waiting for {} to be created", path.display());
+            engine.locked("engine").set_log_missing(true);
+            publish(&engine, &snapshot, &updates, &events);
+            while !path.exists() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            engine.locked("engine").set_log_missing(false);
+        }
         // A window is measured from the log's own end, not the wall clock:
         // the two are a timezone apart, and a log last written yesterday would
         // otherwise come back empty.

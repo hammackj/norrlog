@@ -246,6 +246,9 @@ pub struct Snapshot {
     pub log_time: i64,
     /// True once the initial backlog has been read and we are following live.
     pub live: bool,
+    /// The chosen log does not exist yet. Normal before `/log on`; the
+    /// daemon waits for it rather than reading nothing for ever.
+    pub log_missing: bool,
     /// Alerts that recently went off, oldest first.
     ///
     /// Carried on the snapshot rather than pushed on their own channel so a
@@ -520,6 +523,7 @@ pub struct Engine {
     /// reaches the end of the file, the newest line is approximately "now".
     clock_offset: Option<i64>,
     live: bool,
+    log_missing: bool,
     /// The six collectors that read this log for the *record* rather than for
     /// the screen — who was here, what considered at what, which faction a
     /// kill moved, how high a skill has reached, and where things stood.
@@ -629,6 +633,7 @@ impl Engine {
             seen_logon: false,
             clock_offset: None,
             live: false,
+            log_missing: false,
             record: crate::record::Record::new(),
             feed_zone: None,
             alerts: AlertBook::new(),
@@ -661,6 +666,11 @@ impl Engine {
                 SpellDb::empty()
             }
         }
+    }
+
+    /// Whether the log being followed is still waiting to be created.
+    pub fn set_log_missing(&mut self, missing: bool) {
+        self.log_missing = missing;
     }
 
     /// Mark the backlog as consumed; subsequent lines are live.
@@ -3770,6 +3780,7 @@ impl Engine {
             totals,
             log_time: self.last_timestamp,
             live: self.live,
+            log_missing: self.log_missing,
             alerts: self
                 .alerts
                 .since(self.alerts.seq().saturating_sub(SNAPSHOT_ALERTS)),
