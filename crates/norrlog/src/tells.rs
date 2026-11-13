@@ -114,7 +114,7 @@ impl Render for TellsView {
                             h_flex()
                                 .gap_1()
                                 .child(c.who.clone())
-                                .when(owed, |d| d.child(tag("their turn", ACCENT).flex_none())),
+                                .when(owed, |d| d.child(tag("their turn", GOLD).flex_none())),
                             h_flex()
                                 .gap_3()
                                 .child(dim(when_short(Some(c.last))))
@@ -154,7 +154,7 @@ impl Render for TellsView {
                                 .flex_none()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(hex(if m.outgoing { YOU } else { ACCENT }))
+                                .text_color(hex(if m.outgoing { YOU } else { GOLD }))
                                 .child(if m.outgoing {
                                     "You".to_string()
                                 } else {

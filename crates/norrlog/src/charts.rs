@@ -66,7 +66,7 @@ pub fn dps_lines(t: &TickSeries) -> Vec<Line> {
         vec![
             (
                 (0..n).map(|i| t.you[i] + helpers[i]).collect(),
-                ACCENT,
+                GOLD,
                 true,
                 "you + pet + group",
             ),
@@ -109,7 +109,7 @@ fn mark_label(m: &TimelineMark) -> String {
 }
 
 fn mark_colour(m: &TimelineMark) -> u32 {
-    if m.kind == "invocation" { PET } else { ACCENT }
+    if m.kind == "invocation" { PET } else { GOLD }
 }
 
 pub fn dps_card(e: &Encounter, s: &EncounterSummary) -> Option<Div> {
@@ -225,7 +225,7 @@ pub fn dps_card(e: &Encounter, s: &EncounterSummary) -> Option<Div> {
     }
     if !e.marks.iter().all(|m| m.at < e.start || m.at > e.end) {
         legend = legend
-            .child(swap_key(ACCENT, "stance"))
+            .child(swap_key(GOLD, "stance"))
             .child(swap_key(PET, "invocation"));
     }
     legend = legend.child(
@@ -389,7 +389,7 @@ pub fn tl_width(span: i64) -> f64 {
 fn outcome_style(o: Outcome) -> (u32, f32, f32) {
     match o {
         Outcome::Hit => (YOU, 11., 0.85),
-        Outcome::Crit => (ACCENT, 18., 1.),
+        Outcome::Crit => (GOLD, 18., 1.),
         Outcome::Miss => (MUTED, 6., 0.7),
         Outcome::Resist => (ENEMY, 13., 0.9),
     }
@@ -593,7 +593,7 @@ pub fn timeline_card(e: &Encounter, s: &EncounterSummary) -> Div {
 
     let mut legend = legend_row()
         .child(key(YOU, "hit"))
-        .child(key(ACCENT, "crit"))
+        .child(key(GOLD, "crit"))
         .child(key(MUTED, "miss"))
         .child(key(ENEMY, "resist"))
         .child(band_key(false, "effect running"));
@@ -604,7 +604,7 @@ pub fn timeline_card(e: &Encounter, s: &EncounterSummary) -> Div {
         legend = legend.child(band_key(true, "expected (no wear-off seen)"));
     }
     legend = legend
-        .child(swap_key(ACCENT, "stance"))
+        .child(swap_key(GOLD, "stance"))
         .child(swap_key(PET, "invocation"));
 
     let mut note = "Your own actions only — a charmed pet's damage counts toward your total but is not a skill you \

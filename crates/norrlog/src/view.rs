@@ -543,10 +543,10 @@ impl Shell {
             &self.link,
             s.and_then(|s| s.get("live")).and_then(Value::as_bool),
         ) {
-            (Link::Attached { .. }, _) if missing => ("waiting for the log", ACCENT),
+            (Link::Attached { .. }, _) if missing => ("waiting for the log", WARN),
             (Link::Attached { .. }, Some(true)) => ("following live", HEAL),
             (Link::Attached { .. }, Some(false)) => ("parsing…", MUTED),
-            (Link::Attached { .. }, None) | (Link::Attaching, _) => ("connecting", ACCENT),
+            (Link::Attached { .. }, None) | (Link::Attaching, _) => ("connecting", WARN),
             (Link::Lost(_), _) => ("offline", ENEMY),
             (Link::Unset, _) => ("no log chosen", MUTED),
         };

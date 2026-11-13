@@ -1179,7 +1179,7 @@ impl SettingsView {
                     .child(
                         div()
                             .w(px(110.))
-                            .text_color(hex(if l.behind > 0 { ACCENT } else { HEAL }))
+                            .text_color(hex(if l.behind > 0 { WARN } else { HEAL }))
                             .child(behind),
                     )
                     .child(

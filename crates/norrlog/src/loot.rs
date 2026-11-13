@@ -773,7 +773,7 @@ fn first(v: &[String], n: usize) -> String {
 fn fates(i: &LootTally) -> Vec<(String, u32)> {
     [
         (i.kept, "kept", MUTED),
-        (i.sold, "sold", ACCENT),
+        (i.sold, "sold", GOLD),
         (i.stored, "stored", YOU),
         (i.transmuted, "transmuted", PET),
     ]

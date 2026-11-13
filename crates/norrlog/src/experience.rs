@@ -786,7 +786,7 @@ fn aa_row(i: usize, a: &AaAbility) -> AnyElement {
         listed.to_string()
     };
     let note: AnyElement = if a.truncated {
-        tag("ladder cut short", ACCENT).into_any_element()
+        tag("ladder cut short", WARN).into_any_element()
     } else if a.cost_to_finish == Some(0) {
         dim("complete").into_any_element()
     } else {

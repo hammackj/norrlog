@@ -94,6 +94,7 @@ fn resolve(c: u32) -> u32 {
         TEXT => 0xe8e2d4,
         MUTED => 0x918aa8,
         ACCENT => 0xe0b64a,
+        GOLD => 0xe0b64a,
         YOU => 0x79b6d9,
         ENEMY => 0xd16a72,
         HEAL => 0x86c08a,
@@ -107,7 +108,8 @@ fn resolve(c: u32) -> u32 {
 }
 
 // The parser's palette, shared with the collector so the two apps read as
-// one family: eqldb's surfaces and text, gold for the accent, cyan for you.
+// one family: eqldb's surfaces and text, hammackj.com's cyan for the accent
+// and for you, gold where gold means something.
 pub const BG: u32 = 0x14161a;
 /// `--bg-2`: header, tabs, section cards.
 pub const PANEL: u32 = 0x1b1e24;
@@ -116,8 +118,13 @@ pub const PANEL_2: u32 = 0x22262e;
 pub const BORDER: u32 = 0x2e333d;
 pub const TEXT: u32 = 0xd8dae0;
 pub const MUTED: u32 = 0x8b93a1;
-/// Gold: the active tab, a sent row.
-pub const ACCENT: u32 = 0xd9a441;
+/// The active tab, a selected row, a tag: the interface's own colour, the
+/// cyan of the icon and of hammackj.com: cyan-300, a step lighter than `YOU`,
+/// and one blue step off `LINK_HOVER` so the spellbook can map them apart.
+pub const ACCENT: u32 = 0x67e8f8;
+/// Gold, where the colour carries meaning rather than marking a selection: a
+/// crit, coin, the other side of a conversation, something waiting on you.
+pub const GOLD: u32 = 0xd9a441;
 /// Cyan: you, and where you are.
 pub const YOU: u32 = 0x22d3ee;
 /// Red: something only you know, or something wrong.
@@ -133,7 +140,7 @@ pub const LINK_HOVER: u32 = 0x67e8f9;
 pub const RAISED: u32 = 0x2a2f38;
 pub const SUNKEN: u32 = 0x0e1013;
 pub const OK: u32 = HEAL;
-pub const WARN: u32 = ACCENT;
+pub const WARN: u32 = GOLD;
 pub const ERR: u32 = ENEMY;
 pub const INFO: u32 = YOU;
 
