@@ -24,7 +24,6 @@ pub const TABS: &[(&str, &str)] = &[
     ("tradeskills", "Tradeskills"),
     ("forage", "Forage"),
     ("sky", "Sky"),
-    ("quests", "Quests"),
     ("tells", "Tells"),
     ("alerts", "Alerts"),
     ("character", "Character"),

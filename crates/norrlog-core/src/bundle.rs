@@ -1056,18 +1056,14 @@ pub struct CoinReward {
 
 /// A quest walkthrough: how to start it, what it wants, what it gives.
 ///
-/// This is the one type eqldb has to declare for itself rather than borrowing
-/// from the parser. The parser's `QuestRecord` lives in `norrlogd`, which is
-/// a binary with no library target, so there is nothing to depend on. Field
-/// names match so the JSON deserialises straight across, and every field is
-/// `#[serde(default)]` so a parser that grows a new one does not break an
-/// older reader.
+/// Written by hand and kept by the item sites (their `assets/quests.json`),
+/// not parsed from a log: the parser kept a notebook of these once and no
+/// longer does. Every field is `#[serde(default)]` so a file that grows a
+/// new one does not break an older reader.
 ///
-/// The mismatch is deliberate in one direction: `QuestRecord` also carries
-/// `status` — whether *this player* has finished it. That is progress, not
-/// reference, and a public site has no business publishing whether someone
-/// has done a quest yet. It is dropped on export rather than carried and
-/// hidden.
+/// There is no `status` -- whether *this player* has finished it. That is
+/// progress, not reference, and a public site has no business publishing
+/// whether someone has done a quest yet.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Quest {
     pub name: String,
