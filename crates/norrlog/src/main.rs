@@ -42,6 +42,7 @@ mod sky;
 mod sound;
 mod spell_tip;
 mod state;
+mod steady;
 mod table;
 #[allow(dead_code)]
 mod tells;

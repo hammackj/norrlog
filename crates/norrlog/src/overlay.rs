@@ -361,6 +361,11 @@ pub struct OverlayView {
     /// started, seconds). One per rule; firing again restarts it.
     timers: Vec<(String, String, Instant, u32)>,
     _tick: Task<()>,
+    /// Redraws the timer bars five times a second, so they glide rather
+    /// than step, while a timer panel is shown.
+    _glide: Task<()>,
+    /// Where each timer ends, held steady between snapshots.
+    ends: crate::steady::Ends,
 }
 
 /// How long an alert's banner stays up.
@@ -438,6 +443,20 @@ impl OverlayView {
                 };
             }
         });
+        let glide = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let Ok(()) = this.update(cx, |v, cx| {
+                    if ["buffs", "debuffs", "others"].iter().any(|p| v.opts.has(p)) {
+                        cx.notify();
+                    }
+                }) else {
+                    break;
+                };
+            }
+        });
         OverlayView {
             saved,
             opts,
@@ -457,6 +476,8 @@ impl OverlayView {
             banners: Vec::new(),
             timers: Vec::new(),
             _tick: tick,
+            _glide: glide,
+            ends: Default::default(),
         }
     }
 
@@ -1155,7 +1176,6 @@ impl OverlayView {
 
     /// `renderOthers`: your spells on others, the soonest to end first.
     fn others(&self, snap: &Value) -> Div {
-        let gone = self.elapsed();
         let rows: Vec<AnyElement> = snap
             .get("on_others")
             .and_then(Value::as_array)
@@ -1164,10 +1184,11 @@ impl OverlayView {
             .iter()
             .take(self.opts.buffs)
             .map(|o| {
+                let key = format!("others:{}:{}", s(o, "target"), s(o, "spell"));
                 let left = o
                     .get("remaining")
                     .and_then(Value::as_f64)
-                    .map(|r| (r - gone).max(0.));
+                    .map(|r| self.ends.left(&key, r, self.at));
                 let worn = flag(o, "worn_off");
                 let ticking = !worn && (flag(o, "overrun") || left.is_none_or(|l| l <= 0.));
                 let total = o.get("total").and_then(Value::as_f64).unwrap_or(1.).max(1.);
@@ -1260,7 +1281,8 @@ impl OverlayView {
                         let left = if perm || over {
                             rem
                         } else {
-                            (rem - gone).max(0.)
+                            self.ends
+                                .left(&format!("{key}:{}", s(b, "name")), rem, self.at)
                         };
                         let total = b
                             .get("total")

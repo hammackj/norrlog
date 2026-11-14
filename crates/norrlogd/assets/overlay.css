@@ -273,7 +273,9 @@ body {
   width: var(--remain, 0%);
   background: linear-gradient(90deg, rgb(var(--wash-rgb) / 0.2), rgb(var(--wash-rgb) / 0.06));
   z-index: -1;
-  transition: width 400ms linear;
+  /* The length of the page's tick: each step's movement ends as the next
+     begins, so a bar glides instead of stepping. */
+  transition: width 1s linear;
 }
 
 .buff.cat-heal::before {

@@ -1009,7 +1009,10 @@
   /* Detrimental effects. Coloured as threats rather than timers: what matters
      is that one is on you, and how long until it drops. */
   function renderDebuffs(debuffs) {
-    const list = debuffs.filter((d) => d.remaining != null).slice(0, opt.buffs);
+    const list = debuffs
+      .filter((d) => d.remaining != null)
+      .map((d) => (d.permanent ? d : { ...d, remaining: steady(`d:${d.name}`, d.remaining) }))
+      .slice(0, opt.buffs);
     if (!list.length) {
       el.debuffs.innerHTML = '<div class="empty">None</div>';
       return;
@@ -1030,7 +1033,11 @@
      first. Past its expected end and still ticking, or seen only from its
      ticks, a row says "ticking" rather than show a number it does not have. */
   function renderOthers(rows) {
-    const list = rows.slice(0, opt.buffs);
+    const list = rows
+      .slice(0, opt.buffs)
+      .map((o) =>
+        o.worn_off ? o : { ...o, remaining: steady(`o:${o.target}|${o.spell}`, o.remaining) }
+      );
     if (!list.length) {
       el.others.innerHTML = '<div class="empty">None</div>';
       return;
@@ -1049,12 +1056,35 @@
       .join("");
   }
 
+  /* Where each timer ends, held steady between pushes. The daemon states
+     whole seconds, worked out as it builds each snapshot, and the page counts
+     down on its own between them, so every push landed up to a second either
+     side of where a bar already was and the bars jumped back and forth. A
+     push moves an end only when it disagrees by more than rounding explains:
+     a recast, or a duration learned since. */
+  const ends = new Map();
+  function steady(key, remaining) {
+    if (remaining == null) return remaining;
+    const now = Date.now();
+    const stated = now + Math.max(0, remaining) * 1000;
+    const end = ends.get(key);
+    if (end == null || Math.abs(end - stated) > 1500) {
+      ends.set(key, stated);
+      return Math.max(0, remaining);
+    }
+    for (const [k, e] of ends) if (e + 60000 < now) ends.delete(k);
+    return Math.max(0, (end - now) / 1000);
+  }
+
   function renderBuffs(buffs) {
     /* Until-you-zone effects would otherwise dominate the list with
        multi-day countdowns, pushing the timers that actually need watching
        off the bottom. Real timers first, permanents after. */
     const list = buffs
       .filter((b) => b.remaining != null)
+      .map((b) =>
+        b.permanent || b.overrun != null ? b : { ...b, remaining: steady(`b:${b.name}`, b.remaining) }
+      )
       .sort((a, b) => (a.permanent ? 1 : 0) - (b.permanent ? 1 : 0))
       .slice(0, opt.buffs);
 

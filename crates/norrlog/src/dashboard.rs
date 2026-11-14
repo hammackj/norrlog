@@ -61,7 +61,10 @@ pub struct DashboardView {
     /// between snapshots.
     on_others: Vec<OnOther>,
     others_at: Instant,
-    /// Redraws every second while anything is counting down.
+    /// Where each of them ends, held steady between snapshots.
+    others_ends: crate::steady::Ends,
+    /// Redraws five times a second while anything is counting down, so the
+    /// bars glide.
     others_tick: Option<Task<()>>,
     session: Option<SessionReply>,
     lockouts: Option<LockoutReport>,
@@ -88,6 +91,7 @@ impl DashboardView {
             current: None,
             on_others: Vec::new(),
             others_at: Instant::now(),
+            others_ends: Default::default(),
             others_tick: None,
             session: None,
             lockouts: None,
@@ -134,7 +138,9 @@ impl DashboardView {
         } else if self.others_tick.is_none() {
             self.others_tick = Some(cx.spawn(async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(200))
+                        .await;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         return;
                     }
@@ -502,9 +508,11 @@ impl DashboardView {
         if self.on_others.is_empty() {
             return lead().child(empty("Nothing of yours is running on anyone."));
         }
-        let gone = self.others_at.elapsed().as_secs_f64();
         lead().gap_1().children(self.on_others.iter().map(|o| {
-            let left = o.remaining.map(|r| (r as f64 - gone).max(0.));
+            let key = format!("{}:{}", o.target, o.spell);
+            let left = o
+                .remaining
+                .map(|r| self.others_ends.left(&key, r as f64, self.others_at));
             let ticking = !o.worn_off && (o.overrun || left.is_none() || left == Some(0.));
             let share = match (left, o.total) {
                 _ if o.worn_off => 0.,
