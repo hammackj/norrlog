@@ -225,6 +225,18 @@ struct LastKill {
     credited: bool,
 }
 
+/// What a class switch closed, in case it turns out not to have been one.
+#[derive(Debug, Clone)]
+struct Parked {
+    record: LevelRecord,
+    /// Whether the switch filed it among the completed records.
+    filed: bool,
+    current_level: Option<u32>,
+    level_zones: HashMap<String, f64>,
+    started: bool,
+    from_switch: bool,
+}
+
 /// Accumulates experience events and derives progression statistics.
 pub struct ExpTracker {
     current_level: Option<u32>,
@@ -286,6 +298,17 @@ pub struct ExpTracker {
     /// (a loadout switch), so where in the level it began is unknown and it
     /// is never a whole level, even if it ends with a level-up.
     current_from_switch: bool,
+    /// How much of the level just finished was still missing when the
+    /// level-up line was written, and when. The game writes "You have gained
+    /// a level!" *before* the experience that caused it, in the same second:
+    /// that gain finishes the old level first, and only the rest is progress
+    /// into the new one. Crediting all of it to the new level read 5.84% for
+    /// a bar at 3.331%. `None` when the level that ended was not seen whole,
+    /// so what it was missing is unknown.
+    carry: Option<(i64, f64)>,
+    /// The record a class switch closed, kept until the game states the
+    /// level. See `on_level_stated`.
+    parked: Option<Parked>,
 }
 
 impl Default for ExpTracker {
@@ -298,6 +321,8 @@ impl ExpTracker {
     pub fn new() -> ExpTracker {
         ExpTracker {
             current_level: None,
+            carry: None,
+            parked: None,
             completed: Vec::new(),
             current: LevelRecord {
                 level: None,
@@ -755,14 +780,29 @@ impl ExpTracker {
             self.current.started = timestamp;
             self.current_started = true;
         }
-        self.current.percent += percent;
+        // The part that finished the level below, when this gain came with a
+        // level-up (see `carry`). Rates, zones and kills still get all of it.
+        let mut here = percent;
+        if let Some((at, missing)) = self.carry.take() {
+            if timestamp - at <= 1 {
+                let finished = percent.min(missing);
+                if let Some(last) = self.completed.last_mut() {
+                    last.percent += finished;
+                }
+                here -= finished;
+                if missing - finished > 0.0 {
+                    self.carry = Some((at, missing - finished));
+                }
+            }
+        }
+        self.current.percent += here;
         self.current.events += 1;
         if bonus {
-            self.current.bonus_percent += percent;
+            self.current.bonus_percent += here;
             self.current.bonus_events += 1;
         }
         if let Some(z) = self.zone.clone() {
-            *self.level_zones.entry(z).or_insert(0.0) += percent;
+            *self.level_zones.entry(z).or_insert(0.0) += here;
         }
         self.current.seconds = (timestamp - self.current.started).max(0);
 
@@ -821,12 +861,43 @@ impl ExpTracker {
     /// which has its own level. The level now is unknown until the game says
     /// it, so the record starts with none; a `/who` or a level-up fills it.
     pub fn on_class_switch(&mut self, timestamp: i64) {
+        // Another switch before anything was gained or stated: the class
+        // flickering while it is worked out (Garrow's read Warrior, Shaman,
+        // Warrior within minutes). The record set aside by the first is still
+        // the one to resume, not this empty one.
+        if self.current.events == 0 && self.current.level.is_none() && self.parked.is_some() {
+            self.restart_at(timestamp, None);
+            self.current_level = None;
+            return;
+        }
+        let parked = Parked {
+            record: self.current.clone(),
+            filed: self.current.events > 0,
+            current_level: self.current_level,
+            level_zones: self.level_zones.clone(),
+            started: self.current_started,
+            from_switch: self.current_from_switch,
+        };
         self.restart_at(timestamp, None);
+        self.parked = Some(parked);
         // A level-up after this closes a record that began mid-level.
         self.current_level = None;
     }
 
     pub fn on_level_stated(&mut self, timestamp: i64, level: u32) {
+        // A switch, then the level the record it closed was already at: the
+        // same persona, and the switch only the class becoming known. Garrow
+        // levelled his Shaman 60 to 66 with no `/who`, so the last class the
+        // game had named was his 130 Warrior's; the first `/who` as a Shaman
+        // read as a switch, threw away where 66 had started, and with it the
+        // carry that puts the levelling gain on the right side of 67.
+        if self.current.level.is_none() {
+            if let Some(p) = self.parked.take().filter(|p| p.record.level == Some(level)) {
+                self.resume(p);
+                return;
+            }
+        }
+        self.parked = None;
         // Compared with the record's level, not `current_level`: that one
         // says a level-up has been seen, which is what makes the next record
         // whole, and a statement is not a level-up.
@@ -842,7 +913,29 @@ impl ExpTracker {
     }
 
     /// Close the current record as partial, and start another at `level`.
+    /// Put back the record a switch closed, with whatever was gained since.
+    fn resume(&mut self, p: Parked) {
+        if p.filed {
+            self.completed.pop();
+        }
+        let since = std::mem::replace(&mut self.current, p.record);
+        self.current.percent += since.percent;
+        self.current.events += since.events;
+        self.current.kills += since.kills;
+        self.current.bonus_percent += since.bonus_percent;
+        self.current.bonus_events += since.bonus_events;
+        let mut zones = p.level_zones;
+        for (z, v) in std::mem::take(&mut self.level_zones) {
+            *zones.entry(z).or_insert(0.0) += v;
+        }
+        self.level_zones = zones;
+        self.current_level = p.current_level;
+        self.current_started = p.started;
+        self.current_from_switch = p.from_switch;
+    }
+
     fn restart_at(&mut self, timestamp: i64, level: Option<u32>) {
+        self.carry = None;
         let was = self.current.level;
         if self.current.events > 0 {
             self.current.ended = Some(timestamp);
@@ -873,6 +966,7 @@ impl ExpTracker {
     }
 
     pub fn on_level_up(&mut self, timestamp: i64, level: u32) {
+        self.parked = None;
         self.current.ended = Some(timestamp);
         if !self.current_started {
             // A level completed without any experience message of its own
@@ -887,6 +981,10 @@ impl ExpTracker {
         self.current.complete = self.current_level.is_some() && !self.current_from_switch;
         self.current_from_switch = false;
         self.current.zones = self.zone_shares();
+        self.carry = self
+            .current
+            .complete
+            .then(|| (timestamp, (100.0 - self.current.percent).max(0.0)));
         self.completed.push(self.current.clone());
 
         self.current_level = Some(level);
@@ -1100,6 +1198,82 @@ mod tests {
 
     /// The first record starts wherever the log does, so its rate would be a
     /// lie if treated as a whole level.
+    /// Garrow's ding to 68: the level line, then the kill that caused it.
+    /// 97.491% into 67, a 5.840% gain: 2.509 finishes 67, 3.331 is 68.
+    #[test]
+    fn the_gain_that_levels_you_finishes_the_old_level_first() {
+        let mut t = ExpTracker::new();
+        t.on_level_up(0, 67);
+        t.on_experience(10, 97.491, false);
+        t.on_level_up(100, 68);
+        t.on_experience(100, 5.840, true);
+        assert!(
+            (t.current_percent() - 3.331).abs() < 1e-9,
+            "{}",
+            t.current_percent()
+        );
+        let done = t.completed_levels().last().unwrap();
+        assert!((done.percent - 100.0).abs() < 1e-9);
+        // Two gains in that second (a solo and a party message): the first
+        // finishes the level, the second is all new progress.
+        // 68 ends at 98%: a 2.5% gain finishes it and leaves 0.5, and the
+        // party gain after it is all new progress.
+        t.on_experience(200, 94.669, false);
+        t.on_level_up(300, 69);
+        t.on_experience(300, 2.5, false);
+        t.on_experience(300, 4.161, false);
+        assert!(
+            (t.current_percent() - 4.661).abs() < 1e-9,
+            "{}",
+            t.current_percent()
+        );
+        // A later gain is never carried back.
+        t.on_level_up(400, 70);
+        t.on_experience(460, 1.0, false);
+        assert!((t.current_percent() - 1.0).abs() < 1e-9);
+    }
+
+    /// The first `/who` as a Shaman after the last one named a Warrior: a
+    /// switch, then the level the open record is already at. The record
+    /// resumes, so the next level-up still knows what it was missing.
+    #[test]
+    fn a_switch_that_names_the_same_level_resumes_the_record() {
+        let mut t = ExpTracker::new();
+        t.on_level_up(0, 66);
+        t.on_experience(10, 76.0, false);
+        t.on_class_switch(100);
+        // The class flickers once more before the `/who`.
+        t.on_class_switch(105);
+        t.on_level_stated(106, 66);
+        t.on_experience(110, 20.0, false);
+        assert!((t.current_percent() - 96.0).abs() < 1e-9);
+        t.on_level_up(200, 67);
+        t.on_experience(200, 13.0, false);
+        assert!(
+            (t.current_percent() - 9.0).abs() < 1e-9,
+            "{}",
+            t.current_percent()
+        );
+        let done = t.completed_levels();
+        assert_eq!(done.len(), 2, "no partial record left behind");
+        assert!(done[1].complete && (done[1].percent - 100.0).abs() < 1e-9);
+        // A real switch to another level starts afresh.
+        t.on_class_switch(300);
+        t.on_level_stated(300, 40);
+        assert_eq!(t.current_percent(), 0.0);
+    }
+
+    /// A level not seen whole: what it was missing is unknown, so the gain
+    /// is left where it was, rather than guessed apart.
+    #[test]
+    fn a_partial_level_carries_nothing() {
+        let mut t = ExpTracker::new();
+        t.on_experience(10, 40.0, false);
+        t.on_level_up(100, 68);
+        t.on_experience(100, 5.840, false);
+        assert!((t.current_percent() - 5.840).abs() < 1e-9);
+    }
+
     #[test]
     fn first_partial_level_is_marked_incomplete() {
         let mut t = ExpTracker::new();
