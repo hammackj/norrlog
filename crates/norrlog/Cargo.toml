@@ -33,6 +33,9 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "macros", "
 gpui = { version = "=0.3.12", package = "gpui-pre" }
 gpui_platform = { version = "=0.3.12", package = "gpui-pre-platform", features = ["font-kit", "x11", "wayland"] }
 gpui-component = "=0.9.1"
+regex = { workspace = true }
+roxmltree = "0.21"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 # Only used when building for Windows (see build.rs).

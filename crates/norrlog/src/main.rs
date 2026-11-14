@@ -29,6 +29,7 @@ mod fight;
 #[allow(dead_code)]
 mod forage;
 mod format;
+mod gina;
 mod item_tip;
 mod loot;
 mod overlay;

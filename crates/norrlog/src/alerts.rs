@@ -235,6 +235,13 @@ pub struct AlertsView {
     voices: Option<bool>,
     notes: [bool; 2],
     tasks: Vec<Task<()>>,
+    /// The last GINA import: what it brought in, and what did not come over
+    /// whole. Shown until dismissed.
+    imported: Option<(String, Vec<String>)>,
+    /// Its own slot, not [`Self::track`]'s: it waits on a file dialog for as
+    /// long as you take, and the feed's polls would push it out of a
+    /// short list, which cancels it.
+    importing: Option<Task<()>>,
     _poll: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -311,6 +318,8 @@ impl AlertsView {
             voices: None,
             notes: [false; 2],
             tasks: vec![voices],
+            imported: None,
+            importing: None,
             _poll: None,
             _subs: subs,
         }
@@ -629,6 +638,71 @@ impl AlertsView {
         self.put(rule, Some(id), window, cx);
     }
 
+    /// Pick a GINA package or XML file and add its triggers as alerts. See
+    /// [`crate::gina`]. Each is posted as any rule saved here is; one that
+    /// fails is counted, not fatal.
+    fn import_gina(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(api) = self.api.clone() else { return };
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        self.importing = Some(cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            // `{C}` is the character being followed.
+            let character = api
+                .get::<norrlog_api::Hello>("/api/hello".to_string())
+                .await
+                .map(|h| h.character)
+                .unwrap_or_default();
+            let read = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { crate::gina::read_file(&path, &character) }
+                })
+                .await;
+            let file = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let report = match read {
+                Err(e) => (format!("{file}: {e}"), Vec::new()),
+                Ok(got) => {
+                    let mut failed = Vec::new();
+                    for rule in &got.rules {
+                        let body = serde_json::to_value(rule).unwrap_or_default();
+                        if let Err(e) = api.post_json("/api/alerts".to_string(), body).await {
+                            failed.push(format!("{}: not saved ({e})", rule.name));
+                        }
+                    }
+                    let saved = got.rules.len() - failed.len();
+                    let mut notes = failed;
+                    notes.extend(got.notes);
+                    (
+                        format!(
+                            "Imported {saved} trigger{} from {} group{} in {file}",
+                            if saved == 1 { "" } else { "s" },
+                            got.groups,
+                            if got.groups == 1 { "" } else { "s" },
+                        ),
+                        notes,
+                    )
+                }
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.imported = Some(report);
+                v.load(cx);
+            });
+        }));
+    }
+
     /// POST a rule, reload, and (when `then_edit`) open it in the editor.
     fn put(
         &mut self,
@@ -706,7 +780,10 @@ impl AlertsView {
 }
 
 const RULES_NOTE: &str = "Sounds play in this window, so the app has to be running — but it does not have to be in \
-    front. Alerts stay silent while the log is being read at startup; only what happens after that makes a noise.";
+    front. Alerts stay silent while the log is being read at startup; only what happens after that makes a noise. \
+    A pattern can name what it catches, as (?<who>.+?), and the name and the words to say can quote it as {who}; \
+    {C} is you. Import GINA brings triggers in from a GINA package (.gtp) or GINA's own XML, tokens and \
+    countdowns included, and lists anything that did not come over whole.";
 const FEED_NOTE: &str = "The last few hundred lines, newest first. Click one to build an alert from it — the text is \
     filled in for you, and you trim it down to the part that matters. Where a typed happening covers the same \
     ground, prefer it: \"a charm broke\" survives wording the client varies, a substring does not.";
@@ -740,7 +817,47 @@ impl Render for AlertsView {
                     .child("Volume")
                     .child(div().w(px(110.)).child(Slider::new(&self.volume))),
             )
+            .child(
+                Button::new("al-gina")
+                    .label("Import GINA…")
+                    .small()
+                    .ghost()
+                    .tooltip("Triggers from a GINA package (.gtp) or GINA's XML")
+                    .on_click(cx.listener(|v, _, window, cx| v.import_gina(window, cx))),
+            )
             .child(dim(self.status.clone()));
+        let toolbar = v_flex().gap_2().child(toolbar).when_some(
+            self.imported.as_ref(),
+            |d, (head, notes)| {
+                const SHOWN: usize = 8;
+                d.child(
+                    v_flex()
+                        .gap_1()
+                        .p_2()
+                        .rounded(px(5.))
+                        .bg(hex(PANEL_2))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(head.clone()))
+                                .child(
+                                    Button::new("al-gina-close")
+                                        .label("Dismiss")
+                                        .xsmall()
+                                        .ghost()
+                                        .on_click(cx.listener(|v, _, _, cx| {
+                                            v.imported = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .children(notes.iter().take(SHOWN).map(|n| dim(n.clone()).text_sm()))
+                        .when(notes.len() > SHOWN, |d| {
+                            d.child(dim(format!("and {} more", notes.len() - SHOWN)).text_sm())
+                        }),
+                )
+            },
+        );
         let count = (!self.rules.is_empty()).then(|| format!("— {}", self.rules.len()));
         let fired = (!self.fires.is_empty()).then(|| format!("— {}", self.fires.len()));
         let left = card_suffixed("Alerts", count)

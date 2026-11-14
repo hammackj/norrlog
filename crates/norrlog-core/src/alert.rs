@@ -377,6 +377,8 @@ impl AlertBook {
             if !rule.enabled || rule.error.is_some() {
                 continue;
             }
+            // `{C}` is you in any rule read from a line, as in GINA.
+            let mut vars = vec![("c".to_string(), player.to_string())];
             let hit: Option<(String, String)> = match &rule.trigger {
                 Trigger::Contains { text: needle } => {
                     let needle = needle.trim().to_lowercase();
@@ -389,11 +391,20 @@ impl AlertBook {
                         None
                     }
                 }
-                Trigger::Pattern { .. } => self
-                    .patterns
-                    .get(&rule.id)
-                    .filter(|re| re.is_match(text))
-                    .map(|_| (String::new(), text.to_string())),
+                Trigger::Pattern { .. } => {
+                    self.patterns
+                        .get(&rule.id)
+                        .and_then(|re| re.captures(text).map(|c| (re, c)))
+                        .map(|(re, caps)| {
+                            // Named groups, for the rule's words to quote.
+                            for name in re.capture_names().flatten() {
+                                if let Some(m) = caps.name(name) {
+                                    vars.push((name.to_lowercase(), m.as_str().to_string()));
+                                }
+                            }
+                            (String::new(), text.to_string())
+                        })
+                }
                 Trigger::Signal { kind, name } => match &derived {
                     Some((k, subject)) if k == kind && !kind.is_derived() => {
                         if name_matches(name.as_deref(), subject) {
@@ -407,7 +418,7 @@ impl AlertBook {
                 Trigger::BuffExpiring { .. } => None,
             };
             if let Some((subject, detail)) = hit {
-                self.fire(i, at, subject, detail);
+                self.fire_with(i, at, subject, detail, &vars);
             }
         }
     }
@@ -483,6 +494,19 @@ impl AlertBook {
 
     /// Record a fire, honouring the per-subject cooldown.
     fn fire(&mut self, index: usize, at: i64, subject: String, detail: String) {
+        self.fire_with(index, at, subject, detail, &[]);
+    }
+
+    /// The same, with values for `{name}` in the rule's name and words: a
+    /// pattern's named groups, and `{C}` for you.
+    fn fire_with(
+        &mut self,
+        index: usize,
+        at: i64,
+        subject: String,
+        detail: String,
+        vars: &[(String, String)],
+    ) {
         let rule = &self.rules[index];
         let key = (rule.id.clone(), subject);
         if let Some(prev) = self.last_fired.get(&key) {
@@ -495,7 +519,7 @@ impl AlertBook {
         self.last_fired.insert(key, at);
         self.seq += 1;
         let say = if rule.speak {
-            Some(rule.say.clone().unwrap_or_else(|| rule.name.clone()))
+            Some(fill(rule.say.as_deref().unwrap_or(&rule.name), vars))
         } else {
             None
         };
@@ -503,7 +527,7 @@ impl AlertBook {
             seq: self.seq,
             at,
             rule_id: rule.id.clone(),
-            name: rule.name.clone(),
+            name: fill(&rule.name, vars),
             detail,
             sound: rule.sound,
             say,
@@ -514,6 +538,36 @@ impl AlertBook {
             self.fires.drain(0..drop);
         }
     }
+}
+
+/// `{name}` replaced by its value, the name in any case. A brace that names
+/// nothing on hand is left as written.
+pub fn fill(template: &str, vars: &[(String, String)]) -> String {
+    if vars.is_empty() || !template.contains('{') {
+        return template.to_string();
+    }
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('}') {
+            Some(close) => {
+                let key = after[..close].to_lowercase();
+                match vars.iter().rev().find(|(k, _)| *k == key) {
+                    Some((_, v)) => out.push_str(v),
+                    None => out.push_str(&rest[open..open + close + 2]),
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push_str(&rest[open..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Does an optional name filter accept this subject?
@@ -638,6 +692,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.timer, 0);
+    }
+
+    /// A pattern's named groups and `{C}` fill the rule's name and words, as
+    /// GINA's `{S}` does.
+    #[test]
+    fn named_groups_fill_the_banner_and_the_speech() {
+        let mut r = rule(
+            "r1",
+            Trigger::Pattern {
+                pattern: r"^(?<S>.+?) begins to cast Complete Heal".to_string(),
+            },
+        );
+        r.name = "{S} is healing".into();
+        r.speak = true;
+        r.say = Some("{s} heals {C}, {unknown} stays".into());
+        let mut b = armed(vec![r]);
+        b.on_line(
+            100,
+            "[x] Kenekab begins to cast Complete Heal.",
+            &Event::Unknown,
+            "Tharn",
+        );
+        let f = &b.since(0)[0];
+        assert_eq!(f.name, "Kenekab is healing");
+        assert_eq!(
+            f.say.as_deref(),
+            Some("Kenekab heals Tharn, {unknown} stays")
+        );
+        assert_eq!(fill("no braces", &[]), "no braces");
+        assert_eq!(
+            fill("open { only", &[("a".into(), "b".into())]),
+            "open { only"
+        );
     }
 
     /// An unfinished rule with an empty substring would otherwise match every
