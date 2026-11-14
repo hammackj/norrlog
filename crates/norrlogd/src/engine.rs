@@ -239,6 +239,9 @@ pub struct Snapshot {
     pub auras: Vec<BuffInfo>,
     /// Detrimental effects currently on you.
     pub debuffs: Vec<BuffInfo>,
+    /// Your spells running on others: heals over time, dots, slows.
+    #[serde(default)]
+    pub on_others: Vec<norrlog_core::on_others::OnOther>,
     /// Progress through the current level, and the rate it is moving at.
     pub exp: ExpSummary,
     pub totals: Totals,
@@ -390,6 +393,8 @@ const GRANT_WINDOW: i64 = 1;
 pub struct Engine {
     parser: Parser,
     tracker: EncounterTracker,
+    /// Your spells running on others, for the overlay's `others` panel.
+    on_others: norrlog_core::on_others::OnOthers,
     resolver: SpellResolver,
     classes: ClassDetector,
     /// The class the buffs were gathered under, in a one-class game. A
@@ -586,6 +591,7 @@ impl Engine {
         let mut e = Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
+            on_others: Default::default(),
             resolver: {
                 let mut r = SpellResolver::new(spell_db, 1);
                 r.set_overrun(norrlog_core::profile::profile(game).buff_overrun);
@@ -997,6 +1003,32 @@ impl Engine {
             _ => {}
         }
 
+        // A tick of your own heal over time or dot: still running on them.
+        match &entry.event {
+            Event::Heal {
+                source,
+                target,
+                spell: Some(spell),
+                over_time: true,
+                ..
+            } if source.is_you() && !target.is_you() => {
+                let who = target.display(&self.player);
+                self.on_others.ticked(entry.timestamp, spell, &who, "heal");
+            }
+            Event::Damage {
+                source,
+                target,
+                kind: norrlog_core::event::DamageKind::DamageOverTime,
+                ability: Some(spell),
+                ..
+            } if source.is_you() && !target.is_you() => {
+                let who = target.display(&self.player);
+                self.on_others
+                    .ticked(entry.timestamp, spell, &who, "damage");
+            }
+            _ => {}
+        }
+
         match &entry.event {
             Event::CastStart { source, spell, .. } if source.is_you() => {
                 self.resolver.note_cast(entry.timestamp, spell);
@@ -1087,6 +1119,7 @@ impl Engine {
                 // saying so.
                 let who = target.display(&self.player);
                 self.tracker.end_effect(entry.timestamp, &who, Some(spell));
+                self.on_others.wore_off(entry.timestamp, &who, spell);
                 if self.fading_effect_ends_a_charm(spell) {
                     self.tracker.set_charmed(entry.timestamp, target, false);
                     // The line names a fading spell, not a charm break; only
@@ -1424,6 +1457,9 @@ impl Engine {
                 .exp
                 .on_ability_spent(entry.timestamp, ability, *rank, *cost),
             Event::Death { victim, killer } => {
+                if !victim.is_you() {
+                    self.on_others.died(&victim.display(&self.player));
+                }
                 // Your own death strips your buffs. The client logs no fade
                 // lines for it, so this is the only chance to notice.
                 if victim.is_you() {
@@ -2394,6 +2430,8 @@ impl Engine {
         let (name, seconds, category) = span;
         self.tracker
             .note_effect(timestamp, timestamp + seconds, &name, &target, &category);
+        self.on_others
+            .landed(timestamp, timestamp + seconds, &name, &target, &category);
     }
 
     /// The same, for lines the parser already split for us.
@@ -2417,6 +2455,8 @@ impl Engine {
         };
         self.tracker
             .note_effect(timestamp, timestamp + seconds, &name, target, &category);
+        self.on_others
+            .landed(timestamp, timestamp + seconds, &name, target, &category);
     }
 
     /// Pick the spell behind a landing, and how long it should run.
@@ -3822,6 +3862,7 @@ impl Engine {
             buffs,
             auras,
             debuffs,
+            on_others: self.on_others.report(now),
             exp: ExpSummary {
                 percent: self.exp.current_percent(),
                 kills: self.exp.current_record().kills,

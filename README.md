@@ -150,8 +150,11 @@ they are typed into Settings, for OBS they go on the URL:
 | `?idle=1` | Keep the last fight on screen between pulls |
 
 Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
-`auras`, `buffs`, `debuffs`, `motes`, `charm`, `sky`, `apps`. Several hide
-themselves when they have nothing to say.
+`auras`, `buffs`, `debuffs`, `others`, `motes`, `charm`, `sky`, `apps`. Several
+hide themselves when they have nothing to say. `others` lists your spells running
+on other people and mobs (a heal over time on each groupmate, your dots and
+slows) with a countdown per target. The countdown starts from the spell file's
+duration, then uses how long each spell was actually seen to last for you.
 
 ## Command-line tools
 

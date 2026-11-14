@@ -5,7 +5,8 @@
  * Browser Source, a small always-on-top desktop window, and a debugging view:
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
- *                                 incoming, auras, buffs, debuffs, motes,
+ *                                 incoming, auras, buffs, debuffs, others,
+ *                                 motes,
  *                                 charm, sky, apps (wanted is an alias)
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
@@ -102,6 +103,8 @@
     auraPanel: document.getElementById("aura-panel"),
     auraMeta: document.getElementById("aura-meta"),
     auras: document.getElementById("auras"),
+    othersPanel: document.getElementById("others-panel"),
+    others: document.getElementById("others"),
     debuffPanel: document.getElementById("debuff-panel"),
     debuffs: document.getElementById("debuffs"),
     buffPanel: document.getElementById("buff-panel"),
@@ -126,6 +129,7 @@
   if (!opt.panels.includes("taken")) el.takenPanel.classList.add("hidden");
   if (!opt.panels.includes("auras")) el.auraPanel.classList.add("hidden");
   if (!opt.panels.includes("debuffs")) el.debuffPanel.classList.add("hidden");
+  if (!opt.panels.includes("others")) el.othersPanel.classList.add("hidden");
   if (!opt.panels.includes("buffs")) el.buffPanel.classList.add("hidden");
 
   /* Charm resists.
@@ -677,6 +681,7 @@
     renderXp(snap);
     renderAuras(snap.auras || []);
     renderDebuffs(snap.debuffs || []);
+    renderOthers(snap.on_others || []);
     renderBuffs(snap.buffs || []);
     // `live: false` is the daemon still reading the log's backlog, not a lost
     // connection: say so, since a long log can take a minute.
@@ -1014,6 +1019,28 @@
       .join("");
   }
 
+  /* Your spells on others, one row per target and spell, the soonest to end
+     first. Past its expected end and still ticking, or seen only from its
+     ticks, a row says "ticking" rather than show a number it does not have. */
+  function renderOthers(rows) {
+    const list = rows.slice(0, opt.buffs);
+    if (!list.length) {
+      el.others.innerHTML = '<div class="empty">None</div>';
+      return;
+    }
+    el.others.innerHTML = list
+      .map((o) => {
+        const ticking = o.overrun || o.remaining == null || o.remaining <= 0;
+        const pct = ticking ? 100 : Math.max(0, Math.min(100, (o.remaining / (o.total || 1)) * 100));
+        const urgency = ticking ? " overrun" : o.remaining <= 6 ? " urgent" : "";
+        return `<div class="buff cat-${esc(o.category)}${urgency}" style="--remain:${pct.toFixed(1)}%">
+          <span class="bname">${esc(o.target)} <span class="bspell">${esc(o.spell)}</span></span>
+          <span class="btime">${ticking ? "ticking" : dur(o.remaining)}</span>
+        </div>`;
+      })
+      .join("");
+  }
+
   function renderBuffs(buffs) {
     /* Until-you-zone effects would otherwise dominate the list with
        multi-day countdowns, pushing the timers that actually need watching
@@ -1100,6 +1127,12 @@
   setInterval(() => {
     if (opt.alerts) renderAlerts();
     if (!lastSnapshot || !lastSnapshot.buffs) return;
+    if (lastSnapshot.on_others) {
+      lastSnapshot.on_others = lastSnapshot.on_others.map((o) =>
+        o.remaining == null ? o : { ...o, remaining: Math.max(0, o.remaining - 1) }
+      );
+      renderOthers(lastSnapshot.on_others);
+    }
     if (lastSnapshot.debuffs) {
       lastSnapshot.debuffs = lastSnapshot.debuffs.map((b) =>
         b.remaining == null || b.permanent

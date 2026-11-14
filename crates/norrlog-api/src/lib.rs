@@ -1173,6 +1173,7 @@ pub struct GroupedAbility {
 
 pub use norrlog_core::drops::{DropReport, DropSighting, ItemDrops};
 pub use norrlog_core::game::Game;
+pub use norrlog_core::on_others::OnOther;
 pub use norrlog_core::tradeskill::{
     ComponentUse, CostBasis, CostComponent, CraftRecord, ItemPrice, LearnedRecipe, RecipeCost,
     RecipeSpend, SkillCost, SkillProgress, SkillSegment, TradeskillReport, VendorPrice,

@@ -290,6 +290,8 @@ body {
 }
 
 .buff.cat-heal .bname { color: var(--heal); }
+/* On others: the target leads, the spell follows, smaller and dimmer. */
+.bspell { color: rgb(var(--dim-rgb) / 0.95); font-size: 0.88em; margin-left: 4px; }
 .buff.cat-buff .bname,
 .buff.cat-cure .bname { color: var(--accent); }
 

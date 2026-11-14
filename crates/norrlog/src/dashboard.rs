@@ -1,6 +1,6 @@
 //! Dashboard: the Combat box (one fight, the session or this zone, by
-//! damage, healing or damage taken), the week's lockouts and Sky progress by
-//! class.
+//! damage, healing or damage taken), your spells running on others, the
+//! week's lockouts and Sky progress by class.
 //!
 //! Every snapshot, whichever tab is open: the live fight is taken from it,
 //! `/api/session` is asked again (at most every 2 s, and only while Session
@@ -21,7 +21,7 @@ use gpui::*;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex};
-use norrlog_api::{EncounterSummary, LockoutReport, SessionReply, SkyReport, SpriteIcon};
+use norrlog_api::{EncounterSummary, LockoutReport, OnOther, SessionReply, SkyReport, SpriteIcon};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,12 @@ pub struct DashboardView {
     /// "Waiting for a fight".
     seen: bool,
     current: Option<EncounterSummary>,
+    /// Your spells on others, and when they arrived: counted down here
+    /// between snapshots.
+    on_others: Vec<OnOther>,
+    others_at: Instant,
+    /// Redraws every second while anything is counting down.
+    others_tick: Option<Task<()>>,
     session: Option<SessionReply>,
     lockouts: Option<LockoutReport>,
     sky: Option<SkyReport>,
@@ -80,6 +86,9 @@ impl DashboardView {
             bars: Default::default(),
             seen: false,
             current: None,
+            on_others: Vec::new(),
+            others_at: Instant::now(),
+            others_tick: None,
             session: None,
             lockouts: None,
             sky: None,
@@ -110,9 +119,28 @@ impl DashboardView {
     }
 
     /// A snapshot arrived, whichever tab is open.
-    pub fn on_snapshot(&mut self, current: Option<EncounterSummary>, cx: &mut Context<Self>) {
+    pub fn on_snapshot(
+        &mut self,
+        current: Option<EncounterSummary>,
+        on_others: Vec<OnOther>,
+        cx: &mut Context<Self>,
+    ) {
         self.seen = true;
         self.current = current;
+        self.on_others = on_others;
+        self.others_at = Instant::now();
+        if self.on_others.is_empty() {
+            self.others_tick = None;
+        } else if self.others_tick.is_none() {
+            self.others_tick = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        return;
+                    }
+                }
+            }));
+        }
         if self.scope != Scope::Fight
             && self
                 .last_session
@@ -217,6 +245,11 @@ impl Render for DashboardView {
                     .gap_3()
                     .child(band("Combat", "what the parser makes of the fighting"))
                     .child(self.render_combat(cx))
+                    .child(band(
+                        "On others",
+                        "your heals over time, dots and slows, by target",
+                    ))
+                    .child(self.render_on_others())
                     // Legends' alone: live EverQuest has neither (see `features`).
                     .when(crate::features::has("lockouts"), |d| {
                         d.child(band("This week", "resets Tuesday 10:00"))
@@ -460,6 +493,67 @@ impl DashboardView {
             .child(panes)
             .child(body)
             .children(scope_note)
+    }
+
+    /// One row per target and spell, the soonest to end first. Past the
+    /// time it was expected to last and still ticking, or seen only from its
+    /// ticks, a row says "ticking" rather than show a number it does not have.
+    fn render_on_others(&self) -> Div {
+        if self.on_others.is_empty() {
+            return lead().child(empty("Nothing of yours is running on anyone."));
+        }
+        let gone = self.others_at.elapsed().as_secs_f64();
+        lead().gap_1().children(self.on_others.iter().map(|o| {
+            let left = o.remaining.map(|r| (r as f64 - gone).max(0.));
+            let ticking = o.overrun || left.is_none() || left == Some(0.);
+            let share = match (left, o.total) {
+                (Some(l), Some(t)) if t > 0 && !ticking => (l / t as f64).clamp(0., 1.),
+                _ => 1.,
+            };
+            let colour = match o.category.as_str() {
+                "heal" => HEAL,
+                "damage" | "detrimental" => ENEMY,
+                _ => ACCENT,
+            };
+            let (time, time_colour) = match left {
+                _ if ticking => ("ticking".to_string(), MUTED),
+                Some(l) if l <= 6. => (dur(l), ENEMY),
+                Some(l) => (dur(l), TEXT),
+                None => ("ticking".to_string(), MUTED),
+            };
+            div()
+                .relative()
+                .rounded(px(4.))
+                .bg(hex(PANEL_2))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .h_full()
+                        .w(relative(share as f32))
+                        .bg(wash(colour, if ticking { 0.12 } else { 0.28 })),
+                )
+                .child(
+                    h_flex()
+                        .relative()
+                        .px_2()
+                        .py(px(3.))
+                        .gap_2()
+                        .child(div().text_color(hex(TEXT)).child(o.target.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .text_color(hex(colour))
+                                .child(o.spell.clone()),
+                        )
+                        .child(div().text_color(hex(time_colour)).child(time)),
+                )
+        }))
     }
 
     fn render_lockouts(&self, cx: &mut Context<Self>) -> Div {

@@ -330,8 +330,12 @@ impl Shell {
                     .get("current")
                     .filter(|c| !c.is_null())
                     .and_then(|c| serde_json::from_value(c.clone()).ok());
+                let on_others = s
+                    .get("on_others")
+                    .and_then(|o| serde_json::from_value(o.clone()).ok())
+                    .unwrap_or_default();
                 self.dashboard
-                    .update(cx, |v, cx| v.on_snapshot(current, cx));
+                    .update(cx, |v, cx| v.on_snapshot(current, on_others, cx));
                 // Every snapshot, whichever tab is open: alerts are heard.
                 let fires = s
                     .get("alerts")

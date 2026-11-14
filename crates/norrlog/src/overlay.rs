@@ -756,7 +756,7 @@ impl OverlayView {
         // The page's fixed order, whatever order `panels=` names them in.
         for p in [
             "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
-            "debuffs", "buffs", "charm", "apps", "sky",
+            "debuffs", "others", "buffs", "charm", "apps", "sky",
         ] {
             if !o.has(p) {
                 continue;
@@ -783,6 +783,7 @@ impl OverlayView {
                 "motes" => Some(self.motes(snap)),
                 "auras" => Some(self.auras(snap)),
                 "debuffs" => Some(self.debuffs(snap)),
+                "others" => Some(self.others(snap)),
                 "buffs" => Some(self.buffs(snap)),
                 "charm" => self.charm_panel(),
                 "dps" => self.dps_panel(snap),
@@ -1149,6 +1150,62 @@ impl OverlayView {
             })
             .collect();
         panel("Debuffs".into(), None, false, out)
+    }
+
+    /// `renderOthers`: your spells on others, the soonest to end first.
+    fn others(&self, snap: &Value) -> Div {
+        let gone = self.elapsed();
+        let rows: Vec<AnyElement> = snap
+            .get("on_others")
+            .and_then(Value::as_array)
+            .map(|a| a.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .take(self.opts.buffs)
+            .map(|o| {
+                let left = o
+                    .get("remaining")
+                    .and_then(Value::as_f64)
+                    .map(|r| (r - gone).max(0.));
+                let ticking = flag(o, "overrun") || left.is_none_or(|l| l <= 0.);
+                let total = o.get("total").and_then(Value::as_f64).unwrap_or(1.).max(1.);
+                let share = if ticking {
+                    1.
+                } else {
+                    (left.unwrap_or(0.) / total).clamp(0., 1.)
+                };
+                let cat = s(o, "category");
+                let (colour, bar) = match cat {
+                    "heal" => (HEAL, rgba_of(HEAL, if ticking { 0.14 } else { 0.32 })),
+                    "detrimental" | "damage" => {
+                        (TEXT, rgba_of(ENEMY, if ticking { 0.14 } else { 0.34 }))
+                    }
+                    _ => (ACCENT, rgba_of(ACCENT, if ticking { 0.12 } else { 0.3 })),
+                };
+                let target = s(o, "target").to_string();
+                let text = format!("{target}  {}", s(o, "spell"));
+                let name = div().text_color(gpui::rgb(colour)).child(
+                    StyledText::new(text.clone()).with_highlights(vec![(
+                        target.len()..text.len(),
+                        HighlightStyle {
+                            color: Some(gpui::rgb(DIM).into()),
+                            ..Default::default()
+                        },
+                    )]),
+                );
+                let time = match left {
+                    _ if ticking => ("ticking".to_string(), DIM),
+                    Some(l) if l <= 6. => (dur(l), ENEMY),
+                    Some(l) => (dur(l), TEXT),
+                    None => ("ticking".to_string(), DIM),
+                };
+                bar_row(name, vec![time], share, bar, 1.).into_any_element()
+            })
+            .collect();
+        if rows.is_empty() {
+            return panel("On others".into(), None, false, vec![empty("None")]);
+        }
+        panel("On others".into(), None, false, rows)
     }
 
     /// `renderBuffs`: timed first, permanents last; amber at 30 s, red at 10.

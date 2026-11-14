@@ -25,6 +25,7 @@ pub mod game;
 pub mod itemids;
 pub mod lockout;
 pub mod npc;
+pub mod on_others;
 pub mod parser;
 pub mod preview;
 pub mod procs;

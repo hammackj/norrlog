@@ -23,6 +23,7 @@ pub const PANELS: &[(&str, &str)] = &[
     ("outgoing", "Your damage, by attack"),
     ("buffs", "Buffs"),
     ("debuffs", "Debuffs"),
+    ("others", "Your spells on others (heals over time, dots)"),
     ("auras", "Auras"),
     ("heals", "Healing"),
     ("taken", "Damage taken"),
@@ -669,7 +670,7 @@ mod tests {
     fn every_panel_the_overlay_draws_has_a_box() {
         for p in [
             "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
-            "debuffs", "buffs", "charm", "apps", "sky",
+            "debuffs", "others", "buffs", "charm", "apps", "sky",
         ] {
             assert!(PANELS.iter().any(|(k, _)| *k == p), "{p}");
         }
