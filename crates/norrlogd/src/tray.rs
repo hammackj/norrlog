@@ -82,7 +82,11 @@ impl ksni::Tray for DaemonTray {
     }
 
     fn icon_name(&self) -> String {
-        "eqlparser".into()
+        "norrlog".into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        icons()
     }
 
     fn status(&self) -> ksni::Status {
@@ -309,6 +313,35 @@ fn find_collector() -> Option<PathBuf> {
     })
 }
 
+/// The Norrlog icon at the sizes trays draw, built in: a tray host uses
+/// these when the icon theme has no `norrlog` (nothing installed, or an
+/// older install that only has the eqlparser one).
+fn icons() -> Vec<ksni::Icon> {
+    const PNGS: [&[u8]; 4] = [
+        include_bytes!("../../../packaging/norrlog-16.png"),
+        include_bytes!("../../../packaging/norrlog-32.png"),
+        include_bytes!("../../../packaging/norrlog-48.png"),
+        include_bytes!("../../../packaging/norrlog-64.png"),
+    ];
+    PNGS.iter()
+        .filter_map(|png| image::load_from_memory(png).ok())
+        .map(|img| {
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            // StatusNotifierItem wants ARGB32 in network byte order.
+            let data = rgba
+                .pixels()
+                .flat_map(|p| [p[3], p[0], p[1], p[2]])
+                .collect();
+            ksni::Icon {
+                width: width as i32,
+                height: height as i32,
+                data,
+            }
+        })
+        .collect()
+}
+
 /// Start the tray, or say why not. Never fails the daemon.
 pub fn spawn(life: Arc<Life>, zone: Zone) {
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
@@ -360,6 +393,17 @@ mod tests {
             Some("/opt/y/run".into())
         );
         assert_eq!(super::exec_of("Name=nothing to run"), None);
+    }
+
+    #[test]
+    fn the_built_in_icons_decode_at_every_size() {
+        let icons = super::icons();
+        let sizes: Vec<i32> = icons.iter().map(|i| i.width).collect();
+        assert_eq!(sizes, [16, 32, 48, 64]);
+        for i in &icons {
+            assert_eq!(i.width, i.height);
+            assert_eq!(i.data.len(), (i.width * i.height * 4) as usize);
+        }
     }
 
     #[test]

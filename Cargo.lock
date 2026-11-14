@@ -4263,6 +4263,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "image",
  "ksni",
  "libc",
  "memchr",

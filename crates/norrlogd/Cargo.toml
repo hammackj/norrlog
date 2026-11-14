@@ -25,6 +25,8 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 # runs on the tokio runtime the server already has.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3"
+# The icon is built in, so the tray shows it even with nothing installed.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # A log's identity on Windows, to notice one replaced at the same path.
 [target.'cfg(windows)'.dependencies]
