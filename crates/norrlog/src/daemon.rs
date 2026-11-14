@@ -357,10 +357,21 @@ fn names_a_log(args: &[OsString]) -> bool {
 /// for the port to come free. Whoever started it: every app attached to it
 /// reconnects to the new one.
 async fn stop(port: u16) {
-    let Ok(old) = Client::attach(port).await else {
-        return;
+    let pid = match Client::attach(port).await {
+        Ok(old) => old.hello().pid,
+        // Still on its initial parse, and not answering until it is done:
+        // waiting for it would follow the old log for minutes, then attach
+        // to it as if nothing had been asked. It recorded its pid on binding.
+        Err(Error::Busy { .. }) => match norrlog_api::pidfile::holder(port) {
+            Some(pid) => pid,
+            None => {
+                eprintln!("[norrlog] the daemon on port {port} is busy and its pid is not known");
+                return;
+            }
+        },
+        Err(_) => return,
     };
-    terminate(old.hello().pid).await;
+    terminate(pid).await;
     for _ in 0..50 {
         if matches!(Client::attach(port).await, Err(Error::Unreachable { .. })) {
             return;

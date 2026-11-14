@@ -477,6 +477,14 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
+    // Who holds the port, for a restart that comes before the parse is done
+    // and there is a `/api/hello` to ask (see `norrlog_api::pidfile`).
+    if let Err(e) = norrlog_api::pidfile::write(cfg.port) {
+        eprintln!(
+            "[norrlogd] could not record the pid for port {}: {e}",
+            cfg.port
+        );
+    }
     // From here this is a daemon that stays up, so its stderr is kept for
     // `/api/daemon-log` (see `logring`). Not earlier: a process that prints
     // and exits at once (usage, a taken port) could lose lines still in the

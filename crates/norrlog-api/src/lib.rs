@@ -12,6 +12,8 @@
 //! boundary* wiki page). The parser's own endpoints move onto types here as
 //! each tab is ported; the untyped ones keep working meanwhile.
 
+pub mod pidfile;
+
 use serde::{Deserialize, Serialize};
 
 /// What `/api/hello` names itself, so a client can tell this daemon from
