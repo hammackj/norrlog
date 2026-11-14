@@ -525,7 +525,12 @@ impl OverlayControls {
         let id = |s: &str| SharedString::from(format!("{tag}-{s}"));
         let on: Vec<String> = panels_of(c.options.read(cx).value().as_ref());
         let mut boxes = h_flex().flex_wrap().gap_x_3().gap_y_1();
-        for &(key, label) in PANELS {
+        // A panel the followed game has nothing for is not offered. Its tick
+        // stays in the options, so switching back to Legends brings it back.
+        for &(key, label) in PANELS
+            .iter()
+            .filter(|(k, _)| crate::features::panel_shown(k))
+        {
             boxes = boxes.child(
                 Checkbox::new(id(&format!("p-{key}")))
                     .label(label)

@@ -24,6 +24,9 @@
 (() => {
   "use strict";
 
+  // Until the hello says otherwise (see `applyFeatures`).
+  let gameHasSky = true;
+
   const params = new URLSearchParams(location.search);
   const opt = {
     // `?? ` not `||`: an absent parameter means "use the defaults", but an
@@ -399,6 +402,10 @@
 
   async function pollSky() {
     if (!opt.panels.includes("sky")) return;
+    if (!gameHasSky) {
+      el.skyPanel.classList.add("hidden");
+      return;
+    }
     try {
       const r = await fetch("/api/sky");
       if (!r.ok) return;
@@ -1090,6 +1097,23 @@
   let ws = null;
   let retry = 0;
 
+  /* Motes and Sky are Legends'; live EverQuest has neither, so their panels
+     stay hidden there even when the link asks for them. The daemon's hello
+     says which the followed game has; a daemon too old to say shows all. */
+  async function applyFeatures() {
+    let features = null;
+    try {
+      const r = await fetch("/api/hello");
+      if (r.ok) features = (await r.json()).features || null;
+    } catch (_) {
+      return;
+    }
+    const has = (f) => !features || features.includes(f);
+    el.motesPanel.classList.toggle("hidden", !(opt.panels.includes("motes") && has("motes")));
+    if (!has("sky")) el.skyPanel.classList.add("hidden");
+    gameHasSky = has("sky");
+  }
+
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -1097,6 +1121,8 @@
     ws.onopen = () => {
       retry = 0;
       el.status.classList.add("hidden");
+      // On every connect: a restarted daemon may follow the other game.
+      applyFeatures();
     };
 
     ws.onmessage = (ev) => {

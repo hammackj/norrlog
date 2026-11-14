@@ -758,7 +758,8 @@ impl OverlayView {
             "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
             "debuffs", "others", "buffs", "charm", "apps", "sky",
         ] {
-            if !o.has(p) {
+            // Motes and Sky are Legends'; live EverQuest has neither.
+            if !o.has(p) || !crate::features::panel_shown(p) {
                 continue;
             }
             let el = match p {

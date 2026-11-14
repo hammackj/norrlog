@@ -24,6 +24,20 @@ pub fn has(name: &str) -> bool {
     })
 }
 
+/// The feature an overlay panel needs, if any.
+pub fn of_panel(panel: &str) -> Option<&'static str> {
+    match panel {
+        "motes" => Some("motes"),
+        "sky" => Some("sky"),
+        _ => None,
+    }
+}
+
+/// Whether the followed game has what `panel` shows.
+pub fn panel_shown(panel: &str) -> bool {
+    of_panel(panel).is_none_or(has)
+}
+
 /// The feature a tab needs, if any.
 pub fn of_tab(tab: &str) -> Option<&'static str> {
     match tab {
@@ -40,6 +54,10 @@ mod tests {
         assert!(super::has("sky"));
         super::set(Some(vec!["motes".into()]));
         assert!(super::has("motes") && !super::has("sky") && !super::has("lockouts"));
+        assert!(super::panel_shown("motes") && !super::panel_shown("sky"));
+        assert!(super::panel_shown("meter"));
+        super::set(Some(vec![]));
+        assert!(!super::panel_shown("motes") && super::panel_shown("others"));
         super::set(None);
     }
 }
