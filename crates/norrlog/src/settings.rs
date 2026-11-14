@@ -27,7 +27,7 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
-use norrlog_api::{DaemonLog, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
+use norrlog_api::{DaemonLog, Game, HistoryBrief, LogFile, LogsReply, LogsStatusReply};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -525,6 +525,51 @@ impl SettingsView {
         }
     }
 
+    /// Follow the other game: its paths from last time, or the install found
+    /// beside this one and its newest log. The current paths are kept for
+    /// the switch back.
+    fn switch_game(&mut self, game: Game, window: &mut Window, cx: &mut Context<Self>) {
+        let cfg = ParserConfig::load();
+        let (next, patch) = match cfg.switch_to(game, |near| {
+            norrlog_client::install::install_near(near, game)
+        }) {
+            Ok(x) => x,
+            Err(e) => return self.say(e, 6, cx),
+        };
+        for (input, value) in [
+            (&self.inputs.log_file, next.log_file),
+            (&self.inputs.logs_dir, next.logs_dir),
+            (&self.inputs.game_dir, next.game_dir),
+        ] {
+            input.update(cx, |s, cx| s.set_value(value, window, cx));
+        }
+        self.pick = None;
+        match self.apply(patch, true) {
+            Ok(_) => self.say(
+                format!("Switched to {} — daemon restarting…", game.label()),
+                6,
+                cx,
+            ),
+            Err(e) => self.say(e, 6, cx),
+        }
+    }
+
+    /// The game the paths in the fields name, if they name one.
+    fn shown_game(&self, cx: &App) -> Game {
+        let text = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
+        let paths = [
+            text(&self.inputs.game_dir),
+            text(&self.inputs.log_file),
+            text(&self.inputs.logs_dir),
+        ];
+        Game::detect(
+            paths
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| std::path::Path::new(s.as_str())),
+        )
+    }
+
     /// Browse. Choosing a log file is an instruction to follow it, not a
     /// draft; the directories only fill their fields, to apply on Save.
     fn browse(&mut self, what: Pick, window: &mut Window, cx: &mut Context<Self>) {
@@ -684,6 +729,9 @@ const LOG_HINT: &str = "Every eqlog_*.txt in the logs directory, newest first. S
 const DIR_HINT: &str = "One log is followed live; the rest are swept on a timer into the same history database, so a \
     character you are not playing still contributes its kills, loot and screenshots. Behind is how much of each file \
     nothing has read yet. Empty means the install's Logs folder, shown greyed when one was found.";
+const SWITCH_HINT: &str = "Switches the log, logs directory and game directory together. Each game's last log is \
+    remembered, so switching back returns to it; the first switch finds the install beside this one and follows its \
+    newest log.";
 const GAME_HINT: &str = "Needs spells_us.txt. Without it, buff timers and class detection are unavailable. Empty \
     means the install found by looking, shown greyed when there is one.";
 const SINCE_HINT: &str = "A shorter window starts far faster, but every figure derived from the log shrinks with it: \
@@ -974,7 +1022,25 @@ impl SettingsView {
                 menu
             });
 
+        let shown = self.shown_game(cx);
+        let game_button = |id: &'static str, game: Game| {
+            let b = Button::new(id)
+                .label(game.label())
+                .small()
+                .on_click(cx.listener(move |v, _, window, cx| v.switch_game(game, window, cx)));
+            if shown == game { b.primary() } else { b }
+        };
         card("Paths")
+            .child(
+                field("Game")
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(game_button("set-game-eql", Game::EverQuestLegends))
+                            .child(game_button("set-game-eq", Game::EverQuest)),
+                    )
+                    .child(hint(SWITCH_HINT)),
+            )
             .child(
                 field("Log file")
                     .child(

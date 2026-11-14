@@ -6,9 +6,21 @@
 //! being changed are replaced, and the rest are written back untouched, so
 //! a key this version does not know survives a save.
 
-use serde::Deserialize;
+use norrlog_api::Game;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// What is followed for one game: kept per game under `games`, so switching
+/// back returns to the log that was being followed, not to a guess.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Paths {
+    pub log_file: String,
+    pub logs_dir: String,
+    pub game_dir: String,
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -25,6 +37,8 @@ pub struct ParserConfig {
     pub theme: String,
     /// A multiplier on the whole layout; absent means 1.
     pub ui_scale: Option<f32>,
+    /// The paths last followed for each game, by slug.
+    pub games: BTreeMap<String, Paths>,
 }
 
 /// Where Electron keeps `userData` (its `appData`): `%APPDATA%` on Windows,
@@ -86,6 +100,86 @@ fn save_patch_at(
 }
 
 impl ParserConfig {
+    fn paths(&self) -> Paths {
+        Paths {
+            log_file: self.log_file.clone(),
+            logs_dir: self.logs_dir.clone(),
+            game_dir: self.game_dir.clone(),
+        }
+    }
+
+    /// The game being followed, from its paths, the game folder first.
+    /// `Unknown` when nothing is set and the install is left to a guess.
+    pub fn game(&self) -> Game {
+        let p = self.paths();
+        Game::detect(
+            [&p.game_dir, &p.log_file, &p.logs_dir]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .map(Path::new),
+        )
+    }
+
+    /// The patch that follows `game` instead: the paths last used for it
+    /// when its install is still there, else the install `find` turns up
+    /// (given a path of the current one to look beside) and its newest log.
+    /// The current paths are kept under `games` for the switch back. `Err`
+    /// is what to say.
+    pub fn switch_to(
+        &self,
+        game: Game,
+        find: impl FnOnce(Option<&Path>) -> Option<PathBuf>,
+    ) -> Result<(Paths, serde_json::Map<String, serde_json::Value>), String> {
+        let now = self.game();
+        if now == game {
+            return Err(format!("Already following {}.", game.label()));
+        }
+        let mut next = self
+            .games
+            .get(game.slug())
+            .filter(|p| !p.game_dir.is_empty() && Path::new(&p.game_dir).is_dir())
+            .cloned();
+        if next.is_none() {
+            let cur = self.paths();
+            let here = [&cur.game_dir, &cur.log_file, &cur.logs_dir]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .map(Path::new);
+            let install = find(here).ok_or_else(|| {
+                format!(
+                    "No {} install was found. Set its game directory below and Save.",
+                    game.label()
+                )
+            })?;
+            let logs = install.join("Logs");
+            next = Some(Paths {
+                log_file: String::new(),
+                logs_dir: logs.display().to_string(),
+                game_dir: install.display().to_string(),
+            });
+        }
+        let mut next = next.unwrap_or_default();
+        // A remembered log that has since gone, or none yet: the newest.
+        if next.log_file.is_empty() || !Path::new(&next.log_file).is_file() {
+            next.log_file = newest_log(Path::new(&next.logs_dir))
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+        }
+        let mut games = self.games.clone();
+        if now != Game::Unknown {
+            games.insert(now.slug().into(), self.paths());
+        }
+        let mut patch = serde_json::Map::new();
+        patch.insert("logFile".into(), next.log_file.clone().into());
+        patch.insert("logsDir".into(), next.logs_dir.clone().into());
+        patch.insert("gameDir".into(), next.game_dir.clone().into());
+        patch.insert(
+            "games".into(),
+            serde_json::to_value(games).map_err(|e| e.to_string())?,
+        );
+        Ok((next, patch))
+    }
+
     /// The Electron app's `config.json`, or defaults when there is none.
     pub fn load() -> Self {
         path()
@@ -147,6 +241,20 @@ impl ParserConfig {
     }
 }
 
+/// The `eqlog_*.txt` in `dir` written to most recently.
+fn newest_log(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            n.starts_with("eqlog_") && n.ends_with(".txt")
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, p)| p)
+}
+
 /// The install a Logs folder belongs to: its parent, when that holds the
 /// game's spell file. Anything else is not taken as an install.
 fn install_of(logs: &std::path::Path) -> Option<PathBuf> {
@@ -158,6 +266,58 @@ fn install_of(logs: &std::path::Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_games_follows_the_newest_log_and_comes_back_to_the_old_one() {
+        let root = std::env::temp_dir().join(format!("norrlog-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let legends = root.join("EverquestLegends/EverQuest Legends");
+        let live = root.join("Everquest/EverQuest");
+        std::fs::create_dir_all(legends.join("Logs")).unwrap();
+        std::fs::create_dir_all(live.join("Logs")).unwrap();
+        let tharn = legends.join("Logs/eqlog_Tharn_freeport.txt");
+        std::fs::write(&tharn, "").unwrap();
+        std::fs::write(live.join("Logs/eqlog_Old_firiona.txt"), "").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(live.join("Logs/eqlog_New_teek.txt"), "").unwrap();
+        std::fs::write(live.join("Logs/dbg.txt"), "").unwrap();
+        let s = |p: &Path| p.display().to_string();
+        let mut c = ParserConfig {
+            log_file: s(&tharn),
+            logs_dir: s(&legends.join("Logs")),
+            game_dir: s(&legends),
+            ..Default::default()
+        };
+        assert_eq!(c.game(), Game::EverQuestLegends);
+        assert!(c.switch_to(Game::EverQuestLegends, |_| None).is_err());
+        assert!(
+            c.switch_to(Game::EverQuest, |_| None)
+                .unwrap_err()
+                .contains("No EverQuest install")
+        );
+        let (next, patch) = c
+            .switch_to(Game::EverQuest, |near| {
+                assert_eq!(near, Some(legends.as_path()));
+                Some(live.clone())
+            })
+            .unwrap();
+        assert_eq!(next.log_file, s(&live.join("Logs/eqlog_New_teek.txt")));
+        assert_eq!(next.game_dir, s(&live));
+        // Apply it as the file would be, and pick another log meanwhile.
+        c = serde_json::from_value(serde_json::Value::Object(patch)).unwrap();
+        c.log_file = s(&live.join("Logs/eqlog_Old_firiona.txt"));
+        assert_eq!(c.game(), Game::EverQuest);
+        let (back, patch) = c.switch_to(Game::EverQuestLegends, |_| None).unwrap();
+        assert_eq!(
+            back.log_file,
+            s(&tharn),
+            "the remembered log, without a search"
+        );
+        let c: ParserConfig = serde_json::from_value(serde_json::Value::Object(patch)).unwrap();
+        let (again, _) = c.switch_to(Game::EverQuest, |_| None).unwrap();
+        assert_eq!(again.log_file, s(&live.join("Logs/eqlog_Old_firiona.txt")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_chosen_log_is_not_given_some_other_install() {
