@@ -505,8 +505,9 @@ impl DashboardView {
         let gone = self.others_at.elapsed().as_secs_f64();
         lead().gap_1().children(self.on_others.iter().map(|o| {
             let left = o.remaining.map(|r| (r as f64 - gone).max(0.));
-            let ticking = o.overrun || left.is_none() || left == Some(0.);
+            let ticking = !o.worn_off && (o.overrun || left.is_none() || left == Some(0.));
             let share = match (left, o.total) {
+                _ if o.worn_off => 0.,
                 (Some(l), Some(t)) if t > 0 && !ticking => (l / t as f64).clamp(0., 1.),
                 _ => 1.,
             };
@@ -516,6 +517,7 @@ impl DashboardView {
                 _ => ACCENT,
             };
             let (time, time_colour) = match left {
+                _ if o.worn_off => ("worn off".to_string(), ENEMY),
                 _ if ticking => ("ticking".to_string(), MUTED),
                 Some(l) if l <= 6. => (dur(l), ENEMY),
                 Some(l) => (dur(l), TEXT),
@@ -543,13 +545,21 @@ impl DashboardView {
                         .gap_2()
                         .child(div().text_color(hex(TEXT)).child(o.target.clone()))
                         .child(
-                            div()
+                            h_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
+                                .gap_2()
                                 .text_sm()
-                                .text_color(hex(colour))
-                                .child(o.spell.clone()),
+                                .child(div().text_color(hex(colour)).child(o.spell.clone()))
+                                // Where the countdown's length comes from.
+                                .when(o.samples > 0, |d| {
+                                    d.child(div().truncate().text_color(hex(MUTED)).child(format!(
+                                        "{} typical, from your last {} wear-off{}",
+                                        dur(o.total.unwrap_or(0) as f64),
+                                        o.samples,
+                                        if o.samples == 1 { "" } else { "s" }
+                                    )))
+                                }),
                         )
                         .child(div().text_color(hex(time_colour)).child(time)),
                 )

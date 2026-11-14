@@ -22,7 +22,13 @@
 //! stretches durations by focus effects and AAs the log never names, so
 //! Breath of Trushar, 24 s in the file, runs about 46 s for a shaman who has
 //! them. Every landing that is seen to wear off says how long that spell
-//! really lasts for you, and the next landing counts down from that.
+//! really lasted for you, and the next landing counts down from the median
+//! of the last [`SAMPLES`] of those: a median, so one early dispel or a
+//! wear-off line written late does not drag the countdown with it.
+//!
+//! A wear-off keeps the row for [`WORN_SHOW`] seconds, marked worn off, so
+//! the overlay says whose heal just ran out rather than the row vanishing.
+//! A recast replaces it.
 //!
 //! Without an end line, a span is dropped once its expected end and its last
 //! tick are both [`GRACE`] behind: a target that walked out of range, or a
@@ -38,6 +44,15 @@ pub const GRACE: i64 = 18;
 /// dozen; this is a bound, not a target.
 const MAX: usize = 40;
 
+/// How many wear-offs of a spell its duration is taken from, newest kept.
+/// Few, on purpose: swapping gear or buying an AA changes a focus, and with
+/// it the duration, and three wear-offs at the new length should be enough
+/// for the countdown to follow.
+pub const SAMPLES: usize = 5;
+
+/// How long a worn-off row stays on screen, unless recast first.
+pub const WORN_SHOW: i64 = 10;
+
 #[derive(Debug, Clone)]
 struct Span {
     target: String,
@@ -47,6 +62,8 @@ struct Span {
     /// span known only from its ticks.
     landed: Option<(i64, i64)>,
     last_tick: Option<i64>,
+    /// When "has worn off of" was written.
+    worn: Option<i64>,
 }
 
 impl Span {
@@ -58,6 +75,14 @@ impl Span {
     fn alive_until(&self) -> i64 {
         let end = self.landed.map_or(i64::MIN, |(_, until)| until);
         end.max(self.last_tick.unwrap_or(i64::MIN))
+    }
+
+    /// Whether it still belongs on screen at `now`.
+    fn shown(&self, now: i64) -> bool {
+        match self.worn {
+            Some(at) => now <= at + WORN_SHOW,
+            None => now <= self.alive_until() + GRACE,
+        }
     }
 }
 
@@ -76,14 +101,21 @@ pub struct OnOther {
     /// Still ticking past its expected end: the duration was stretched by
     /// something the log does not state.
     pub overrun: bool,
+    /// It wore off moments ago: time to recast.
+    #[serde(default)]
+    pub worn_off: bool,
+    /// How many of your own wear-offs the countdown is taken from; 0 when
+    /// it is the spell file's duration.
+    #[serde(default)]
+    pub samples: u32,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct OnOthers {
     spans: Vec<Span>,
-    /// How long each spell (by base name, lowercased) last ran from landing
-    /// to wearing off.
-    learned: std::collections::HashMap<String, i64>,
+    /// How long each spell (by base name, lowercased) ran from landing to
+    /// wearing off, the newest [`SAMPLES`].
+    learned: std::collections::HashMap<String, std::collections::VecDeque<i64>>,
 }
 
 fn key(spell: &str) -> String {
@@ -99,7 +131,7 @@ impl OnOthers {
     /// run to `until`, and what it was seen to last wins over that. A recast
     /// refreshes the row rather than adding a second.
     pub fn landed(&mut self, at: i64, until: i64, spell: &str, target: &str, category: &str) {
-        let until = self.learned.get(&key(spell)).map_or(until, |d| at + d);
+        let until = self.duration(spell).map_or(until, |(d, _)| at + d);
         if until <= at {
             return;
         }
@@ -108,6 +140,7 @@ impl OnOthers {
             Some(s) => {
                 s.landed = Some((at, until));
                 s.last_tick = None;
+                s.worn = None;
                 s.category = category.to_string();
             }
             None => {
@@ -120,6 +153,7 @@ impl OnOthers {
                     category: category.to_string(),
                     landed: Some((at, until)),
                     last_tick: None,
+                    worn: None,
                 });
             }
         }
@@ -129,6 +163,8 @@ impl OnOthers {
     pub fn ticked(&mut self, at: i64, spell: &str, target: &str, category: &str) {
         self.prune(at);
         match self.spans.iter_mut().find(|s| s.is(target, spell)) {
+            // A tick written after the wear-off changes nothing.
+            Some(s) if s.worn.is_some() => {}
             Some(s) => s.last_tick = Some(at),
             None => {
                 if self.spans.len() >= MAX {
@@ -140,28 +176,49 @@ impl OnOthers {
                     category: category.to_string(),
                     landed: None,
                     last_tick: Some(at),
+                    worn: None,
                 });
             }
         }
     }
 
     /// "Your `spell` spell has worn off of `target`." Learns how long it
-    /// lasted, when its landing was seen.
+    /// lasted, when its landing was seen, and marks the row worn off.
     pub fn wore_off(&mut self, at: i64, target: &str, spell: &str) {
-        if let Some((landed, _)) = self
+        let Some(s) = self
             .spans
-            .iter()
-            .find(|s| s.is(target, spell))
-            .and_then(|s| s.landed)
-        {
-            // Seconds-resolution stamps: a landing and its wear-off a few
-            // seconds apart is a dispel or a line out of order, not a
-            // duration worth learning.
-            if at - landed >= 6 {
-                self.learned.insert(key(spell), at - landed);
+            .iter_mut()
+            .find(|s| s.is(target, spell) && s.worn.is_none())
+        else {
+            return;
+        };
+        s.worn = Some(at);
+        let Some((landed, _)) = s.landed else { return };
+        // Seconds-resolution stamps: a landing and its wear-off a few
+        // seconds apart is a dispel or a line out of order, not a duration
+        // worth learning.
+        if at - landed >= 6 {
+            let seen = self.learned.entry(key(spell)).or_default();
+            seen.push_back(at - landed);
+            if seen.len() > SAMPLES {
+                seen.pop_front();
             }
         }
-        self.spans.retain(|s| !s.is(target, spell));
+    }
+
+    /// How long `spell` lasts for you, by the median of its wear-offs seen,
+    /// and how many that is.
+    pub fn duration(&self, spell: &str) -> Option<(i64, u32)> {
+        let seen = self.learned.get(&key(spell)).filter(|v| !v.is_empty())?;
+        let mut v: Vec<i64> = seen.iter().copied().collect();
+        v.sort_unstable();
+        let n = v.len();
+        let median = if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2] + 1) / 2
+        };
+        Some((median, n as u32))
     }
 
     /// Nothing runs on a corpse.
@@ -183,9 +240,11 @@ impl OnOthers {
         let mut rows: Vec<OnOther> = self
             .spans
             .iter()
-            .filter(|s| now <= s.alive_until() + GRACE)
+            .filter(|s| s.shown(now))
             .map(|s| {
+                let worn_off = s.worn.is_some();
                 let (remaining, total, overrun) = match s.landed {
+                    _ if worn_off => (Some(0), s.landed.map(|(at, until)| until - at), false),
                     Some((at, until)) => (
                         Some((until - now).max(0)),
                         Some(until - at),
@@ -200,17 +259,20 @@ impl OnOthers {
                     remaining,
                     total,
                     overrun,
+                    worn_off,
+                    samples: self.duration(&s.spell).map_or(0, |(_, n)| n),
                 }
             })
             .collect();
-        rows.sort_by_key(|r| (r.remaining.is_none(), r.remaining.unwrap_or(0)));
+        // What just wore off first: it is the one to recast.
+        rows.sort_by_key(|r| (!r.worn_off, r.remaining.is_none(), r.remaining.unwrap_or(0)));
         rows
     }
 
     /// Forget what has gone quiet, so the list stays bounded by what is
     /// running rather than by [`MAX`].
     fn prune(&mut self, now: i64) {
-        self.spans.retain(|s| now <= s.alive_until() + GRACE);
+        self.spans.retain(|s| s.shown(now));
     }
 }
 
@@ -255,10 +317,57 @@ mod tests {
         o.landed(100, 148, BOT, "Garrowx", "heal");
         o.wore_off(101, "Valkyrie Warden", BOT);
         o.died("a gnoll");
-        assert_eq!(o.report(101).len(), 1);
+        let r = o.report(101);
+        assert_eq!(r.len(), 2);
+        assert!(
+            r[0].worn_off && r[0].target == "Valkyrie Warden",
+            "worn off shows first"
+        );
+        assert_eq!(r[0].remaining, Some(0));
+        assert_eq!(o.report(101 + WORN_SHOW).len(), 2);
+        assert_eq!(o.report(102 + WORN_SHOW).len(), 1, "then it goes");
         // No end line: kept through the grace, then dropped.
         assert_eq!(o.report(148 + GRACE).len(), 1);
         assert!(o.report(149 + GRACE).is_empty());
+    }
+
+    #[test]
+    fn the_duration_is_the_median_of_the_wear_offs_seen() {
+        let mut o = OnOthers::new();
+        let mut t = 0;
+        // 46, 48, 47, then a dispel after 8 s and a line 20 s late.
+        for d in [46, 48, 47, 8, 66] {
+            o.landed(t, t + 24, BOT, "Valkyrie Warden", "heal");
+            o.wore_off(t + d, "Valkyrie Warden", BOT);
+            t += 100;
+        }
+        assert_eq!(o.duration(BOT), Some((47, 5)));
+        o.landed(t, t + 24, BOT, "Garrowx", "heal");
+        let r = o.report(t);
+        let row = r.iter().find(|r| r.target == "Garrowx").unwrap();
+        assert_eq!((row.remaining, row.samples), (Some(47), 5));
+        // New gear: three wear-offs at 60 s and the countdown follows.
+        for _ in 0..3 {
+            o.landed(t, t + 24, BOT, "Valkyrie Warden", "heal");
+            o.wore_off(t + 60, "Valkyrie Warden", BOT);
+            t += 100;
+        }
+        assert_eq!(o.duration(BOT), Some((60, 5)));
+    }
+
+    #[test]
+    fn a_recast_replaces_a_worn_off_row() {
+        let mut o = OnOthers::new();
+        o.landed(100, 146, BOT, "Valkyrie Warden", "heal");
+        o.wore_off(146, "Valkyrie Warden", BOT);
+        // A tick written just after changes nothing.
+        o.ticked(147, BOT, "Valkyrie Warden", "heal");
+        assert!(o.report(147)[0].worn_off);
+        o.landed(150, 174, BOT, "Valkyrie Warden", "heal");
+        let r = o.report(150);
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].worn_off);
+        assert_eq!(r[0].remaining, Some(46));
     }
 
     #[test]

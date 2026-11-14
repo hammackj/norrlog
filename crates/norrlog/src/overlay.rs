@@ -1168,9 +1168,12 @@ impl OverlayView {
                     .get("remaining")
                     .and_then(Value::as_f64)
                     .map(|r| (r - gone).max(0.));
-                let ticking = flag(o, "overrun") || left.is_none_or(|l| l <= 0.);
+                let worn = flag(o, "worn_off");
+                let ticking = !worn && (flag(o, "overrun") || left.is_none_or(|l| l <= 0.));
                 let total = o.get("total").and_then(Value::as_f64).unwrap_or(1.).max(1.);
-                let share = if ticking {
+                let share = if worn {
+                    0.
+                } else if ticking {
                     1.
                 } else {
                     (left.unwrap_or(0.) / total).clamp(0., 1.)
@@ -1195,6 +1198,7 @@ impl OverlayView {
                     )]),
                 );
                 let time = match left {
+                    _ if worn => ("worn off".to_string(), ENEMY),
                     _ if ticking => ("ticking".to_string(), DIM),
                     Some(l) if l <= 6. => (dur(l), ENEMY),
                     Some(l) => (dur(l), TEXT),

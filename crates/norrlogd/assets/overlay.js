@@ -1037,12 +1037,13 @@
     }
     el.others.innerHTML = list
       .map((o) => {
-        const ticking = o.overrun || o.remaining == null || o.remaining <= 0;
-        const pct = ticking ? 100 : Math.max(0, Math.min(100, (o.remaining / (o.total || 1)) * 100));
-        const urgency = ticking ? " overrun" : o.remaining <= 6 ? " urgent" : "";
+        const worn = !!o.worn_off;
+        const ticking = !worn && (o.overrun || o.remaining == null || o.remaining <= 0);
+        const pct = worn ? 0 : ticking ? 100 : Math.max(0, Math.min(100, (o.remaining / (o.total || 1)) * 100));
+        const urgency = worn ? " urgent" : ticking ? " overrun" : o.remaining <= 6 ? " urgent" : "";
         return `<div class="buff cat-${esc(o.category)}${urgency}" style="--remain:${pct.toFixed(1)}%">
           <span class="bname">${esc(o.target)} <span class="bspell">${esc(o.spell)}</span></span>
-          <span class="btime">${ticking ? "ticking" : dur(o.remaining)}</span>
+          <span class="btime">${worn ? "worn off" : ticking ? "ticking" : dur(o.remaining)}</span>
         </div>`;
       })
       .join("");
