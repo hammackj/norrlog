@@ -21,6 +21,7 @@ mod locks;
 mod logring;
 mod paths;
 mod record;
+mod search;
 mod server;
 mod store;
 mod tail;
@@ -213,6 +214,7 @@ ENDPOINTS:
     /api/snapshot      Current state
     /api/encounters    Historical encounters (filter, search, paginate)
     /api/loot          Aggregated loot
+    /api/search        Lines in the log matching ?q= (regex=1, case=1, log=)
     /ws                Live snapshot stream
 "
     );

@@ -1353,3 +1353,44 @@ pub use norrlog_core::bestiary::{
     BestiaryReport, ConsideredLevel, CreatureKind, MeleeAgainst, NpcCast, NpcProfile,
 };
 pub use norrlog_core::zone::{Mode, TIER_NAMES};
+
+// ---------------------------------------------------------------------------
+// Log search: `GET /api/search`.
+
+/// One line that matched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// 1-based, counted in the file, so a later search can ask for what lies
+    /// before it.
+    pub line: u64,
+    /// The client's timestamp, as written: `Fri Nov 13 13:36:13 2026`. Empty
+    /// for a line without one.
+    pub stamp: String,
+    /// The rest of the line.
+    pub text: String,
+    /// Where the query matched in `text`, as byte ranges `[start, end)`.
+    #[serde(default)]
+    pub marks: Vec<[usize; 2]>,
+}
+
+/// The newest matches in one log, newest first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchReply {
+    #[serde(default)]
+    pub hits: Vec<SearchHit>,
+    /// Every match in the log (before `before`, when given), of which `hits`
+    /// are the newest.
+    #[serde(default)]
+    pub total: u64,
+    /// The file searched, by name.
+    #[serde(default)]
+    pub log: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub seconds: f64,
+    /// Why nothing was searched: a pattern that does not compile, a log that
+    /// is not there.
+    #[serde(default)]
+    pub error: Option<String>,
+}

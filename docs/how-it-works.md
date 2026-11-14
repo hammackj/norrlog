@@ -160,6 +160,7 @@ See `crate::bundle` for why that is a set of verdicts rather than row counts.
 | `GET /api/session` | Every fight of the session as one meter — `?scope=zone` for the current zone |
 | `GET /api/alerts` · `POST` | Alert rules; `POST /api/alerts/delete` removes one |
 | `GET /api/lines` | Recent log lines — `?since=` a sequence number |
+| `GET /api/search` | Lines in the log that match `?q=`, newest first. `regex=1`, `case=1`, `limit=` (200, at most 1000), `before=` a line number for the page before, `log=` another `eqlog_*.txt` in the same folder |
 | `WS /ws` | Live snapshot stream |
 
 ## Layout

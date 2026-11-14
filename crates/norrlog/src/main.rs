@@ -35,6 +35,7 @@ mod overlay;
 mod overlay_settings;
 mod parts;
 mod procs;
+mod search;
 mod settings;
 mod sky;
 mod sound;

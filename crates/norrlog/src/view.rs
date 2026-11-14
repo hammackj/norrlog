@@ -26,6 +26,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("bestiary", "Bestiary"),
     ("sky", "Sky"),
     ("tells", "Tells"),
+    ("search", "Search"),
     ("alerts", "Alerts"),
     ("character", "Character"),
     ("classes", "Classes"),
@@ -64,6 +65,7 @@ pub struct Shell {
     bestiary: Entity<crate::bestiary::BestiaryView>,
     sky: Entity<crate::sky::SkyView>,
     tells: Entity<crate::tells::TellsView>,
+    search: Entity<crate::search::SearchView>,
     alerts: Entity<crate::alerts::AlertsView>,
     settings: Entity<crate::settings::SettingsView>,
     dashboard: Entity<crate::dashboard::DashboardView>,
@@ -129,6 +131,7 @@ impl Shell {
             }),
         );
         let tells = cx.new(|_| crate::tells::TellsView::new());
+        let search = cx.new(|cx| crate::search::SearchView::new(window, cx));
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
         let controls = settings.read(cx).overlay.clone();
@@ -157,6 +160,7 @@ impl Shell {
             bestiary,
             sky,
             tells,
+            search,
             alerts,
             settings,
             dashboard,
@@ -251,6 +255,8 @@ impl Shell {
                     v.set_visible(open == "settings", cx);
                     v.set_api(Some(api.clone()), cx);
                 });
+                self.search
+                    .update(cx, |v, cx| v.set_api(Some(api.clone()), cx));
                 self.tells.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
                     if open == "tells" {
@@ -376,6 +382,7 @@ impl Shell {
                 self.bestiary.update(cx, |v, cx| v.set_api(None, cx));
                 self.sky.update(cx, |v, cx| v.set_api(None, cx));
                 self.tells.update(cx, |v, cx| v.set_api(None, cx));
+                self.search.update(cx, |v, cx| v.set_api(None, cx));
                 self.alerts.update(cx, |v, cx| v.set_api(None, cx));
                 self.settings.update(cx, |v, cx| v.set_api(None, cx));
                 if matches!(self.link, Link::Unset) {
@@ -741,6 +748,11 @@ impl Shell {
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
+            "search" => self
+                .search
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             "sky" => self
                 .sky
                 .clone()
@@ -787,6 +799,7 @@ impl Render for Shell {
                         | "bestiary"
                         | "sky"
                         | "tells"
+                        | "search"
                         | "alerts"
                         | "dashboard"
                 ) && !self.link.down()

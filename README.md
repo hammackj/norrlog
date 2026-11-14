@@ -32,6 +32,8 @@ overlay.
 - **Tells and alerts.** A tell log, and alerts built from any line: a sound,
   speech, a banner on the overlay, and optionally a countdown there. The OBS
   overlay shows the banners and countdowns too (`alerts=0` hides them).
+- **Log search.** Any line in the log, newest first, as plain text or a
+  regular expression, read from the file as it is now.
 
 ## Two games
 

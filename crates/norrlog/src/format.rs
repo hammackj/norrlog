@@ -82,7 +82,7 @@ fn round_half_up(n: f64) -> i64 {
 }
 
 /// `toLocaleString()` in the en-US form the renderer has always shown.
-fn grouped(n: i64) -> String {
+pub fn grouped(n: i64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {

@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/alerts", get(alerts).post(put_alert))
         .route("/api/alerts/delete", post(delete_alert))
         .route("/api/lines", get(lines))
+        .route("/api/search", get(search))
         .route("/api/session", get(session))
         .route("/ws", get(ws_upgrade))
         .route("/api/hello", get(hello))
@@ -1627,6 +1628,64 @@ async fn lines(State(s): State<AppState>, Query(q): Query<SinceQuery>) -> Json<s
         "lines": lines,
         "live": engine.is_live(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    q: String,
+    /// `1`: `q` is a regular expression rather than text.
+    #[serde(default)]
+    regex: Option<String>,
+    /// `1`: match case exactly.
+    #[serde(default)]
+    case: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Only lines before this one (1-based): the next page back.
+    #[serde(default)]
+    before: Option<u64>,
+    /// A log in the same folder, by file name; the followed one when absent.
+    #[serde(default)]
+    log: Option<String>,
+}
+
+/// Lines in a log that match, newest first. See [`crate::search`].
+async fn search(State(s): State<AppState>, Query(q): Query<SearchQuery>) -> Response {
+    let on = |v: &Option<String>| v.as_deref() == Some("1");
+    if q.q.is_empty() {
+        return (StatusCode::BAD_REQUEST, "nothing to search for").into_response();
+    }
+    let path = match q.log.as_deref().filter(|n| !n.is_empty()) {
+        None => s.log_path.clone(),
+        Some(name) => {
+            let dir = s
+                .logs_dir
+                .clone()
+                .or_else(|| s.log_path.parent().map(|p| p.to_path_buf()));
+            match dir.and_then(|d| crate::search::resolve(&d, name)) {
+                Some(p) => p,
+                None => return (StatusCode::BAD_REQUEST, "not a log name").into_response(),
+            }
+        }
+    };
+    let re = match crate::search::pattern(&q.q, on(&q.regex), on(&q.case)) {
+        Ok(re) => re,
+        Err(e) => {
+            return Json(norrlog_api::SearchReply {
+                error: Some(e),
+                ..Default::default()
+            })
+            .into_response();
+        }
+    };
+    let limit = q.limit.unwrap_or(200);
+    // A file read of up to a few hundred megabytes: off the async runtime.
+    match tokio::task::spawn_blocking(move || crate::search::search(&path, &re, limit, q.before))
+        .await
+    {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

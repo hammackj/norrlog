@@ -4245,6 +4245,7 @@ dependencies = [
  "norrlog-api",
  "norrlog-client",
  "norrlog-core",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",
