@@ -287,6 +287,25 @@ pub struct AlertBook {
     fires: Vec<AlertFire>,
     seq: u64,
     armed: bool,
+    /// The character the patterns were compiled for: `{C}` in a pattern is
+    /// whoever is followed, so a change of character recompiles them.
+    you: String,
+}
+
+/// `pattern` with each `{C}` made the character `you`, as a regular
+/// expression matches it.
+///
+/// A rule keeps `{C}` as written and is compiled for whoever is followed:
+/// GINA imports used to write the importing character's name into the rule,
+/// and once another log was followed the rule watched for the wrong person.
+/// With no character known, `{C}` matches nothing rather than anyone.
+pub fn with_you(pattern: &str, you: &str) -> String {
+    let you = if you.is_empty() {
+        r"[^\s\S]".to_string()
+    } else {
+        regex::escape(you)
+    };
+    pattern.replace("{C}", &you).replace("{c}", &you)
 }
 
 impl AlertBook {
@@ -306,22 +325,8 @@ impl AlertBook {
 
     /// Replace the whole rule set, compiling any patterns.
     pub fn set_rules(&mut self, rules: Vec<AlertRule>) {
-        self.patterns.clear();
         self.rules = rules;
-        for rule in &mut self.rules {
-            rule.error = None;
-            if let Trigger::Pattern { pattern } = &rule.trigger {
-                // Case-insensitive by default: the log's casing varies with
-                // sentence position, and nobody writing "gate" means only the
-                // lowercase one.
-                match Regex::new(&format!("(?i){pattern}")) {
-                    Ok(re) => {
-                        self.patterns.insert(rule.id.clone(), re);
-                    }
-                    Err(e) => rule.error = Some(e.to_string()),
-                }
-            }
-        }
+        self.compile();
         // A rule that is gone should not hold a cooldown or a warning against
         // its id, or re-adding it would start it in a fired state.
         let live: Vec<&str> = self.rules.iter().map(|r| r.id.as_str()).collect();
@@ -329,6 +334,25 @@ impl AlertBook {
             .retain(|(id, _), _| live.iter().any(|l| l == id));
         self.warned
             .retain(|(id, _), _| live.iter().any(|l| l == id));
+    }
+
+    /// Compile every pattern for the character followed now.
+    fn compile(&mut self) {
+        self.patterns.clear();
+        for rule in &mut self.rules {
+            rule.error = None;
+            if let Trigger::Pattern { pattern } = &rule.trigger {
+                // Case-insensitive by default: the log's casing varies with
+                // sentence position, and nobody writing "gate" means only the
+                // lowercase one.
+                match Regex::new(&format!("(?i){}", with_you(pattern, &self.you))) {
+                    Ok(re) => {
+                        self.patterns.insert(rule.id.clone(), re);
+                    }
+                    Err(e) => rule.error = Some(e.to_string()),
+                }
+            }
+        }
     }
 
     /// Add or replace one rule, keeping the rest.
@@ -367,6 +391,10 @@ impl AlertBook {
     pub fn on_line(&mut self, at: i64, raw: &str, event: &Event, player: &str) {
         if !self.armed || self.rules.is_empty() {
             return;
+        }
+        if self.you != player {
+            self.you = player.to_string();
+            self.compile();
         }
         let text = strip_timestamp(raw);
         let lowered = text.to_lowercase();
@@ -692,6 +720,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.timer, 0);
+    }
+
+    /// `{C}` in a pattern is whoever is followed: GINA imports wrote the
+    /// importing character's name into the rule, and after a switch it
+    /// watched for the wrong one.
+    #[test]
+    fn c_in_a_pattern_is_whoever_is_followed_now() {
+        let mut b = armed(vec![rule(
+            "hurt",
+            Trigger::Pattern {
+                pattern: r"^{C} is hurt$".to_string(),
+            },
+        )]);
+        let hurt = |b: &mut AlertBook, at: i64, who: &str, player: &str| {
+            let before = b.since(0).len();
+            b.on_line(at, &format!("[x] {who} is hurt"), &Event::Unknown, player);
+            b.since(0).len() > before
+        };
+        assert!(hurt(&mut b, 100, "Tharn", "Tharn"));
+        assert!(hurt(&mut b, 200, "Mirela", "Mirela"), "the new character");
+        assert!(!hurt(&mut b, 300, "Tharn", "Mirela"), "not the old one");
+        assert!(!hurt(&mut b, 400, "Anyone", "Mirela"));
+        assert!(b.rules()[0].error.is_none());
+    }
+
+    /// With nobody known, `{C}` matches nobody rather than everybody, and a
+    /// name is matched as text, not as a pattern.
+    #[test]
+    fn c_with_no_character_matches_nothing() {
+        let re = |p: &str, you: &str| regex::Regex::new(&with_you(p, you)).unwrap();
+        assert!(!re("^{C} is hurt$", "").is_match("Tharn is hurt"));
+        assert!(!re("^{C} is hurt$", "").is_match(" is hurt"));
+        assert!(re("^{c} is hurt$", "Tharn").is_match("Tharn is hurt"));
+        assert!(!re("^{C}$", "T.arn").is_match("Tharn"));
     }
 
     /// A pattern's named groups and `{C}` fill the rule's name and words, as

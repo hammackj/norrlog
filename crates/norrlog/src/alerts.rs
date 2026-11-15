@@ -656,16 +656,10 @@ impl AlertsView {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            // `{C}` is the character being followed.
-            let character = api
-                .get::<norrlog_api::Hello>("/api/hello".to_string())
-                .await
-                .map(|h| h.character)
-                .unwrap_or_default();
             let read = cx
                 .background_spawn({
                     let path = path.clone();
-                    async move { crate::gina::read_file(&path, &character) }
+                    async move { crate::gina::read_file(&path) }
                 })
                 .await;
             let file = path

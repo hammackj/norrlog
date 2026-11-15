@@ -1317,7 +1317,7 @@ pub use norrlog_core::tells::{Conversation, TellMessage, TellReport};
 // Alerts: `GET /api/alerts`, `POST /api/alerts`, `POST /api/alerts/delete`
 // and the feed, `GET /api/lines?since=N`. Fires ride on the snapshot.
 
-pub use norrlog_core::alert::{AlertFire, AlertRule, SignalKind, Sound, Trigger};
+pub use norrlog_core::alert::{with_you, AlertFire, AlertRule, SignalKind, Sound, Trigger};
 
 /// `GET /api/alerts`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

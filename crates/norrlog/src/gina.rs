@@ -6,7 +6,8 @@
 //! [`AlertRule`] closely:
 //!
 //! - its text, plain or a regular expression, becomes the rule's trigger.
-//!   GINA's tokens become what they stand for: `{C}` your name, `{S}` (and
+//!   GINA's tokens become what they stand for: `{C}` stays `{C}`, which
+//!   the daemon makes whoever it follows when it compiles the rule, `{S}` (and
 //!   `{S1}`…) any text, `{N}` a number, `{TS}` a duration, each captured under
 //!   its own name so the banner and the speech can quote it;
 //! - the display text, when it has one, is the banner, which is the rule's
@@ -34,14 +35,14 @@ pub struct Imported {
 }
 
 /// Read a `.gtp` package or a GINA XML file.
-pub fn read_file(path: &std::path::Path, character: &str) -> Result<Imported, String> {
+pub fn read_file(path: &std::path::Path) -> Result<Imported, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let xml = if bytes.starts_with(b"PK") {
         from_zip(&bytes)?
     } else {
         String::from_utf8_lossy(&bytes).into_owned()
     };
-    from_xml(&xml, character)
+    from_xml(&xml)
 }
 
 /// The XML inside a package: `ShareData.xml`, or failing that its only XML.
@@ -63,7 +64,7 @@ fn from_zip(bytes: &[u8]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&raw).into_owned())
 }
 
-pub fn from_xml(xml: &str, character: &str) -> Result<Imported, String> {
+pub fn from_xml(xml: &str) -> Result<Imported, String> {
     let xml = xml.trim_start_matches('\u{feff}');
     let doc = Document::parse(xml).map_err(|e| format!("not GINA XML: {e}"))?;
     let mut out = Imported {
@@ -76,7 +77,7 @@ pub fn from_xml(xml: &str, character: &str) -> Result<Imported, String> {
     for t in doc.descendants().filter(|n| {
         n.has_tag_name("Trigger") && n.parent().is_some_and(|p| p.has_tag_name("Triggers"))
     }) {
-        if let Some(rule) = trigger(t, character, &mut out.notes) {
+        if let Some(rule) = trigger(t, &mut out.notes) {
             out.rules.push(rule);
         }
     }
@@ -113,7 +114,7 @@ fn group_path(t: Node) -> Vec<String> {
     path
 }
 
-fn trigger(t: Node, character: &str, notes: &mut Vec<String>) -> Option<AlertRule> {
+fn trigger(t: Node, notes: &mut Vec<String>) -> Option<AlertRule> {
     let title = field(t, "Name").unwrap_or("").to_string();
     let text = field(t, "TriggerText").unwrap_or("");
     let label = if title.is_empty() {
@@ -126,7 +127,7 @@ fn trigger(t: Node, character: &str, notes: &mut Vec<String>) -> Option<AlertRul
         note("no trigger text, skipped");
         return None;
     }
-    let (trigger, warnings) = convert(text, flag(t, "EnableRegex"), character);
+    let (trigger, warnings) = convert(text, flag(t, "EnableRegex"));
     for w in warnings {
         note(&w);
     }
@@ -184,7 +185,7 @@ fn trigger(t: Node, character: &str, notes: &mut Vec<String>) -> Option<AlertRul
 /// Plain text with no tokens stays plain text. Anything else becomes a
 /// pattern: plain text is escaped around its tokens, a regular expression is
 /// kept as written. Only the tokens are touched, so `\d{3}` stays a count.
-fn convert(text: &str, regex: bool, character: &str) -> (Trigger, Vec<String>) {
+fn convert(text: &str, regex: bool) -> (Trigger, Vec<String>) {
     let mut warnings = Vec::new();
     let mut out = String::new();
     let mut seen: Vec<String> = Vec::new();
@@ -201,7 +202,7 @@ fn convert(text: &str, regex: bool, character: &str) -> (Trigger, Vec<String>) {
         let after = &rest[open + 1..];
         let Some(close) = after.find('}') else { break };
         let inner = &after[..close];
-        let Some(part) = token(inner, character, &mut seen, &mut warnings) else {
+        let Some(part) = token(inner, &mut seen, &mut warnings) else {
             // Not a token: a count in a pattern, or a brace in plain text.
             out.push_str(&literal(&rest[..open + close + 2]));
             rest = &after[close + 1..];
@@ -218,7 +219,7 @@ fn convert(text: &str, regex: bool, character: &str) -> (Trigger, Vec<String>) {
             text: text.to_string(),
         }
     } else {
-        if let Err(e) = regex::Regex::new(&out) {
+        if let Err(e) = regex::Regex::new(&norrlog_api::with_you(&out, "You")) {
             let first = e
                 .to_string()
                 .lines()
@@ -234,12 +235,7 @@ fn convert(text: &str, regex: bool, character: &str) -> (Trigger, Vec<String>) {
 }
 
 /// What a GINA token stands for, or `None` for braces that are not one.
-fn token(
-    inner: &str,
-    character: &str,
-    seen: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) -> Option<String> {
+fn token(inner: &str, seen: &mut Vec<String>, warnings: &mut Vec<String>) -> Option<String> {
     let up = inner.to_uppercase();
     let (kind, rest) = up.split_at(
         up.find(|c: char| !c.is_ascii_alphabetic())
@@ -262,11 +258,9 @@ fn token(
         }
     };
     match (kind, tail) {
-        ("C", "") if digits.is_empty() => Some(if character.is_empty() {
-            r"(?:\w+)".to_string()
-        } else {
-            regex::escape(character)
-        }),
+        // Kept as written: the daemon makes it whoever it follows when it
+        // compiles the rule, so the rule follows a change of character.
+        ("C", "") if digits.is_empty() => Some("{C}".to_string()),
         ("S", "") => Some(group(".+?")),
         ("N", "") => Some(group(r"\d+")),
         ("N", cmp) if cmp.starts_with(['<', '>', '=']) => {
@@ -357,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_share_package_becomes_alerts() {
-        let i = from_xml(SHARE, "Tharn").unwrap();
+        let i = from_xml(SHARE).unwrap();
         assert_eq!((i.rules.len(), i.groups), (4, 2));
 
         let breath = by_name(&i, "BREATH");
@@ -373,8 +367,8 @@ mod tests {
             panic!()
         };
         assert_eq!(
-            pattern,
-            r"^(?<S>.+?) begins to cast Complete Heal on Tharn\.$"
+            pattern, r"^(?<S>.+?) begins to cast Complete Heal on {C}\.$",
+            "{{C}} stays, for the daemon to make whoever it follows"
         );
         assert_eq!(heal.sound, Sound::Chime);
 
@@ -413,8 +407,8 @@ mod tests {
 
     #[test]
     fn the_same_trigger_keeps_its_id_and_groups_tell_apart() {
-        let a = from_xml(SHARE, "Tharn").unwrap();
-        let b = from_xml(SHARE, "Other").unwrap();
+        let a = from_xml(SHARE).unwrap();
+        let b = from_xml(SHARE).unwrap();
         assert_eq!(
             a.rules.iter().map(|r| &r.id).collect::<Vec<_>>(),
             b.rules.iter().map(|r| &r.id).collect::<Vec<_>>()
@@ -439,15 +433,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("raid.gtp");
         std::fs::write(&p, buf.into_inner()).unwrap();
-        let i = read_file(&p, "Tharn").unwrap();
+        let i = read_file(&p).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(i.rules.len(), 4);
     }
 
     #[test]
     fn what_is_not_gina_says_so() {
-        assert!(from_xml("<html/>", "x").is_err());
-        assert!(from_xml("not xml", "x").is_err());
+        assert!(from_xml("<html/>").is_err());
+        assert!(from_xml("not xml").is_err());
     }
 
     #[test]
@@ -455,7 +449,7 @@ mod tests {
         let xml = r#"<SharedData><TriggerGroups><TriggerGroup><Name>g</Name><Triggers><Trigger>
             <Name>Back</Name><TriggerText>(?&lt;a&gt;x)\k&lt;a&gt;</TriggerText><EnableRegex>True</EnableRegex>
             </Trigger></Triggers></TriggerGroup></TriggerGroups></SharedData>"#;
-        let i = from_xml(xml, "x").unwrap();
+        let i = from_xml(xml).unwrap();
         assert_eq!(i.rules.len(), 1);
         assert!(
             i.notes[0].starts_with("Back: its pattern does not work here"),
