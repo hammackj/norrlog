@@ -175,15 +175,11 @@ impl Feed {
         reader: impl BufRead,
         to: &mut [&mut dyn Observer],
     ) -> std::io::Result<u64> {
-        let mut lines = 0u64;
-        for line in reader.lines() {
-            let line = line?;
-            lines += 1;
-            let Some(entry) = self.parser.parse_line(&line) else {
-                continue;
-            };
-            self.dispatch(&entry, to);
-        }
+        let lines = crate::lines::each_line(reader, |line| {
+            if let Some(entry) = self.parser.parse_line(line) {
+                self.dispatch(&entry, to);
+            }
+        })?;
         // The last fight ends because the file did, not because anything in
         // it said so. Without this every log silently loses its final
         // encounter -- and the final encounter of a raid log is usually the

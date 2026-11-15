@@ -23,6 +23,7 @@ pub mod experience;
 pub mod feed;
 pub mod game;
 pub mod itemids;
+pub mod lines;
 pub mod lockout;
 pub mod npc;
 pub mod on_others;

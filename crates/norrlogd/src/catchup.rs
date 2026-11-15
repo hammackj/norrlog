@@ -182,15 +182,25 @@ pub fn catch_up_one(
     let started = std::time::Instant::now();
     let spells = Engine::load_spell_db(game_dir);
     let engine = Arc::new(Mutex::new(Engine::with_game(player.clone(), spells, game)));
-    let mut lines = 0u64;
-    {
+    // A line that is not UTF-8 is read like any other. A read that fails
+    // stops here, before anything is written: the history writers replace
+    // what is stored for this log, and a half-read log stored as the whole
+    // of it lost every total after the failure. The watermark stays put, so
+    // the next sweep tries again.
+    let read = {
         let mut e = engine.locked("catch-up");
-        for line in BufReader::with_capacity(1 << 20, file).lines() {
-            let Ok(line) = line else { break };
-            e.push_line(&line);
-            lines += 1;
+        norrlog_core::lines::each_line(BufReader::with_capacity(1 << 20, file), |l| e.push_line(l))
+    };
+    let lines = match read {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!(
+                "[norrlogd] catch-up: could not read {}: {e}",
+                path.display()
+            );
+            return None;
         }
-    }
+    };
     let st = store::Store::open_as(db, &player, &server).ok()?;
     let store = Arc::new(Mutex::new(st));
     // A failed write leaves the watermark where it was, so the next sweep
@@ -499,6 +509,69 @@ mod tests {
     }
 
     /// The status readout says how far behind each log is, worst first.
+    fn stale_bread(db: &Path) -> u64 {
+        let st = store::Store::open_as(db, "Mirela", "freeport").unwrap();
+        st.all_drops()
+            .unwrap()
+            .iter()
+            .filter(|r| r.item == "Stale Bread")
+            .map(|r| r.looted)
+            .sum()
+    }
+
+    fn bread(s: u32) -> String {
+        format!("[Tue Jul 28 14:00:{s:02} 2026] --You have looted a Stale Bread from a rat's corpse.--\n")
+    }
+
+    /// A line that is not UTF-8 was taken for the end of the log: what came
+    /// after it was never read, the log's totals were replaced with the part
+    /// before it, and the watermark claimed the whole file.
+    #[test]
+    fn a_line_that_is_not_utf8_does_not_end_the_log() {
+        let d = scratch("not-utf8");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(bread(1).as_bytes()).unwrap();
+        f.write_all(b"[Tue Jul 28 14:00:01 2026] Mirela says, 'bad: \xff'\n")
+            .unwrap();
+        f.write_all(bread(2).as_bytes()).unwrap();
+        drop(f);
+        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        assert_eq!(first.lines, 3);
+        assert_eq!(stale_bread(&db), 2);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&p)
+            .unwrap()
+            .write_all(bread(3).as_bytes())
+            .unwrap();
+        catch_up_one(&p, &db, None, Game::Unknown, first.to, 0).expect("the appended line");
+        assert_eq!(stale_bread(&db), 3, "the totals stopped at the bad line");
+    }
+
+    /// A read that fails writes nothing: the totals stored before stay, and
+    /// so does the watermark, so the next sweep tries again.
+    #[test]
+    fn a_failed_read_keeps_the_stored_history_and_the_watermark() {
+        let d = scratch("read-fails");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        write(&p, &format!("{}{}", bread(1), bread(2)));
+        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        assert_eq!(stale_bread(&db), 2);
+        let key = p.to_string_lossy().to_string();
+        assert_eq!(watermarks(&db).get(&key), Some(&first.to));
+
+        // A directory where the log was: it opens, and every read fails.
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, 0, 0).is_none());
+        assert_eq!(stale_bread(&db), 2, "a failed read replaced the totals");
+        assert_eq!(watermarks(&db).get(&key), Some(&first.to));
+    }
+
     #[test]
     fn the_status_puts_the_worst_gap_first_and_names_the_followed_log() {
         let d = scratch("status");

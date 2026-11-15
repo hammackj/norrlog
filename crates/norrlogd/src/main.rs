@@ -835,15 +835,11 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
         let file =
             std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let started = std::time::Instant::now();
-        let mut lines = 0u64;
-        {
-            use std::io::BufRead;
+        let lines = {
             let mut e = engine.locked("parse");
-            for line in std::io::BufReader::new(file).lines() {
-                e.push_line(&line?);
-                lines += 1;
-            }
-        }
+            norrlog_core::lines::each_line(std::io::BufReader::new(file), |l| e.push_line(l))
+                .with_context(|| format!("reading {}", path.display()))?
+        };
         let store = Arc::new(Mutex::new(
             store::Store::open_as(&db, &player, &server)
                 .with_context(|| format!("opening {}", db.display()))?,
@@ -960,8 +956,6 @@ fn print_verdicts(p: &crate::bundle::Preview) {
 }
 
 fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<()> {
-    use std::io::BufRead;
-
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let (player, _server) = Parser::identity_from_filename(&log_path.to_string_lossy())
         .with_context(|| {
@@ -988,11 +982,9 @@ fn record_out_once(cfg: &Config, log_path: &Path, dir: &Path) -> anyhow::Result<
     let file =
         std::fs::File::open(log_path).with_context(|| format!("opening {}", log_path.display()))?;
     let start = std::time::Instant::now();
-    let mut lines = 0u64;
-    for line in std::io::BufReader::new(file).lines() {
-        engine.push_line(&line?);
-        lines += 1;
-    }
+    let lines =
+        norrlog_core::lines::each_line(std::io::BufReader::new(file), |l| engine.push_line(l))
+            .with_context(|| format!("reading {}", log_path.display()))?;
     // The tag is the log's stem, as it was when a script fetched these off
     // this daemon's API.
     let tag = log_path
