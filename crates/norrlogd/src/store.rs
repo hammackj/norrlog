@@ -258,6 +258,7 @@ impl Store {
         s.drop_graded_duplicates()?;
         s.repair_inferred_group_mode(&inferred)?;
         s.reread_logs_with_drops_once()?;
+        s.reread_logs_with_creatures_once()?;
         Ok(s)
     }
 
@@ -273,7 +274,31 @@ impl Store {
     /// at every start anyway. Nothing is deleted here, and a log that no
     /// longer exists keeps what it has.
     fn reread_logs_with_drops_once(&mut self) -> Result<()> {
-        const NAME: &str = "reread-logs-with-drops";
+        self.reread_once(
+            "reread-logs-with-drops",
+            "item_drops",
+            "to recount their drops",
+        )
+    }
+
+    /// The same, for the bestiary, which had the same flaw: every log with
+    /// creatures on file is read again from its start, once.
+    ///
+    /// The live history held 2,755 creatures twice within one log, "leaf
+    /// drake" beside "a leaf drake", from builds before the name kept its
+    /// article. The merge folds the two into one creature and adds their
+    /// kills, so each such creature showed twice its kills.
+    fn reread_logs_with_creatures_once(&mut self) -> Result<()> {
+        self.reread_once(
+            "reread-logs-with-creatures",
+            "npc_profiles",
+            "to recount their creatures",
+        )
+    }
+
+    /// Zero the watermark of every log with rows in `table`, the first time
+    /// this repair is seen and never again.
+    fn reread_once(&mut self, name: &str, table: &str, why: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS store_repairs (
@@ -283,17 +308,19 @@ impl Store {
         )?;
         let done: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM store_repairs WHERE name = ?1)",
-            [NAME],
+            [name],
             |r| r.get(0),
         )?;
         if !done {
             let n = tx.execute(
-                "UPDATE sources SET bytes = 0
-                 WHERE bytes > 0 AND path IN (SELECT DISTINCT source FROM item_drops)",
+                &format!(
+                    "UPDATE sources SET bytes = 0
+                     WHERE bytes > 0 AND path IN (SELECT DISTINCT source FROM {table})"
+                ),
                 [],
             )?;
             if n > 0 {
-                eprintln!("[norrlogd] {n} log(s) will be read again to recount their drops");
+                eprintln!("[norrlogd] {n} log(s) will be read again {why}");
             }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -301,7 +328,7 @@ impl Store {
                 .unwrap_or(0);
             tx.execute(
                 "INSERT INTO store_repairs (name, at) VALUES (?1, ?2)",
-                params![NAME, now],
+                params![name, now],
             )?;
         }
         tx.commit()?;
@@ -3020,8 +3047,9 @@ impl Store {
     /// Record the bestiary this log produced: profiles, melee per pairing, and
     /// every health sample.
     ///
-    /// Same keying as [`Store::put_drops`] — a re-parse replaces this log's
-    /// rows and nothing else. The health samples are written in full rather
+    /// Same keying as [`Store::put_drops`], and cleared the same way: only a
+    /// whole read calls this, so the log's rows are deleted and rewritten,
+    /// and nothing of any other log is touched. The health samples are written in full rather
     /// than summarised, because [`norrlog_core::bestiary::merge`] has to
     /// recompute the spread over every log at once and cannot do that from
     /// per-log medians.
@@ -3036,16 +3064,51 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut n = 0;
         {
-            // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: see the note on
-            // `put_vendors` for the column-erasing hazard that distinction
-            // avoids. `kind` is exactly the kind of column it bites — it is
-            // written only when a body-restricted spell happened to land, so a
-            // writer that reverted it would undo evidence that may not come
-            // round again for weeks.
-            //
-            // Which is also why `kind` is the one column that will not go back
-            // to empty: a re-parse of a log whose casts have scrolled out of
-            // range must not erase what an earlier parse proved.
+            // `kind` is the one column that will not go back to empty: it is
+            // written only when a body-restricted spell happened to land, and
+            // a re-parse of a log whose casts have scrolled out of range must
+            // not erase what an earlier parse proved. So it is read out
+            // before the clear, by identity, and carried over to a row that
+            // does not prove it again, whatever that row is now spelled.
+            let carried: std::collections::HashMap<(String, String, u8, String), String> = {
+                let mut st = tx.prepare(
+                    "SELECT zone, mode, difficulty, npc, kind FROM npc_profiles
+                     WHERE game = ?1 AND character = ?2 AND server = ?3 AND source = ?4
+                       AND kind <> ''",
+                )?;
+                let rows = st.query_map(params![game, c, sv, source], |r| {
+                    Ok((
+                        (
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, u8>(2)?,
+                            norrlog_core::drops::canonical_npc(&r.get::<_, String>(3)?)
+                                .to_lowercase(),
+                        ),
+                        r.get::<_, String>(4)?,
+                    ))
+                })?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            // Cleared per log first, as `put_drops` is. The rows are keyed on
+            // how the creature is spelled, and a build that respelled it --
+            // "leaf drake" becoming "a leaf drake" -- left the old row beside
+            // the new, which the merge then counted twice.
+            for table in ["npc_profiles", "npc_casts", "npc_health_samples"] {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {table}
+                         WHERE game = ?1 AND character = ?2 AND server = ?3 AND source = ?4"
+                    ),
+                    params![game, c, sv, source],
+                )?;
+            }
+            // Melee rows carry the pairing's own character, not the store's,
+            // so this log's are all of them under its path.
+            tx.execute(
+                "DELETE FROM npc_melee WHERE game = ?1 AND server = ?2 AND source = ?3",
+                params![game, sv, source],
+            )?;
             let mut npc_stmt = tx.prepare(
                 "INSERT INTO npc_profiles
                  (game, character, server, source, zone, mode, difficulty, npc,
@@ -3110,7 +3173,17 @@ impl Store {
                     p.max_hit as i64,
                     p.first_seen,
                     p.last_seen,
-                    p.kind.map(|k| k.as_str()).unwrap_or(""),
+                    match p.kind {
+                        Some(k) => k.as_str(),
+                        None => carried
+                            .get(&(
+                                p.zone.clone(),
+                                p.mode.as_str().to_string(),
+                                p.difficulty,
+                                p.identity().to_lowercase(),
+                            ))
+                            .map_or("", String::as_str),
+                    },
                 ])?;
                 n += 1;
                 for m in &p.melee {
@@ -4491,6 +4564,45 @@ mod tests {
         (b.report(), b.health_samples())
     }
 
+    /// A re-read that spells a creature differently replaces the old row
+    /// rather than sitting beside it.
+    ///
+    /// Older builds filed "fire giant" where this one files "a fire giant".
+    /// Keyed on the spelling, the re-read left both, and the merge, which
+    /// folds on identity, added their kills: the live history had 2,755
+    /// creatures counted twice this way. The proved body type comes across.
+    #[test]
+    fn a_respelled_creature_replaces_its_old_row() {
+        use norrlog_core::bestiary::CreatureKind;
+        let mut s = Store::in_memory().unwrap();
+        let zone = "Nagafen's Lair - Solo 4 (Refined)";
+
+        let (mut old, mut old_hp) = bestiary("Tharn", zone, 50, &[(100, 20000), (200, 21000)]);
+        for p in &mut old.npcs {
+            p.name = "fire giant".into();
+            p.key = String::new();
+            p.kind = Some(CreatureKind::Undead);
+        }
+        for h in &mut old_hp {
+            h.name = "fire giant".into();
+        }
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &old, &old_hp)
+            .unwrap();
+
+        let (new, new_hp) = bestiary("Tharn", zone, 50, &[(100, 20000), (200, 21000)]);
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &new, &new_hp)
+            .unwrap();
+
+        let (profiles, health) = s.bestiary_excluding("everquest-legends", "").unwrap();
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["a fire giant"], "the old spelling is gone");
+        assert_eq!(health.len(), 2, "and so are its health samples");
+        let merged = norrlog_core::bestiary::merge(profiles, &health);
+        assert_eq!(merged[0].kills, 2, "counted once, not twice");
+        assert_eq!(merged[0].melee.iter().map(|m| m.swings).sum::<u64>(), 2);
+        assert_eq!(merged[0].kind, Some(CreatureKind::Undead), "the proof kept");
+    }
+
     /// A body type is proved by a single spell landing, which may happen once
     /// in one log and never again. So it has to survive the round trip, survive
     /// a re-parse of a log that no longer reaches that cast, and reach a
@@ -4732,9 +4844,12 @@ mod tests {
             50,
             &[(200, 30000)],
         );
-        s.put_bestiary("everquest-legends", "/logs/one.txt", &t1, &t1_hp)
-            .unwrap();
-        s.put_bestiary("everquest-legends", "/logs/one.txt", &t4, &t4_hp)
+        // One log that fought it at both tiers: one report, as a whole read
+        // writes it.
+        let mut both = t1;
+        both.npcs.extend(t4.npcs);
+        let both_hp: Vec<_> = t1_hp.into_iter().chain(t4_hp).collect();
+        s.put_bestiary("everquest-legends", "/logs/one.txt", &both, &both_hp)
             .unwrap();
 
         let (profiles, health) = s.bestiary_excluding("everquest-legends", "/none").unwrap();
