@@ -1689,6 +1689,19 @@ pub struct CombatCollector {
     player: String,
     drops: crate::drops::DropTracker,
     bestiary: crate::bestiary::Bestiary,
+    /// Names the client has positively called people, lowercased: a `/who`
+    /// row or `Targeted (Player):`.
+    ///
+    /// A melee line does not know what it is looking at. Somebody swinging a
+    /// sword beside you produces exactly the shape a monster does, and a
+    /// groupmate caught in your own area effect exactly the shape a creature
+    /// you are killing does. Only these two lines settle it, so a name in
+    /// here never reaches the bestiary or the drop tables. It only grows: no
+    /// line ever says somebody stopped being a person.
+    people: std::collections::BTreeSet<String>,
+    /// Spell name (lowercased) to the one body type it can be cast at, from
+    /// [`crate::spell::SpellDb::creature_kinds`]. Empty without game files.
+    kinds: std::collections::HashMap<String, crate::bestiary::CreatureKind>,
 }
 
 impl CombatCollector {
@@ -1697,15 +1710,53 @@ impl CombatCollector {
             player: player.to_string(),
             drops: crate::drops::DropTracker::new(game),
             bestiary: crate::bestiary::Bestiary::new(game, player),
+            people: Default::default(),
+            kinds: Default::default(),
         }
+    }
+
+    /// With the spells that settle a creature's body type.
+    pub fn with_spell_kinds(
+        mut self,
+        kinds: std::collections::HashMap<String, crate::bestiary::CreatureKind>,
+    ) -> Self {
+        self.kinds = kinds;
+        self
     }
 
     pub fn drops(&self) -> crate::drops::DropReport {
         self.drops.report()
     }
 
+    pub fn drop_tracker(&self) -> &crate::drops::DropTracker {
+        &self.drops
+    }
+
     pub fn bestiary(&self) -> &crate::bestiary::Bestiary {
         &self.bestiary
+    }
+
+    pub fn bestiary_mut(&mut self) -> &mut crate::bestiary::Bestiary {
+        &mut self.bestiary
+    }
+
+    /// Whether `name` is you, or someone the client has said is a person.
+    ///
+    /// False for a name nobody ran `/who` on or targeted, which is the
+    /// common case: this keeps proven people out and claims nothing about
+    /// anyone else.
+    pub fn is_person(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case(&self.player)
+            || name.eq_ignore_ascii_case("you")
+            || self.people.contains(&name.to_lowercase())
+    }
+
+    /// A creature, as far as the log can tell: named, and not a person.
+    fn creature<'a>(&self, actor: &'a Actor) -> Option<&'a str> {
+        match actor {
+            Actor::Named(n) if !self.is_person(n) => Some(n),
+            _ => None,
+        }
     }
 }
 
@@ -1717,7 +1768,21 @@ impl Observer for CombatCollector {
     fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
         use crate::bestiary::Swing;
 
+        let at = entry.timestamp;
         match &entry.event {
+            // Every `/who` row, anonymous ones and other people's included:
+            // the fact that matters here is personhood.
+            Event::WhoEntry { name, .. } if !name.is_empty() => {
+                self.people.insert(name.to_lowercase());
+            }
+            // The other kinds the client writes (NPC, Banker, Merchant) are
+            // not proof of the opposite: a name absent here is unproven.
+            Event::Targeted {
+                name: Actor::Named(n),
+                kind,
+            } if kind.eq_ignore_ascii_case("player") => {
+                self.people.insert(n.to_lowercase());
+            }
             Event::Damage {
                 source,
                 target,
@@ -1727,13 +1792,21 @@ impl Observer for CombatCollector {
                 damage_type,
                 ..
             } => {
-                if let Actor::Named(npc) = target {
-                    self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
+                if let Some(npc) = self.creature(target) {
+                    self.bestiary.on_damage_to(at, npc, *amount);
+                    let settled = ability.as_deref().and_then(|a| {
+                        self.kinds
+                            .get(&crate::spell::base_spell_name(a).to_lowercase())
+                            .copied()
+                    });
+                    if let Some(k) = settled {
+                        self.bestiary.on_kind_evidence(at, npc, k);
+                    }
                 }
-                if let Actor::Named(npc) = source {
+                if let Some(npc) = self.creature(source) {
                     file_npc_damage(
                         &mut self.bestiary,
-                        entry.timestamp,
+                        at,
                         npc,
                         target.is_you(),
                         *amount,
@@ -1743,45 +1816,55 @@ impl Observer for CombatCollector {
                     );
                 }
             }
-            Event::CastStart {
-                source: Actor::Named(npc),
-                spell,
-                ..
-            } => self.bestiary.on_npc_cast(
-                entry.timestamp,
-                npc,
-                spell,
-                crate::bestiary::CastSeen::Announced,
-                false,
-            ),
+            // Filed only against something already on record as having
+            // fought.
+            Event::CastStart { source, spell, .. } => {
+                if let Some(npc) = self.creature(source) {
+                    self.bestiary.on_npc_cast(
+                        at,
+                        npc,
+                        spell,
+                        crate::bestiary::CastSeen::Announced,
+                        false,
+                    );
+                }
+            }
             Event::Miss { source, target, .. } => {
                 if target.is_you() {
                     if let Actor::Named(npc) = source {
-                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Missed);
+                        self.bestiary.on_swing(at, npc, Swing::Missed);
                     }
                 }
             }
             Event::Avoided { source, target, .. } => {
                 if target.is_you() {
                     if let Actor::Named(npc) = source {
-                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Avoided);
+                        self.bestiary.on_swing(at, npc, Swing::Avoided);
                     }
                 }
             }
+            // A named corpse that is not your own and not a person's is a
+            // creature, and what came off it is a drop. Your own corpse is
+            // items going back where they came from.
             Event::Loot {
                 item,
                 quantity,
-                source,
+                source: Some(src),
                 ..
             } => {
-                // A named corpse that is not your own is a creature, and what
-                // came off it is a drop. Your own corpse is items going back
-                // where they came from, which says nothing about any creature.
-                if let Some(Actor::Named(npc)) = source {
-                    if !npc.eq_ignore_ascii_case(&self.player) {
-                        self.drops
-                            .on_drop(entry.timestamp, item, *quantity, npc, cx.zone);
-                    }
+                if let Some(npc) = self.creature(src) {
+                    self.drops.on_drop(at, item, *quantity, npc, cx.zone);
+                }
+            }
+            // An item you saw and did not take. It says as much about the
+            // creature as one you did, and nothing about your inventory.
+            Event::LootLeft {
+                item,
+                source: Some(src),
+                ..
+            } => {
+                if let Some(npc) = self.creature(src) {
+                    self.drops.on_left_behind(at, item, npc, cx.zone);
                 }
             }
             Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
@@ -1792,14 +1875,12 @@ impl Observer for CombatCollector {
                     // What actually kills you is worth knowing per creature,
                     // and it is the one statistic a death line states outright.
                     if let Some(Actor::Named(k)) = killer {
-                        self.bestiary.on_your_death(entry.timestamp, k);
+                        self.bestiary.on_your_death(at, k);
                     }
                 } else if killer.as_ref().is_some_and(|k| k.is_you()) || cx.fought(victim) {
-                    {
-                        let name = victim.display(&self.player);
-                        self.drops.on_kill(&name);
-                        self.bestiary.on_kill(entry.timestamp, &name);
-                    }
+                    let name = victim.display(&self.player);
+                    self.drops.on_kill(&name);
+                    self.bestiary.on_kill(at, &name);
                 }
             }
             _ => {}
@@ -2607,5 +2688,93 @@ mod forage_tests {
         assert_eq!(items["Berries"], 2);
         assert_eq!(items["Fruit"], 1);
         assert_eq!(c.zones().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod combat_tests {
+    use super::*;
+    use crate::feed::Feed;
+    use crate::game::Game;
+
+    fn run(log: &str) -> CombatCollector {
+        let mut c = CombatCollector::new("Tharn", Game::EverQuest);
+        let mut feed = Feed::new("Tharn", Game::EverQuest);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
+        }
+        c
+    }
+
+    /// A person the client named never reaches the drop tables or the
+    /// bestiary, and an item left on a corpse does.
+    ///
+    /// These were the daemon's rules and not the shared collector's, so
+    /// eqldb filed a groupmate's corpse as a creature and never saw the
+    /// items nobody picked up, which in EverQuest is most of them.
+    #[test]
+    fn people_stay_out_and_left_items_count() {
+        let c = run("\
+[Tue Jul 28 14:00:00 2026] You have entered The Field of Bone.
+[Tue Jul 28 14:00:01 2026] Targeted (Player): Dorrak
+[Tue Jul 28 14:00:02 2026] You slash Dorrak for 10 points of damage.
+[Tue Jul 28 14:00:03 2026] --You have looted a Bone Chips from Dorrak's corpse.--
+[Tue Jul 28 14:00:04 2026] You slash a goblin bloodtracer for 100 points of damage.
+[Tue Jul 28 14:00:05 2026] You have slain a goblin bloodtracer!
+[Tue Jul 28 14:00:06 2026] --You left a Tiny Glowing Skull on a goblin bloodtracer.--
+");
+        assert!(c.is_person("dorrak") && !c.is_person("a goblin bloodtracer"));
+        let r = c.drops();
+        assert!(
+            !r.items.iter().any(|i| i.item == "Bone Chips"),
+            "a person's corpse is not a drop: {:?}",
+            r.items
+        );
+        let skull = r.items.iter().find(|i| i.item == "Tiny Glowing Skull");
+        assert_eq!(skull.map(|i| i.left), Some(1), "{:?}", r.items);
+        assert!(
+            !c.bestiary()
+                .report()
+                .npcs
+                .iter()
+                .any(|n| n.name == "Dorrak"),
+            "nor is a person a creature"
+        );
+    }
+
+    /// A spell that can be cast at only one body type settles what it hit.
+    #[test]
+    fn a_restricted_spell_settles_the_kind() {
+        let mut c = CombatCollector::new("Tharn", Game::EverQuest).with_spell_kinds(
+            [(
+                "expel undead".to_string(),
+                crate::bestiary::CreatureKind::Undead,
+            )]
+            .into(),
+        );
+        let mut feed = Feed::new("Tharn", Game::EverQuest);
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(
+                std::io::Cursor::new(
+                    "\
+[Tue Jul 28 14:00:00 2026] You have entered The Field of Bone.
+[Tue Jul 28 14:00:01 2026] You hit a ghoul for 200 points of magic damage by Expel Undead.
+[Tue Jul 28 14:00:02 2026] You have slain a ghoul!
+",
+                ),
+                &mut subs,
+            )
+            .unwrap();
+        }
+        let r = c.bestiary().report();
+        let ghoul = r.npcs.iter().find(|n| n.key == "ghoul");
+        assert_eq!(
+            ghoul.and_then(|g| g.kind),
+            Some(crate::bestiary::CreatureKind::Undead),
+            "{:?}",
+            r.npcs
+        );
     }
 }

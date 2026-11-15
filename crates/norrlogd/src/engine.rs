@@ -7,9 +7,9 @@
 
 use norrlog_core::aa::{AaCatalog, AaReport};
 use norrlog_core::alert::{AlertBook, AlertFire, AlertRule, Signal};
-use norrlog_core::bestiary::{Bestiary, BestiaryReport, CreatureKind, HealthSample, Swing};
+use norrlog_core::bestiary::{BestiaryReport, HealthSample};
 use norrlog_core::class::{ClassDetector, ClassScore};
-use norrlog_core::drops::{DropReport, DropTracker};
+use norrlog_core::drops::DropReport;
 use norrlog_core::encounter::{Encounter, EncounterTracker};
 use norrlog_core::experience::{ExpTracker, LevelRecord};
 use norrlog_core::feed::{Context, Observer};
@@ -467,23 +467,11 @@ pub struct Engine {
     /// Driven as an [`Observer`], the same collector eqldb runs, so there is
     /// one set of tradeskill rules rather than a copy here.
     trades: norrlog_core::collect::TradeCollector,
-    /// Where items were seen coming from, tagged with the game they were seen
-    /// in — see [`norrlog_core::game`] for why that tag is not optional.
-    drops: DropTracker,
-    /// Creature profiles, keyed by zone, mode and difficulty.
-    bestiary: Bestiary,
-    /// Names the client has positively called people, lowercased.
-    ///
-    /// A melee line does not know what it is looking at: somebody swinging a
-    /// sword beside you produces exactly the shape a monster does, and a
-    /// groupmate caught in your own area effect produces exactly the shape a
-    /// creature you are killing does. Two lines settle it outright — a `/who`
-    /// row, and `Targeted (Player):` — and nothing else in the log does.
-    ///
-    /// Used to keep people out of the bestiary and out of the drop tables. It
-    /// only ever grows: a name proved to be a person does not stop being one,
-    /// and no line ever says the opposite.
-    players: std::collections::BTreeSet<String>,
+    /// Drops and creature profiles, driven as an [`Observer`]: the same
+    /// collector eqldb runs. Drops are tagged with the game they were seen
+    /// in (see [`norrlog_core::game`] for why that is not optional), and it
+    /// keeps the names the client has proved are people out of both.
+    combat: norrlog_core::collect::CombatCollector,
     encounters: Vec<Encounter>,
     /// Coin taken from corpses, and coin from items auto-sold on pickup.
     ///
@@ -623,6 +611,7 @@ impl Engine {
     /// is recorded as being about that game rather than about EverQuest in
     /// general.
     pub fn with_game(player: String, spell_db: SpellDb, game: Game) -> Engine {
+        let kinds = spell_db.creature_kinds();
         let mut e = Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
@@ -647,7 +636,6 @@ impl Engine {
             grants: Vec::new(),
             pending_grants: Vec::new(),
             lockouts: LockoutTracker::new(),
-            players: Default::default(),
             quests: norrlog_core::collect::QuestCollector::with(
                 TaskTracker::new(),
                 SkyTracker::new(),
@@ -660,8 +648,8 @@ impl Engine {
             aa_pending_desc: String::new(),
             aa_description_open: false,
             trades: norrlog_core::collect::TradeCollector::new(game),
-            drops: DropTracker::new(game),
-            bestiary: Bestiary::new(game, &player),
+            combat: norrlog_core::collect::CombatCollector::new(&player, game)
+                .with_spell_kinds(kinds),
             encounters: Vec::new(),
             coin_from_corpses: 0,
             coin_from_sales: 0,
@@ -1024,20 +1012,8 @@ impl Engine {
         match &entry.event {
             Event::CastStart { source, spell, .. } if !source.is_you() => {
                 self.resolver.note_cast_by_other(entry.timestamp, spell);
-                // A creature's announced cast, if it is one: the bestiary
-                // files it only against something already on record as
-                // having fought.
-                if let norrlog_core::event::Actor::Named(npc) = source {
-                    if !self.is_a_player(npc) {
-                        self.bestiary.on_npc_cast(
-                            entry.timestamp,
-                            npc,
-                            spell,
-                            norrlog_core::bestiary::CastSeen::Announced,
-                            false,
-                        );
-                    }
-                }
+                // A creature's announced cast reaches the bestiary through
+                // `combat`.
             }
             Event::Heal {
                 spell: Some(spell), ..
@@ -1214,71 +1190,20 @@ impl Engine {
             Event::TradeComplete { npc } => {
                 self.npcs.on_trade_complete(entry.timestamp, npc);
             }
-            // Damage into a creature is evidence of its health; damage out of
-            // one is evidence about the pairing. Both are recorded, neither is
-            // confused for the other.
+            // What it says about the creature reaches the bestiary through
+            // `combat`, which keeps people out of it.
             Event::Damage {
                 source,
-                target,
                 amount,
                 ability,
-                kind,
-                damage_type,
                 ..
             } => {
-                // A person is not a creature, however much a melee line
-                // looks the same either way — a groupmate caught in your own
-                // area effect would otherwise be filed as something you are
-                // killing, with a health estimate built out of it.
-                if let norrlog_core::event::Actor::Named(npc) = target {
-                    if !self.is_a_player(npc) {
-                        self.bestiary.on_damage_to(entry.timestamp, npc, *amount);
-                        // A damage line names both the spell and who it hit, so a
-                        // spell the game will only cast at one body type settles
-                        // what that creature is. Whose spell it was does not
-                        // matter — the restriction is the game's, so a group
-                        // member's cast proves it just as well as your own.
-                        if let Some(kind) =
-                            ability.as_deref().and_then(|a| self.spell_restricts_to(a))
-                        {
-                            self.bestiary.on_kind_evidence(entry.timestamp, npc, kind);
-                        }
-                    }
-                }
-                if let norrlog_core::event::Actor::Named(npc) = source {
-                    if !self.is_a_player(npc) {
-                        norrlog_core::collect::file_npc_damage(
-                            &mut self.bestiary,
-                            entry.timestamp,
-                            npc,
-                            target.is_you(),
-                            *amount,
-                            *kind,
-                            ability.as_deref(),
-                            damage_type.as_deref(),
-                        );
-                    }
-                }
                 // What your own procs actually did. Only the total: an area
                 // proc writes one of these per creature it caught, so counting
                 // them would report its rate as many times the truth.
                 if source.is_you() {
                     if let Some(a) = ability.as_deref() {
                         self.procs.on_proc_damage(a, *amount);
-                    }
-                }
-            }
-            Event::Miss { source, target, .. } => {
-                if target.is_you() {
-                    if let norrlog_core::event::Actor::Named(npc) = source {
-                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Missed);
-                    }
-                }
-            }
-            Event::Avoided { source, target, .. } => {
-                if target.is_you() {
-                    if let norrlog_core::event::Actor::Named(npc) = source {
-                        self.bestiary.on_swing(entry.timestamp, npc, Swing::Avoided);
                     }
                 }
             }
@@ -1318,17 +1243,8 @@ impl Engine {
                 // level of a class that capped before this log began.
                 self.class_levels.on_achievement(entry.timestamp, name);
             }
-            Event::Targeted { name, kind } => {
-                // "Targeted (Player): Dorrak". The other kinds the client
-                // writes — NPC, Banker, Merchant — are not recorded as proof
-                // of the opposite: a name absent from this set is unproven,
-                // not proven to be a creature.
-                if kind.eq_ignore_ascii_case("player") {
-                    if let norrlog_core::event::Actor::Named(n) = name {
-                        self.players.insert(n.to_lowercase());
-                    }
-                }
-            }
+            // "Targeted (Player): Dorrak", like a `/who` row, proves a person;
+            // `combat` keeps that set.
             Event::ChannelRoster { channels } => {
                 // EverQuest joins you to your class's channel; Legends
                 // characters swap classes, so there a channel may name one
@@ -1344,13 +1260,7 @@ impl Engine {
                 name,
                 ..
             } => {
-                // Every row, including anonymous ones and other people's: the
-                // fact that matters here is personhood, and somebody hiding
-                // their level is exactly as much a person as somebody who is
-                // not.
-                if !name.is_empty() {
-                    self.players.insert(name.to_lowercase());
-                }
+                // Every row is a person, which `combat` notes.
                 if name.eq_ignore_ascii_case(&self.player) {
                     let trio = norrlog_core::class::parse_class_list(classes);
                     if !trio.is_empty() {
@@ -1371,7 +1281,6 @@ impl Engine {
                 self.procs.on_item_proc(entry.timestamp, item, effect);
             }
             Event::StanceChanged { stance } => {
-                self.bestiary.on_stance(stance);
                 // Mid-fight it is a decision worth seeing against the damage
                 // either side of it.
                 self.tracker.note_mark(entry.timestamp, "stance", stance);
@@ -1380,7 +1289,6 @@ impl Engine {
                 // The grants for this level were printed a moment ago, before
                 // the line that says which level it is.
                 self.file_grants(entry.timestamp, *level);
-                self.bestiary.on_level(*level as u32);
                 self.resolver.set_level(*level);
                 self.exp.on_level_up(entry.timestamp, *level);
                 let trio = self.current_loadout(entry.timestamp);
@@ -1396,16 +1304,11 @@ impl Engine {
             Event::MerchantSale { coin, .. } => self.coin_from_sales += coin.as_copper(),
             // An item you saw and did not take. It says as much about the
             // creature as one you did, and nothing at all about your
-            // inventory, so it reaches the drop tables and stops there.
+            // inventory: `combat` files it in the drop tables, and the loot
+            // list keeps it here.
             Event::LootLeft { item, source, .. } => {
                 if let Some(norrlog_core::event::Actor::Named(npc)) = source {
-                    if !npc.eq_ignore_ascii_case(&self.player) && !self.is_a_player(npc) {
-                        self.drops.on_left_behind(
-                            entry.timestamp,
-                            item,
-                            npc,
-                            self.tracker.current_zone(),
-                        );
+                    if !self.is_a_player(npc) {
                         self.all_left.push(LeftRecord {
                             timestamp: entry.timestamp,
                             item: item.clone(),
@@ -1426,20 +1329,8 @@ impl Engine {
                     *self.session_motes.entry(item.clone()).or_insert(0) += (*quantity).max(1);
                 }
 
-                // A named corpse that is not your own is a creature, and what
-                // came off it is a drop. Your own corpse is items going back
-                // where they came from, which says nothing about any creature.
-                if let Some(norrlog_core::event::Actor::Named(npc)) = source {
-                    if !npc.eq_ignore_ascii_case(&self.player) && !self.is_a_player(npc) {
-                        self.drops.on_drop(
-                            entry.timestamp,
-                            item,
-                            *quantity,
-                            npc,
-                            self.tracker.current_zone(),
-                        );
-                    }
-                }
+                // What came off a creature's corpse reaches the drop tables
+                // through `combat`.
                 let (fate, destination, sold) =
                     norrlog_core::encounter::LootFate::split(disposition);
                 let record = norrlog_core::encounter::LootRecord {
@@ -1488,11 +1379,6 @@ impl Engine {
                 // lines for it, so this is the only chance to notice.
                 if victim.is_you() {
                     self.resolver.clear_on_death();
-                    // What actually kills you is worth knowing per creature,
-                    // and it is the one statistic a death line states outright.
-                    if let Some(norrlog_core::event::Actor::Named(k)) = killer {
-                        self.bestiary.on_your_death(entry.timestamp, k);
-                    }
                 }
                 // Everything below is about a creature you killed, so your own
                 // death is not it. Without this guard the credit check passed
@@ -1536,13 +1422,9 @@ impl Engine {
                     if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
                         let name = victim.display(&self.player);
                         self.exp.on_kill(entry.timestamp, &name);
-                        // The denominator for every drop this creature did or did
-                        // not yield. Counted whether or not the corpse was looted,
-                        // which is what makes a sighting count a floor.
-                        self.drops.on_kill(&name);
-                        // Closes out the damage accumulated into it, which becomes
-                        // a lower bound on its health.
-                        self.bestiary.on_kill(entry.timestamp, &name);
+                        // The drop tables' denominator and the bestiary's
+                        // health floor follow from the same verdict in
+                        // `combat`.
                         // Difficulty comes from the zone, so use the zone we were
                         // in when it died, not wherever we ended up later.
                         let was_raid_target = self.lockouts.on_kill(
@@ -1575,9 +1457,6 @@ impl Engine {
                 if self.zone_log.last().map(|(_, _, l)| l.as_str()) != Some(zone.as_str()) {
                     self.zone_log.push((entry.timestamp, place, zone.clone()));
                 }
-                // Everything the bestiary records is keyed on where you are,
-                // and a zone line also ends any fight still in progress.
-                self.bestiary.on_zone(zone);
                 // Most buffs do not survive a zone line in practice, but rather
                 // than drop them we simply let them expire naturally.
                 self.resolver.expire(entry.timestamp);
@@ -1644,20 +1523,21 @@ impl Engine {
         // encounter that was open when it was written, and pushing first
         // closes the fight and turns "did you fight this" into no.
         {
+            let game = self.combat.drop_tracker().game();
             let Engine {
                 record,
                 trades,
                 quests,
+                combat,
                 tracker,
                 player,
                 feed_zone,
-                drops,
                 paid_death,
                 ..
             } = self;
             let cx = Context {
                 player,
-                game: drops.game(),
+                game,
                 zone: feed_zone.as_deref(),
                 gap: record_gap,
                 encounter: tracker.current(),
@@ -1666,6 +1546,7 @@ impl Engine {
             record.on_entry(&entry, &cx);
             trades.on_entry(&entry, &cx);
             quests.on_entry(&entry, &cx);
+            combat.on_entry(&entry, &cx);
         }
 
         if let Some(done) = self.tracker.push(&entry) {
@@ -1674,17 +1555,17 @@ impl Engine {
             // an observer wants here is the state the next line is read
             // against.
             {
+                let game = self.combat.drop_tracker().game();
                 let Engine {
                     record,
                     tracker,
                     player,
                     feed_zone,
-                    drops,
                     ..
                 } = self;
                 let cx = Context {
                     player,
-                    game: drops.game(),
+                    game,
                     zone: feed_zone.as_deref(),
                     gap: record_gap,
                     encounter: tracker.current(),
@@ -2202,7 +2083,7 @@ impl Engine {
 
     pub fn set_known_level(&mut self, level: u32) {
         if level > 0 {
-            self.bestiary.on_level(level);
+            self.combat.bestiary_mut().on_level(level);
         }
     }
 
@@ -2386,29 +2267,6 @@ impl Engine {
             .any(|sp| sp.is_charm)
     }
 
-    /// The body type a named spell proves about whatever it just hit.
-    ///
-    /// A log names a spell without its rank, and ranks are separate rows in the
-    /// spell file, so the name resolves to several candidates. Every one of
-    /// them has to carry the same restriction before anything is claimed: a
-    /// name shared between a restricted spell and an unrestricted one proves
-    /// nothing about which was cast, and the whole value of this evidence is
-    /// that it is the game's own verdict rather than an inference.
-    fn spell_restricts_to(&self, spell: &str) -> Option<CreatureKind> {
-        let db = self.resolver.db();
-        let ids = db.candidates_for_name(norrlog_core::spell::base_spell_name(spell));
-        let mut kinds = ids
-            .iter()
-            .filter_map(|id| db.get(*id))
-            .map(|s| s.restricted_to);
-        let first = kinds.next()??;
-        if kinds.all(|k| k == Some(first)) {
-            Some(first)
-        } else {
-            None
-        }
-    }
-
     fn note_charm_failure(&mut self, at: i64, target: &str, kind: &'static str, spell: &str) {
         self.charm_failures.push(CharmFailure {
             at,
@@ -2430,18 +2288,10 @@ impl Engine {
             .on_signal(at, Signal::CharmResisted { target, how: kind });
     }
 
-    /// Whether a display name refers to the logging character.
-    fn is_player(&self, name: &str) -> bool {
-        name.eq_ignore_ascii_case(&self.player) || name.eq_ignore_ascii_case("you")
-    }
-
-    /// Whether the client has positively said this name belongs to a person.
-    ///
-    /// False for a name nobody ever ran `/who` on or targeted, which is the
-    /// common case — so this keeps proven people out, and claims nothing
-    /// about anyone else.
+    /// You, or a name the client has positively said is a person; see
+    /// [`norrlog_core::collect::CombatCollector::is_person`].
     fn is_a_player(&self, name: &str) -> bool {
-        self.is_player(name) || self.players.contains(&name.to_lowercase())
+        self.combat.is_person(name)
     }
 
     /// Charm state and recent failures.
@@ -2767,7 +2617,7 @@ impl Engine {
 
     /// Where items were seen coming from, and how often.
     pub fn drop_report(&self) -> DropReport {
-        self.drops.report()
+        self.combat.drop_tracker().report()
     }
 
     /// Creature profiles, keyed by zone, mode and difficulty.
@@ -2787,7 +2637,7 @@ impl Engine {
     }
 
     pub fn bestiary_report(&self) -> BestiaryReport {
-        self.bestiary.report()
+        self.combat.bestiary().report()
     }
 
     /// Every health measurement this log produced, one row per death.
@@ -2796,12 +2646,12 @@ impl Engine {
     /// the store keeps these so a median can be taken across every log, which
     /// no amount of per-log spreads would allow.
     pub fn bestiary_health_samples(&self) -> Vec<HealthSample> {
-        self.bestiary.health_samples()
+        self.combat.bestiary().health_samples()
     }
 
     /// Which game this engine's log is from.
     pub fn game(&self) -> Game {
-        self.drops.game()
+        self.combat.drop_tracker().game()
     }
 
     /// The record as it stands, settled but not disturbed.
@@ -2809,8 +2659,11 @@ impl Engine {
     /// See [`crate::record`] for why this clones rather than finishing the
     /// live collectors in place.
     pub fn record(&self) -> crate::record::Settled {
-        self.record
-            .settle(&self.player, self.drops.game(), self.feed_zone.as_deref())
+        self.record.settle(
+            &self.player,
+            self.combat.drop_tracker().game(),
+            self.feed_zone.as_deref(),
+        )
     }
 
     /// Every record report, filed under `source`.
@@ -2831,7 +2684,7 @@ impl Engine {
     pub fn item_database(&self) -> ItemDatabase {
         let book = norrlog_core::recipe::RecipeBook::embedded();
         let trades = self.trades.report();
-        let drops = self.drops.report();
+        let drops = self.combat.drop_tracker().report();
 
         let game = drops.game;
         let mut items: std::collections::BTreeMap<String, ItemEntry> =
@@ -3300,12 +3153,12 @@ impl Engine {
                         .get(&(key.clone(), tier))
                         .copied()
                         .unwrap_or(0)
-                        .max(self.bestiary.kills_in_tier(&key, mode, difficulty)),
+                        .max(self.combat.bestiary().kills_in_tier(&key, mode, difficulty)),
                     None => deaths
                         .get(key.as_str())
                         .copied()
                         .unwrap_or(0)
-                        .max(self.drops.kills_of(&key)),
+                        .max(self.combat.drop_tracker().kills_of(&key)),
                 };
                 if let Some((mode, difficulty)) = tier {
                     s.mode = mode.as_str().to_string();
@@ -3962,6 +3815,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use norrlog_core::bestiary::CreatureKind;
 
     fn engine() -> Engine {
         Engine::new("Tharn".to_string(), SpellDb::empty())
@@ -5090,7 +4944,7 @@ mod tests {
                 "[Tue Nov 10 14:30:05 2026] A greater spurbone was slain by Valkyrie Warden!",
             ],
         );
-        assert_eq!(e.drops.kills_of("a greater spurbone"), 1);
+        assert_eq!(e.combat.drop_tracker().kills_of("a greater spurbone"), 1);
     }
 
     /// EverQuest has no auto-sell, so most of what a corpse holds is walked

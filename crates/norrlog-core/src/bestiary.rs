@@ -719,11 +719,16 @@ impl Bestiary {
                     .then(a.stance.cmp(&b.stance))
             });
         }
+        // The tier last: one creature at two tiers ties on everything else,
+        // and the profiles come out of a hash map, so without it the order
+        // changed from one run to the next.
         npcs.sort_by(|a, b| {
             b.kills
                 .cmp(&a.kills)
                 .then(a.zone.cmp(&b.zone))
                 .then(a.name.cmp(&b.name))
+                .then(a.mode.cmp(&b.mode))
+                .then(a.difficulty.cmp(&b.difficulty))
         });
         BestiaryReport {
             game: self.game,

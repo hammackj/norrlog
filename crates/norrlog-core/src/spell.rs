@@ -749,6 +749,35 @@ impl SpellDb {
         self.by_fades.get(text).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// The body type each spell name can only be cast at, keyed by the
+    /// lowercased name: only names every rank of which agrees.
+    ///
+    /// A damage line names the spell and who it hit, and a spell the game
+    /// will cast at only one body type settles what that creature is. Whose
+    /// spell it was does not matter: the restriction is the game's.
+    ///
+    /// A log names a spell without its rank, and the ranks are separate rows,
+    /// so every one of them has to carry the same restriction: a name shared
+    /// between a restricted spell and an unrestricted one proves nothing
+    /// about which was cast. Built once, so a collector can hold it without
+    /// holding the database.
+    pub fn creature_kinds(&self) -> HashMap<String, CreatureKind> {
+        let mut out = HashMap::new();
+        for (name, ids) in &self.by_name {
+            let mut kinds = ids
+                .iter()
+                .filter_map(|id| self.spells.get(id))
+                .map(|s| s.restricted_to);
+            let Some(Some(first)) = kinds.next() else {
+                continue;
+            };
+            if kinds.all(|k| k == Some(first)) {
+                out.insert(name.clone(), first);
+            }
+        }
+        out
+    }
+
     /// Candidate spells with the given name (case-insensitive). Names repeat
     /// across ranks, so this is also a set.
     pub fn candidates_for_name(&self, name: &str) -> &[u32] {
