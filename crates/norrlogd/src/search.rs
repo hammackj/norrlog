@@ -23,7 +23,9 @@ const CHUNK: usize = 8 << 20;
 /// The pattern for a query: the text as typed, unless `regex`.
 ///
 /// Multi-line, so `^` and `$` mean the start and end of a log line, and
-/// without Unicode classes: the log is bytes, mostly ASCII, and a line that
+/// CRLF-aware, so `$` falls before the `\r` the Windows client ends each line
+/// with rather than after it, where nothing typed can reach. Without Unicode
+/// classes: the log is bytes, mostly ASCII, and a line that
 /// is not UTF-8 still has to be searchable.
 pub fn pattern(q: &str, regex: bool, case: bool) -> Result<Regex, String> {
     let src = if regex {
@@ -34,6 +36,7 @@ pub fn pattern(q: &str, regex: bool, case: bool) -> Result<Regex, String> {
     RegexBuilder::new(&src)
         .case_insensitive(!case)
         .multi_line(true)
+        .crlf(true)
         .unicode(false)
         .size_limit(1 << 22)
         .build()
@@ -268,6 +271,61 @@ mod tests {
             marks,
             "the last line has no newline and is still found"
         );
+    }
+
+    /// The client writes CRLF, and `$` matched only after the `\r`: an
+    /// end-anchored search found nothing in a log written on Windows.
+    #[test]
+    fn line_anchors_work_the_same_on_crlf_and_lf_logs() {
+        let a = "[Tue Jul 28 14:00:00 2026] You hit a rat for 12 points of damage.";
+        let b = "[Tue Jul 28 14:00:01 2026] A rat hits YOU for 3 points of damage.";
+        let c = "[Tue Jul 28 14:00:02 2026] You have slain a rat!";
+        let d = "[Tue Jul 28 14:00:03 2026] You hit a bat for 7 points of damage.";
+        let files = [
+            ("LF", format!("{a}\n{b}\n{c}\n{d}")),
+            ("CRLF", format!("{a}\r\n{b}\r\n{c}\r\n{d}")),
+            ("mixed", format!("{a}\r\n{b}\n{c}\r\n{d}")),
+            ("CRLF, ended", format!("{a}\r\n{b}\r\n{c}\r\n{d}\r\n")),
+        ];
+        for (kind, text) in files {
+            let f = tempfile_path::Temp::with(text);
+            let r = search(&f.0, &pattern(r"damage\.$", true, false).unwrap(), 10, None);
+            assert_eq!(
+                r.hits.iter().map(|h| h.line).collect::<Vec<_>>(),
+                [4, 2, 1],
+                "{kind}: $ is the end of the visible line, the last one included"
+            );
+            assert_eq!(r.hits[0].text, "You hit a bat for 7 points of damage.");
+            assert_eq!(
+                r.hits[0].marks,
+                [[30, 37]],
+                "{kind}: the mark is on the text"
+            );
+
+            let r = search(&f.0, &pattern(r"rat!$", true, false).unwrap(), 10, None);
+            assert_eq!(
+                r.hits.iter().map(|h| h.line).collect::<Vec<_>>(),
+                [3],
+                "{kind}"
+            );
+
+            let r = search(
+                &f.0,
+                &pattern(r"^\[Tue Jul 28 14:00:0[13]", true, false).unwrap(),
+                10,
+                None,
+            );
+            assert_eq!(
+                r.hits.iter().map(|h| h.line).collect::<Vec<_>>(),
+                [4, 2],
+                "{kind}"
+            );
+            assert_eq!(
+                r.hits[0].marks,
+                Vec::<[usize; 2]>::new(),
+                "{kind}: the stamp is cut off"
+            );
+        }
     }
 
     #[test]
