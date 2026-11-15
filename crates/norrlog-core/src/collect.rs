@@ -1955,6 +1955,29 @@ impl QuestCollector {
         }
     }
 
+    /// Around trackers the caller has already set up: the daemon loads its
+    /// task and Sky definitions from files the player can edit, and the
+    /// built-in table must not be added on top of what they say.
+    pub fn with(tasks: crate::task::TaskTracker, sky: crate::skyquest::SkyTracker) -> Self {
+        Self { tasks, sky }
+    }
+
+    pub fn task_tracker(&self) -> &crate::task::TaskTracker {
+        &self.tasks
+    }
+
+    pub fn task_tracker_mut(&mut self) -> &mut crate::task::TaskTracker {
+        &mut self.tasks
+    }
+
+    pub fn sky_tracker(&self) -> &crate::skyquest::SkyTracker {
+        &self.sky
+    }
+
+    pub fn sky_tracker_mut(&mut self) -> &mut crate::skyquest::SkyTracker {
+        &mut self.sky
+    }
+
     /// What a task is, which the log never says in full.
     pub fn define_task(&mut self, def: crate::task::TaskDef) {
         self.tasks.define(def);

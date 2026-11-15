@@ -448,7 +448,9 @@ pub struct Engine {
     grants: Vec<crate::store::StoredGrant>,
     pending_grants: Vec<(i64, String)>,
     lockouts: LockoutTracker,
-    sky: SkyTracker,
+    /// Tasks and Sky quests, driven as an [`Observer`]: the same collector
+    /// eqldb runs, so a kill is credited to a quest by one rule.
+    quests: norrlog_core::collect::QuestCollector,
     aa: AaCatalog,
     tells: TellTracker,
     npcs: NpcTracker,
@@ -482,7 +484,6 @@ pub struct Engine {
     /// only ever grows: a name proved to be a person does not stop being one,
     /// and no line ever says the opposite.
     players: std::collections::BTreeSet<String>,
-    tasks: TaskTracker,
     encounters: Vec<Encounter>,
     /// Coin taken from corpses, and coin from items auto-sold on pickup.
     ///
@@ -502,6 +503,9 @@ pub struct Engine {
     /// greater spurbones paid out and 16 counted. Each line credits one
     /// death and is spent on it.
     xp_unclaimed: Option<i64>,
+    /// Whether the line being read is a death that experience paid for,
+    /// handed to the observers as [`Context::paid`].
+    paid_death: bool,
     /// Every loot event, recorded independently of encounters.
     ///
     /// Loot must not depend on a fight being open. Corpses are looted *after*
@@ -644,7 +648,10 @@ impl Engine {
             pending_grants: Vec::new(),
             lockouts: LockoutTracker::new(),
             players: Default::default(),
-            sky: SkyTracker::new(),
+            quests: norrlog_core::collect::QuestCollector::with(
+                TaskTracker::new(),
+                SkyTracker::new(),
+            ),
             aa: AaCatalog::new(),
             tells: TellTracker::new(),
             npcs: NpcTracker::new(),
@@ -655,11 +662,11 @@ impl Engine {
             trades: norrlog_core::collect::TradeCollector::new(game),
             drops: DropTracker::new(game),
             bestiary: Bestiary::new(game, &player),
-            tasks: TaskTracker::new(),
             encounters: Vec::new(),
             coin_from_corpses: 0,
             coin_from_sales: 0,
             xp_unclaimed: None,
+            paid_death: false,
             all_loot: Vec::new(),
             zone_log: Vec::new(),
             events: VecDeque::new(),
@@ -1114,24 +1121,12 @@ impl Engine {
             } => {
                 // Quest text arrives as ordinary say-channel chat; other
                 // channels are player conversation and would only be noise.
+                // Tasks and Sky quests read the same lines through `quests`.
                 if channel.eq_ignore_ascii_case("say") || channel.eq_ignore_ascii_case("says") {
-                    self.tasks.on_dialogue(
-                        entry.timestamp,
-                        &speaker.display(&self.player),
-                        message,
-                    );
-                    // Sky quests start by saying a trigger word, and only your
-                    // own utterance starts one.
                     if speaker.is_you() {
-                        self.sky.on_say(entry.timestamp, message);
                         self.npcs.on_your_say(entry.timestamp, message);
                     } else {
                         self.npcs.on_npc_line(
-                            entry.timestamp,
-                            &speaker.display(&self.player),
-                            message,
-                        );
-                        self.sky.on_giver_line(
                             entry.timestamp,
                             &speaker.display(&self.player),
                             message,
@@ -1141,11 +1136,9 @@ impl Engine {
             }
             Event::ItemGranted { item } => self.lockouts.on_item_granted(entry.timestamp, item),
             Event::TaskAssigned { task } => {
-                self.tasks.on_assigned(entry.timestamp, task);
                 self.lockouts.on_task_assigned(entry.timestamp, task);
             }
             Event::TaskUpdated { task } => {
-                self.tasks.on_updated(entry.timestamp, task);
                 self.lockouts.on_task_updated(entry.timestamp, task);
             }
             Event::EffectWoreOffTarget { spell, target } => {
@@ -1216,11 +1209,9 @@ impl Engine {
                 );
             }
             Event::TradeOffer { item, quantity, .. } => {
-                self.sky.on_offer(item, *quantity);
                 self.npcs.on_offer(item, *quantity);
             }
             Event::TradeComplete { npc } => {
-                self.sky.on_trade_complete(entry.timestamp, npc);
                 self.npcs.on_trade_complete(entry.timestamp, npc);
             }
             // Damage into a creature is evidence of its health; damage out of
@@ -1322,7 +1313,6 @@ impl Engine {
                 self.aa.on_cost(*cost, desc.trim_end());
             }
             Event::AchievementEarned { name } => {
-                self.tasks.on_achievement(entry.timestamp, name);
                 // "Druid's Combat Proficiency, Level 50" is the only line that
                 // states a named class's level, and the only way to learn the
                 // level of a class that capped before this log began.
@@ -1432,7 +1422,6 @@ impl Engine {
             } => {
                 // Recorded here as well as inside the encounter, because loot
                 // frequently arrives after the fight has closed.
-                self.sky.on_loot(item, *quantity);
                 if is_mote(item) {
                     *self.session_motes.entry(item.clone()).or_insert(0) += (*quantity).max(1);
                 }
@@ -1534,7 +1523,10 @@ impl Engine {
                     let paid = self
                         .xp_unclaimed
                         .take()
-                        .is_some_and(|at| entry.timestamp - at <= 1);
+                        .is_some_and(|at| entry.timestamp - at <= norrlog_core::feed::PAID_WITHIN);
+                    // Tasks and Sky quests take the same verdict through
+                    // `quests`, which reads it from the context.
+                    self.paid_death = paid;
                     let fought_it = paid
                         || self
                             .tracker
@@ -1564,14 +1556,6 @@ impl Engine {
                             self.alerts
                                 .on_signal(entry.timestamp, Signal::BossKilled { boss: &name });
                         }
-                        // Lets a following "task has been updated" say which step.
-                        self.tasks.on_kill(entry.timestamp, &name);
-                    }
-                    // Sky island nameds are counted regardless of who landed the
-                    // blow, on the same participation basis as everything else.
-                    if killer.as_ref().is_some_and(|k| k.is_you()) || fought_it {
-                        self.sky
-                            .on_kill(entry.timestamp, &victim.display(&self.player));
                     }
                 }
             }
@@ -1663,10 +1647,12 @@ impl Engine {
             let Engine {
                 record,
                 trades,
+                quests,
                 tracker,
                 player,
                 feed_zone,
                 drops,
+                paid_death,
                 ..
             } = self;
             let cx = Context {
@@ -1675,9 +1661,11 @@ impl Engine {
                 zone: feed_zone.as_deref(),
                 gap: record_gap,
                 encounter: tracker.current(),
+                paid: std::mem::take(paid_death),
             };
             record.on_entry(&entry, &cx);
             trades.on_entry(&entry, &cx);
+            quests.on_entry(&entry, &cx);
         }
 
         if let Some(done) = self.tracker.push(&entry) {
@@ -1700,6 +1688,7 @@ impl Engine {
                     zone: feed_zone.as_deref(),
                     gap: record_gap,
                     encounter: tracker.current(),
+                    paid: false,
                 };
                 record.on_encounter_end(&done, &cx);
             }
@@ -2630,7 +2619,7 @@ impl Engine {
     /// Plane of Sky quest progress, flagged against the character's classes.
     /// Sky turn-ins seen in this log, for the history database.
     pub fn sky_turn_ins(&self) -> Vec<(String, i64)> {
-        self.sky.turn_in_log()
+        self.quests.sky_tracker().turn_in_log()
     }
 
     /// Fold stored turn-in counts into a report.
@@ -2665,7 +2654,7 @@ impl Engine {
                 played.push(c.clone());
             }
         }
-        self.sky.report_for(&now, &played)
+        self.quests.sky_tracker().report_for(&now, &played)
     }
 
     /// The character's current classes by full name, for matching against
@@ -2680,7 +2669,7 @@ impl Engine {
 
     /// Add or replace a Sky quest definition, and persist the catalogue.
     pub fn define_sky_quest(&mut self, def: SkyQuestDef) {
-        self.sky.define(def);
+        self.quests.sky_tracker_mut().define(def);
         self.save_sky_quests();
     }
 
@@ -2696,7 +2685,7 @@ impl Engine {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(json) = serde_json::to_string_pretty(self.sky.definitions()) {
+        if let Ok(json) = serde_json::to_string_pretty(self.quests.sky_tracker().definitions()) {
             let _ = std::fs::write(&path, json);
         }
     }
@@ -2708,7 +2697,7 @@ impl Engine {
             return;
         };
         match serde_json::from_str::<Vec<SkyQuestDef>>(&text) {
-            Ok(defs) => self.sky.set_definitions(defs),
+            Ok(defs) => self.quests.sky_tracker_mut().set_definitions(defs),
             Err(_) => {
                 eprintln!("[norrlogd] sky-quests.json is unreadable; using the built-in table")
             }
@@ -2717,12 +2706,12 @@ impl Engine {
 
     /// Tasks and achievements.
     pub fn task_report(&self) -> TaskReport {
-        self.tasks.report()
+        self.quests.task_tracker().report()
     }
 
     /// Seed a task's objectives, and persist them.
     pub fn define_task(&mut self, def: TaskDef) {
-        self.tasks.define(def);
+        self.quests.task_tracker_mut().define(def);
         self.save_task_defs();
     }
 
@@ -2745,7 +2734,7 @@ impl Engine {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(json) = serde_json::to_string_pretty(&self.tasks.definitions()) {
+        if let Ok(json) = serde_json::to_string_pretty(&self.quests.task_tracker().definitions()) {
             let _ = std::fs::write(&path, json);
         }
     }
@@ -2766,7 +2755,7 @@ impl Engine {
             Err(_) => norrlog_core::task::seed_definitions(),
         };
         for d in defs {
-            self.tasks.define(d);
+            self.quests.task_tracker_mut().define(d);
         }
     }
 

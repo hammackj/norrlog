@@ -78,7 +78,21 @@ pub struct Context<'a> {
     ///
     /// Use [`Context::fought`] rather than reading this directly.
     pub encounter: Option<&'a Encounter>,
+    /// On a death: the game paid you experience for it, on the line just
+    /// before (within a second) and not already claimed by another death.
+    ///
+    /// The game pays experience on kills you never touched when a groupmate,
+    /// mercenary or pet finished them, and that line is the game's own word
+    /// on whose kill it was. Participation alone undercounted grouped kills
+    /// (one spurbone: the game 29, participation 16).
+    ///
+    /// Use [`Context::fought`] rather than reading this directly.
+    pub paid: bool,
 }
+
+/// How soon a death must follow the experience line that pays for it: coin
+/// and the corpse's last words can land between the two.
+pub const PAID_WITHIN: i64 = 1;
 
 impl Context<'_> {
     /// Whether you took part in killing this, by the game's own standard.
@@ -86,10 +100,16 @@ impl Context<'_> {
     /// True when you damaged it during the fight that is open. Deliberately
     /// not "did you land the killing blow": requiring that silently discards
     /// every kill a charmed pet finished, which on a bard is most of them.
+    ///
+    /// Also true when the game paid you experience for this death
+    /// ([`Context::paid`]), which covers a groupmate's or mercenary's kill
+    /// you never hit.
     pub fn fought(&self, victim: &Actor) -> bool {
-        self.encounter
-            .and_then(|e| e.actors.get(&victim.key()))
-            .is_some_and(|s| s.damaged_by_you)
+        self.paid
+            || self
+                .encounter
+                .and_then(|e| e.actors.get(&victim.key()))
+                .is_some_and(|s| s.damaged_by_you)
     }
 }
 
@@ -136,6 +156,8 @@ pub struct Feed {
     zone: Option<String>,
     last: Option<i64>,
     encounters: EncounterTracker,
+    /// When experience was last paid and no death has claimed it yet.
+    xp_unclaimed: Option<i64>,
 }
 
 impl Feed {
@@ -144,6 +166,7 @@ impl Feed {
         Self {
             parser: Parser::new(player.clone()),
             encounters: EncounterTracker::new(&player),
+            xp_unclaimed: None,
             player,
             game,
             zone: None,
@@ -212,6 +235,7 @@ impl Feed {
             zone: self.zone.as_deref(),
             gap: None,
             encounter: self.encounters.current(),
+            paid: false,
         }
     }
 
@@ -223,6 +247,18 @@ impl Feed {
         if let Event::ZoneChange { zone } = &entry.event {
             self.zone = Some(zone.clone());
         }
+        // A death claims the experience paid just before it; your own does
+        // not, as it pays nothing.
+        let paid = match &entry.event {
+            Event::Death { victim, .. } if !victim.is_you() => self
+                .xp_unclaimed
+                .take()
+                .is_some_and(|at| entry.timestamp - at <= PAID_WITHIN),
+            _ => false,
+        };
+        if matches!(entry.event, Event::Experience { .. }) {
+            self.xp_unclaimed = Some(entry.timestamp);
+        }
         {
             let cx = Context {
                 player: &self.player,
@@ -233,6 +269,7 @@ impl Feed {
                 // as it stood when the line was written. Push first and the
                 // fight closes and the answer becomes no.
                 encounter: self.encounters.current(),
+                paid,
             };
             for o in to.iter_mut() {
                 o.on_entry(entry, &cx);
@@ -248,6 +285,7 @@ impl Feed {
                 zone: self.zone.as_deref(),
                 gap,
                 encounter: self.encounters.current(),
+                paid: false,
             };
             for o in to.iter_mut() {
                 o.on_encounter_end(&done, &cx);
@@ -418,5 +456,54 @@ mod encounter_end_tests {
             feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
         }
         assert_eq!(f.ended.len(), 1, "the open fight is closed and handed over");
+    }
+}
+
+#[cfg(test)]
+mod paid_tests {
+    use super::*;
+    use crate::game::Game;
+
+    /// Whether each death was counted as yours, in order.
+    #[derive(Default)]
+    struct Credit {
+        deaths: Vec<bool>,
+    }
+
+    impl Observer for Credit {
+        fn name(&self) -> &'static str {
+            "credit"
+        }
+        fn on_entry(&mut self, entry: &LogEntry, cx: &Context<'_>) {
+            if let Event::Death { victim, .. } = &entry.event {
+                self.deaths.push(cx.fought(victim));
+            }
+        }
+    }
+
+    /// A kill the game paid you for is yours, though you never hit it.
+    ///
+    /// The daemon has credited these since Dorrak's mercenary finished 13 of
+    /// 29 spurbones; the shared context did not, so tasks and Sky quests in
+    /// the feed disagreed with the daemon. Each experience line pays one
+    /// death, and only one within a second of it.
+    #[test]
+    fn experience_just_before_a_death_credits_it_once() {
+        let mut c = Credit::default();
+        let mut feed = Feed::new("Dorrak", Game::EverQuest);
+        let log = "\
+[Tue Nov 10 14:27:11 2026] Valkyrie Warden slashes a greater spurbone for 119 points of damage.
+[Tue Nov 10 14:27:12 2026] You gain party experience (with a bonus)! (6.372%)
+[Tue Nov 10 14:27:12 2026] You receive 3 platinum as your split (with a bonus).
+[Tue Nov 10 14:27:12 2026] A greater spurbone was slain by Valkyrie Warden!
+[Tue Nov 10 14:27:13 2026] A greater spurbone was slain by Valkyrie Warden!
+[Tue Nov 10 14:30:00 2026] You gain party experience (with a bonus)! (1.000%)
+[Tue Nov 10 14:30:05 2026] A greater spurbone was slain by Valkyrie Warden!
+";
+        {
+            let mut subs: Vec<&mut dyn Observer> = vec![&mut c];
+            feed.read(std::io::Cursor::new(log), &mut subs).unwrap();
+        }
+        assert_eq!(c.deaths, vec![true, false, false]);
     }
 }

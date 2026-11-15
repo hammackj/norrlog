@@ -195,6 +195,7 @@ impl Record {
             zone,
             gap: None,
             encounter: None,
+            paid: false,
         };
         for o in [
             &mut s.consider as &mut dyn Observer,
