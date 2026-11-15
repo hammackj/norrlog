@@ -1757,33 +1757,8 @@ impl Store {
     }
 
     pub fn put_encounters(&mut self, encs: &[StoredEncounter]) -> Result<usize> {
-        let (c, sv) = (self.character.clone(), self.server.clone());
         let tx = self.conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO encounters
-                 (character, server, start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build, difficulty)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            )?;
-            for e in encs {
-                stmt.execute(params![
-                    c,
-                    sv,
-                    e.start,
-                    e.end,
-                    e.title,
-                    e.zone,
-                    e.duration,
-                    e.your_damage as i64,
-                    e.your_dps,
-                    e.total_damage as i64,
-                    e.kills,
-                    e.deaths,
-                    e.build,
-                    e.difficulty,
-                ])?;
-            }
-        }
+        insert_encounters(&tx, &self.character, &self.server, encs)?;
         tx.commit()?;
         Ok(encs.len())
     }
@@ -1804,12 +1779,18 @@ impl Store {
         ) else {
             return Ok(0);
         };
-        self.conn.execute(
+        // One transaction for the delete and the inserts: a failed insert
+        // used to leave the old fights already deleted, and a log gone by
+        // the retry could not bring them back.
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "DELETE FROM encounters
              WHERE character = ?1 AND server = ?2 AND start >= ?3 AND start <= ?4",
             params![self.character, self.server, lo, hi],
         )?;
-        self.put_encounters(encs)
+        insert_encounters(&tx, &self.character, &self.server, encs)?;
+        tx.commit()?;
+        Ok(encs.len())
     }
 
     pub fn put_levels(&mut self, levels: &[StoredLevel]) -> Result<usize> {
@@ -3831,6 +3812,39 @@ fn log_marks_group(path: &Path) -> Option<bool> {
     }
 }
 
+/// The encounters insert, inside whatever transaction the caller holds.
+fn insert_encounters(
+    conn: &rusqlite::Connection,
+    c: &str,
+    sv: &str,
+    encs: &[StoredEncounter],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO encounters
+         (character, server, start, end, title, zone, duration, your_damage, your_dps, total_damage, kills, deaths, build, difficulty)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+    )?;
+    for e in encs {
+        stmt.execute(params![
+            c,
+            sv,
+            e.start,
+            e.end,
+            e.title,
+            e.zone,
+            e.duration,
+            e.your_damage as i64,
+            e.your_dps,
+            e.total_damage as i64,
+            e.kills,
+            e.deaths,
+            e.build,
+            e.difficulty,
+        ])?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5098,6 +5112,82 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0, "both stale rows sat inside the span");
+    }
+
+    fn a_fight(start: i64, title: &str) -> StoredEncounter {
+        StoredEncounter {
+            start,
+            end: start + 10,
+            title: title.into(),
+            zone: "Guild Lobby".into(),
+            duration: 10,
+            your_damage: 0,
+            your_dps: 0.0,
+            total_damage: 10,
+            kills: 0,
+            deaths: 0,
+            build: String::new(),
+            difficulty: 0,
+        }
+    }
+
+    fn fights(s: &Store) -> Vec<(String, i64, String)> {
+        s.conn
+            .prepare("SELECT character, start, title FROM encounters ORDER BY character, start")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// The delete and the inserts were two commits: an insert that failed
+    /// left the old fights deleted, and nothing brought them back.
+    #[test]
+    fn a_replacement_that_fails_keeps_the_fights_it_would_have_replaced() {
+        let mut s = Store::in_memory().unwrap();
+        s.put_encounters(&[a_fight(100, "a rat"), a_fight(200, "a bat")])
+            .unwrap();
+        let before = fights(&s);
+        // Fault injection: every insert into encounters now fails.
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON encounters
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        assert!(s
+            .replace_encounters(&[a_fight(100, "a goblin"), a_fight(200, "a bat")])
+            .is_err());
+        assert_eq!(fights(&s), before, "the failed replacement deleted fights");
+    }
+
+    /// A replacement that succeeds changes only its own span, for its own
+    /// character: another character's fight at the same moment stays.
+    #[test]
+    fn a_replacement_touches_only_its_own_span_and_character() {
+        let mut s = Store::in_memory().unwrap();
+        let me = s.character.clone();
+        s.character = "Someone".into();
+        s.put_encounters(&[a_fight(150, "their fight")]).unwrap();
+        s.character = me.clone();
+        s.put_encounters(&[
+            a_fight(50, "before"),
+            a_fight(150, "stale"),
+            a_fight(400, "after"),
+        ])
+        .unwrap();
+        s.replace_encounters(&[a_fight(100, "a goblin"), a_fight(300, "a bat")])
+            .unwrap();
+        let mut want = vec![
+            (me.clone(), 50, "before".to_string()),
+            (me.clone(), 100, "a goblin".to_string()),
+            (me.clone(), 300, "a bat".to_string()),
+            (me.clone(), 400, "after".to_string()),
+            ("Someone".to_string(), 150, "their fight".to_string()),
+        ];
+        want.sort();
+        assert_eq!(fights(&s), want);
     }
 
     #[test]
