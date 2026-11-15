@@ -1312,8 +1312,18 @@ pub(crate) fn flush_history(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    st.note_source(&path.to_string_lossy(), bytes, now)
-        .map_err(|e| e.to_string())?;
+    // The watermark says the whole log is stored, drops and the rest
+    // included, and catch-up skips a log whose watermark is its length. A
+    // windowed read stored none of those, so it must not move it: it did, and
+    // the loot of a `--since` session never reached the history, because the
+    // log looked read once something else was followed. Left where it was,
+    // the next sweep reads the log whole.
+    if whole {
+        st.note_source(&source, bytes, now)
+    } else {
+        st.note_seen(&source, now)
+    }
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

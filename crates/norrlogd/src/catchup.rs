@@ -572,6 +572,74 @@ mod tests {
         assert_eq!(watermarks(&db).get(&key), Some(&first.to));
     }
 
+    /// What the follower stores for a `--since` window over `lines`.
+    fn windowed_flush(p: &Path, db: &Path, lines: &[String]) {
+        let mut e = Engine::with_game("Mirela".into(), Engine::load_spell_db(None), Game::Unknown);
+        for l in lines {
+            e.push_line(l.trim_end());
+        }
+        let engine = Arc::new(Mutex::new(e));
+        let store = Arc::new(Mutex::new(
+            store::Store::open_as(db, "Mirela", "freeport").unwrap(),
+        ));
+        crate::flush_history(&engine, &store, p, false).unwrap();
+    }
+
+    fn mark(db: &Path, p: &Path) -> u64 {
+        watermarks(db)
+            .get(p.to_string_lossy().as_ref())
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// A `--since` window stores no drops, and marked the log read to its
+    /// end anyway, so once another log was followed catch-up skipped it and
+    /// the loot never reached the history.
+    #[test]
+    fn a_windowed_session_leaves_its_log_for_catch_up() {
+        let d = scratch("windowed");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        write(&p, &bread(1));
+        windowed_flush(&p, &db, &[bread(1)]);
+        assert_eq!(stale_bread(&db), 0, "a window replaces no totals");
+
+        // Another log is followed now, and this one is swept.
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p), 0)
+            .expect("the window's log is not taken as read");
+        assert_eq!(stale_bread(&db), 1);
+        assert!(
+            watermarks(&db).contains_key(p.to_string_lossy().as_ref()),
+            "the log stays listed"
+        );
+    }
+
+    /// Two sightings stored, one more seen only in a window, then the sweep:
+    /// three, not two and not four.
+    #[test]
+    fn a_window_over_a_stored_log_is_filled_in_without_doubling() {
+        let d = scratch("window-after");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        write(&p, &format!("{}{}", bread(1), bread(2)));
+        catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        assert_eq!(stale_bread(&db), 2);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&p)
+            .unwrap()
+            .write_all(bread(3).as_bytes())
+            .unwrap();
+        windowed_flush(&p, &db, &[bread(3)]);
+        assert_eq!(stale_bread(&db), 2);
+
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p), 0)
+            .expect("the windowed part is still to read");
+        assert_eq!(stale_bread(&db), 3);
+        assert_eq!(mark(&db, &p), std::fs::metadata(&p).unwrap().len());
+    }
+
     #[test]
     fn the_status_puts_the_worst_gap_first_and_names_the_followed_log() {
         let d = scratch("status");

@@ -3458,6 +3458,17 @@ impl Store {
         Ok(rows)
     }
 
+    /// Note that `path` was read just now without moving how far it is
+    /// known to be read: a windowed read stored only some of it.
+    pub fn note_seen(&mut self, path: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sources (path, last_seen, bytes) VALUES (?1, ?2, 0)
+             ON CONFLICT(path) DO UPDATE SET last_seen = excluded.last_seen",
+            params![path, now],
+        )?;
+        Ok(())
+    }
+
     pub fn note_source(&mut self, path: &str, bytes: u64, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO sources (path, last_seen, bytes) VALUES (?1,?2,?3)",
