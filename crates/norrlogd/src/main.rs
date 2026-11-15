@@ -40,7 +40,7 @@ use tokio::sync::broadcast;
 
 /// How many recent encounters to include in the pushed snapshot. The full set
 /// is available through the REST API; this only bounds the live payload.
-const SNAPSHOT_RECENT: usize = 40;
+pub(crate) const SNAPSHOT_RECENT: usize = 40;
 
 const DEFAULT_PORT: u16 = 8777;
 
@@ -611,6 +611,11 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
             match store.last_known_level() {
                 Ok(level) => engine.set_known_level(level),
                 Err(e) => eprintln!("[norrlogd] could not read the last known level: {e}"),
+            }
+            match store.xp_bar() {
+                Ok(Some(bar)) => engine.restore_xp_bar(bar),
+                Ok(None) => {}
+                Err(e) => eprintln!("[norrlogd] could not read the saved XP bar: {e}"),
             }
             // Alerts are not scoped to a character, so these load whichever
             // log is being followed. They stay disarmed until the backlog is

@@ -16,6 +16,7 @@ use crate::theme::px;
 use crate::theme::*;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -42,6 +43,12 @@ pub struct ExperienceView {
     /// being typed is not replaced under the cursor.
     inputs: HashMap<String, Entity<InputState>>,
     notes: [bool; 3],
+    /// Where the player types what their experience bar shows; made when
+    /// the tab first opens, since an input needs the window.
+    bar_input: Option<Entity<InputState>>,
+    /// Why the last bar reading was not taken, if it was not.
+    bar_error: Option<String>,
+    bar_task: Option<Task<()>>,
     last_load: Option<Instant>,
     tasks: Vec<Task<()>>,
     subs: Vec<Subscription>,
@@ -58,6 +65,9 @@ impl ExperienceView {
             unfinished_only: true,
             inputs: HashMap::new(),
             notes: [false; 3],
+            bar_input: None,
+            bar_error: None,
+            bar_task: None,
             last_load: None,
             tasks: Vec::new(),
             subs: Vec::new(),
@@ -72,8 +82,58 @@ impl ExperienceView {
 
     /// The tab was opened: everything, the catalogue included.
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bar_input.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 3.331"));
+            self.subs.push(cx.subscribe_in(
+                &input,
+                window,
+                |v, input, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::PressEnter { .. }) {
+                        let typed = input
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .trim_end_matches('%')
+                            .to_string();
+                        v.commit_bar(Some(typed), window, cx);
+                    }
+                },
+            ));
+            self.bar_input = Some(input);
+        }
         self.load(window, cx);
         self.load_aa(cx);
+    }
+
+    /// Send what the bar shows (`None` forgets it), then reload.
+    fn commit_bar(&mut self, typed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let percent = match typed.as_deref().map(parse_bar) {
+            None => None,
+            Some(Some(p)) => Some(p),
+            Some(None) => {
+                self.bar_error = Some("A percentage from 0 to 100, as the bar shows it.".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.bar_error = None;
+        let Some(api) = self.api.clone() else { return };
+        let body = serde_json::json!({ "percent": percent });
+        // Its own slot, not `track`: the feed's loads would push it out.
+        self.bar_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let sent = api.post_json("/api/xp-bar".to_string(), body).await;
+            let _ = this.update_in(cx, |v, window, cx| {
+                match sent {
+                    Ok(_) => {
+                        if let Some(i) = &v.bar_input {
+                            i.update(cx, |s, cx| s.set_value("", window, cx));
+                        }
+                    }
+                    Err(e) => v.bar_error = Some(e),
+                }
+                v.load(window, cx);
+            });
+        }));
     }
 
     /// A snapshot arrived: refresh if on screen and ten seconds have passed.
@@ -451,7 +511,40 @@ impl ExperienceView {
                     .child(figure(format!("{pct:.1}%"))),
             )
         });
-        card("Progress through this level").children(row).child(note(
+        let calibrated = self.exp.as_ref().is_some_and(|e| e.calibrated);
+        let counted = self.exp.as_ref().map_or(0., |e| e.counted_percent);
+        let set = h_flex()
+            .gap_2()
+            .items_center()
+            .child(dim("Your bar shows".to_string()))
+            .children(
+                self.bar_input
+                    .as_ref()
+                    .map(|i| div().w(px(96.)).child(Input::new(i).small())),
+            )
+            .child(dim("% — Enter to set".to_string()))
+            .when(calibrated, |d| {
+                d.child(
+                    Button::new("xp-bar-clear")
+                        .label("Clear")
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(|v, _, window, cx| v.commit_bar(None, window, cx))),
+                )
+            });
+        let status = if let Some(e) = &self.bar_error {
+            div().text_color(hex(ENEMY)).child(e.clone())
+        } else if calibrated {
+            dim(format!(
+                "From your bar, plus what the log has counted since. The log alone counts {counted:.2}%."
+            ))
+        } else {
+            dim("Counted from the log, which prints gains but never the bar: a level begun before the log, or a gain it does not print, leaves it short. Type what the bar shows to correct it until your next level.".to_string())
+        };
+        card("Progress through this level")
+            .children(row)
+            .child(v_flex().gap_1().child(set).child(status))
+            .child(note(
             "x-note-bar",
             self.notes[1],
             "EverQuest reports experience only as a percentage of the level you are in, so everything here is in \
@@ -858,6 +951,14 @@ fn aa_summary(r: &AaReport) -> String {
     s
 }
 
+/// A typed bar reading: a number from 0 to 100, `%` allowed.
+fn parse_bar(typed: &str) -> Option<f64> {
+    let t = typed.trim().trim_end_matches('%').trim();
+    t.parse::<f64>()
+        .ok()
+        .filter(|p| p.is_finite() && (0.0..=100.0).contains(p))
+}
+
 fn rate_text(per_hour: f64) -> String {
     if per_hour > 0. {
         format!("{per_hour:.1} %/hr")
@@ -976,7 +1077,7 @@ fn stat_card(label: &str, value: impl IntoElement, note: Option<String>) -> Div 
 
 #[cfg(test)]
 mod tests {
-    use super::{aa_summary, rate_text, zone_cell};
+    use super::{aa_summary, parse_bar, rate_text, zone_cell};
     use norrlog_api::{AaReport, ZoneShare};
 
     #[test]
@@ -992,6 +1093,17 @@ mod tests {
             Some("Hate: 30.0%\nFear: 10.0%\nSky: 5.0%\nRo: 5.0%")
         );
         assert_eq!(zone_cell(&[]), ("—".to_string(), None));
+    }
+
+    #[test]
+    fn a_bar_reading_is_a_percentage() {
+        assert_eq!(parse_bar("3.331"), Some(3.331));
+        assert_eq!(parse_bar(" 53% "), Some(53.));
+        assert_eq!(parse_bar("0"), Some(0.));
+        assert_eq!(parse_bar("100.1"), None);
+        assert_eq!(parse_bar("-1"), None);
+        assert_eq!(parse_bar("abc"), None);
+        assert_eq!(parse_bar(""), None);
     }
 
     #[test]

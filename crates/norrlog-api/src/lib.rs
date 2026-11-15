@@ -577,7 +577,15 @@ pub use norrlog_core::experience::{AaPurchase, ExpSource, LevelRecord, ZoneShare
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperienceReport {
     pub current_level: Option<u32>,
+    /// Progress through the level: from the player's bar reading when they
+    /// set one for this level, otherwise as the log counts it.
     pub current_percent: f64,
+    /// As the log counts it, whatever the bar reading.
+    #[serde(default)]
+    pub counted_percent: f64,
+    /// Whether `current_percent` starts from a bar reading.
+    #[serde(default)]
+    pub calibrated: bool,
     pub current_kills: u32,
     pub current_seconds: i64,
     pub rate_per_hour: f64,

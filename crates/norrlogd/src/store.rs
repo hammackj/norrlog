@@ -1191,9 +1191,8 @@ impl Store {
                 at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (character, server, class)
             );
-            -- Figures the player read off their own character sheet. Nothing
-            -- reads or writes it since the stated AA spend was dropped; kept so
-            -- a figure that needs it later costs no migration.
+            -- Figures the player read off their own character sheet: the
+            -- experience bar (xp_bar_*), in thousandths of a percent.
             CREATE TABLE IF NOT EXISTS stated_values (
                 character TEXT NOT NULL,
                 server TEXT NOT NULL,
@@ -2938,6 +2937,64 @@ impl Store {
     ///
     /// Returns 0 when nothing is known, which the caller must treat as "leave
     /// it alone" rather than as level zero.
+    /// What the player last read off their experience bar, for this
+    /// character, if they set it.
+    pub fn xp_bar(&self) -> Result<Option<crate::engine::XpBar>> {
+        let get = |key: &str| -> Result<Option<i64>> {
+            Ok(self
+                .conn
+                .query_row(
+                    "SELECT value FROM stated_values
+                     WHERE character = ?1 AND server = ?2 AND key = ?3",
+                    params![self.character, self.server, key],
+                    |r| r.get(0),
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    e => Err(e),
+                })?)
+        };
+        let (Some(level), Some(stated), Some(counted)) = (
+            get("xp_bar_level")?,
+            get("xp_bar_stated")?,
+            get("xp_bar_counted")?,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(crate::engine::XpBar {
+            level: level as u32,
+            stated: stated as f64 / 1000.,
+            counted: counted as f64 / 1000.,
+        }))
+    }
+
+    /// Save a bar reading, or forget it with `None`.
+    pub fn put_xp_bar(&mut self, bar: Option<crate::engine::XpBar>, now: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM stated_values
+             WHERE character = ?1 AND server = ?2
+               AND key IN ('xp_bar_level', 'xp_bar_stated', 'xp_bar_counted')",
+            params![self.character, self.server],
+        )?;
+        if let Some(b) = bar {
+            for (key, value) in [
+                ("xp_bar_level", b.level as i64),
+                ("xp_bar_stated", (b.stated * 1000.).round() as i64),
+                ("xp_bar_counted", (b.counted * 1000.).round() as i64),
+            ] {
+                tx.execute(
+                    "INSERT INTO stated_values (character, server, key, value, at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![self.character, self.server, key, value, now],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn last_known_level(&self) -> Result<u32> {
         let filed: Option<u32> = self.conn.query_row(
             "SELECT MAX(level) FROM npc_melee WHERE character = ?1 AND server = ?2",
@@ -4600,6 +4657,25 @@ mod tests {
 
     /// Another character's level must not leak into this one's — an alt who
     /// has never left Qeynos would otherwise be seeded at the main's cap.
+    #[test]
+    fn an_xp_bar_reading_is_kept_per_character_and_can_be_forgotten() {
+        let mut s = Store::in_memory().unwrap();
+        assert_eq!(s.xp_bar().unwrap(), None);
+        let bar = crate::engine::XpBar {
+            level: 68,
+            stated: 3.331,
+            counted: 1.25,
+        };
+        s.put_xp_bar(Some(bar), 1).unwrap();
+        assert_eq!(s.xp_bar().unwrap(), Some(bar));
+        let me = s.character.clone();
+        s.character = "Someone".into();
+        assert_eq!(s.xp_bar().unwrap(), None, "another character's bar");
+        s.character = me;
+        s.put_xp_bar(None, 2).unwrap();
+        assert_eq!(s.xp_bar().unwrap(), None);
+    }
+
     #[test]
     fn the_last_known_level_is_per_character() {
         let dir = std::env::temp_dir().join("norrlog-bestiary-level-test");

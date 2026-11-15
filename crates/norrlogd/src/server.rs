@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/buff-marks", get(get_marks).post(set_mark))
         .route("/api/item-brief", get(item_brief))
         .route("/api/alerts", get(alerts).post(put_alert))
+        .route("/api/xp-bar", post(put_xp_bar))
         .route("/api/alerts/delete", post(delete_alert))
         .route("/api/lines", get(lines))
         .route("/api/search", get(search))
@@ -1593,6 +1594,46 @@ async fn put_alert(
         Some(r) => Json(r).into_response(),
         None => (StatusCode::OK, "ok").into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct XpBarRequest {
+    /// What the bar shows now, in percent; `null` forgets the reading.
+    percent: Option<f64>,
+}
+
+/// `POST /api/xp-bar`: what the experience bar shows now. The log prints
+/// gains, never the bar, so its count falls short of a level it did not see
+/// begin; this sets the figure the count goes on from, until the level
+/// changes. Answers with the experience summary as it now stands.
+async fn put_xp_bar(State(s): State<AppState>, Json(req): Json<XpBarRequest>) -> Response {
+    if req.percent.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "the bar is between 0 and 100 percent",
+        )
+            .into_response();
+    }
+    let (bar, snap) = {
+        let mut engine = s.engine.locked("engine");
+        let bar = engine.set_xp_bar(req.percent);
+        (bar, engine.snapshot(crate::SNAPSHOT_RECENT))
+    };
+    let exp = serde_json::to_value(&snap.exp).unwrap_or_default();
+    // Out at once rather than on the next log line, which in town could be
+    // minutes away.
+    *s.snapshot.writing("snapshot") = snap;
+    let _ = s.updates.send(());
+    if let Some(store) = &s.store {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Err(e) = store.locked("history").put_xp_bar(bar, now) {
+            return (StatusCode::OK, format!("set, but not saved: {e}")).into_response();
+        }
+    }
+    Json(exp).into_response()
 }
 
 #[derive(Debug, Deserialize)]

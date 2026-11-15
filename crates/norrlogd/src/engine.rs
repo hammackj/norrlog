@@ -165,7 +165,16 @@ pub struct IncomingReport {
 /// Live experience summary carried in every snapshot.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ExpSummary {
+    /// Progress through the level: what the player last read off their bar
+    /// plus what the log added since, when they have set it for this level;
+    /// otherwise what the log adds up to on its own.
     pub percent: f64,
+    /// What the log adds up to on its own. It falls short of the bar
+    /// wherever the log did not see the experience (a level begun before
+    /// the log, a gain it does not print).
+    pub counted_percent: f64,
+    /// Whether `percent` starts from a figure the player set.
+    pub calibrated: bool,
     pub kills: u32,
     pub rate_per_hour: f64,
     pub seconds_to_next_level: Option<i64>,
@@ -179,6 +188,17 @@ pub struct ExpSummary {
     /// Doubled awards remaining from experience potions.
     pub aa_potion_charges: u32,
     pub aa_potion_active: bool,
+}
+
+/// The experience bar as the player read it: `stated` percent on `level`,
+/// when the log had counted `counted` of that level. The log never prints
+/// the bar, only gains, so a level begun before the log, or a gain it does
+/// not print, leaves the count short; this is the correction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct XpBar {
+    pub level: u32,
+    pub stated: f64,
+    pub counted: f64,
 }
 
 /// Everything the UI needs, as of the last processed line.
@@ -404,6 +424,8 @@ pub struct Engine {
     /// Your spells running on others, for the overlay's `others` panel.
     on_others: norrlog_core::on_others::OnOthers,
     combat_text: norrlog_core::combat_text::CombatTexts,
+    /// What the player read off their experience bar, if they set it.
+    xp_bar: Option<XpBar>,
     resolver: SpellResolver,
     classes: ClassDetector,
     /// The class the buffs were gathered under, in a one-class game. A
@@ -602,6 +624,7 @@ impl Engine {
             tracker: EncounterTracker::new(&player),
             on_others: Default::default(),
             combat_text: Default::default(),
+            xp_bar: None,
             resolver: {
                 let mut r = SpellResolver::new(spell_db, 1);
                 r.set_overrun(norrlog_core::profile::profile(game).buff_overrun);
@@ -2146,6 +2169,48 @@ impl Engine {
     /// pairing, so the same fights split into an "unknown level" row that no
     /// later log will ever join up with. Seeding from what the store already
     /// knows keeps one pairing one row across a roll.
+    /// Set what the experience bar shows now, or clear it with `None`.
+    /// Returns what was recorded, for the caller to save.
+    pub fn set_xp_bar(&mut self, stated: Option<f64>) -> Option<XpBar> {
+        self.xp_bar = stated.map(|stated| XpBar {
+            level: self.exp.current_record().level.unwrap_or(0),
+            stated: stated.clamp(0., 100.),
+            counted: self.exp.current_percent(),
+        });
+        self.xp_bar
+    }
+
+    /// A bar reading saved earlier, as [`Engine::set_xp_bar`] recorded it.
+    pub fn restore_xp_bar(&mut self, bar: XpBar) {
+        self.xp_bar = Some(bar);
+    }
+
+    /// Whether the bar reading is about the level now in progress. A level
+    /// gained since starts from zero, where the log's own count is right.
+    fn xp_bar_applies(&self) -> bool {
+        self.xp_bar
+            .is_some_and(|b| b.level == self.exp.current_record().level.unwrap_or(0))
+    }
+
+    /// Progress through the level, from the bar reading when it applies.
+    fn xp_percent(&self) -> f64 {
+        let counted = self.exp.current_percent();
+        match self.xp_bar {
+            Some(b) if self.xp_bar_applies() => (b.stated + counted - b.counted).clamp(0., 100.),
+            _ => counted,
+        }
+    }
+
+    /// Time to the next level at the current rate, from the bar reading
+    /// when it applies: the log's own count would promise a level too late.
+    fn seconds_to_next_level(&self, now: i64) -> Option<i64> {
+        if !self.xp_bar_applies() {
+            return self.exp.seconds_to_next_level(now);
+        }
+        let rate = self.exp.current_rate_per_hour(now);
+        (rate > 0.).then(|| ((100. - self.xp_percent()).max(0.) / rate * 3600.) as i64)
+    }
+
     pub fn set_known_level(&mut self, level: u32) {
         if level > 0 {
             self.bestiary.on_level(level);
@@ -2915,11 +2980,13 @@ impl Engine {
         let cur = self.exp.current_record();
         ExperienceReport {
             current_level: self.exp.current_level(),
-            current_percent: cur.percent,
+            current_percent: self.xp_percent(),
+            counted_percent: cur.percent,
+            calibrated: self.xp_bar_applies(),
             current_kills: cur.kills,
             current_seconds: cur.seconds,
             rate_per_hour: rate,
-            seconds_to_next_level: self.exp.seconds_to_next_level(now),
+            seconds_to_next_level: self.seconds_to_next_level(now),
             average_seconds_per_level: self.exp.average_seconds_per_level(),
             average_kills_per_level: self.exp.average_kills_per_level(),
             levels: self.levels_with_build(),
@@ -3878,10 +3945,12 @@ impl Engine {
             combat_text: self.combat_text.recent(),
             combat_seq: self.combat_text.seq(),
             exp: ExpSummary {
-                percent: self.exp.current_percent(),
+                percent: self.xp_percent(),
+                counted_percent: self.exp.current_percent(),
+                calibrated: self.xp_bar_applies(),
                 kills: self.exp.current_record().kills,
                 rate_per_hour: self.exp.current_rate_per_hour(now),
-                seconds_to_next_level: self.exp.seconds_to_next_level(now),
+                seconds_to_next_level: self.seconds_to_next_level(now),
                 aa_earned: self.exp.aa_earned(),
                 aa_spent: self.exp.aa_spent_total(),
                 aa_unspent: self.exp.aa_unspent(),
@@ -5637,6 +5706,40 @@ mod tests {
     /// The screenshot prompt is about what you could photograph right now,
     /// which is a narrower question than the loot tally answers but a wider
     /// one than "what is in your bags".
+    /// The bar reading is where the count goes on from, for the level it was
+    /// read on; a level gained since starts from the log's own count.
+    #[test]
+    fn the_xp_bar_reading_carries_the_count_until_the_level_changes() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have gained a level! Welcome to level 42!",
+                "[Tue Jul 28 14:01:00 2026] You gain experience! (1.500%)",
+            ],
+        );
+        let pct = |e: &Engine| {
+            let x = e.snapshot(1).exp;
+            ((x.percent * 1000.).round() / 1000., x.calibrated)
+        };
+        assert_eq!(pct(&e), (1.5, false));
+
+        let bar = e.set_xp_bar(Some(40.)).unwrap();
+        assert_eq!((bar.level, bar.counted), (42, 1.5));
+        assert_eq!(pct(&e), (40., true));
+        e.push_line("[Tue Jul 28 14:02:00 2026] You gain experience! (2.250%)");
+        assert_eq!(pct(&e), (42.25, true), "the reading plus what came since");
+        assert_eq!(e.snapshot(1).exp.counted_percent, 3.75);
+
+        e.push_line("[Tue Jul 28 14:03:00 2026] You have gained a level! Welcome to level 43!");
+        e.push_line("[Tue Jul 28 14:04:00 2026] You gain experience! (0.500%)");
+        assert_eq!(pct(&e), (0.5, false), "a new level is counted from zero");
+
+        e.set_xp_bar(Some(10.));
+        e.set_xp_bar(None);
+        assert_eq!(pct(&e), (0.5, false), "cleared");
+    }
+
     /// Combat text is news, like events: the initial read adds none, and
     /// what follows goes out in the snapshot with its sequence.
     #[test]
