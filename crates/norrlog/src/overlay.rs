@@ -238,7 +238,12 @@ fn decode(v: &str) -> String {
 // ---- colours, from overlay.css ---------------------------------------------
 
 const TEXT: u32 = 0xe8eaf0;
-const DIM: u32 = 0x9aa2b0;
+/// Lifted from 0x9aa2b0, with the panels' scrim from 0.74 to 0.86: judged
+/// over saved game screenshots, the dim figures lost to bright snow and a
+/// busy scene read through the panel. The page's `--text-dim` matches.
+const DIM: u32 = 0xaeb5c2;
+/// The panels' backing (`--bg-panel` in the page).
+const SCRIM_ALPHA: f32 = 0.86;
 const ACCENT: u32 = 0xe0ad46;
 const YOU: u32 = 0x22d3ee;
 const ENEMY: u32 = 0xdd7076;
@@ -2000,7 +2005,7 @@ fn panel(title: String, meta: Option<String>, idle: bool, rows: Vec<AnyElement>)
         .gap(u(3.))
         .p(u(6.))
         .rounded(u(6.))
-        .bg(rgba_of(SCRIM, 0.74))
+        .bg(rgba_of(SCRIM, SCRIM_ALPHA))
         .border_1()
         .border_color(rgba_of(WASH, 0.1))
         .child(
@@ -2163,7 +2168,7 @@ fn status(text: Option<&'static str>) -> Div {
     d.px(u(6.))
         .py(u(2.))
         .rounded(u(4.))
-        .bg(rgba_of(SCRIM, 0.74))
+        .bg(rgba_of(SCRIM, SCRIM_ALPHA))
         .text_size(u(11.))
         .text_color(gpui::rgb(ACCENT))
         .child(text)

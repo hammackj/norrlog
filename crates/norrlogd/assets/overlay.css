@@ -10,14 +10,19 @@
  */
 
 :root {
-  --bg-panel: rgb(var(--scrim-rgb) / 0.74);
+  /* 0.86, up from 0.74: judged over saved game screenshots, a busy scene
+     (the game's own windows behind) read through as if it were overlay text,
+     and snow washed the panel grey. OBS draws this page over the scene, so
+     the backdrop blur below has nothing to blur there; opacity is what
+     separates the panel from the game. */
+  --bg-panel: rgb(var(--scrim-rgb) / 0.86);
   --bg-row: rgb(var(--wash-rgb) / 0.05);
   --border: rgb(var(--wash-rgb) / 0.1);
   /* The house palette, as the window uses it. Lifted a little: this is read
      over moving footage, so text runs brighter and the accents stay saturated
      where the window can afford to be muted. */
   --text: #e8eaf0;
-  --text-dim: #9aa2b0;
+  --text-dim: #aeb5c2;
   --accent: #e0ad46;
   --you: #22d3ee;
   --enemy: #dd7076;
@@ -28,7 +33,7 @@
      overlay carries more washes than the window does — every panel sits on a
      scrim — so this is where restating hurt most. */
   --text-rgb: 232 234 240;
-  --dim-rgb: 154 162 176;
+  --dim-rgb: 174 181 194;
   --accent-rgb: 224 173 70;
   --you-rgb: 34 211 238;
   --enemy-rgb: 221 112 118;
