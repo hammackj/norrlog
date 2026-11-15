@@ -1,10 +1,10 @@
 //! Classes: the snapshot's class evidence, redrawn on every push; it has no
-//! loader of its own.
+//! loader of its own. Drawn as a section of the Character tab, which
+//! scrolls; this view does not.
 
 use crate::parts::{ROW, bar_row, card, dim, empty, figure, fill, note};
 use crate::theme::px;
 use gpui::*;
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{h_flex, v_flex};
 use norrlog_api::ClassInfo;
 
@@ -81,23 +81,19 @@ impl Render for ClassesView {
             }))
         };
         // The notes come before the rows, as in the renderer.
-        div()
-            .id("classes-scroll")
-            .size_full()
-            .overflow_y_scrollbar()
-            .child(
-                card("Detected classes")
-                    .child(note(
-                        "classes-note",
-                        self.note_open,
-                        NOTE,
-                        cx.listener(|v, _, _, cx| {
-                            v.note_open = !v.note_open;
-                            cx.notify();
-                        }),
-                    ))
-                    .child(rows),
-            )
+        div().w_full().child(
+            card("Detected classes")
+                .child(note(
+                    "classes-note",
+                    self.note_open,
+                    NOTE,
+                    cx.listener(|v, _, _, cx| {
+                        v.note_open = !v.note_open;
+                        cx.notify();
+                    }),
+                ))
+                .child(rows),
+        )
     }
 }
 

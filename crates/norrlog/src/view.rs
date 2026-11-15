@@ -29,7 +29,6 @@ pub const TABS: &[(&str, &str)] = &[
     ("search", "Search"),
     ("alerts", "Alerts"),
     ("character", "Character"),
-    ("classes", "Classes"),
     ("settings", "Settings"),
 ];
 
@@ -107,16 +106,21 @@ impl Shell {
         // a window killed with the session never gets to say goodbye.
         let mut subs =
             vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
+        // Classes is a section of Character now.
+        let saved = match state.tab.as_str() {
+            "classes" => "character",
+            t => t,
+        };
         let tab = TABS
             .iter()
-            .find(|t| t.0 == state.tab)
+            .find(|t| t.0 == saved)
             .map(|t| t.0)
             .unwrap_or("dashboard");
         let encounters = cx.new(|cx| crate::encounters::EncountersView::new(window, cx));
         let procs = cx.new(|_| crate::procs::ProcsView::new());
         let loot = cx.new(|cx| crate::loot::LootView::new(window, cx));
         let classes = cx.new(|_| crate::classes::ClassesView::new());
-        let character = cx.new(|_| crate::character::CharacterView::new());
+        let character = cx.new(|_| crate::character::CharacterView::new(classes.clone()));
         let experience = cx.new(|_| crate::experience::ExperienceView::new());
         let tradeskills = cx.new(|_| crate::tradeskills::TradeskillsView::new());
         let forage = cx.new(|_| crate::forage::ForageView::new());
@@ -722,11 +726,6 @@ impl Shell {
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
-            "classes" => self
-                .classes
-                .clone()
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
             "tradeskills" => self
                 .tradeskills
                 .clone()
@@ -795,7 +794,6 @@ impl Render for Shell {
                     "encounters"
                         | "procs"
                         | "loot"
-                        | "classes"
                         | "character"
                         | "experience"
                         | "tradeskills"

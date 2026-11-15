@@ -1,5 +1,6 @@
-//! Character: the lifetime totals from the snapshot, and tasks and
-//! achievements from `/api/tasks`.
+//! Character: the lifetime totals from the snapshot, the classes the
+//! character is detected or stated to have (the Classes view, which was a
+//! tab of its own), and tasks and achievements from `/api/tasks`.
 //!
 //! Tasks are fetched on every snapshot whichever tab is open, at most every
 //! fifteen seconds, as the renderer does: they change rarely, and the
@@ -23,6 +24,8 @@ const REFRESH: Duration = Duration::from_secs(15);
 
 pub struct CharacterView {
     api: Option<Api>,
+    /// The class evidence, drawn as a section of this page.
+    classes: Entity<crate::classes::ClassesView>,
     totals: Option<Totals>,
     report: Option<TaskReport>,
     last_load: Option<Instant>,
@@ -35,9 +38,10 @@ pub struct CharacterView {
 }
 
 impl CharacterView {
-    pub fn new() -> Self {
+    pub fn new(classes: Entity<crate::classes::ClassesView>) -> Self {
         CharacterView {
             api: None,
+            classes,
             totals: None,
             report: None,
             last_load: None,
@@ -384,6 +388,8 @@ impl Render for CharacterView {
             .gap_3()
             .child(band("Totals", "everything this log has recorded"))
             .child(self.render_totals())
+            .child(band("Classes", "what the log and the game say you play"))
+            .child(self.classes.clone())
             .child(band(
                 "Character",
                 "what this character is carrying and has earned",
