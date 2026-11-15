@@ -24,7 +24,7 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
-use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use norrlog_api::{
     AlertFire, AlertRule, AlertsReply, LinesReply, LogLine, SignalKind, Sound, Trigger,
 };
@@ -242,6 +242,8 @@ pub struct AlertsView {
     /// long as you take, and the feed's polls would push it out of a
     /// short list, which cancels it.
     importing: Option<Task<()>>,
+    /// The same, for the export's save dialog.
+    exporting: Option<Task<()>>,
     _poll: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -320,6 +322,7 @@ impl AlertsView {
             tasks: vec![voices],
             imported: None,
             importing: None,
+            exporting: None,
             _poll: None,
             _subs: subs,
         }
@@ -697,6 +700,49 @@ impl AlertsView {
         }));
     }
 
+    /// Save every alert as a GINA package, for someone using GINA. See
+    /// [`crate::gina::to_package`]. Its report shows where the import's does.
+    fn export_gina(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rules = self.rules.clone();
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+        let rx = cx.prompt_for_new_path(&home, Some("norrlog-alerts.gtp"));
+        self.exporting = Some(cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let file = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let wrote = cx
+                .background_spawn(async move {
+                    let pkg = crate::gina::to_package(&rules)?;
+                    std::fs::write(&path, &pkg.bytes).map_err(|e| e.to_string())?;
+                    Ok::<_, String>(pkg)
+                })
+                .await;
+            let report = match wrote {
+                Err(e) => (format!("{file}: {e}"), Vec::new()),
+                Ok(pkg) => (
+                    format!(
+                        "Exported {} trigger{} to {file}, in a group called {}",
+                        pkg.triggers,
+                        if pkg.triggers == 1 { "" } else { "s" },
+                        crate::gina::EXPORT_GROUP,
+                    ),
+                    pkg.notes,
+                ),
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.imported = Some(report);
+                cx.notify();
+            });
+        }));
+    }
+
     /// POST a rule, reload, and (when `then_edit`) open it in the editor.
     fn put(
         &mut self,
@@ -777,7 +823,8 @@ const RULES_NOTE: &str = "Sounds play in this window, so the app has to be runni
     front. Alerts stay silent while the log is being read at startup; only what happens after that makes a noise. \
     A pattern can name what it catches, as (?<who>.+?), and the name and the words to say can quote it as {who}; \
     {C} is you. Import GINA brings triggers in from a GINA package (.gtp) or GINA's own XML, tokens and \
-    countdowns included, and lists anything that did not come over whole.";
+    countdowns included, and lists anything that did not come over whole. Export GINA writes your alerts as a \
+    package someone using GINA can import, and lists what GINA has no room for.";
 const FEED_NOTE: &str = "The last few hundred lines, newest first. Click one to build an alert from it — the text is \
     filled in for you, and you trim it down to the part that matters. Where a typed happening covers the same \
     ground, prefer it: \"a charm broke\" survives wording the client varies, a substring does not.";
@@ -818,6 +865,15 @@ impl Render for AlertsView {
                     .ghost()
                     .tooltip("Triggers from a GINA package (.gtp) or GINA's XML")
                     .on_click(cx.listener(|v, _, window, cx| v.import_gina(window, cx))),
+            )
+            .child(
+                Button::new("al-gina-out")
+                    .label("Export GINA…")
+                    .small()
+                    .ghost()
+                    .disabled(self.rules.is_empty())
+                    .tooltip("Every alert as a GINA package (.gtp), to share")
+                    .on_click(cx.listener(|v, _, window, cx| v.export_gina(window, cx))),
             )
             .child(dim(self.status.clone()));
         let toolbar = v_flex().gap_2().child(toolbar).when_some(

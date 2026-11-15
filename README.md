@@ -32,7 +32,8 @@ overlay.
 - **Tells and alerts.** A tell log, and alerts built from any line: a sound,
   speech, a banner on the overlay, and optionally a countdown there. The OBS
   overlay shows the banners and countdowns too (`alerts=0` hides them). GINA
-  triggers import from a `.gtp` package or GINA's XML.
+  triggers import from a `.gtp` package or GINA's XML, and your alerts export
+  as a `.gtp` package for someone using GINA.
 - **Log search.** Any line in the log, newest first, as plain text or a
   regular expression, read from the file as it is now.
 

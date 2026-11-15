@@ -20,6 +20,9 @@
 //!
 //! Every rule gets an id from its group path and name, so importing the same
 //! package again replaces its rules instead of adding a second copy.
+//!
+//! [`to_package`] goes the other way, so alerts made here can be shared with
+//! someone using GINA.
 
 use norrlog_api::{AlertRule, Sound, Trigger};
 use roxmltree::{Document, Node};
@@ -272,6 +275,192 @@ fn token(inner: &str, seen: &mut Vec<String>, warnings: &mut Vec<String>) -> Opt
     }
 }
 
+/// A package written for GINA, and what could not go into it.
+#[derive(Debug, Default)]
+pub struct Exported {
+    /// The `.gtp`: a zip holding `ShareData.xml`.
+    pub bytes: Vec<u8>,
+    pub triggers: usize,
+    /// One line per alert that did not go across whole: `name: why`.
+    pub notes: Vec<String>,
+}
+
+/// The group every exported trigger sits in.
+pub const EXPORT_GROUP: &str = "Norrlog";
+
+/// Write `rules` as a GINA package. The import, run backwards:
+///
+/// - a text alert is a plain trigger; a pattern is a regular expression,
+///   its `(?<S>.+?)`, `(?<N>\d+)` and `(?<TS>.+?)` turned back into GINA's
+///   `{S}`, `{N}` and `{TS}`, and `{C}` left as it is, which GINA reads the
+///   same way;
+/// - the name is the display text, and the words to say are the
+///   text-to-speech;
+/// - a countdown is a timer of the same length, restarted by a repeat.
+///
+/// What GINA has no counterpart for is listed, not dropped quietly: alerts
+/// on a typed happening or a fading buff (GINA reads only lines), this
+/// app's sounds, and a cooldown.
+pub fn to_package(rules: &[AlertRule]) -> Result<Exported, String> {
+    use std::io::Write;
+    let (xml, triggers, notes) = to_xml(rules);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut buf);
+        z.start_file("ShareData.xml", zip::write::SimpleFileOptions::default())
+            .map_err(|e| e.to_string())?;
+        z.write_all(xml.as_bytes()).map_err(|e| e.to_string())?;
+        z.finish().map_err(|e| e.to_string())?;
+    }
+    Ok(Exported {
+        bytes: buf.into_inner(),
+        triggers,
+        notes,
+    })
+}
+
+/// `ShareData.xml` for `rules`, how many triggers it holds, and the notes.
+pub fn to_xml(rules: &[AlertRule]) -> (String, usize, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut body = String::new();
+    let mut count = 0;
+    for r in rules {
+        let mut note = |why: &str| notes.push(format!("{}: {why}", r.name));
+        let (text, regex) = match &r.trigger {
+            // GINA reads braces in plain text as tokens, so text holding one
+            // goes as an escaped pattern instead.
+            Trigger::Contains { text } if text.contains('{') => (regex::escape(text), true),
+            Trigger::Contains { text } => (text.clone(), false),
+            Trigger::Pattern { pattern } => (to_tokens(pattern), true),
+            Trigger::Signal { .. } => {
+                note(
+                    "watches a typed happening, not a line; GINA has nothing like it, so it was left out",
+                );
+                continue;
+            }
+            Trigger::BuffExpiring { .. } => {
+                note("watches a buff running out; GINA reads only lines, so it was left out");
+                continue;
+            }
+        };
+        if r.sound != Sound::None {
+            note("this app's sound does not go across; give it one in GINA");
+        }
+        if r.cooldown > 0 {
+            note("GINA has no cooldown, so it fires on every match");
+        }
+        if !r.enabled {
+            note("is turned off here; GINA will have it on");
+        }
+        let say = r.say.clone().unwrap_or_else(|| r.name.clone());
+        for (what, words) in [("name", &r.name), ("words to say", &say)] {
+            if let Some(q) = quotes_beyond_gina(words) {
+                note(&format!(
+                    "its {what} quote {{{q}}}, which GINA leaves as written"
+                ));
+            }
+        }
+        let timer = r.timer > 0;
+        let b = |v: bool| if v { "True" } else { "False" };
+        body.push_str(&format!(
+            "        <Trigger>
+          <Name>{name}</Name>
+          <TriggerText>{text}</TriggerText>
+          <Comments />
+          <EnableRegex>{regex}</EnableRegex>
+          <UseText>True</UseText>
+          <DisplayText>{name}</DisplayText>
+          <CopyToClipboard>False</CopyToClipboard>
+          <ClipboardText />
+          <UseTextToVoice>{speak}</UseTextToVoice>
+          <InterruptSpeech>False</InterruptSpeech>
+          <TextToVoiceText>{say}</TextToVoiceText>
+          <PlayMediaFile>False</PlayMediaFile>
+          <TimerType>{timer_type}</TimerType>
+          <TimerName>{name}</TimerName>
+          <RestartBasedOnTimerName>False</RestartBasedOnTimerName>
+          <TimerMillisecondDuration>{ms}</TimerMillisecondDuration>
+          <TimerDuration>{secs}</TimerDuration>
+          <TimerVisibleDuration>0</TimerVisibleDuration>
+          <TimerStartBehavior>RestartTimer</TimerStartBehavior>
+          <TimerEndingTime>0</TimerEndingTime>
+          <UseTimerEnding>False</UseTimerEnding>
+          <UseTimerEnded>False</UseTimerEnded>
+          <UseCounterResetTimer>False</UseCounterResetTimer>
+          <CounterResetDuration>0</CounterResetDuration>
+          <Category>Default</Category>
+        </Trigger>
+",
+            name = xml_escape(&r.name),
+            text = xml_escape(&text),
+            regex = b(regex),
+            speak = b(r.speak),
+            say = xml_escape(if r.speak { &say } else { "" }),
+            timer_type = if timer { "Timer" } else { "NoTimer" },
+            ms = if timer { r.timer as u64 * 1000 } else { 0 },
+            secs = if timer { r.timer } else { 0 },
+        ));
+        count += 1;
+    }
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<SharedData>
+  <TriggerGroups>
+    <TriggerGroup>
+      <Name>{EXPORT_GROUP}</Name>
+      <Comments />
+      <SelfCommented>False</SelfCommented>
+      <EnableByDefault>True</EnableByDefault>
+      <TriggerGroups />
+      <Triggers>
+{body}      </Triggers>
+    </TriggerGroup>
+  </TriggerGroups>
+</SharedData>
+"
+    );
+    (xml, count, notes)
+}
+
+/// A pattern with the captures the import makes out of GINA's tokens
+/// turned back into them. Any other named group is kept; .NET reads
+/// `(?<name>…)` as this app does, and `(?P<name>…)` is respelled to it.
+fn to_tokens(pattern: &str) -> String {
+    let token = regex::Regex::new(r"\(\?P?<(S\d*|N\d*|TS)>(\.\+\?|\\d\+)\)").expect("valid");
+    let out = token.replace_all(pattern, |c: &regex::Captures| {
+        let (name, body) = (&c[1], &c[2]);
+        let fits = if name.starts_with('N') {
+            body == r"\d+"
+        } else {
+            body == ".+?"
+        };
+        if fits {
+            format!("{{{name}}}")
+        } else {
+            c[0].to_string()
+        }
+    });
+    out.replace("(?P<", "(?<")
+}
+
+/// A `{name}` quoted in `words` that GINA would not fill in: anything but
+/// its own `{S}`, `{N}`, `{TS}` (with a number or not) and `{C}`.
+fn quotes_beyond_gina(words: &str) -> Option<String> {
+    let q = regex::Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("valid");
+    q.captures_iter(words).map(|c| c[1].to_string()).find(|n| {
+        let up = n.to_uppercase();
+        let kind = up.trim_end_matches(|c: char| c.is_ascii_digit());
+        !matches!(kind, "S" | "N" | "TS" | "C")
+    })
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// FNV-1a, for ids that do not change from one import to the next.
 fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325, |h, b| {
@@ -436,6 +625,116 @@ mod tests {
         let i = read_file(&p).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(i.rules.len(), 4);
+    }
+
+    fn rule(name: &str, trigger: Trigger) -> AlertRule {
+        AlertRule {
+            id: name.to_lowercase(),
+            name: name.into(),
+            enabled: true,
+            trigger,
+            sound: Sound::None,
+            speak: false,
+            say: None,
+            cooldown: 0,
+            timer: 0,
+            error: None,
+        }
+    }
+
+    /// What goes out comes back the same through the import, and what GINA
+    /// cannot hold is named.
+    #[test]
+    fn an_export_reads_back_as_the_same_alerts() {
+        let mut breath = rule(
+            "BREATH",
+            Trigger::Contains {
+                text: "Lord Nagafen rears back".into(),
+            },
+        );
+        breath.timer = 30;
+        breath.speak = true;
+        breath.say = Some("breath incoming".into());
+        let heal = rule(
+            "{S} is healing you",
+            Trigger::Pattern {
+                pattern: r"^(?<S>.+?) begins to cast Complete Heal on {C}\.$".into(),
+            },
+        );
+        let mut braces = rule(
+            "Braces & <more>",
+            Trigger::Contains {
+                text: "says {hello}".into(),
+            },
+        );
+        braces.sound = Sound::Bell;
+        braces.cooldown = 10;
+        let charm = rule(
+            "Charm broke",
+            Trigger::Signal {
+                kind: norrlog_api::SignalKind::CharmBroken,
+                name: None,
+            },
+        );
+        let rules = vec![breath, heal, braces, charm];
+
+        let (xml, n, notes) = to_xml(&rules);
+        assert_eq!(n, 3, "the happening has no GINA form");
+        assert!(
+            xml.contains(r"<TriggerText>^{S} begins to cast Complete Heal on {C}\.$</TriggerText>"),
+            "{xml}"
+        );
+
+        let back = from_xml(&xml).unwrap();
+        assert_eq!(back.rules.len(), 3, "{:?}", back.notes);
+        let b = by_name(&back, "BREATH");
+        assert!(
+            matches!(&b.trigger, Trigger::Contains { text } if text == "Lord Nagafen rears back")
+        );
+        assert_eq!(
+            (b.timer, b.speak, b.say.as_deref()),
+            (30, true, Some("breath incoming"))
+        );
+        let h = by_name(&back, "{S} is healing you");
+        assert!(
+            matches!(&h.trigger, Trigger::Pattern { pattern } if pattern == r"^(?<S>.+?) begins to cast Complete Heal on {C}\.$"),
+            "{:?}",
+            h.trigger
+        );
+        let br = by_name(&back, "Braces & <more>");
+        let Trigger::Pattern { pattern } = &br.trigger else {
+            panic!("{:?}", br.trigger)
+        };
+        assert!(
+            regex::Regex::new(pattern)
+                .unwrap()
+                .is_match("Tharn says {hello}")
+        );
+
+        for want in [
+            "Charm broke: watches a typed happening",
+            "Braces & <more>: this app's sound",
+            "Braces & <more>: GINA has no cooldown",
+        ] {
+            assert!(
+                notes.iter().any(|n| n.starts_with(want)),
+                "{want}: {notes:?}"
+            );
+        }
+        let pkg = to_package(&rules).unwrap();
+        assert!(pkg.bytes.starts_with(b"PK"));
+        assert_eq!(from_zip(&pkg.bytes).unwrap(), xml);
+    }
+
+    #[test]
+    fn captures_turn_back_into_tokens_and_others_stay() {
+        assert_eq!(to_tokens(r"(?<N>\d+) of (?<S2>.+?)"), "{N} of {S2}");
+        assert_eq!(
+            to_tokens(r"(?P<who>\w+) and (?<N>.+?)"),
+            r"(?<who>\w+) and (?<N>.+?)"
+        );
+        assert_eq!(quotes_beyond_gina("{S} hits {who}").as_deref(), Some("who"));
+        assert_eq!(quotes_beyond_gina("{s1} {N} {TS} {C}"), None);
     }
 
     #[test]
