@@ -378,6 +378,19 @@ pub struct Bestiary {
     /// learned from whichever line happens to carry it, which may not be the
     /// line that created the profile.
     articles: HashMap<NpcKey, String>,
+    /// How each creature's name is spelled, article off, keyed on the
+    /// lowercased name the profiles are filed under.
+    ///
+    /// The client capitalises a name that starts a line: "Fire goblin hits
+    /// YOU" is the "fire goblin" of "You have slain a fire goblin!". Filed
+    /// under the spelling, those were two creatures, one with the kills and
+    /// one with what it did to you (187 of 3,190 on one Legends log). So the
+    /// key is folded, as the drop tables' always was, and the spelling kept
+    /// here is the one with a small first letter when the log ever wrote
+    /// one: that is how the game spells the name mid-line, where a capital
+    /// is the name's own. A proper name is never written small, so "Lord
+    /// Nagafen" keeps its capitals.
+    spellings: HashMap<NpcKey, String>,
 }
 
 /// The spread to report for a set of health samples: min, median, max.
@@ -435,8 +448,16 @@ impl Bestiary {
             zone: zone.name.clone(),
             mode: zone.mode,
             difficulty: zone.difficulty,
-            name: name.to_string(),
+            name: name.to_lowercase(),
         };
+        let small = |s: &str| s.chars().next().is_some_and(char::is_lowercase);
+        match self.spellings.get_mut(&key) {
+            None => {
+                self.spellings.insert(key.clone(), name.to_string());
+            }
+            Some(have) if !small(have) && small(name) => *have = name.to_string(),
+            Some(_) => {}
+        }
         // Remembered here because this is the one place every raw name passes
         // through, and by then the article is the only part about to be lost.
         //
@@ -653,7 +674,7 @@ impl Bestiary {
                     zone: key.zone.clone(),
                     mode: key.mode,
                     difficulty: key.difficulty,
-                    name: key.name.clone(),
+                    name: self.spelling(key).to_string(),
                     at: *at,
                     hp: *hp,
                 })
@@ -676,6 +697,13 @@ impl Bestiary {
     /// The denominator a per-tier drop rate needs: the drop tracker counts
     /// kills by name alone, which pools an Awakened goblin with a Refined
     /// one.
+    /// How `key`'s creature is spelled; see `spellings`.
+    fn spelling<'a>(&'a self, key: &'a NpcKey) -> &'a str {
+        self.spellings
+            .get(key)
+            .map_or(key.name.as_str(), String::as_str)
+    }
+
     pub fn kills_in_tier(&self, npc: &str, mode: Mode, difficulty: u8) -> u64 {
         let name = canonical_npc(npc).trim();
         self.npcs
@@ -693,9 +721,10 @@ impl Bestiary {
             .iter()
             .map(|(key, p)| {
                 let mut p = p.clone();
-                // The identity is what the profile was built under; the name
-                // is that plus whatever article the client was seen to use.
-                p.key = p.name.clone();
+                // The identity is the name as the log spells it; the name is
+                // that plus whatever article the client was seen to use.
+                p.key = self.spelling(key).to_string();
+                p.name = p.key.clone();
                 if let Some(article) = self.articles.get(key) {
                     p.name = format!("{article} {}", p.key);
                 }
@@ -771,7 +800,16 @@ pub fn merge(
         // name would file "a fire goblin" and "fire goblin" as two creatures
         // -- which is the bug `canonical_npc` was written to prevent, moved
         // one level up.
-        let key = (p.game, p.zone.clone(), p.mode, p.difficulty, p.identity());
+        // Case folded too: the same creature was filed as "Fire goblin" and
+        // "fire goblin" by builds before the bestiary folded its own key, and
+        // those rows are still on disk.
+        let key = (
+            p.game,
+            p.zone.clone(),
+            p.mode,
+            p.difficulty,
+            p.identity().to_lowercase(),
+        );
         // Melee always goes through the folding path below, even for the first
         // profile of a creature. Inserting one wholesale would trust it to
         // already hold one row per pairing, and a caller reading rows back out
@@ -789,6 +827,17 @@ pub fn merge(
                 // the bare form, the same way one proved body type does.
                 if into.identity() == into.name && p.identity() != p.name {
                     into.name = p.name.clone();
+                }
+                // And a small first letter wins over a capital, for the
+                // reason the bestiary keeps one (see `Bestiary::spellings`).
+                let small = |s: &str| s.chars().next().is_some_and(char::is_lowercase);
+                let was = into.identity();
+                if !small(&was) && small(&p.identity()) && into.name.ends_with(&was) {
+                    let article = into.name.len() - was.len();
+                    into.name = format!("{}{}", &into.name[..article], p.identity());
+                    if !into.key.is_empty() {
+                        into.key = p.identity();
+                    }
                 }
                 into.kills += p.kills;
                 into.deaths_to_it += p.deaths_to_it;
@@ -846,7 +895,7 @@ pub fn merge(
     let mut by_creature: HashMap<(String, Mode, u8, String), Vec<u64>> = HashMap::new();
     for s in health {
         by_creature
-            .entry((s.zone.clone(), s.mode, s.difficulty, s.name.clone()))
+            .entry((s.zone.clone(), s.mode, s.difficulty, s.name.to_lowercase()))
             .or_default()
             .push(s.hp);
     }
@@ -857,7 +906,12 @@ pub fn merge(
         // moment the name grew an article, and a creature's whole health
         // spread came back as zero.
         let samples = by_creature
-            .get(&(p.zone.clone(), p.mode, p.difficulty, p.identity()))
+            .get(&(
+                p.zone.clone(),
+                p.mode,
+                p.difficulty,
+                p.identity().to_lowercase(),
+            ))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let (min, median, max) = health_spread(samples);
@@ -1047,6 +1101,59 @@ mod tests {
             r.npcs[0].name, "a fire goblin",
             "the name is what the game says"
         );
+    }
+
+    /// A capital at the start of a line is grammar, not the name.
+    ///
+    /// "Fire goblin hits YOU" and "You have slain a fire goblin!" are one
+    /// creature. Filed under the spelling they were two, the kills on one
+    /// and the swings on the other, and the same for a name with no article
+    /// at all ("Phoboplasm hits YOU", "You have slain phoboplasm!"). Stored
+    /// rows from before the fold come together in the merge too.
+    #[test]
+    fn a_capital_that_starts_a_line_is_the_same_creature() {
+        let mut b = bestiary();
+        b.on_zone("The Plane of Fear");
+        b.on_swing(100, "Fire goblin", Swing::Hit(50));
+        b.on_damage_to(100, "a fire goblin", 900);
+        b.on_kill(101, "a fire goblin");
+        b.on_swing(200, "Phoboplasm", Swing::Hit(70));
+        b.on_kill(201, "phoboplasm");
+        b.on_kill(300, "Lord Nagafen");
+        let r = b.report();
+        assert_eq!(r.npcs.len(), 3, "{:?}", r.npcs);
+        let by = |k: &str| r.npcs.iter().find(|n| n.key == k).unwrap();
+        let goblin = by("fire goblin");
+        assert_eq!((goblin.name.as_str(), goblin.kills), ("a fire goblin", 1));
+        assert_eq!(goblin.melee.iter().map(|m| m.hits).sum::<u64>(), 1);
+        assert_eq!(goblin.health_median, 900);
+        let ph = by("phoboplasm");
+        assert_eq!((ph.name.as_str(), ph.kills), ("phoboplasm", 1));
+        assert_eq!(ph.melee.iter().map(|m| m.hits).sum::<u64>(), 1);
+        assert_eq!(
+            by("Lord Nagafen").name,
+            "Lord Nagafen",
+            "a proper name keeps its capital"
+        );
+        assert!(
+            b.health_samples().iter().all(|h| h.name == "fire goblin"),
+            "samples carry the same spelling as the profile, for the merge to join"
+        );
+
+        // Two rows on disk from an older build, one per spelling.
+        let mut capital = goblin.clone();
+        capital.name = "Fire goblin".into();
+        capital.key = String::new();
+        capital.kills = 0;
+        let mut small = goblin.clone();
+        small.key = String::new();
+        let merged = merge(vec![capital, small], &b.health_samples());
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(
+            (merged[0].name.as_str(), merged[0].kills),
+            ("a fire goblin", 1)
+        );
+        assert_eq!(merged[0].health_median, 900);
     }
 
     /// A creature the client never puts an article on keeps none.
