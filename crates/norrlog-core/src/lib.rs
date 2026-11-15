@@ -15,6 +15,7 @@ pub mod bundle;
 pub mod class;
 pub mod classlevel;
 pub mod collect;
+pub mod combat_text;
 pub mod drops;
 pub mod encounter;
 pub mod env;

@@ -366,6 +366,55 @@ pub struct OverlayView {
     _glide: Task<()>,
     /// Where each timer ends, held steady between snapshots.
     ends: crate::steady::Ends,
+    /// Floating combat text in flight, and the last sequence taken from a
+    /// snapshot (`None` until the first, which only sets the start).
+    floats: Vec<Float>,
+    float_seen: Option<u64>,
+}
+
+/// One number on its way up the combat-text panel.
+struct Float {
+    born: Instant,
+    seq: u64,
+    kind: String,
+    amount: f64,
+    crit: bool,
+}
+
+/// How long a number takes to rise and fade (the page's `--fct-life`).
+const FLOAT_FOR: Duration = Duration::from_millis(1800);
+/// The combat-text panel's height, in the page's pixels.
+const FLOAT_HEIGHT: f32 = 120.;
+/// At most this many in flight; a burst keeps its newest.
+const FLOATS_MAX: usize = 24;
+
+/// The combat text in `snap` newer than `seen`, oldest first, and the new
+/// `seen`. The first snapshot only sets where to start, so opening the
+/// overlay mid-fight replays nothing; a sequence that went backwards is a
+/// restarted daemon, and starts again from its number.
+fn fresh_floats(seen: Option<u64>, snap: &Value) -> (Vec<Value>, Option<u64>) {
+    let Some(top) = snap.get("combat_seq").and_then(Value::as_u64) else {
+        return (Vec::new(), seen);
+    };
+    match seen {
+        Some(seen) if top >= seen => {
+            let new = snap
+                .get("combat_text")
+                .and_then(Value::as_array)
+                .map(|a| a.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|c| {
+                    c.get("seq")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|q| q > seen)
+                })
+                .cloned()
+                .collect();
+            (new, Some(top))
+        }
+        _ => (Vec::new(), Some(top)),
+    }
 }
 
 /// How long an alert's banner stays up.
@@ -478,6 +527,8 @@ impl OverlayView {
             _tick: tick,
             _glide: glide,
             ends: Default::default(),
+            floats: Vec::new(),
+            float_seen: None,
         }
     }
 
@@ -497,6 +548,20 @@ impl OverlayView {
             };
             self.dps
                 .on_snapshot(snap.get("log_time").and_then(Value::as_i64), enc);
+        }
+        if self.opts.has("fct") {
+            let (new, seen) = fresh_floats(self.float_seen, &snap);
+            self.float_seen = seen;
+            let now = Instant::now();
+            self.floats.extend(new.iter().map(|c| Float {
+                born: now,
+                seq: c.get("seq").and_then(Value::as_u64).unwrap_or(0),
+                kind: s(c, "kind").to_string(),
+                amount: f(c, "amount"),
+                crit: flag(c, "crit"),
+            }));
+            let over = self.floats.len().saturating_sub(FLOATS_MAX);
+            self.floats.drain(..over);
         }
         self.snap = Some(snap);
         self.at = Instant::now();
@@ -611,6 +676,10 @@ impl OverlayView {
 impl Render for OverlayView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(px(16. * self.opts.scale));
+        self.floats.retain(|fl| fl.born.elapsed() < FLOAT_FOR);
+        if !self.floats.is_empty() {
+            window.request_animation_frame();
+        }
         let me = cx.entity().downgrade();
         let col = div()
             .flex()
@@ -777,7 +846,7 @@ impl OverlayView {
         // The page's fixed order, whatever order `panels=` names them in.
         for p in [
             "meter", "xp", "heals", "taken", "motes", "dps", "outgoing", "incoming", "auras",
-            "debuffs", "others", "buffs", "charm", "apps", "sky",
+            "debuffs", "others", "buffs", "fct", "charm", "apps", "sky",
         ] {
             // Motes and Sky are Legends'; live EverQuest has neither.
             if !o.has(p) || !crate::features::panel_shown(p) {
@@ -806,6 +875,7 @@ impl OverlayView {
                 "auras" => Some(self.auras(snap)),
                 "debuffs" => Some(self.debuffs(snap)),
                 "others" => Some(self.others(snap)),
+                "fct" => Some(self.combat_text()),
                 "buffs" => Some(self.buffs(snap)),
                 "charm" => self.charm_panel(),
                 "dps" => self.dps_panel(snap),
@@ -1175,6 +1245,67 @@ impl OverlayView {
     }
 
     /// `renderOthers`: your spells on others, the soonest to end first.
+    /// Floating combat text: what came at you rises on the left, what you
+    /// sent out on the right, each fading as it goes; a crit is larger and
+    /// bold. Redrawn every frame while anything is in flight.
+    fn combat_text(&self) -> Div {
+        let lane = |outgoing: bool| {
+            let mut d = div()
+                .relative()
+                .flex_1()
+                .h(u(FLOAT_HEIGHT))
+                .overflow_hidden();
+            for fl in &self.floats {
+                let out = matches!(fl.kind.as_str(), "hit" | "heal_out");
+                if out != outgoing {
+                    continue;
+                }
+                let t = (fl.born.elapsed().as_secs_f32() / FLOAT_FOR.as_secs_f32()).min(1.);
+                let colour = match fl.kind.as_str() {
+                    "hurt" => ENEMY,
+                    "heal" | "heal_out" => HEAL,
+                    _ if fl.crit => ACCENT,
+                    _ => TEXT,
+                };
+                // Three columns by sequence, so a burst does not stack on
+                // one spot.
+                let across = (fl.seq % 3) as f32 * 26.;
+                let size = if fl.crit { 19. } else { 14. };
+                let sign = if fl.kind.starts_with("heal") { "+" } else { "" };
+                let mut n = div()
+                    .absolute()
+                    .bottom(u(t * (FLOAT_HEIGHT - size - 4.)))
+                    .text_size(u(size))
+                    .text_color(rgba_of(colour, 1. - t * t))
+                    .whitespace_nowrap()
+                    .child(format!("{sign}{}", num(Some(fl.amount))));
+                n = if outgoing {
+                    n.right(u(across))
+                } else {
+                    n.left(u(across))
+                };
+                if fl.crit {
+                    n = n.font_weight(FontWeight::BOLD);
+                }
+                d = d.child(n);
+            }
+            d
+        };
+        panel(
+            "Combat text".into(),
+            Some("taken · dealt".into()),
+            self.floats.is_empty(),
+            vec![
+                div()
+                    .flex()
+                    .gap(u(8.))
+                    .child(lane(false))
+                    .child(lane(true))
+                    .into_any_element(),
+            ],
+        )
+    }
+
     fn others(&self, snap: &Value) -> Div {
         let rows: Vec<AnyElement> = snap
             .get("on_others")
@@ -2340,6 +2471,33 @@ fn x11_click_through(id: u32, on: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opening the overlay mid-fight replays nothing; after that, each
+    /// number shows once; a restarted daemon starts again from its own.
+    #[test]
+    fn combat_text_shows_each_number_once_and_nothing_old() {
+        let snap = |top: u64, seqs: &[u64]| {
+            serde_json::json!({
+                "combat_seq": top,
+                "combat_text": seqs.iter().map(|q| serde_json::json!({"seq": q, "kind": "hit", "amount": 5})).collect::<Vec<_>>(),
+            })
+        };
+        let seqs = |v: Vec<Value>| {
+            v.iter()
+                .map(|c| c["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (new, seen) = fresh_floats(None, &snap(7, &[5, 6, 7]));
+        assert!(new.is_empty(), "already on screen when the overlay opened");
+        let (new, seen) = fresh_floats(seen, &snap(9, &[6, 7, 8, 9]));
+        assert_eq!(seqs(new), [8, 9]);
+        let (new, seen) = fresh_floats(seen, &snap(9, &[6, 7, 8, 9]));
+        assert!(new.is_empty(), "a snapshot with nothing new");
+        let (new, seen) = fresh_floats(seen, &snap(2, &[1, 2]));
+        assert!(new.is_empty(), "a new daemon: start from its number");
+        let (new, _) = fresh_floats(seen, &snap(3, &[1, 2, 3]));
+        assert_eq!(seqs(new), [3]);
+    }
     // The glob import of `gpui` brings its own `test` attribute.
     use core::prelude::v1::test;
 

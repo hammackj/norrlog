@@ -242,6 +242,14 @@ pub struct Snapshot {
     /// Your spells running on others: heals over time, dots, slows.
     #[serde(default)]
     pub on_others: Vec<norrlog_core::on_others::OnOther>,
+    /// Your newest hits, damage taken and heals, for the overlays' floating
+    /// combat text. Live lines only: the initial read adds none.
+    #[serde(default)]
+    pub combat_text: Vec<norrlog_core::combat_text::CombatText>,
+    /// The highest combat-text sequence issued, so a client that connects
+    /// mid-fight starts from here rather than replaying what is listed.
+    #[serde(default)]
+    pub combat_seq: u64,
     /// Progress through the current level, and the rate it is moving at.
     pub exp: ExpSummary,
     pub totals: Totals,
@@ -395,6 +403,7 @@ pub struct Engine {
     tracker: EncounterTracker,
     /// Your spells running on others, for the overlay's `others` panel.
     on_others: norrlog_core::on_others::OnOthers,
+    combat_text: norrlog_core::combat_text::CombatTexts,
     resolver: SpellResolver,
     classes: ClassDetector,
     /// The class the buffs were gathered under, in a one-class game. A
@@ -592,6 +601,7 @@ impl Engine {
             parser: Parser::new(&player),
             tracker: EncounterTracker::new(&player),
             on_others: Default::default(),
+            combat_text: Default::default(),
             resolver: {
                 let mut r = SpellResolver::new(spell_db, 1);
                 r.set_overrun(norrlog_core::profile::profile(game).buff_overrun);
@@ -829,9 +839,11 @@ impl Engine {
             player,
             recent_lines,
             line_seq,
+            combat_text,
             ..
         } = self;
         alerts.on_line(entry.timestamp, &entry.raw, &entry.event, player);
+        combat_text.on_event(entry.timestamp, &entry.event, player);
         *line_seq += 1;
         recent_lines.push_back(LogLine {
             seq: *line_seq,
@@ -3863,6 +3875,8 @@ impl Engine {
             auras,
             debuffs,
             on_others: self.on_others.report(now),
+            combat_text: self.combat_text.recent(),
+            combat_seq: self.combat_text.seq(),
             exp: ExpSummary {
                 percent: self.exp.current_percent(),
                 kills: self.exp.current_record().kills,
@@ -5623,6 +5637,28 @@ mod tests {
     /// The screenshot prompt is about what you could photograph right now,
     /// which is a narrower question than the loot tally answers but a wider
     /// one than "what is in your bags".
+    /// Combat text is news, like events: the initial read adds none, and
+    /// what follows goes out in the snapshot with its sequence.
+    #[test]
+    fn only_live_hits_become_combat_text() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &["[Tue Jul 28 12:00:00 2026] You slash a rat for 30 points of damage."],
+        );
+        e.set_live(true);
+        let snap = e.snapshot(10);
+        assert!(snap.combat_text.is_empty());
+        assert_eq!(snap.combat_seq, 0);
+
+        e.push_line("[Tue Jul 28 12:01:00 2026] You slash a rat for 45 points of damage.");
+        e.push_line("[Tue Jul 28 12:01:01 2026] A rat bites YOU for 4 points of damage.");
+        let snap = e.snapshot(10);
+        let got: Vec<_> = snap.combat_text.iter().map(|c| (c.seq, c.amount)).collect();
+        assert_eq!(got, [(1, 45), (2, 4)]);
+        assert_eq!(snap.combat_seq, 2);
+    }
+
     #[test]
     fn only_live_lines_become_events() {
         let mut e = engine();

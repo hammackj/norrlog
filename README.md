@@ -150,11 +150,14 @@ they are typed into Settings, for OBS they go on the URL:
 | `?idle=1` | Keep the last fight on screen between pulls |
 
 Panels: `meter`, `dps`, `outgoing`, `incoming`, `xp`, `heals`, `taken`,
-`auras`, `buffs`, `debuffs`, `others`, `motes`, `charm`, `sky`, `apps`. Several
+`auras`, `buffs`, `debuffs`, `others`, `fct`, `motes`, `charm`, `sky`, `apps`. Several
 hide themselves when they have nothing to say. `others` lists your spells running
 on other people and mobs (a heal over time on each groupmate, your dots and
 slows) with a countdown per target. The countdown starts from the spell file's
 duration, then uses how long each spell was actually seen to last for you.
+`fct` is floating combat text: damage you take and heals you get rise on the
+left, your hits and your heals on others on the right, crits larger. It shows
+only what happens after the overlay opens.
 
 ## Command-line tools
 

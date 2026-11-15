@@ -6,7 +6,7 @@
  *
  *   ?panels=meter,buffs   panels: meter, dps, outgoing, xp, heals, taken,
  *                                 incoming, auras, buffs, debuffs, others,
- *                                 motes,
+ *                                 fct (floating combat text), motes,
  *                                 charm, sky, apps (wanted is an alias)
  *   ?rows=6               max meter rows (applies to each meter panel)
  *   ?buffs=8              max buff timers
@@ -108,6 +108,9 @@
     auras: document.getElementById("auras"),
     othersPanel: document.getElementById("others-panel"),
     others: document.getElementById("others"),
+    fctPanel: document.getElementById("fct-panel"),
+    fctIn: document.getElementById("fct-in"),
+    fctOut: document.getElementById("fct-out"),
     debuffPanel: document.getElementById("debuff-panel"),
     debuffs: document.getElementById("debuffs"),
     buffPanel: document.getElementById("buff-panel"),
@@ -133,6 +136,7 @@
   if (!opt.panels.includes("auras")) el.auraPanel.classList.add("hidden");
   if (!opt.panels.includes("debuffs")) el.debuffPanel.classList.add("hidden");
   if (!opt.panels.includes("others")) el.othersPanel.classList.add("hidden");
+  if (!opt.panels.includes("fct")) el.fctPanel.classList.add("hidden");
   if (!opt.panels.includes("buffs")) el.buffPanel.classList.add("hidden");
 
   /* Charm resists.
@@ -689,6 +693,7 @@
     renderAuras(snap.auras || []);
     renderDebuffs(snap.debuffs || []);
     renderOthers(snap.on_others || []);
+    if (opt.panels.includes("fct")) renderCombatText(snap);
     renderBuffs(snap.buffs || []);
     // `live: false` is the daemon still reading the log's backlog, not a lost
     // connection: say so, since a long log can take a minute.
@@ -1027,6 +1032,35 @@
         </div>`;
       })
       .join("");
+  }
+
+  /* Floating combat text: what came at you rises on the left, what you sent
+     out on the right, and CSS fades each as it climbs. The snapshot carries
+     the newest few with a sequence number; the first snapshot only sets
+     where to start, so a page loaded mid-fight replays nothing, and a
+     sequence that goes backwards is a restarted daemon. */
+  let fctSeen = null;
+  const FCT_MAX = 24;
+  function renderCombatText(snap) {
+    const top = snap.combat_seq;
+    if (typeof top !== "number") return;
+    if (fctSeen === null || top < fctSeen) {
+      fctSeen = top;
+      return;
+    }
+    for (const c of snap.combat_text || []) {
+      if (c.seq <= fctSeen) continue;
+      const out = c.kind === "hit" || c.kind === "heal_out";
+      const lane = out ? el.fctOut : el.fctIn;
+      const n = document.createElement("div");
+      n.className = `float ${c.kind}${c.crit ? " crit" : ""}`;
+      n.style.setProperty("--across", `${(c.seq % 3) * 26}px`);
+      n.textContent = (c.kind.startsWith("heal") ? "+" : "") + num(c.amount);
+      n.addEventListener("animationend", () => n.remove());
+      lane.appendChild(n);
+      while (lane.childElementCount > FCT_MAX) lane.firstElementChild.remove();
+    }
+    fctSeen = top;
   }
 
   /* Your spells on others, one row per target and spell, the soonest to end
