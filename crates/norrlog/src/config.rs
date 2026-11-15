@@ -37,6 +37,9 @@ pub struct ParserConfig {
     pub theme: String,
     /// A multiplier on the whole layout; absent means 1.
     pub ui_scale: Option<f32>,
+    /// Whether the Quest Tracker follows Plane of Sky quests; absent means
+    /// yes, as it always did.
+    pub track_sky_quests: Option<bool>,
     /// The paths last followed for each game, by slug.
     pub games: BTreeMap<String, Paths>,
 }

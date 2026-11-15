@@ -95,6 +95,7 @@ fn main() {
         gpui_component::init(cx);
         theme::set_palette(&cfg.theme);
         theme::set_scale(cfg.ui_scale.unwrap_or(1.));
+        features::set_sky_wanted(cfg.track_sky_quests.unwrap_or(true));
         theme::apply(cx);
         let bounds = match state.bounds {
             Some(r) => {

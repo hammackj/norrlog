@@ -23,6 +23,7 @@ use crate::theme::{self, px};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
@@ -111,6 +112,11 @@ pub struct SettingsView {
     /// The overlay cards. The shell listens to them.
     pub overlay: Entity<crate::overlay_settings::OverlayControls>,
 }
+
+/// Plane of Sky tracking was turned on or off: the views that show it redraw.
+pub struct QuestsChanged;
+
+impl EventEmitter<QuestsChanged> for SettingsView {}
 
 fn input(
     window: &mut Window,
@@ -737,7 +743,7 @@ const GAME_HINT: &str = "Needs spells_us.txt. Without it, buff timers and class 
 const SINCE_HINT: &str = "A shorter window starts far faster, but every figure derived from the log shrinks with it: \
     loot, kills, encounters and totals cover the window, not a lifetime. The lockout grid, Sky progress and turn-in \
     history are kept in the database and are unaffected. Changing this restarts the parser.";
-const EQDB_HINT: &str = "Item tooltips, icons and the Sky tab's quest record are asked of an eqldb site, with the item \
+const EQDB_HINT: &str = "Item tooltips, icons and the Quest Tracker's Plane of Sky record are asked of an eqldb site, with the item \
     data bundled in the app behind it. Off asks no site anything; tooltips then come from the bundled data alone. \
     Saved with Save & restart daemon, which restarts the shared daemon with it, whichever app started it.";
 const EXPORT_HINT: &str = "Boss kills grouped by loadout, with kill counts, average and best times, and your DPS. \
@@ -748,6 +754,9 @@ const EXPORT_HINT: &str = "Boss kills grouped by loadout, with kill counts, aver
 fn scale_json(v: f32) -> f64 {
     (f64::from(v) * 100.).round() / 100.
 }
+
+const SKY_HINT: &str = "The Quest Tracker tab, the dashboard's Plane of Sky bars and the overlay's turn-in panel. \
+    Off stops the app asking for them; the daemon keeps reading the lines, so nothing is missed if you turn it back on.";
 
 const THEME_HINT: &str = "The default matches eqldb and hammackj.com, so the tools read as one family. Applies to \
     this window; the overlay keeps its own palette, tuned against game footage rather than a desktop.";
@@ -845,6 +854,7 @@ impl Render for SettingsView {
                         v_flex()
                             .gap_3()
                             .child(self.render_display(cx))
+                            .children(self.render_quests(cx))
                             .child(self.render_marks(cx))
                             .child(self.render_export(cx))
                             .child(self.overlay.clone()),
@@ -917,6 +927,30 @@ impl SettingsView {
             .when_some(self.display_err.clone(), |d, e| {
                 d.child(div().text_sm().text_color(hex(ERR)).child(e))
             })
+    }
+
+    /// The Quest Tracker's sections, each on or off. Only for a game that
+    /// has one: Plane of Sky quests are Legends'.
+    fn render_quests(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !crate::features::has("sky") {
+            return None;
+        }
+        Some(
+            card("Quest Tracker")
+                .child(
+                    Checkbox::new("track-sky")
+                        .label("Track Plane of Sky quests")
+                        .checked(crate::features::sky_wanted())
+                        .on_click(cx.listener(|v, on: &bool, _, cx| {
+                            crate::features::set_sky_wanted(*on);
+                            v.save_display("trackSkyQuests", serde_json::json!(*on), cx);
+                            // Its panel comes and goes from the overlay list.
+                            v.overlay.update(cx, |_, cx| cx.notify());
+                            cx.emit(QuestsChanged);
+                        })),
+                )
+                .child(hint(SKY_HINT)),
+        )
     }
 
     fn save_display(&mut self, key: &str, value: serde_json::Value, cx: &mut Context<Self>) {

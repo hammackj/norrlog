@@ -24,7 +24,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("tradeskills", "Tradeskills"),
     ("forage", "Forage"),
     ("bestiary", "Bestiary"),
-    ("sky", "Sky"),
+    ("quests", "Quest Tracker"),
     ("tells", "Tells"),
     ("search", "Search"),
     ("alerts", "Alerts"),
@@ -106,9 +106,11 @@ impl Shell {
         // a window killed with the session never gets to say goodbye.
         let mut subs =
             vec![cx.observe_window_bounds(window, |v, window, _| v.remember_bounds(window))];
-        // Classes is a section of Character now.
+        // Classes is a section of Character now, and Sky of the Quest
+        // Tracker.
         let saved = match state.tab.as_str() {
             "classes" => "character",
+            "sky" => "quests",
             t => t,
         };
         let tab = TABS
@@ -127,7 +129,7 @@ impl Shell {
         let bestiary = cx.new(|cx| crate::bestiary::BestiaryView::new(window, cx));
         let sky = cx.new(crate::sky::SkyView::new);
         let dashboard = cx.new(crate::dashboard::DashboardView::new);
-        // The dashboard's Sky bars follow the Sky tab's own loads.
+        // The dashboard's Sky bars follow the Quest Tracker's own loads.
         subs.push(
             cx.subscribe(&sky, |v: &mut Self, _, e: &crate::sky::SkyLoaded, cx| {
                 let r = e.0.clone();
@@ -138,6 +140,15 @@ impl Shell {
         let search = cx.new(|cx| crate::search::SearchView::new(window, cx));
         let alerts = cx.new(|cx| crate::alerts::AlertsView::new(window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsView::new(restart, window, cx));
+        // Turning Plane of Sky tracking on or off redraws what shows it:
+        // both are drawn cached, so nothing else would.
+        subs.push(cx.subscribe(
+            &settings,
+            |v: &mut Self, _, _: &crate::settings::QuestsChanged, cx| {
+                v.sky.update(cx, |_, cx| cx.notify());
+                v.dashboard.update(cx, |d, cx| d.sky_toggled(cx));
+            },
+        ));
         let controls = settings.read(cx).overlay.clone();
         subs.push(cx.subscribe(
             &controls,
@@ -191,7 +202,8 @@ impl Shell {
                 client,
             } => {
                 crate::features::set(hello.features.clone());
-                // A tab this game does not have (Sky, for live EverQuest)
+                // A tab this game does not have (the Quest Tracker, for live
+                // EverQuest)
                 // gives way to the Dashboard.
                 if crate::features::of_tab(self.tab).is_some_and(|f| !crate::features::has(f)) {
                     self.tab = "dashboard";
@@ -269,7 +281,7 @@ impl Shell {
                 });
                 self.sky.update(cx, |v, cx| {
                     v.set_api(Some(api.clone()), cx);
-                    if open == "sky" {
+                    if open == "quests" {
                         v.load(false, cx);
                     }
                 });
@@ -328,7 +340,7 @@ impl Shell {
                 let bestiary_open = self.tab == "bestiary";
                 self.bestiary
                     .update(cx, |v, cx| v.on_snapshot(bestiary_open, cx));
-                let sky_open = self.tab == "sky";
+                let sky_open = self.tab == "quests";
                 self.sky.update(cx, |v, cx| v.on_snapshot(sky_open, cx));
                 let current = s
                     .get("current")
@@ -452,7 +464,7 @@ impl Shell {
         if tab == "tells" {
             self.tells.update(cx, |v, cx| v.load(cx));
         }
-        if tab == "sky" {
+        if tab == "quests" {
             self.sky.update(cx, |v, cx| v.load(false, cx));
         }
         self.state.tab = tab.to_string();
@@ -756,7 +768,7 @@ impl Shell {
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
-            "sky" => self
+            "quests" => self
                 .sky
                 .clone()
                 .cached(StyleRefinement::default().size_full())
@@ -799,7 +811,7 @@ impl Render for Shell {
                         | "tradeskills"
                         | "forage"
                         | "bestiary"
-                        | "sky"
+                        | "quests"
                         | "tells"
                         | "search"
                         | "alerts"

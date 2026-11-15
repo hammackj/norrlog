@@ -5,7 +5,7 @@
 //! Every snapshot, whichever tab is open: the live fight is taken from it,
 //! `/api/session` is asked again (at most every 2 s, and only while Session
 //! or This zone is selected), and `/api/lockouts` and `/api/sky` at most
-//! every 15 s. The Sky tab's own loads redraw the progress bars too. A failed
+//! every 15 s. The Quest Tracker's own loads redraw the progress bars too. A failed
 //! fetch keeps what was there.
 
 use crate::api::Api;
@@ -159,13 +159,22 @@ impl DashboardView {
         {
             self.load_lockouts(cx);
         }
-        if crate::features::has("sky") && self.last_sky.is_none_or(|t| t.elapsed() >= SLOW_POLL) {
+        if crate::features::sky_tracked() && self.last_sky.is_none_or(|t| t.elapsed() >= SLOW_POLL)
+        {
             self.load_sky(cx);
         }
         cx.notify();
     }
 
-    /// The Sky tab loaded `/api/sky`; its bars here follow.
+    /// Plane of Sky tracking was turned on or off. On, the bars are asked
+    /// for again rather than drawn from whatever was last loaded.
+    pub fn sky_toggled(&mut self, cx: &mut Context<Self>) {
+        self.sky = None;
+        self.last_sky = None;
+        cx.notify();
+    }
+
+    /// The Quest Tracker loaded `/api/sky`; its bars here follow.
     pub fn set_sky(&mut self, r: SkyReport, cx: &mut Context<Self>) {
         self.sky = Some(r);
         cx.notify();
@@ -262,7 +271,7 @@ impl Render for DashboardView {
                             .child(self.render_lockouts(cx))
                     })
                     // The meta replaces the placeholder note, as `#sky-prog-meta` does.
-                    .when(crate::features::has("sky"), |d| {
+                    .when(crate::features::sky_tracked(), |d| {
                         d.child(band(
                             "Plane of Sky",
                             if sky_meta.is_empty() {

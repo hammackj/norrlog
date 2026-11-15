@@ -647,7 +647,7 @@ impl OverlayView {
                     .unwrap_or_default();
             });
         }
-        if o.has("sky") && n.is_multiple_of(20) && crate::features::has("sky") {
+        if o.has("sky") && n.is_multiple_of(20) && crate::features::sky_tracked() {
             self.fetch("/api/sky".into(), cx, |me, v| me.sky = Some(v));
         }
     }

@@ -88,14 +88,14 @@ silent no matter what is in the log.
 Contributing to eqldb is the **eqldb collector**'s job, a separate app that
 attaches to this daemon: it keeps the site's wanted list, reads the screenshots
 you take, sends readings and bundles, and holds the upload token. This daemon
-reads eqldb only for item tooltips and the Sky tab, and sends it nothing.
+reads eqldb only for item tooltips and the Quest Tracker's Plane of Sky section, and sends it nothing.
 What the collector reads from here is `/api/events` (a `ScreenshotTaken` event
 when the client writes `Taking a screenshot...`), `/api/pickups`, `/api/bags`
 and `/api/bundle`.
 
 ## Plane of Sky
 
-The Sky tab reads two sources and shows both rather than picking one. The quest
+The Quest Tracker's Plane of Sky section reads two sources and shows both rather than picking one. The quest
 table is hand-transcribed and ships in `skyquest.rs`; **eqldb** keeps its own,
 assembled from parsed logs. They currently agree on every quest both know, so
 the useful output is the difference:

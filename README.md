@@ -26,7 +26,7 @@ overlay.
 - **Tradeskills.** Combines, skill-ups, what each recipe cost to raise.
 - **Classes.** Read from what the game states (`/who`, the class channel) and
   from the spells you cast.
-- **Plane of Sky** quest progress, for EverQuest Legends.
+- A **Quest Tracker** tab with Plane of Sky quest progress, for EverQuest Legends. Settings › Quest Tracker turns it off.
 - **Fight detail.** Each fight's breakdown per ability, who cast what, the
   hits that landed before you died, and a one-line parse to paste into chat.
 - **Tells and alerts.** A tell log, and alerts built from any line: a sound,

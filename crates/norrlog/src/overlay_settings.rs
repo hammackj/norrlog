@@ -31,7 +31,7 @@ pub const PANELS: &[(&str, &str)] = &[
     ("incoming", "Hitting you"),
     ("xp", "Experience"),
     ("motes", "Motes this session"),
-    ("sky", "Sky turn-ins"),
+    ("sky", "Plane of Sky turn-ins"),
     ("apps", "Other apps (the eqldb collector's prompt)"),
     ("charm", "Charm"),
 ];

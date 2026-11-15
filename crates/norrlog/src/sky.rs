@@ -1,4 +1,6 @@
-//! Sky: the Plane of Sky quests, with item icons and links.
+//! The Quest Tracker. Its one section so far is the Plane of Sky quests,
+//! with item icons and links; Legends only, and off when the player turns
+//! it off in Settings.
 //!
 //! `/api/sky` is fetched when the tab opens and every ten seconds while it is
 //! on screen; `?refresh=1` from the Refresh button. The bundled item data is
@@ -8,7 +10,7 @@
 use crate::api::Api;
 use crate::format::{num, when_short};
 use crate::item_tip::{ItemCards, item_tip};
-use crate::parts::{ROW, ROW_YOU, bar_row, card, card_suffixed, dim, empty, figure, fill, note};
+use crate::parts::{ROW, ROW_YOU, band, bar_row, card, dim, empty, figure, fill, hint, note};
 use crate::table::tag;
 use crate::theme::px;
 use crate::theme::*;
@@ -104,13 +106,19 @@ impl SkyView {
     }
 
     pub fn on_snapshot(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if visible && self.last_load.is_none_or(|t| t.elapsed() >= REFRESH) {
+        if visible
+            && crate::features::sky_tracked()
+            && self.last_load.is_none_or(|t| t.elapsed() >= REFRESH)
+        {
             self.load(false, cx);
         }
     }
 
     /// A failure is silent: the last draw stays.
     pub fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if !crate::features::sky_tracked() {
+            return;
+        }
         let Some(api) = self.api.clone() else { return };
         self.cards.update(cx, |c, cx| c.load_wiki(cx));
         self.last_load = Some(Instant::now());
@@ -206,6 +214,10 @@ impl SkyView {
     }
 }
 
+const OFF_HINT: &str = "Turned off in Settings, under Quest Tracker. Nothing is asked of the daemon or eqldb \
+    for them while it is off, and the dashboard and overlay leave them out too. The daemon still reads the lines, so \
+    turning it back on shows everything, including what happened while it was off.";
+
 const NOTE: &str = "Counts are items looted in this log, not current inventory — the client never reports a \
     turn-in, so a handed-in item still shows here. The quests are repeatable, so treat a ready quest as \"you have \
     seen every piece drop\", and check your bags before running to the island. Never turned in means no turn-in was \
@@ -222,11 +234,25 @@ const NOTE: &str = "Counts are items looted in this log, not current inventory �
 
 impl Render for SkyView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !crate::features::sky_wanted() {
+            return div()
+                .id("sky-scroll")
+                .size_full()
+                .child(
+                    card("Quest Tracker")
+                        .child(empty("Plane of Sky quests are not being tracked"))
+                        .child(hint(OFF_HINT)),
+                )
+                .into_any_element();
+        }
         let Some(reply) = self.reply.clone() else {
             return div()
                 .id("sky-scroll")
                 .size_full()
-                .child(card("Plane of Sky quests"))
+                .child(
+                    card("Quest Tracker")
+                        .child(band("Plane of Sky", "reading the log for turn-ins…")),
+                )
                 .into_any_element();
         };
         let d = &reply.report;
@@ -234,7 +260,7 @@ impl Render for SkyView {
 
         let ready = rows.iter().filter(|q| q.complete).count();
         let turn_ins: u32 = rows.iter().map(|q| q.completed).sum();
-        let mut summary = format!(" — {ready} of {} ready", rows.len());
+        let mut summary = format!("{ready} of {} ready", rows.len());
         if turn_ins > 0 {
             summary += &format!(
                 " · {turn_ins} turn-in{} recorded",
@@ -289,8 +315,9 @@ impl Render for SkyView {
             .size_full()
             .overflow_y_scrollbar()
             .child(
-                card_suffixed("Plane of Sky quests", Some(summary))
+                card("Quest Tracker")
                     .text_base()
+                    .child(band("Plane of Sky", &summary))
                     .child(body),
             )
             .into_any_element()
