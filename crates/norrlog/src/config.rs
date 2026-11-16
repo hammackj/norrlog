@@ -301,11 +301,7 @@ impl ParserConfig {
         if s.is_empty() || s.eq_ignore_ascii_case("all") {
             return None;
         }
-        let num = s.strip_suffix(['h', 'd', 'H', 'D']).unwrap_or("");
-        let ok = !num.is_empty()
-            && num.len() <= 6
-            && num.bytes().all(|b| b.is_ascii_digit())
-            && num.bytes().any(|b| b != b'0');
+        let ok = window_ok(s);
         if !ok {
             eprintln!(
                 "[norrlog] ignoring the saved load window {s:?}; expected 2h, 4h, 8h, 1d, 2d or all"
@@ -383,6 +379,20 @@ fn newest_log(dir: &Path) -> Option<PathBuf> {
 
 /// The install a Logs folder belongs to: its parent, when that holds the
 /// game's spell file. Anything else is not taken as an install.
+/// Whether `raw` is a load window the daemon takes: "all", nothing, or a
+/// whole number of hours or days.
+pub fn window_ok(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    let num = s.strip_suffix(['h', 'd', 'H', 'D']).unwrap_or("");
+    !num.is_empty()
+        && num.len() <= 6
+        && num.bytes().all(|b| b.is_ascii_digit())
+        && num.bytes().any(|b| b != b'0')
+}
+
 fn install_of(logs: &std::path::Path) -> Option<PathBuf> {
     let name = logs.file_name()?.to_string_lossy().to_lowercase();
     let dir = logs.parent()?;

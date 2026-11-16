@@ -1162,6 +1162,16 @@ impl SettingsView {
             .child(
                 field("Read on startup")
                     .child(since_menu)
+                    // A saved window the daemon would refuse (an old date, a
+                    // hand edit) is left out when it starts; say so here, not
+                    // only in the app's output.
+                    .when(!crate::config::window_ok(&self.since), |d| {
+                            d.child(div().text_color(hex(WARN)).child(format!(
+                                "The saved window {:?} is not one the daemon takes, so the whole log is read. Pick one above.",
+                                self.since.trim()
+                            )))
+                        },
+                    )
                     .child(hint(SINCE_HINT)),
             )
             .child(
