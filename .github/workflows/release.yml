@@ -55,10 +55,15 @@ jobs:
           grep -q "^Target: x86_64-unknown-linux-gnu" squashfs-root/usr/share/doc/norrlog/THIRD-PARTY-LICENSES.txt
           rm -rf squashfs-root
 
+      - name: Checksum
+        run: cd dist && for f in *.AppImage; do sha256sum "$f" > "$f.sha256"; done
+
       - uses: actions/upload-artifact@v4
         with:
           name: Norrlog-linux-x86_64
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -67,7 +72,7 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes "" || true
-          gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.AppImage dist/*.AppImage.sha256 --clobber
 
   # macOS and Windows are built on their own runners: GPUI's macOS build
   # needs Apple's Metal shader compiler, and Windows wants MSVC for the
