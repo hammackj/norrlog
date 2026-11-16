@@ -48,6 +48,7 @@ mod table;
 mod tells;
 mod theme;
 mod tradeskills;
+mod update;
 mod view;
 
 use gpui::*;

@@ -227,6 +227,9 @@ pub fn spawn(
     handle
 }
 
+/// Whether an older daemon has been restarted this run; see `session`.
+static RESTARTED_OLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// How a session ended.
 enum End {
     /// The window has gone.
@@ -316,6 +319,20 @@ async fn session(
     };
     let hello = Box::new(client.hello().clone());
     let started = client.started_daemon();
+    // An older daemon still running from before an update: stop it and start
+    // this build's. Once per run, so a daemon binary that is itself old
+    // (a collector's, say) is not restarted for ever.
+    if !started
+        && crate::update::is_newer(crate::update::VERSION, &hello.version)
+        && !RESTARTED_OLD.swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        eprintln!(
+            "[norrlog] norrlogd {} is older than this app ({}); restarting it",
+            hello.version,
+            crate::update::VERSION
+        );
+        return End::Restart(setup.clone());
+    }
     if tx
         .attached(hello, started, Box::new(client.clone()), generation)
         .await
@@ -356,6 +373,11 @@ fn names_a_log(args: &[OsString]) -> bool {
 /// Stop the daemon on `port`, if one answers, and wait up to five seconds
 /// for the port to come free. Whoever started it: every app attached to it
 /// reconnects to the new one.
+/// Stop the daemon on `port`, for an update about to start its own.
+pub async fn stop_port(port: u16) {
+    stop(port).await
+}
+
 async fn stop(port: u16) {
     let pid = match Client::attach(port).await {
         Ok(old) => old.hello().pid,

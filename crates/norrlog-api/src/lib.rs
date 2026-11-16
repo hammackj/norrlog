@@ -230,6 +230,52 @@ pub struct PanelUp {
     pub panel: Panel,
 }
 
+/// `GET /api/update/latest`: the newest published release of the app, as
+/// the project's GitHub releases list it. The daemon asks, because it has
+/// the TLS stack the app is built without.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LatestRelease {
+    /// `None` when there is no published release, or none could be read.
+    pub release: Option<Release>,
+    /// Why none could be read; `None` when there simply is none yet.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Release {
+    /// The tag, such as `v0.2.0`.
+    pub tag: String,
+    pub name: String,
+    /// The release notes, as written (Markdown).
+    pub notes: String,
+    /// The release's page, for a browser.
+    pub url: String,
+    pub assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size: u64,
+}
+
+/// `POST /api/update/fetch`: download one file of a release, and its
+/// signature, for the app to check and install.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FetchUpdate {
+    pub tag: String,
+    pub asset: String,
+}
+
+/// Where a fetched update was put. Nothing about it is trusted yet: the app
+/// checks the signature against the key it was built with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FetchedUpdate {
+    pub path: String,
+    /// The `.minisig` file's text.
+    pub signature: String,
+}
+
 /// What a non-2xx answer carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiError {

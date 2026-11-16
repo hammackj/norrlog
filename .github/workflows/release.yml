@@ -179,3 +179,38 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --draft --title "Norrlog $GITHUB_REF_NAME" --notes "" || true
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+  # Every download is signed with the release key, which installed copies
+  # check before updating themselves (crates/norrlog/src/update.rs). The
+  # trusted comment names the release and the file, and the app requires it
+  # to, so a signed file cannot be passed off as another. The secret key is
+  # the MINISIGN_KEY secret; packaging/release-key.sh makes the pair.
+  sign:
+    name: Sign the downloads
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [appimage, macos, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Sign and attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "::error::MINISIGN_KEY is not set: without signatures no installed copy will take this release"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_KEY" > "$key"
+          mkdir dist && cd dist
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          for f in *; do
+            case "$f" in *.sha256|*.minisig) continue ;; esac
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "norrlog $GITHUB_REF_NAME $f"
+          done
+          rm -f "$key"
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber *.minisig

@@ -40,6 +40,9 @@ pub struct ParserConfig {
     /// Whether the Quest Tracker follows Plane of Sky quests; absent means
     /// yes, as it always did.
     pub track_sky_quests: Option<bool>,
+    /// Whether an installed copy asks for a newer release on launch; absent
+    /// means yes.
+    pub check_for_updates: Option<bool>,
     /// The paths last followed for each game, by slug.
     pub games: BTreeMap<String, Paths>,
 }

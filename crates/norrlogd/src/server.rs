@@ -107,6 +107,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/item-brief", get(item_brief))
         .route("/api/alerts", get(alerts).post(put_alert))
         .route("/api/xp-bar", post(put_xp_bar))
+        .route("/api/update/latest", get(get_update_latest))
+        .route("/api/update/fetch", post(post_update_fetch))
         .route("/api/alerts/delete", post(delete_alert))
         .route("/api/lines", get(lines))
         .route("/api/search", get(search))
@@ -2579,6 +2581,33 @@ async fn classes(
 #[derive(Deserialize)]
 struct PickupsQuery {
     since: Option<i64>,
+}
+
+/// `GET /api/update/latest`: the newest published release of the app.
+async fn get_update_latest() -> Response {
+    let answer = match crate::update::latest().await {
+        Ok(release) => norrlog_api::LatestRelease {
+            release,
+            error: None,
+        },
+        Err(e) => norrlog_api::LatestRelease {
+            release: None,
+            error: Some(e),
+        },
+    };
+    Json(answer).into_response()
+}
+
+/// `POST /api/update/fetch`: download a file of the newest release and its
+/// signature into the data directory, for the app to check and install.
+async fn post_update_fetch(Json(req): Json<norrlog_api::FetchUpdate>) -> Response {
+    let Some(dir) = crate::paths::data_file("updates") else {
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, "no data directory");
+    };
+    match crate::update::fetch(&req.tag, &req.asset, &dir).await {
+        Ok(got) => Json(got).into_response(),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
+    }
 }
 
 fn api_error(status: StatusCode, error: impl Into<String>) -> Response {

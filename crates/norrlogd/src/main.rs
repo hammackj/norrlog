@@ -27,6 +27,7 @@ mod store;
 mod tail;
 #[cfg(target_os = "linux")]
 mod tray;
+mod update;
 
 use anyhow::Context;
 use engine::Engine;

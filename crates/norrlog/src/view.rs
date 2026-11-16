@@ -68,6 +68,8 @@ pub struct Shell {
     alerts: Entity<crate::alerts::AlertsView>,
     settings: Entity<crate::settings::SettingsView>,
     dashboard: Entity<crate::dashboard::DashboardView>,
+    /// A newer release, when there is one; see `update`.
+    update: Entity<crate::update::UpdateBar>,
     tab: &'static str,
     snapshot: Option<Arc<Value>>,
     /// The daemon, once attached, for an overlay opened later.
@@ -149,6 +151,13 @@ impl Shell {
                 v.dashboard.update(cx, |d, cx| d.sky_toggled(cx));
             },
         ));
+        let update = cx.new(|_| crate::update::UpdateBar::new());
+        subs.push(cx.subscribe(
+            &settings,
+            |v: &mut Self, _, _: &crate::settings::CheckUpdates, cx| {
+                v.update.update(cx, |u, cx| u.check(true, cx));
+            },
+        ));
         let controls = settings.read(cx).overlay.clone();
         subs.push(cx.subscribe(
             &controls,
@@ -179,6 +188,7 @@ impl Shell {
             alerts,
             settings,
             dashboard,
+            update,
             tab,
             snapshot: None,
             api: None,
@@ -214,6 +224,7 @@ impl Shell {
                     client: *client,
                 };
                 self.api = Some(api.clone());
+                self.update.update(cx, |u, cx| u.attached(api.clone(), cx));
                 let base = api.base();
                 let controls = self.settings.read(cx).overlay.clone();
                 controls.update(cx, |c, cx| c.set_base(Some(base), cx));
@@ -799,6 +810,7 @@ impl Render for Shell {
             .text_sm()
             .child(crate::parts::scroll_watch())
             .child(self.render_header(cx))
+            .child(self.update.clone())
             .child(self.render_nav(cx))
             .child(
                 if matches!(

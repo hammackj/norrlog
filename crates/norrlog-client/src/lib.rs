@@ -334,6 +334,34 @@ impl Client {
         Self::status_only(resp).await
     }
 
+    /// POST a JSON body and decode the answer as `T`.
+    pub async fn post_for<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T> {
+        let url = format!("http://127.0.0.1:{}{path}", self.port);
+        let resp = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
+        if !status.is_success() {
+            let error = serde_json::from_slice::<norrlog_api::ApiError>(&bytes)
+                .map(|e| e.error)
+                .unwrap_or_else(|_| String::from_utf8_lossy(&bytes).into_owned());
+            return Err(Error::Api {
+                status: status.as_u16(),
+                error,
+            });
+        }
+        serde_json::from_slice(&bytes).map_err(|e| Error::Decode(format!("{path}: {e}")))
+    }
+
     /// Take a panel down.
     pub async fn delete_panel(&self, id: &str) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/api/panels/{id}", self.port);

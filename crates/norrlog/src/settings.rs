@@ -120,6 +120,11 @@ pub struct SettingsView {
 /// Plane of Sky tracking was turned on or off: the views that show it redraw.
 pub struct QuestsChanged;
 
+/// Check now, under Updates: the shell's update bar answers.
+pub struct CheckUpdates;
+
+impl EventEmitter<CheckUpdates> for SettingsView {}
+
 impl EventEmitter<QuestsChanged> for SettingsView {}
 
 fn input(
@@ -880,6 +885,7 @@ impl Render for SettingsView {
                             .gap_3()
                             .child(self.render_display(cx))
                             .children(self.render_quests(cx))
+                            .child(self.render_updates(cx))
                             .child(self.render_marks(cx))
                             .child(self.render_export(cx))
                             .child(self.overlay.clone()),
@@ -976,6 +982,32 @@ impl SettingsView {
                 )
                 .child(hint(SKY_HINT)),
         )
+    }
+
+    fn render_updates(&self, cx: &mut Context<Self>) -> Div {
+        let on = ParserConfig::load().check_for_updates.unwrap_or(true);
+        let install = crate::update::Install::detect();
+        card("Updates")
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        Checkbox::new("check-updates")
+                            .label("Check for a newer release when Norrlog starts")
+                            .checked(on)
+                            .on_click(cx.listener(|v, on: &bool, _, cx| {
+                                v.save_display("checkForUpdates", serde_json::json!(*on), cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("check-updates-now")
+                            .label("Check now")
+                            .small()
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CheckUpdates))),
+                    ),
+            )
+            .child(crate::update::settings_hint(&install))
     }
 
     fn save_display(&mut self, key: &str, value: serde_json::Value, cx: &mut Context<Self>) {

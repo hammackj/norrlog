@@ -97,6 +97,19 @@ If something breaks, please
 [open an issue](https://github.com/hammackj/norrlog/issues) with your OS
 version and what you saw.
 
+### Updates
+
+An installed copy (the AppImage, the Windows installer's, or the macOS app)
+checks GitHub for a newer release when it starts. If there is one, a bar at
+the top offers it; nothing is installed until you choose **Update**. The
+download is checked against the project's release signing key before it
+replaces anything, and Norrlog then restarts as the new version. Turn the
+check off, or check by hand, under **Settings → Updates**.
+
+The check is one request to GitHub's releases API, made by the daemon. It
+sends nothing about you or your logs. A copy built from source never replaces
+itself; update it with `git pull` and a rebuild.
+
 ## First run
 
 Open **Settings** and pick your log file and your game folder. The log file is

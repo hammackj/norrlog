@@ -63,6 +63,8 @@ Name: "{autodesktop}\Norrlog"; Filename: "{app}\norrlog.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\norrlog.exe"; Description: "{cm:LaunchProgram,Norrlog}"; Flags: nowait postinstall skipifsilent
+; An update the app ran silently: start the new version when it is done.
+Filename: "{app}\norrlog.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallRun]
 ; A daemon still running would hold norrlogd.exe open. It saves as it goes,
@@ -70,6 +72,13 @@ Filename: "{app}\norrlog.exe"; Description: "{cm:LaunchProgram,Norrlog}"; Flags:
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM norrlogd.exe"; Flags: runhidden; RunOnceId: "StopDaemon"
 
 [Code]
+// Run by the app's updater as /VERYSILENT /RELAUNCH=1: a silent install
+// skips the usual "Launch Norrlog" step, so this asks for it.
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 // Norrlog's own data lives outside the install folder: fight history and
 // state in %APPDATA%\norrlog, settings in %APPDATA%\eqlparser-gui (the name
 // the settings file had before the rename, kept so they carry over).
