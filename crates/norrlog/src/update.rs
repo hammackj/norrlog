@@ -26,9 +26,9 @@ use norrlog_api::{FetchedUpdate, LatestRelease, Release, ReleaseAsset};
 use std::path::{Path, PathBuf};
 
 /// The release key's public half: the second line of the `.pub` file that
-/// `packaging/release-key.sh` writes. Empty until a key is made, and while
-/// it is, no update is ever installed.
-const PUBLIC_KEY: &str = "";
+/// `packaging/release-key.sh` writes (key id 867A918B54BDA2B7). Were it
+/// empty, no update would ever be installed.
+const PUBLIC_KEY: &str = "RWS3or1Ui5F6hhknu3WooKg9KcrGHkPeVT3cR1ufbk2WbcZuXf12d2HL";
 
 /// The key updates must be signed with. A build can be given another at
 /// compile time (`NORRLOG_UPDATE_PUBKEY`), which is how the updater is tested
@@ -579,7 +579,12 @@ pub fn settings_hint(install: &Install) -> Div {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's own `test` attribute along.
-    use super::{Install, Release, ReleaseAsset, is_newer, pick, verify_with};
+    use super::{Install, PUBLIC_KEY, Release, ReleaseAsset, is_newer, pick, verify_with};
+
+    #[test]
+    fn the_release_key_is_a_minisign_key() {
+        assert!(minisign_verify::PublicKey::from_base64(PUBLIC_KEY).is_ok());
+    }
 
     #[test]
     fn versions_compare_as_numbers() {
