@@ -36,9 +36,11 @@
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
-    rows: int(params.get("rows"), 6),
-    buffs: int(params.get("buffs"), 8),
-    scale: float(params.get("scale"), 1),
+    // Counts are never negative and a scale is above zero; the native
+    // overlay (`Options::parse`) reads these the same way.
+    rows: count(params.get("rows"), 6),
+    buffs: count(params.get("buffs"), 8),
+    scale: positive(params.get("scale"), 1),
     width: int(params.get("width"), 340),
     selfOnly: params.get("self") === "1",
     showEnemies: params.get("enemies") !== "0",
@@ -54,9 +56,13 @@
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : d;
   }
-  function float(v, d) {
+  function count(v, d) {
+    const n = int(v, d);
+    return n >= 0 ? n : d;
+  }
+  function positive(v, d) {
     const n = parseFloat(v);
-    return Number.isFinite(n) ? n : d;
+    return Number.isFinite(n) && n > 0 ? n : d;
   }
 
   const app = document.getElementById("app");

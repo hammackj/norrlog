@@ -164,9 +164,15 @@ impl Options {
             .filter(|p| !p.is_empty())
         {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            get.insert(k.to_string(), decode(v));
+            // The first of a repeated key, as `URLSearchParams.get` has it.
+            get.entry(decode(k)).or_insert_with(|| decode(v));
         }
-        let int = |k: &str, d: usize| get.get(k).and_then(|v| v.trim().parse().ok()).unwrap_or(d);
+        let int = |k: &str, d: usize| {
+            get.get(k)
+                .and_then(|v| int_prefix(v))
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(d)
+        };
         let panels = get
             .get("panels")
             .map(String::as_str)
@@ -187,10 +193,13 @@ impl Options {
             panels,
             rows: int("rows", 6),
             buffs: int("buffs", 8),
+            // Finite and above zero, or the default: an infinite scale went
+            // straight into the window's layout.
             scale: get
                 .get("scale")
-                .and_then(|v| v.parse().ok())
-                .filter(|s: &f32| *s > 0.)
+                .and_then(|v| float_prefix(v))
+                .map(|s| s as f32)
+                .filter(|s| s.is_finite() && *s > 0.)
                 .unwrap_or(1.),
             self_only: get.get("self").is_some_and(|v| v == "1"),
             show_enemies: get.get("enemies").is_none_or(|v| v != "0"),
@@ -207,6 +216,61 @@ impl Options {
     fn has(&self, panel: &str) -> bool {
         self.panels.iter().any(|p| p == panel)
     }
+}
+
+/// The number a value starts with, as the page's `parseInt(v, 10)` reads
+/// it: `2.5` is 2 and `7px` is 7. `None` where it finds no digits.
+fn int_prefix(v: &str) -> Option<i64> {
+    let v = v.trim_start();
+    let (neg, rest) = match v.as_bytes().first() {
+        Some(b'-') => (true, &v[1..]),
+        Some(b'+') => (false, &v[1..]),
+        _ => (false, v),
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    // Too long to hold is "all of them", as the page's huge number is.
+    let n: i64 = rest[..digits].parse().unwrap_or(i64::MAX);
+    Some(if neg { -n } else { n })
+}
+
+/// The number a value starts with, as the page's `parseFloat` reads it.
+/// "Infinity" reads as infinite there too, and both sides then refuse it.
+fn float_prefix(v: &str) -> Option<f64> {
+    let v = v.trim_start();
+    let b = v.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i = 1;
+    }
+    if v[i..].starts_with("Infinity") {
+        return Some(f64::INFINITY);
+    }
+    let int = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    i += int;
+    let mut frac = 0;
+    if b.get(i) == Some(&b'.') {
+        frac = b[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if int + frac > 0 {
+            i += 1 + frac;
+        }
+    }
+    if int + frac == 0 {
+        return None;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        let exp = b[j..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if exp > 0 {
+            i = j + exp;
+        }
+    }
+    v[..i].parse().ok()
 }
 
 /// `%2C` and `+` as a browser would read them; nothing else in these
@@ -2540,6 +2604,23 @@ mod tests {
         assert_eq!(e.scope.as_deref(), Some("zone"));
         assert_eq!(e.panels, ["meter", "buffs"]);
         assert_eq!(Options::parse("scope=week").scope, None);
+        // As `URLSearchParams` and `parseInt`/`parseFloat` read them.
+        assert_eq!(Options::parse("rows=2&rows=9").rows, 2, "first wins");
+        assert_eq!(Options::parse("rows=2.5").rows, 2);
+        assert_eq!(Options::parse("rows=7px").rows, 7);
+        assert_eq!(Options::parse("%72ows=3").rows, 3, "keys decoded");
+        assert_eq!(Options::parse("rows=").rows, 6);
+        assert_eq!(Options::parse("rows=-2").rows, 6, "no negative count");
+        assert_eq!(
+            Options::parse("rows=99999999999999999999").rows as i64,
+            i64::MAX
+        );
+        assert_eq!(Options::parse("buffs=%zz").buffs, 8, "bad escape");
+        assert_eq!(Options::parse("scale=1.5e0x").scale, 1.5);
+        assert_eq!(Options::parse("scale=.5").scale, 0.5);
+        for bad in ["Infinity", "-Infinity", "NaN", "1e999", "0", "-1", "x"] {
+            assert_eq!(Options::parse(&format!("scale={bad}")).scale, 1., "{bad}");
+        }
         assert_eq!(
             decode("a%2Cb+c%é%"),
             "a,b c%é%",
