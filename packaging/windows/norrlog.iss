@@ -24,6 +24,14 @@ AppPublisher=hammackj
 AppPublisherURL=https://github.com/hammackj/norrlog
 AppSupportURL=https://github.com/hammackj/norrlog/issues
 AppUpdatesURL=https://github.com/hammackj/norrlog/releases
+; The setup program's own version resource. Code signing checks the product
+; name and version against what it was told to expect (docs/code-signing.md).
+VersionInfoProductName=Norrlog
+VersionInfoProductVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
+VersionInfoCompany=hammackj
+VersionInfoDescription=Norrlog setup
+VersionInfoCopyright=Copyright (c) hammackj. MIT licence.
 DefaultDirName={autopf}\Norrlog
 DefaultGroupName=Norrlog
 DisableProgramGroupPage=yes

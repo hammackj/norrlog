@@ -162,6 +162,14 @@ jobs:
     defaults:
       run:
         shell: bash
+    # Authenticode signing through the SignPath Foundation's free open-source
+    # programme (docs/code-signing.md). It happens only for a tagged release,
+    # and only once the SIGNPATH_* repository variables and the
+    # SIGNPATH_API_TOKEN secret are set; until then the downloads are built
+    # unsigned exactly as before. Each signing request waits for a person to
+    # approve it in SignPath, so a release waits for that too.
+    env:
+      SIGNPATH: ${{ startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -173,15 +181,55 @@ jobs:
         run: cargo install --locked --features cli cargo-about@0.9.3
 
       - name: Build
-        run: cargo build --release --locked -p norrlog -p norrlogd
+        run: |
+          cargo build --release --locked -p norrlog -p norrlogd
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir programs
+          cp target/release/norrlog.exe target/release/norrlogd.exe programs/
+
+      # What the signing policy checks, checked here first on every build.
+      - name: Version resources
+        shell: pwsh
+        run: |
+          foreach ($f in "programs/norrlog.exe", "programs/norrlogd.exe") {
+            $v = (Get-Item $f).VersionInfo
+            "$f : $($v.ProductName) $($v.ProductVersion) ($($v.FileDescription))"
+            if ($v.ProductName -ne "Norrlog" -or $v.ProductVersion -ne $env:VERSION) {
+              Write-Error "$f carries the wrong version resource"; exit 1
+            }
+          }
+
+      - name: Upload the programs for signing
+        id: unsigned-programs
+        if: env.SIGNPATH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-programs
+          path: programs/*.exe
+
+      - name: Sign the programs
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: programs
+          github-artifact-id: ${{ steps.unsigned-programs.outputs.artifact-id }}
+          parameters: |
+            version: "${{ env.VERSION }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 14400
+          output-artifact-directory: programs
 
       - name: Portable zip
         run: |
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          version="$VERSION"
           name="norrlog-$version-x86_64-windows"
           mkdir -p "dist/$name"
-          cp target/release/norrlog.exe target/release/norrlogd.exe README.md LICENSE "dist/$name/"
+          cp programs/norrlog.exe programs/norrlogd.exe README.md LICENSE "dist/$name/"
           python packaging/licenses.py x86_64-pc-windows-msvc "dist/$name/THIRD-PARTY-LICENSES.txt"
           (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
           listing="$(7z l -ba "dist/$name.zip")"
@@ -198,8 +246,48 @@ jobs:
           "$iscc" -DAppVersion="$VERSION" -DStage="$(cygpath -w "$PWD/$STAGE")" \
             -O"$(cygpath -w "$PWD/dist")" packaging/windows/norrlog.iss
           rm -r "$STAGE"
+          test -f "dist/norrlog-$VERSION-x86_64-windows-setup.exe"
+
+      - name: Upload the installer for signing
+        id: unsigned-installer
+        if: env.SIGNPATH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-installer
+          path: dist/*-setup.exe
+
+      - name: Sign the installer
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          parameters: |
+            version: "${{ env.VERSION }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 14400
+          output-artifact-directory: dist
+
+      - name: Signatures are valid
+        if: env.SIGNPATH == 'true'
+        shell: pwsh
+        run: |
+          $zip = "dist/norrlog-$env:VERSION-x86_64-windows.zip"
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP/zipcheck"
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/zipcheck" -Recurse -Filter *.exe) + @(Get-Item "dist/*-setup.exe")
+          foreach ($f in $files) {
+            $s = Get-AuthenticodeSignature $f.FullName
+            "$($f.Name): $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne "Valid") { Write-Error "$($f.Name) is not validly signed"; exit 1 }
+          }
+
+      - name: Install check
+        run: |
           setup="norrlog-$VERSION-x86_64-windows-setup.exe"
-          test -f "dist/$setup"
           # Install it for real, silently, into a scratch folder, and look at
           # what landed: it proves the installer runs as well as what it
           # carries. (innoextract cannot read current Inno Setup output.)

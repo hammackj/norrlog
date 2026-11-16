@@ -87,6 +87,9 @@ Installed copies check the signature themselves when they update (see
 minisign -Vm Norrlog-0.1.0-x86_64.AppImage -P RWS3or1Ui5F6hhknu3WooKg9KcrGHkPeVT3cR1ufbk2WbcZuXf12d2HL
 ```
 
+How the downloads are built and signed, and what Norrlog sends over the
+network, is in the [code signing policy](docs/code-signing.md).
+
 ### From source
 
 You need [Rust](https://rustup.rs) (stable).
@@ -114,13 +117,16 @@ Norrlog is used daily on Linux, with the game running under Wine or CrossOver.
 **Windows and macOS support is experimental.** Both build and pass the test
 suite in CI, and the release workflow packages a Windows installer and a macOS
 disk image, but neither has been played with on real hardware yet. Expect rough edges, the overlay
-and spoken alerts above all. Neither package is code-signed:
+and spoken alerts above all. Neither is code-signed by Microsoft's or Apple's
+rules yet (see the [code signing policy](docs/code-signing.md)), so the system
+asks before opening it the first time:
 
-- **Windows:** SmartScreen may ask you to confirm. Choose **More info**, then
-  **Run anyway**.
-- **macOS (Apple Silicon):** the app is not notarised. The first time, right-click
-  it and choose **Open**, or run
-  `xattr -dr com.apple.quarantine /Applications/Norrlog.app`.
+- **Windows:** SmartScreen says "Windows protected your PC". Choose **More
+  info**, then **Run anyway**.
+- **macOS (Apple Silicon):** macOS says it cannot check Norrlog for malicious
+  software. Open **System Settings → Privacy & Security**, scroll down, and
+  choose **Open Anyway** beside Norrlog. Or run
+  `xattr -dr com.apple.quarantine /Applications/Norrlog.app` once.
 
 If something breaks, please
 [open an issue](https://github.com/hammackj/norrlog/issues) with your OS

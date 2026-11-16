@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "programs": the two executables, sent as
+     one GitHub artifact before the zip and the installer are made from them.
+     Paste into the SignPath project when setting it up (docs/code-signing.md). -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="norrlog.exe" product-name="Norrlog" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="norrlogd.exe" product-name="Norrlog" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

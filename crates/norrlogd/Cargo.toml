@@ -32,6 +32,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
+[build-dependencies]
+# Only used when building for Windows (see build.rs).
+embed-resource = "3"
+
 [dev-dependencies]
 # To drive the whole router, middleware included, in tests.
 tower = { version = "0.5", features = ["util"] }
