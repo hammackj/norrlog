@@ -16,7 +16,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -28,7 +28,7 @@ jobs:
     name: private references
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: python3 tools/check-private.py
 
   # Clippy at a fixed version, so a new lint in a later release cannot fail
@@ -40,7 +40,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Linux libraries
         run: |
           sudo apt-get update
@@ -63,7 +63,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GPUI draws through Vulkan on Linux and reads keyboards through
       # xkbcommon on both X11 and Wayland; rodio plays alerts through ALSA.
