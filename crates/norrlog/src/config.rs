@@ -191,6 +191,29 @@ impl ParserConfig {
             .unwrap_or_default()
     }
 
+    /// The saved load window, when it is one the daemon takes: a whole
+    /// number of hours or days (`2h`, `1d`). Anything else, a date or a
+    /// hand-edited typo, would stop the daemon at startup, and the app would
+    /// start it again to the same end; it is left out, so the whole log is
+    /// read, and said so in the app's output.
+    pub fn since_arg(&self) -> Option<&str> {
+        let s = self.since.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("all") {
+            return None;
+        }
+        let num = s.strip_suffix(['h', 'd', 'H', 'D']).unwrap_or("");
+        let ok = !num.is_empty()
+            && num.len() <= 6
+            && num.bytes().all(|b| b.is_ascii_digit())
+            && num.bytes().any(|b| b != b'0');
+        if !ok {
+            eprintln!(
+                "[norrlog] ignoring the saved load window {s:?}; expected 2h, 4h, 8h, 1d, 2d or all"
+            );
+        }
+        ok.then_some(s)
+    }
+
     /// The daemon's arguments after `--port` and `--idle-exit`. With nothing
     /// configured,
     /// the install is guessed and its Logs folder followed.
@@ -234,8 +257,8 @@ impl ParserConfig {
         if let Some(g) = game_dir {
             a.extend(["--game-dir".into(), g.into_os_string()]);
         }
-        if !self.since.is_empty() && self.since != "all" {
-            a.extend(["--since".into(), (&self.since).into()]);
+        if let Some(since) = self.since_arg() {
+            a.extend(["--since".into(), since.into()]);
         }
         if !self.eqdb.is_empty() {
             a.extend(["--eqdb".into(), (&self.eqdb).into()]);
@@ -412,7 +435,7 @@ mod tests {
         let c = ParserConfig {
             logs_dir: "/l".into(),
             game_dir: "/g".into(),
-            since: "2026-09-01".into(),
+            since: "2d".into(),
             ..Default::default()
         };
         let a: Vec<String> = c
@@ -420,16 +443,22 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            a,
-            [
-                "--logs-dir",
-                "/l",
-                "--game-dir",
-                "/g",
-                "--since",
-                "2026-09-01"
-            ]
-        );
+        assert_eq!(a, ["--logs-dir", "/l", "--game-dir", "/g", "--since", "2d"]);
+        // A saved window the daemon would refuse is left out, not passed on
+        // to stop it at every start.
+        for bad in ["2026-09-01", "é", "0h", "-2h", "9999999999h", "h"] {
+            let c = ParserConfig {
+                since: bad.into(),
+                ..Default::default()
+            };
+            assert_eq!(c.since_arg(), None, "{bad}");
+        }
+        for good in ["2h", "1D", " 8h "] {
+            let c = ParserConfig {
+                since: good.into(),
+                ..Default::default()
+            };
+            assert_eq!(c.since_arg(), Some(good.trim()), "{good}");
+        }
     }
 }

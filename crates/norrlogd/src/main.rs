@@ -95,17 +95,26 @@ fn parse_since(raw: &str) -> Option<Option<i64>> {
     if r == "all" || r.is_empty() {
         return Some(None);
     }
-    let (num, unit) = r.split_at(r.len().checked_sub(1)?);
-    let n: i64 = num.parse().ok()?;
-    if n <= 0 {
+    let (num, unit) = if let Some(n) = r.strip_suffix('h') {
+        (n, 3600)
+    } else if let Some(n) = r.strip_suffix('d') {
+        (n, 86_400)
+    } else {
+        return None;
+    };
+    // Digits only: `parse` would take a sign, and byte slicing split "é".
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    match unit {
-        "h" => Some(Some(n * 3600)),
-        "d" => Some(Some(n * 86_400)),
-        _ => None,
-    }
+    let seconds = num.parse::<i64>().ok()?.checked_mul(unit)?;
+    (1..=MAX_SINCE_SECONDS)
+        .contains(&seconds)
+        .then_some(Some(seconds))
 }
+
+/// The longest load window taken: ten years, which is the whole log for
+/// any log there is, and keeps "now minus the window" far from overflow.
+const MAX_SINCE_SECONDS: i64 = 3650 * 86_400;
 
 /// Where to look for the companion site when nothing says otherwise.
 ///
@@ -1534,5 +1543,15 @@ mod tests {
         assert_eq!(parse_since("-2h"), None);
         assert_eq!(parse_since("h"), None);
         assert_eq!(parse_since("banana"), None);
+        assert_eq!(parse_since("+2h"), None);
+        // Not a byte boundary before the last character, and not a panic.
+        assert_eq!(parse_since("é"), None);
+        assert_eq!(parse_since("2日"), None);
+        // Overflowing or absurd windows are refused, not wrapped.
+        assert_eq!(parse_since("9223372036854775807h"), None);
+        assert_eq!(parse_since("9223372036854775807d"), None);
+        assert_eq!(parse_since("106752000000000d"), None);
+        assert_eq!(parse_since("3650d"), Some(Some(3650 * 86_400)));
+        assert_eq!(parse_since("3651d"), None);
     }
 }
