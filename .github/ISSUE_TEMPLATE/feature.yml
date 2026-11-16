@@ -1,0 +1,27 @@
+name: Feature request
+description: Something Norrlog could show or do
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - Both
+        - EverQuest Legends
+        - EverQuest
+    validations:
+      required: true
+  - type: textarea
+    id: want
+    attributes:
+      label: What would you like it to do?
+      description: What you are trying to find out or keep track of in game, and what you do for it today.
+    validations:
+      required: true
+  - type: textarea
+    id: lines
+    attributes:
+      label: Log lines
+      description: If it depends on something the game writes to the log, paste a few example lines. Change player names if you like.
+      render: text

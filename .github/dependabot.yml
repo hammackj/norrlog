@@ -1,0 +1,9 @@
+# Keeps the workflows' actions current. Cargo dependencies are moved by hand:
+# GPUI and gpui-component are pinned to exact versions on purpose, and move
+# together (see crates/norrlog/Cargo.toml).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

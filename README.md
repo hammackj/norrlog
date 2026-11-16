@@ -1,5 +1,9 @@
 # Norrlog
 
+[![CI](https://github.com/hammackj/norrlog/actions/workflows/ci.yml/badge.svg)](https://github.com/hammackj/norrlog/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/hammackj/norrlog)](https://github.com/hammackj/norrlog/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A log parser, DPS meter and stream overlay for **EverQuest** and **EverQuest
 Legends**. It reads the log file the game writes as you play and turns it into
 fights, damage and healing meters, buff timers, loot and drop tables,
@@ -65,8 +69,27 @@ folded back in.
 
 ## Install
 
-There are no prebuilt releases yet. To build from source you need
-[Rust](https://rustup.rs) (stable).
+Download the file for your system from the
+[latest release](https://github.com/hammackj/norrlog/releases/latest):
+
+| System | File |
+|---|---|
+| Linux (x86_64) | `Norrlog-<version>-x86_64.AppImage`: make it executable and run it |
+| Windows (x86_64) | `norrlog-<version>-x86_64-windows-setup.exe`, or the portable `.zip` |
+| macOS (Apple Silicon) | `norrlog-<version>-aarch64-macos.dmg` |
+
+Every file has a `.sha256` checksum and a `.minisig` signature beside it.
+Installed copies check the signature themselves when they update (see
+[Updates](#updates)); to check a download by hand, use
+[minisign](https://jedisct1.github.io/minisign/) with the project's public key:
+
+```sh
+minisign -Vm Norrlog-0.1.0-x86_64.AppImage -P RWS3or1Ui5F6hhknu3WooKg9KcrGHkPeVT3cR1ufbk2WbcZuXf12d2HL
+```
+
+### From source
+
+You need [Rust](https://rustup.rs) (stable).
 
 On Linux, the app also needs a few system libraries. On Debian or Ubuntu:
 
@@ -88,9 +111,9 @@ To add it to your desktop's menu, run `packaging/install-launcher.sh`.
 
 Norrlog is used daily on Linux, with the game running under Wine or CrossOver.
 
-**Windows and macOS support is experimental.** The app compiles for both,
-the release workflow packages a Windows installer and a macOS disk image, and
-neither has been run on real hardware yet. Expect rough edges, the overlay
+**Windows and macOS support is experimental.** Both build and pass the test
+suite in CI, and the release workflow packages a Windows installer and a macOS
+disk image, but neither has been played with on real hardware yet. Expect rough edges, the overlay
 and spoken alerts above all. Neither package is code-signed:
 
 - **Windows:** SmartScreen may ask you to confirm. Choose **More info**, then
