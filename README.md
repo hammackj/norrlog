@@ -11,6 +11,8 @@ the history, and **Norrlog**, the desktop app that shows it. The app starts the
 daemon for you. The same daemon serves a web page you can add to OBS as an
 overlay.
 
+![Norrlog's dashboard during a fight: the live damage meter, and a damage-over-time spell ticking on the target](docs/images/dashboard.png)
+
 ## What it shows
 
 - **Fights.** Every fight, found automatically, with damage, DPS, healing,
@@ -36,6 +38,10 @@ overlay.
   as a `.gtp` package for someone using GINA.
 - **Log search.** Any line in the log, newest first, as plain text or a
   regular expression, read from the file as it is now.
+
+![The Encounters tab: every fight in the history, with zone, time, DPS and loot](docs/images/encounters.png)
+
+The screenshots show a made-up character's log.
 
 ## Two games
 
