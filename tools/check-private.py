@@ -34,15 +34,27 @@ NAMES = {
 # Paths that only exist on the developer's machine. The author's handle is
 # public on purpose (the author line, the palette name, the project URLs);
 # their home directory and game drive are not.
+# Built in pieces, so the history rewrite that scrubs these paths leaves
+# this list alone.
 PATHS = [
-    re.compile(r"/home/user\b"),
-    re.compile(r"/path/to/games\b"),
+    re.compile("/home/" + "hammackj" + r"\b"),
+    re.compile("/mnt/" + "Games" + r"\b"),
 ]
 
 # The checker itself names the patterns.
 SKIP = {"tools/check-private.py"}
 
 WORD = re.compile(r"[A-Za-z]+")
+
+
+def hidden_name(word):
+    """Whether an excluded name is in `word`, alone or run into more letters
+    ("Namex" for a second character)."""
+    for i in range(len(word)):
+        for j in range(i + 4, min(len(word), i + 12) + 1):
+            if hashlib.sha256(word[i:j].encode()).hexdigest() in NAMES:
+                return True
+    return False
 
 
 def files():
@@ -69,7 +81,7 @@ def main():
         text = data.decode("utf-8", "replace")
         for n, line in enumerate(text.splitlines(), 1):
             for w in WORD.findall(line):
-                if hashlib.sha256(w.lower().encode()).hexdigest() in NAMES:
+                if hidden_name(w.lower()):
                     print(f"{path}:{n}: an excluded character name ({w[0]}…)")
                     found += 1
             for p in PATHS:
