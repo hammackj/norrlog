@@ -215,13 +215,9 @@ this section is the disclosure instead.
 
 ## Bundled data
 
-`crates/norrlog-read/atlas` and `crates/norrlog-vision/templates` hold small
-glyph and label crops taken from screenshots of the EverQuest client. They let
-the reader match the game's own UI text in an item screenshot, and are kept for
-that alone; EverQuest and its interface are © Daybreak Game Company. Nothing
-else from the game ships: spells and item data are read from your own install
-while the daemon runs. The recipe book is not shipped either; see
-[How it works](docs/how-it-works.md).
+Nothing from the game ships: spells and item data are read from your own
+install while the daemon runs, and the recipe book is not shipped either (see
+[How it works](docs/how-it-works.md)). EverQuest is © Daybreak Game Company.
 
 ## Contributing
 

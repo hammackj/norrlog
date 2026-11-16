@@ -179,8 +179,6 @@ crates/norrlogd/          daemon: follower, HTTP/WebSocket API, overlay assets
 crates/norrlog/           the desktop app (GPUI)
 crates/norrlog-client/    attach to or start the daemon, typed API calls
 crates/norrlog-api/       the API's types, shared by the daemon and its clients
-crates/norrlog-read/, -vision, -shot, -parse
-                          reading item screenshots
 packaging/                desktop launcher, icons, AppImage build
 ```
 
