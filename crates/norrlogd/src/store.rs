@@ -3427,7 +3427,7 @@ impl Store {
             // A mode nothing recognises is dropped rather than guessed at:
             // filing an instance as the open world would merge it into a
             // different creature entirely.
-            let Some(parsed_mode) = Mode::from_str(&mode) else {
+            let Some(parsed_mode) = Mode::parse(&mode) else {
                 continue;
             };
             let key = (src, zone.clone(), mode, difficulty, npc.clone());
@@ -3446,7 +3446,7 @@ impl Store {
                 game: parsed_game,
                 // Empty for every row written before body types were recorded,
                 // and for every creature nobody has proved one for.
-                kind: norrlog_core::bestiary::CreatureKind::from_str(&kind),
+                kind: norrlog_core::bestiary::CreatureKind::parse(&kind),
                 kills,
                 deaths_to_it: deaths,
                 // Recomputed by the merge from the samples; whatever is put
@@ -3484,7 +3484,7 @@ impl Store {
             .filter_map(|(zone, mode, difficulty, name, at, hp)| {
                 Some(HealthSample {
                     zone,
-                    mode: Mode::from_str(&mode)?,
+                    mode: Mode::parse(&mode)?,
                     difficulty,
                     name,
                     at,
@@ -5554,7 +5554,7 @@ mod tests {
             build: "WAR/DRU/BRD".into(),
             zones: "[]".into(),
         };
-        s.put_levels(&[l.clone()]).unwrap();
+        s.put_levels(std::slice::from_ref(&l)).unwrap();
         s.put_levels(&[l]).unwrap();
         assert_eq!(s.levels().unwrap().len(), 1);
     }

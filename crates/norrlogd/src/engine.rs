@@ -193,6 +193,15 @@ pub struct ExpSummary {
     pub aa_potion_active: bool,
 }
 
+/// What a flush writes of the engine's history: boss kills, encounters,
+/// levels, and AA purchases as (ability, rank, cost, when).
+pub type HistoryRows = (
+    Vec<crate::store::StoredKill>,
+    Vec<crate::store::StoredEncounter>,
+    Vec<crate::store::StoredLevel>,
+    Vec<(String, u32, u32, i64)>,
+);
+
 /// The experience bar as the player read it: `stated` percent on `level`,
 /// when the log had counted `counted` of that level. The log never prints
 /// the bar, only gains, so a level begun before the log, or a gain it does
@@ -961,11 +970,9 @@ impl Engine {
         // begun mid-session, so fall back to inferring a boundary from a long
         // silence.
         if !self.seen_logon {
-            if self.last_timestamp > 0
-                && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS
-            {
-                self.begin_session(entry.timestamp);
-            } else if self.session_start == 0 {
+            let long_gap = self.last_timestamp > 0
+                && entry.timestamp - self.last_timestamp > SESSION_GAP_SECONDS;
+            if long_gap || self.session_start == 0 {
                 self.begin_session(entry.timestamp);
             }
         }
@@ -1221,12 +1228,8 @@ impl Engine {
             }
             Event::Faction {
                 faction,
-                adjustment,
-            } => {
-                if let Some(adj) = adjustment {
-                    self.npcs.on_faction(entry.timestamp, faction, *adj);
-                }
-            }
+                adjustment: Some(adj),
+            } => self.npcs.on_faction(entry.timestamp, faction, *adj),
             Event::SpellSetLoaded { name } => {
                 self.classes.observe_spell_set(entry.timestamp, name);
                 // An invocation swap changes what you are, so a fight either
@@ -1284,7 +1287,7 @@ impl Engine {
                         // After the class: a switch empties the level, and
                         // this is the line that fills it.
                         if *level > 0 {
-                            self.exp.on_level_stated(entry.timestamp, *level as u32);
+                            self.exp.on_level_stated(entry.timestamp, *level);
                         }
                     }
                 }
@@ -1334,15 +1337,17 @@ impl Engine {
             // creature as one you did, and nothing at all about your
             // inventory: `combat` files it in the drop tables, and the loot
             // list keeps it here.
-            Event::LootLeft { item, source, .. } => {
-                if let Some(norrlog_core::event::Actor::Named(npc)) = source {
-                    if !self.is_a_player(npc) {
-                        self.all_left.push(LeftRecord {
-                            timestamp: entry.timestamp,
-                            item: item.clone(),
-                            source: Some(npc.clone()),
-                        });
-                    }
+            Event::LootLeft {
+                item,
+                source: Some(norrlog_core::event::Actor::Named(npc)),
+                ..
+            } => {
+                if !self.is_a_player(npc) {
+                    self.all_left.push(LeftRecord {
+                        timestamp: entry.timestamp,
+                        item: item.clone(),
+                        source: Some(npc.clone()),
+                    });
                 }
             }
             Event::Loot {
@@ -2172,14 +2177,7 @@ impl Engine {
     /// build guide. Each kill is matched to the encounter it happened in so
     /// the stored row carries the fight's duration and your damage, which is
     /// what per-raid averages are built from.
-    pub fn history_to_persist(
-        &self,
-    ) -> (
-        Vec<crate::store::StoredKill>,
-        Vec<crate::store::StoredEncounter>,
-        Vec<crate::store::StoredLevel>,
-        Vec<(String, u32, u32, i64)>,
-    ) {
+    pub fn history_to_persist(&self) -> HistoryRows {
         let mut kills = Vec::new();
         let mut encs = Vec::new();
 
@@ -2802,7 +2800,7 @@ impl Engine {
             }
             e.used_in.sort();
         }
-        items.sort_by(|a, b| a.item.to_lowercase().cmp(&b.item.to_lowercase()));
+        items.sort_by_key(|a| a.item.to_lowercase());
 
         ItemDatabase {
             game: drops.game,
@@ -2972,7 +2970,7 @@ impl Engine {
             fights += 1;
             combat += e.duration();
         }
-        if let Some(open) = self.tracker.current().filter(|e| in_session(&e)) {
+        if let Some(open) = self.tracker.current().filter(|e| in_session(e)) {
             merged.merge_from(open);
             fights += 1;
             combat += open.duration();

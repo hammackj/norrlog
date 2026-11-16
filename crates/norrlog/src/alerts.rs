@@ -557,7 +557,7 @@ impl AlertsView {
     }
 
     /// Start a `contains` rule from a line the player just watched go past.
-    fn from_line(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_from_line(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.blank(window, cx);
         self.kind = Kind::Contains;
         self.set(&self.inputs.text.clone(), &text, window, cx);
@@ -1215,7 +1215,7 @@ impl AlertsView {
                             .child(div().min_w_0().child(l.text.clone()))
                             .child(dim(when_short(Some(l.at))).flex_none())
                             .on_click(cx.listener(move |v, _, window, cx| {
-                                v.from_line(text.clone(), window, cx)
+                                v.start_from_line(text.clone(), window, cx)
                             }))
                     })),
             )

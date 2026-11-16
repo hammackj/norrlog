@@ -102,6 +102,9 @@ enum Cached {
     Miss,
 }
 
+/// An icon's media type and bytes.
+type Icon = (String, Vec<u8>);
+
 /// Looks items up on the site, remembering what it finds.
 pub struct ItemDb {
     /// Origins to try, in order. See [`ItemDb::new`].
@@ -111,7 +114,7 @@ pub struct ItemDb {
     live: Mutex<Option<String>>,
     client: reqwest::Client,
     cache: Mutex<HashMap<String, (Instant, Cached)>>,
-    icons: Mutex<HashMap<String, (Instant, Option<(String, Vec<u8>)>)>>,
+    icons: Mutex<HashMap<String, (Instant, Option<Icon>)>>,
     /// Whole payloads fetched by path — the wanted list, a zone record — with
     /// the time each arrived.
     ///

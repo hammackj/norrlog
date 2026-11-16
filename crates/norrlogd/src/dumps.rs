@@ -278,7 +278,7 @@ impl Ids {
                     .iter()
                     .all(|s| Source::of_filename(s) == Some(Source::LootFilter));
             if only_filters && !e.grades_held.is_empty() {
-                e.grades_seen.extend(e.grades_held.drain(..));
+                e.grades_seen.append(&mut e.grades_held);
                 e.grades_seen.sort_unstable();
                 e.grades_seen.dedup();
                 corrected += 1;

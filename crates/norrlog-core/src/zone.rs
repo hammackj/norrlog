@@ -118,7 +118,7 @@ impl Mode {
     /// recognises means the writer and the reader disagree, and silently
     /// filing an instance as the open world would corrupt the identity every
     /// creature and drop is keyed on.
-    pub fn from_str(s: &str) -> Option<Mode> {
+    pub fn parse(s: &str) -> Option<Mode> {
         match s {
             "open" => Some(Mode::Open),
             "solo" => Some(Mode::Solo),
@@ -492,10 +492,10 @@ mod tests {
     #[test]
     fn a_mode_round_trips_and_an_unknown_one_is_refused() {
         for mode in [Mode::Open, Mode::Solo, Mode::Group] {
-            assert_eq!(Mode::from_str(mode.as_str()), Some(mode));
+            assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
-        assert_eq!(Mode::from_str("raid"), None);
-        assert_eq!(Mode::from_str("Solo"), None, "as_str is lowercase");
+        assert_eq!(Mode::parse("raid"), None);
+        assert_eq!(Mode::parse("Solo"), None, "as_str is lowercase");
     }
 
     /// Classic EverQuest has no instancing, so its zones are one open variant

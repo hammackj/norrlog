@@ -45,8 +45,18 @@ pub struct AppState {
     pub ids: Option<Arc<Mutex<crate::dumps::Ids>>>,
     /// Panels other apps have put up for the overlay: id -> (panel, put at,
     /// expires at). See [`norrlog_api::Panel`].
-    pub panels: Arc<Mutex<std::collections::HashMap<String, (norrlog_api::Panel, i64, i64)>>>,
+    pub panels: Arc<Mutex<Panels>>,
 }
+
+/// Overlay panels by id: the panel, when it was put up, when it expires.
+pub type Panels = std::collections::HashMap<String, (norrlog_api::Panel, i64, i64)>;
+
+/// What [`my_dumps`] answers with.
+type MyDumps = (
+    Option<(String, String)>,
+    Vec<(String, String)>,
+    Vec<norrlog_api::BagSource>,
+);
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -747,14 +757,7 @@ async fn item_ids(State(state): State<AppState>) -> impl IntoResponse {
 ///
 /// Read from the files rather than the id record, which remembers every id
 /// ever seen. Sorted newest first.
-fn my_dumps(
-    state: &AppState,
-    ids: &Arc<Mutex<crate::dumps::Ids>>,
-) -> (
-    Option<(String, String)>,
-    Vec<(String, String)>,
-    Vec<norrlog_api::BagSource>,
-) {
+fn my_dumps(state: &AppState, ids: &Arc<Mutex<crate::dumps::Ids>>) -> MyDumps {
     let me: Option<(String, String)> = state.store.as_ref().and_then(|st| {
         let st = st.lock().ok()?;
         let (c, sv) = st.identity();

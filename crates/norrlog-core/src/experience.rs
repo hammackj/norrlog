@@ -667,7 +667,7 @@ impl ExpTracker {
             .into_iter()
             .filter(|p| !p.unlogged_ranks.is_empty())
             .collect();
-        v.sort_by(|a, b| b.unlogged_cost_max.cmp(&a.unlogged_cost_max));
+        v.sort_by_key(|p| std::cmp::Reverse(p.unlogged_cost_max));
         let bound = v.iter().map(|p| p.unlogged_cost_max).sum();
         (v, bound)
     }

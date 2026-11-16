@@ -80,7 +80,8 @@ fn every_melee_verb_in_the_string_table_parses() {
         for (second, third) in &vs {
             // The base form is what follows "tries to", in either person.
             let base = second.as_str();
-            let cases: Vec<(String, Box<dyn Fn(&Event) -> bool>)> = vec![
+            type Case = (String, Box<dyn Fn(&Event) -> bool>);
+            let cases: Vec<Case> = vec![
                 (
                     format!("You {second} a gnoll scout for 12 points of damage."),
                     Box::new(|e| {

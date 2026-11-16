@@ -1320,7 +1320,9 @@ impl Encounter {
     /// `landed` comes from your own ability breakdown, so a spell that
     /// sometimes worked carries a real rate rather than a bare failure count.
     pub fn resist_tallies(&self) -> Vec<ResistTally> {
-        let mut by_spell: HashMap<&str, (u64, Vec<(String, u64)>)> = HashMap::new();
+        /// Times resisted, and by whom how often.
+        type Tally = (u64, Vec<(String, u64)>);
+        let mut by_spell: HashMap<&str, Tally> = HashMap::new();
         for (target, spells) in &self.resists {
             for (spell, n) in spells {
                 let e = by_spell.entry(spell.as_str()).or_default();

@@ -197,7 +197,7 @@ impl ForageView {
         }
         v_flex().gap_1().children(pool.into_iter().enumerate().map(
             |(i, (item, times, mut where_))| {
-                where_.sort_by(|a, b| b.1.cmp(&a.1));
+                where_.sort_by_key(|w| std::cmp::Reverse(w.1));
                 let all: SharedString = where_
                     .iter()
                     .map(|(z, n)| format!("{z} ×{n}"))
@@ -268,9 +268,15 @@ fn row(
         )
 }
 
+/// An item, how often it was found, and where: [(zone, times)].
+type Pooled = (String, u64, Vec<(String, u64)>);
+
+/// How often an item was found, and where: [(zone, times)].
+type Found = (u64, Vec<(String, u64)>);
+
 /// (item, total, [(zone, times)]), most found first, then by name.
-fn pool(zones: &[ForageZoneRow], only: Option<&str>) -> Vec<(String, u64, Vec<(String, u64)>)> {
-    let mut pool: HashMap<&str, (u64, Vec<(String, u64)>)> = HashMap::new();
+fn pool(zones: &[ForageZoneRow], only: Option<&str>) -> Vec<Pooled> {
+    let mut pool: HashMap<&str, Found> = HashMap::new();
     for z in zones {
         if only.is_some_and(|o| o != z.zone) {
             continue;

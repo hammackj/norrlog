@@ -18,7 +18,8 @@ use std::collections::HashMap;
 
 enum Lookup {
     Pending(#[allow(dead_code)] Task<()>),
-    Done(Option<SpellLookup>),
+    /// Boxed: a lookup is far larger than a task handle.
+    Done(Option<Box<SpellLookup>>),
 }
 
 pub struct SpellCards {
@@ -50,7 +51,7 @@ impl SpellCards {
         let task = cx.spawn(async move |this, cx| {
             let got = api.get::<SpellLookup>(path).await.ok();
             let _ = this.update(cx, |c, cx| {
-                c.known.insert(key, Lookup::Done(got));
+                c.known.insert(key, Lookup::Done(got.map(Box::new)));
                 cx.notify();
             });
         });
@@ -59,7 +60,7 @@ impl SpellCards {
 
     fn get(&self, name: &str) -> Option<&SpellLookup> {
         match self.known.get(name) {
-            Some(Lookup::Done(Some(d))) => Some(d),
+            Some(Lookup::Done(Some(d))) => Some(&**d),
             _ => None,
         }
     }
@@ -225,16 +226,16 @@ fn card(d: &SpellLookup) -> Option<Card> {
                 .collect()
         })
         .unwrap_or_default();
-    if cls.is_empty() {
-        if let Some(l) = loc {
-            cls = l
-                .classes
-                .iter()
-                .enumerate()
-                .filter(|(_, lv)| **lv != CLASS_CANNOT_CAST)
-                .filter_map(|(i, lv)| Class::from_index(i).map(|c| format!("{} {lv}", c.name())))
-                .collect();
-        }
+    if cls.is_empty()
+        && let Some(l) = loc
+    {
+        cls = l
+            .classes
+            .iter()
+            .enumerate()
+            .filter(|(_, lv)| **lv != CLASS_CANNOT_CAST)
+            .filter_map(|(i, lv)| Class::from_index(i).map(|c| format!("{} {lv}", c.name())))
+            .collect();
     }
     cls.truncate(6);
 

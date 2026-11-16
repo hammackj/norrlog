@@ -427,7 +427,7 @@ fn hint(text: impl Into<SharedString>) -> Div {
     }
     let style = HighlightStyle {
         font_weight: Some(FontWeight::BOLD),
-        color: Some(hex(TEXT).into()),
+        color: Some(hex(TEXT)),
         ..Default::default()
     };
     d.child(StyledText::new(plain).with_highlights(bold.into_iter().map(|r| (r, style))))
@@ -1790,7 +1790,7 @@ pub(crate) fn parse_line(title: &str, duration: i64, meter: &[MeterRow]) -> Stri
             None => i += 1,
         }
     }
-    rows.sort_by(|a, b| b.damage.cmp(&a.damage));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.damage));
     let total: u64 = rows.iter().map(|r| r.damage).sum();
     let secs = duration.max(1);
     let mut line = format!(
@@ -1901,6 +1901,8 @@ mod tests {
     }
 
     #[test]
+    // A list of one range is the answer here, not a range of numbers.
+    #[allow(clippy::single_range_in_vec_init)]
     fn bold_runs_drop_their_markers_and_keep_their_place() {
         assert_eq!(
             bold_runs("From **Critical** 39× · **Slay** 2×"),

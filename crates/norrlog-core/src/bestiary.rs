@@ -104,7 +104,7 @@ impl CreatureKind {
     ///
     /// `None` for anything unrecognised, and for the empty string a stored row
     /// uses to mean nothing was ever proved.
-    pub fn from_str(s: &str) -> Option<CreatureKind> {
+    pub fn parse(s: &str) -> Option<CreatureKind> {
         match s {
             "undead" => Some(CreatureKind::Undead),
             "summoned" => Some(CreatureKind::Summoned),

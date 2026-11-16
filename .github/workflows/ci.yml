@@ -21,6 +21,30 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  # Clippy at a fixed version, so a new lint in a later release cannot fail
+  # a commit that changed nothing. Raise it on purpose, fixing what the new
+  # release reports in the same commit. Local allows are kept narrow, each
+  # with its reason, and nothing is allowed crate-wide but the workaround in
+  # norrlogd/src/main.rs.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig-dev libfreetype-dev \
+            libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

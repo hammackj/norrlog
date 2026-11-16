@@ -1868,7 +1868,7 @@ impl Observer for CombatCollector {
                 }
             }
             Event::StanceChanged { stance } => self.bestiary.on_stance(stance),
-            Event::LevelUp { level } => self.bestiary.on_level(*level as u32),
+            Event::LevelUp { level } => self.bestiary.on_level(*level),
             Event::ZoneChange { zone } => self.bestiary.on_zone(zone),
             Event::Death { victim, killer } => {
                 if victim.is_you() {

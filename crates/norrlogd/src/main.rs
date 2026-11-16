@@ -97,10 +97,9 @@ fn parse_since(raw: &str) -> Option<Option<i64>> {
     }
     let (num, unit) = if let Some(n) = r.strip_suffix('h') {
         (n, 3600)
-    } else if let Some(n) = r.strip_suffix('d') {
-        (n, 86_400)
     } else {
-        return None;
+        let n = r.strip_suffix('d')?;
+        (n, 86_400)
     };
     // Digits only: `parse` would take a sign, and byte slicing split "é".
     if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {

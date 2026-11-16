@@ -242,9 +242,10 @@ pub struct SkyTracker {
 
 impl SkyTracker {
     pub fn new() -> Self {
-        let mut t = Self::default();
-        t.defs = seed_quests();
-        t
+        Self {
+            defs: seed_quests(),
+            ..Self::default()
+        }
     }
 
     /// Replace the catalogue. Used when the caller loads it from disk.

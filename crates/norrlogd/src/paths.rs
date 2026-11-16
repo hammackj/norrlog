@@ -284,7 +284,7 @@ mod tests {
     /// Relative values are refused rather than joined onto.
     #[test]
     fn a_relative_base_is_not_a_base() {
-        assert_eq!(PathBuf::from("relative/path").is_absolute(), false);
+        assert!(!PathBuf::from("relative/path").is_absolute());
         // `abs_env` and `home` both gate on this, which is what stops
         // `unwrap_or_default().join(..)` happening again.
     }
