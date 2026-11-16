@@ -195,11 +195,15 @@ jobs:
           rm -r "$STAGE"
           setup="norrlog-$VERSION-x86_64-windows-setup.exe"
           test -f "dist/$setup"
-          choco install innoextract --no-progress -y >/dev/null
-          listing="$(innoextract --list "dist/$setup")"
-          for f in LICENSE THIRD-PARTY-LICENSES.txt; do
-            grep -q "$f" <<<"$listing" || { echo "::error::$f missing from the installer"; exit 1; }
+          # Install it for real, silently, into a scratch folder, and look at
+          # what landed: it proves the installer runs as well as what it
+          # carries. (innoextract cannot read current Inno Setup output.)
+          inst="$RUNNER_TEMP\\norrlog-install"
+          "dist/$setup" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART //NOICONS //CURRENTUSER "//DIR=$inst" "//LOG=$RUNNER_TEMP\\install.log"
+          for f in norrlog.exe norrlogd.exe LICENSE THIRD-PARTY-LICENSES.txt; do
+            test -s "$(cygpath -u "$inst")/$f" || { echo "::error::$f missing after installing"; cat "$RUNNER_TEMP/install.log"; exit 1; }
           done
+          "$(cygpath -u "$inst")/unins000.exe" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
           (cd dist && sha256sum "$setup" > "$setup.sha256")
 
       - uses: actions/upload-artifact@v4
