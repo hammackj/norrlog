@@ -32,6 +32,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: cargo-about
+        run: cargo install --locked --features cli cargo-about@0.9.3
+
       - name: appimagetool
         run: |
           curl -fsSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
@@ -41,6 +44,16 @@ jobs:
 
       - name: Build
         run: packaging/appimage/build.sh dist
+
+      - name: Licences are in the AppImage
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE"/dist/*.AppImage --appimage-extract >/dev/null
+          for f in LICENSE THIRD-PARTY-LICENSES.txt; do
+            test -s "squashfs-root/usr/share/doc/norrlog/$f" || { echo "::error::$f missing"; exit 1; }
+          done
+          grep -q "^Target: x86_64-unknown-linux-gnu" squashfs-root/usr/share/doc/norrlog/THIRD-PARTY-LICENSES.txt
+          rm -rf squashfs-root
 
       - uses: actions/upload-artifact@v4
         with:
@@ -70,6 +83,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: cargo-about
+        run: cargo install --locked --features cli cargo-about@0.9.3
+
       - name: Build
         run: cargo build --release --locked -p norrlog -p norrlogd
 
@@ -90,6 +106,7 @@ jobs:
           iconutil -c icns "$iconset" -o "$app/Contents/Resources/norrlog.icns"
 
           cp LICENSE README.md "$app/Contents/Resources/"
+          python3 packaging/licenses.py aarch64-apple-darwin "$app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
           install -m 755 packaging/macos/uninstall.command "$app/Contents/Resources/uninstall.command"
 
           sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
@@ -111,6 +128,12 @@ jobs:
           hdiutil create -volname "Norrlog $VERSION" -srcfolder "$stage" \
             -fs HFS+ -format UDZO -ov "dist/$name.dmg"
           hdiutil verify "dist/$name.dmg"
+          mnt="$RUNNER_TEMP/check"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "dist/$name.dmg" >/dev/null
+          for f in LICENSE THIRD-PARTY-LICENSES.txt; do
+            test -s "$mnt/Norrlog.app/Contents/Resources/$f" || { echo "::error::$f missing from the disk image"; exit 1; }
+          done
+          hdiutil detach "$mnt" >/dev/null
           rm -r dist/Norrlog.app
           (cd dist && shasum -a 256 "$name.dmg" > "$name.dmg.sha256")
 
@@ -141,6 +164,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: cargo-about
+        run: cargo install --locked --features cli cargo-about@0.9.3
+
       - name: Build
         run: cargo build --release --locked -p norrlog -p norrlogd
 
@@ -151,7 +177,12 @@ jobs:
           name="norrlog-$version-x86_64-windows"
           mkdir -p "dist/$name"
           cp target/release/norrlog.exe target/release/norrlogd.exe README.md LICENSE "dist/$name/"
+          python packaging/licenses.py x86_64-pc-windows-msvc "dist/$name/THIRD-PARTY-LICENSES.txt"
           (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+          listing="$(7z l -ba "dist/$name.zip")"
+          for f in LICENSE THIRD-PARTY-LICENSES.txt; do
+            grep -q "$f" <<<"$listing" || { echo "::error::$f missing from the zip"; exit 1; }
+          done
           (cd dist && sha256sum "$name.zip" > "$name.zip.sha256")
           echo "STAGE=dist/$name" >> "$GITHUB_ENV"
 
@@ -164,6 +195,11 @@ jobs:
           rm -r "$STAGE"
           setup="norrlog-$VERSION-x86_64-windows-setup.exe"
           test -f "dist/$setup"
+          choco install innoextract --no-progress -y >/dev/null
+          listing="$(innoextract --list "dist/$setup")"
+          for f in LICENSE THIRD-PARTY-LICENSES.txt; do
+            grep -q "$f" <<<"$listing" || { echo "::error::$f missing from the installer"; exit 1; }
+          done
           (cd dist && sha256sum "$setup" > "$setup.sha256")
 
       - uses: actions/upload-artifact@v4

@@ -56,6 +56,7 @@ Source: "{#Stage}\norrlog.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\norrlogd.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\THIRD-PARTY-LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Norrlog"; Filename: "{app}\norrlog.exe"

@@ -3,7 +3,8 @@
 #
 #     packaging/appimage/build.sh [OUT_DIR]
 #
-# Needs appimagetool on PATH, or its path in $APPIMAGETOOL. Builds the release
+# Needs appimagetool on PATH, or its path in $APPIMAGETOOL, and cargo-about
+# (for the licence list; see packaging/licenses.py). Builds the release
 # binaries first. An AppImage runs on systems whose glibc is at least the
 # build machine's, so a release is built on an old distribution (CI uses
 # Ubuntu 22.04), not a rolling one.
@@ -12,6 +13,7 @@ ROOT=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 OUT=${1:-$ROOT/target/appimage}
 TOOL=${APPIMAGETOOL:-appimagetool}
 command -v "$TOOL" >/dev/null || { echo "appimagetool not found; set APPIMAGETOOL" >&2; exit 1; }
+cargo about --version >/dev/null 2>&1 || { echo "cargo-about not found: cargo install --locked --features cli cargo-about" >&2; exit 1; }
 
 cd "$ROOT"
 cargo build --release --locked -p norrlog -p norrlogd
@@ -32,6 +34,9 @@ for size in 32 48 64 128 256; do
 done
 install -m644 packaging/norrlog-256.png "$APPDIR/norrlog.png"
 ln -s norrlog.png "$APPDIR/.DirIcon"
+mkdir -p "$APPDIR/usr/share/doc/norrlog"
+install -m644 LICENSE README.md "$APPDIR/usr/share/doc/norrlog/"
+python3 packaging/licenses.py x86_64-unknown-linux-gnu "$APPDIR/usr/share/doc/norrlog/THIRD-PARTY-LICENSES.txt"
 
 mkdir -p "$OUT"
 ARCH=x86_64 VERSION=$VERSION "$TOOL" --no-appstream "$APPDIR" "$OUT/Norrlog-$VERSION-x86_64.AppImage"
