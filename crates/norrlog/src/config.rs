@@ -410,16 +410,16 @@ mod tests {
     fn switching_games_follows_the_newest_log_and_comes_back_to_the_old_one() {
         let root = std::env::temp_dir().join(format!("norrlog-switch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let legends = root.join("EverquestLegends/EverQuest Legends");
-        let live = root.join("Everquest/EverQuest");
+        let legends = root.join("EverquestLegends").join("EverQuest Legends");
+        let live = root.join("Everquest").join("EverQuest");
         std::fs::create_dir_all(legends.join("Logs")).unwrap();
         std::fs::create_dir_all(live.join("Logs")).unwrap();
-        let tharn = legends.join("Logs/eqlog_Tharn_freeport.txt");
+        let tharn = legends.join("Logs").join("eqlog_Tharn_freeport.txt");
         std::fs::write(&tharn, "").unwrap();
-        std::fs::write(live.join("Logs/eqlog_Old_firiona.txt"), "").unwrap();
+        std::fs::write(live.join("Logs").join("eqlog_Old_firiona.txt"), "").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(live.join("Logs/eqlog_New_teek.txt"), "").unwrap();
-        std::fs::write(live.join("Logs/dbg.txt"), "").unwrap();
+        std::fs::write(live.join("Logs").join("eqlog_New_teek.txt"), "").unwrap();
+        std::fs::write(live.join("Logs").join("dbg.txt"), "").unwrap();
         let s = |p: &Path| p.display().to_string();
         let mut c = ParserConfig {
             log_file: s(&tharn),
@@ -440,11 +440,14 @@ mod tests {
                 Some(live.clone())
             })
             .unwrap();
-        assert_eq!(next.log_file, s(&live.join("Logs/eqlog_New_teek.txt")));
+        assert_eq!(
+            next.log_file,
+            s(&live.join("Logs").join("eqlog_New_teek.txt"))
+        );
         assert_eq!(next.game_dir, s(&live));
         // Apply it as the file would be, and pick another log meanwhile.
         c = serde_json::from_value(serde_json::Value::Object(patch)).unwrap();
-        c.log_file = s(&live.join("Logs/eqlog_Old_firiona.txt"));
+        c.log_file = s(&live.join("Logs").join("eqlog_Old_firiona.txt"));
         assert_eq!(c.game(), Game::EverQuest);
         let (back, patch) = c.switch_to(Game::EverQuestLegends, |_| None).unwrap();
         assert_eq!(
@@ -454,7 +457,10 @@ mod tests {
         );
         let c: ParserConfig = serde_json::from_value(serde_json::Value::Object(patch)).unwrap();
         let (again, _) = c.switch_to(Game::EverQuest, |_| None).unwrap();
-        assert_eq!(again.log_file, s(&live.join("Logs/eqlog_Old_firiona.txt")));
+        assert_eq!(
+            again.log_file,
+            s(&live.join("Logs").join("eqlog_Old_firiona.txt"))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -463,7 +469,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("norrlog-gamedir-{}", std::process::id()));
         let live = root.join("EverQuest");
         std::fs::create_dir_all(live.join("Logs")).unwrap();
-        let log = live.join("Logs/eqlog_Dorrak_drinal.txt");
+        let log = live.join("Logs").join("eqlog_Dorrak_drinal.txt");
         let legends = || Some(PathBuf::from("/somewhere/EverQuest Legends"));
         let args = |c: &ParserConfig| {
             c.daemon_args_with(legends)
@@ -507,14 +513,14 @@ mod tests {
     fn a_chosen_log_brings_its_install() {
         let root = std::env::temp_dir().join(format!("norrlog-follow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let legends = root.join("EverquestLegends/EverQuest Legends");
-        let live = root.join("Everquest/EverQuest");
+        let legends = root.join("EverquestLegends").join("EverQuest Legends");
+        let live = root.join("Everquest").join("EverQuest");
         for g in [&legends, &live] {
             std::fs::create_dir_all(g.join("Logs")).unwrap();
             std::fs::write(g.join("spells_us.txt"), "").unwrap();
         }
-        let tharn = legends.join("Logs/eqlog_Tharn_freeport.txt");
-        let mirela = live.join("Logs/eqlog_Mirela_freeport.txt");
+        let tharn = legends.join("Logs").join("eqlog_Tharn_freeport.txt");
+        let mirela = live.join("Logs").join("eqlog_Mirela_freeport.txt");
         std::fs::write(&tharn, "").unwrap();
         std::fs::write(&mirela, "").unwrap();
         let s = |p: &Path| p.display().to_string();
@@ -574,7 +580,10 @@ mod tests {
 
         // A copy that names the other game: that game's remembered folders,
         // and with none, refused rather than read by the wrong rules.
-        let other = root.join("Everquest/backup/eqlog_Mirela_freeport.txt");
+        let other = root
+            .join("Everquest")
+            .join("backup")
+            .join("eqlog_Mirela_freeport.txt");
         assert!(
             c.follow_log(&other)
                 .unwrap_err()
@@ -596,7 +605,7 @@ mod tests {
     #[test]
     fn a_patch_keeps_the_keys_it_does_not_name() {
         let dir = std::env::temp_dir().join(format!("norrlog-cfg-{}", std::process::id()));
-        let p = dir.join("eqlparser-gui/config.json");
+        let p = dir.join("eqlparser-gui").join("config.json");
         let mut patch = serde_json::Map::new();
         patch.insert("logFile".into(), "/a".into());
         save_patch_at(&p, patch.clone()).unwrap();
