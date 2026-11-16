@@ -848,17 +848,22 @@ async fn bundle_once(cfg: &Config) -> anyhow::Result<()> {
         let engine = Arc::new(Mutex::new(Engine::with_game(player.clone(), spells, game)));
         let file =
             std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let ident = tail::ident(&file);
         let started = std::time::Instant::now();
+        let mut counted = tail::Counted::new(file);
         let lines = {
             let mut e = engine.locked("parse");
-            norrlog_core::lines::each_line(std::io::BufReader::new(file), |l| e.push_line(l))
-                .with_context(|| format!("reading {}", path.display()))?
+            norrlog_core::lines::each_line(std::io::BufReader::new(&mut counted), |l| {
+                e.push_line(l)
+            })
+            .with_context(|| format!("reading {}", path.display()))?
         };
+        let read = tail::Mark::taken(path, counted.consumed(), ident);
         let store = Arc::new(Mutex::new(
             store::Store::open_as(&db, &player, &server)
                 .with_context(|| format!("opening {}", db.display()))?,
         ));
-        if let Err(e) = flush_history(&engine, &store, path, true) {
+        if let Err(e) = flush_history(&engine, &store, path, Some(read)) {
             anyhow::bail!("writing the history of {}: {e}", path.display());
         }
         eprintln!("{lines} lines in {:.1}s", started.elapsed().as_secs_f64());
@@ -1189,23 +1194,13 @@ fn spawn_log_catchup(
             // synchronous, and a long catch-up on the async runtime would stall
             // every request the daemon is serving.
             let caught = tokio::task::spawn_blocking(move || {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
                 // The watermarks are read once, through a store of their own,
                 // rather than borrowing the daemon's -- that one is locked by
                 // the follower for the length of every batch it ingests.
                 let marks = catchup::watermarks(&db);
-                catchup::sweep(
-                    &dir,
-                    &followed,
-                    &db,
-                    game_dir.as_deref(),
-                    game,
-                    &|p| marks.get(p).copied().unwrap_or(0),
-                    now,
-                )
+                catchup::sweep(&dir, &followed, &db, game_dir.as_deref(), game, &|p| {
+                    marks.get(p).copied().unwrap_or_default()
+                })
             })
             .await
             .unwrap_or_default();
@@ -1275,8 +1270,13 @@ pub(crate) fn flush_history(
     engine: &Arc<Mutex<Engine>>,
     store: &Arc<Mutex<store::Store>>,
     path: &Path,
-    whole: bool,
+    // How much of the log the engine has read, when it read it from the
+    // start: `None` for a windowed read, which stores no whole-log totals.
+    // Taken by the caller with the engine state being written, never from
+    // the file's size now; see `tail::Mark`.
+    read: Option<tail::Mark>,
 ) -> Result<(), String> {
+    let whole = read.is_some();
     let (kills, encs, levels, aa) = { engine.locked("engine").history_to_persist() };
     let sky_turn_ins = { engine.locked("engine").sky_turn_ins() };
     let grants = { engine.locked("engine").grants_to_persist() };
@@ -1333,7 +1333,6 @@ pub(crate) fn flush_history(
         eprintln!("[norrlogd] history write failed: {e}");
         return Err(e.to_string());
     }
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1344,8 +1343,8 @@ pub(crate) fn flush_history(
     // the loot of a `--since` session never reached the history, because the
     // log looked read once something else was followed. Left where it was,
     // the next sweep reads the log whole.
-    if whole {
-        st.note_source(&source, bytes, now)
+    if let Some(mark) = read {
+        st.note_mark(&source, &mark, now)
     } else {
         st.note_seen(&source, now)
     }
@@ -1418,7 +1417,7 @@ fn spawn_follower_since(
             start.elapsed().as_secs_f64()
         );
         if let Some(st) = &store {
-            let _ = flush_history(&engine, st, &path, whole);
+            let _ = flush_history(&engine, st, &path, whole.then(|| follower.mark()));
         }
 
         // Follow.
@@ -1443,7 +1442,9 @@ fn spawn_follower_since(
             if last_flush.elapsed() >= HISTORY_FLUSH_INTERVAL {
                 last_flush = std::time::Instant::now();
                 if let Some(st) = &store {
-                    let _ = flush_history(&engine, st, &path, whole);
+                    // The follower reads on this thread only, so where it
+                    // stands now is exactly what the engine has seen.
+                    let _ = flush_history(&engine, st, &path, whole.then(|| follower.mark()));
                 }
             }
         }

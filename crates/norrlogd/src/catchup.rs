@@ -43,6 +43,7 @@ use norrlog_core::Parser;
 use crate::engine::Engine;
 use crate::locks::Guarded;
 use crate::store;
+use crate::tail::Mark;
 use std::sync::Mutex;
 
 /// How often the other logs are caught up.
@@ -72,15 +73,11 @@ pub const FIRST_SWEEP_AFTER: std::time::Duration = std::time::Duration::from_sec
 /// look unread. That is the safe direction: the worst case is re-reading a
 /// log from the start, which is slow and correct, rather than skipping one,
 /// which is fast and wrong.
-pub fn watermarks(db: &Path) -> std::collections::HashMap<String, u64> {
+pub fn watermarks(db: &Path) -> std::collections::HashMap<String, Mark> {
     let Ok(st) = store::Store::open_as(db, "", "") else {
         return Default::default();
     };
-    st.sources()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(path, _seen, bytes)| (path, bytes.max(0) as u64))
-        .collect()
+    st.source_marks().unwrap_or_default()
 }
 
 /// The same, with the time each was last read, for [`status`].
@@ -161,16 +158,24 @@ pub fn catch_up_one(
     // it here from each filename could file an alt's kills under the other
     // game on a machine that has both installed, which this one does.
     game: Game,
-    watermark: u64,
-    now: i64,
+    mark: Mark,
 ) -> Option<Caught> {
     let (player, server) = Parser::identity_from_filename(&path.to_string_lossy())?;
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let from = resume_at(&mut file, watermark, len).ok()?;
-    if from >= len {
+    // Read only when this is the file the mark is about, as long as it was
+    // and with the same contents at its ends. A length alone let another
+    // file of the same size at the same path pass for the one read.
+    if mark.holds_for(&mut file, len) {
         return None;
     }
+    let ident = crate::tail::ident(&file);
+    let same_file = mark.print.is_some() && ident == mark.ident;
+    let from = if same_file {
+        resume_at(&mut file, mark.bytes, len).ok()?
+    } else {
+        0
+    };
     // Read from the start, not from the watermark. The history writers for
     // drops, vendors, the bestiary and the record replace everything stored
     // for a source, so an engine that saw only the new tail would swap a
@@ -187,9 +192,12 @@ pub fn catch_up_one(
     // what is stored for this log, and a half-read log stored as the whole
     // of it lost every total after the failure. The watermark stays put, so
     // the next sweep tries again.
+    let mut counted = crate::tail::Counted::new(file);
     let read = {
         let mut e = engine.locked("catch-up");
-        norrlog_core::lines::each_line(BufReader::with_capacity(1 << 20, file), |l| e.push_line(l))
+        norrlog_core::lines::each_line(BufReader::with_capacity(1 << 20, &mut counted), |l| {
+            e.push_line(l)
+        })
     };
     let lines = match read {
         Ok(n) => n,
@@ -203,28 +211,19 @@ pub fn catch_up_one(
     };
     let st = store::Store::open_as(db, &player, &server).ok()?;
     let store = Arc::new(Mutex::new(st));
-    // A failed write leaves the watermark where it was, so the next sweep
-    // tries again rather than taking the log as read.
-    crate::flush_history(&engine, &store, path, true).ok()?;
-    // The watermark is the file's length as measured *before* the read, not
-    // its length now. The log may have grown while this ran -- an alt's log
-    // will not, but a log that turns out to be the one being played would --
-    // and claiming those bytes were read would skip them forever.
-    if let Err(e) = store
-        .locked("catch-up")
-        .note_source(&path.to_string_lossy(), len, now)
-    {
-        eprintln!(
-            "[norrlogd] catch-up: could not mark {}: {e}",
-            path.display()
-        );
-    }
+    // The mark is what was actually read, which is to the end of the file as
+    // it was when the read got there: claiming more would skip what the game
+    // wrote after, and the next sweep sees any of that as growth. A failed
+    // write leaves the old mark, so the next sweep tries again rather than
+    // taking the log as read.
+    let read = Mark::taken(path, counted.consumed(), ident);
+    crate::flush_history(&engine, &store, path, Some(read)).ok()?;
     Some(Caught {
         path: path.to_string_lossy().to_string(),
         player,
         server,
         from,
-        to: len,
+        to: read.bytes,
         lines,
         seconds: started.elapsed().as_secs_f64(),
     })
@@ -241,8 +240,7 @@ pub fn sweep(
     db: &Path,
     game_dir: Option<&Path>,
     game: Game,
-    marks: &dyn Fn(&str) -> u64,
-    now: i64,
+    marks: &dyn Fn(&str) -> Mark,
 ) -> Vec<Caught> {
     let followed = followed
         .canonicalize()
@@ -254,7 +252,7 @@ pub fn sweep(
             continue;
         }
         let mark = marks(&path.to_string_lossy());
-        if let Some(c) = catch_up_one(&path, db, game_dir, game, mark, now) {
+        if let Some(c) = catch_up_one(&path, db, game_dir, game, mark) {
             out.push(c);
         }
     }
@@ -339,6 +337,21 @@ mod tests {
         f.write_all(text.as_bytes()).unwrap();
     }
 
+    /// The mark of `bytes` read of the file at `p` now.
+    fn read_to(p: &Path, bytes: u64) -> Mark {
+        let ident = crate::tail::ident(&std::fs::File::open(p).unwrap());
+        Mark::taken(p, bytes, ident)
+    }
+
+    fn append(p: &Path, text: &str) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(p)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    }
+
     const A: &str = "[Tue Jul 28 14:00:00 2026] You slash a giant for 300 points of damage.\n";
     const B: &str = "[Tue Jul 28 14:00:05 2026] You slash a giant for 100 points of damage.\n";
 
@@ -398,7 +411,7 @@ mod tests {
         write(&p, A);
         let db = d.join("history.db");
         let len = std::fs::metadata(&p).unwrap().len();
-        assert!(catch_up_one(&p, &db, None, Game::Unknown, len, 0).is_none());
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, read_to(&p, len)).is_none());
         assert!(
             !db.exists(),
             "a log with nothing new still opened a database"
@@ -415,7 +428,14 @@ mod tests {
         let d = scratch("noname");
         let p = d.join("notalog.txt");
         write(&p, A);
-        assert!(catch_up_one(&p, &d.join("history.db"), None, Game::Unknown, 0, 0).is_none());
+        assert!(catch_up_one(
+            &p,
+            &d.join("history.db"),
+            None,
+            Game::Unknown,
+            Mark::default()
+        )
+        .is_none());
     }
 
     /// The followed log is the tailer's, and the sweep does not touch it.
@@ -432,8 +452,7 @@ mod tests {
             &d.join("history.db"),
             None,
             Game::Unknown,
-            &|_| 0,
-            0,
+            &|_| Mark::default(),
         );
         let names: Vec<&str> = caught.iter().map(|c| c.player.as_str()).collect();
         assert_eq!(
@@ -458,8 +477,7 @@ mod tests {
             &d.join("history.db"),
             None,
             Game::Unknown,
-            A.len() as u64,
-            0,
+            read_to(&p, A.len() as u64),
         )
         .expect("something to read");
         assert_eq!(c.lines, 2);
@@ -478,7 +496,8 @@ mod tests {
         };
         let zone = "[Tue Jul 28 13:59:00 2026] You have entered West Commonlands.\n";
         write(&p, &format!("{zone}{}{}", loot(1), loot(2)));
-        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        let first =
+            catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).expect("a first read");
         let looted = || {
             let st = store::Store::open_as(&db, "Mirela", "freeport").unwrap();
             st.all_drops()
@@ -496,7 +515,8 @@ mod tests {
             .unwrap()
             .write_all(loot(3).as_bytes())
             .unwrap();
-        catch_up_one(&p, &db, None, Game::Unknown, first.to, 0).expect("the appended line");
+        catch_up_one(&p, &db, None, Game::Unknown, read_to(&p, first.to))
+            .expect("the appended line");
         assert_eq!(
             looted(),
             3,
@@ -504,7 +524,7 @@ mod tests {
         );
 
         let len = std::fs::metadata(&p).unwrap().len();
-        assert!(catch_up_one(&p, &db, None, Game::Unknown, len, 0).is_none());
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, read_to(&p, len)).is_none());
         assert_eq!(looted(), 3);
     }
 
@@ -537,7 +557,8 @@ mod tests {
             .unwrap();
         f.write_all(bread(2).as_bytes()).unwrap();
         drop(f);
-        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        let first =
+            catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).expect("a first read");
         assert_eq!(first.lines, 3);
         assert_eq!(stale_bread(&db), 2);
 
@@ -547,7 +568,8 @@ mod tests {
             .unwrap()
             .write_all(bread(3).as_bytes())
             .unwrap();
-        catch_up_one(&p, &db, None, Game::Unknown, first.to, 0).expect("the appended line");
+        catch_up_one(&p, &db, None, Game::Unknown, read_to(&p, first.to))
+            .expect("the appended line");
         assert_eq!(stale_bread(&db), 3, "the totals stopped at the bad line");
     }
 
@@ -559,17 +581,18 @@ mod tests {
         let p = d.join("eqlog_Mirela_freeport.txt");
         let db = d.join("history.db");
         write(&p, &format!("{}{}", bread(1), bread(2)));
-        let first = catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        let first =
+            catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).expect("a first read");
         assert_eq!(stale_bread(&db), 2);
         let key = p.to_string_lossy().to_string();
-        assert_eq!(watermarks(&db).get(&key), Some(&first.to));
+        assert_eq!(watermarks(&db).get(&key).map(|m| m.bytes), Some(first.to));
 
         // A directory where the log was: it opens, and every read fails.
         std::fs::remove_file(&p).unwrap();
         std::fs::create_dir(&p).unwrap();
-        assert!(catch_up_one(&p, &db, None, Game::Unknown, 0, 0).is_none());
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).is_none());
         assert_eq!(stale_bread(&db), 2, "a failed read replaced the totals");
-        assert_eq!(watermarks(&db).get(&key), Some(&first.to));
+        assert_eq!(watermarks(&db).get(&key).map(|m| m.bytes), Some(first.to));
     }
 
     /// What the follower stores for a `--since` window over `lines`.
@@ -582,14 +605,14 @@ mod tests {
         let store = Arc::new(Mutex::new(
             store::Store::open_as(db, "Mirela", "freeport").unwrap(),
         ));
-        crate::flush_history(&engine, &store, p, false).unwrap();
+        crate::flush_history(&engine, &store, p, None).unwrap();
     }
 
-    fn mark(db: &Path, p: &Path) -> u64 {
+    fn mark(db: &Path, p: &Path) -> Mark {
         watermarks(db)
             .get(p.to_string_lossy().as_ref())
             .copied()
-            .unwrap_or(0)
+            .unwrap_or_default()
     }
 
     /// A `--since` window stores no drops, and marked the log read to its
@@ -605,7 +628,7 @@ mod tests {
         assert_eq!(stale_bread(&db), 0, "a window replaces no totals");
 
         // Another log is followed now, and this one is swept.
-        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p), 0)
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p))
             .expect("the window's log is not taken as read");
         assert_eq!(stale_bread(&db), 1);
         assert!(
@@ -622,7 +645,7 @@ mod tests {
         let p = d.join("eqlog_Mirela_freeport.txt");
         let db = d.join("history.db");
         write(&p, &format!("{}{}", bread(1), bread(2)));
-        catch_up_one(&p, &db, None, Game::Unknown, 0, 0).expect("a first read");
+        catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).expect("a first read");
         assert_eq!(stale_bread(&db), 2);
 
         std::fs::OpenOptions::new()
@@ -634,10 +657,92 @@ mod tests {
         windowed_flush(&p, &db, &[bread(3)]);
         assert_eq!(stale_bread(&db), 2);
 
-        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p), 0)
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p))
             .expect("the windowed part is still to read");
         assert_eq!(stale_bread(&db), 3);
-        assert_eq!(mark(&db, &p), std::fs::metadata(&p).unwrap().len());
+        assert_eq!(mark(&db, &p).bytes, std::fs::metadata(&p).unwrap().len());
+    }
+
+    /// The followed log's mark was the file's size when the history was
+    /// written, not what had been read. A line the game appended between the
+    /// last read and the write was marked read, and once that log was left,
+    /// catch-up skipped it for good.
+    #[test]
+    fn a_line_appended_after_the_last_read_is_not_marked_read() {
+        let d = scratch("appended");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        let zone = "[Tue Jul 28 13:59:00 2026] You have entered West Commonlands.\n";
+        write(&p, &format!("{zone}{}{}", bread(1), bread(2)));
+        let mut follower = crate::tail::Follower::open(&p).unwrap();
+        let mut e = Engine::with_game("Mirela".into(), Engine::load_spell_db(None), Game::Unknown);
+        follower.read_available(|l| e.push_line(l)).unwrap();
+        let engine = Arc::new(Mutex::new(e));
+        let store = Arc::new(Mutex::new(
+            store::Store::open_as(&db, "Mirela", "freeport").unwrap(),
+        ));
+
+        // The game writes a third loot and half of a fourth line before the
+        // next poll, and the history is written then.
+        append(&p, &bread(3));
+        append(&p, "[Tue Jul 28 14:00:04 2026] --You have looted a St");
+        let read = follower.mark();
+        crate::flush_history(&engine, &store, &p, Some(read)).unwrap();
+        assert_eq!(stale_bread(&db), 2);
+        assert_eq!(
+            mark(&db, &p).bytes,
+            (zone.len() + 2 * bread(1).len()) as u64,
+            "only what was read, not the third loot or the half line"
+        );
+
+        // That log is left, and swept.
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p)).expect("the rest");
+        assert_eq!(stale_bread(&db), 3);
+    }
+
+    /// A different file of the same length at the same path looked read,
+    /// because the mark was a length. It is read now, and so is a rewrite
+    /// in place and a mark from before marks named the file; the same file,
+    /// untouched, is still left alone.
+    #[test]
+    fn a_replacement_of_the_same_length_is_read() {
+        let d = scratch("replaced");
+        let p = d.join("eqlog_Mirela_freeport.txt");
+        let db = d.join("history.db");
+        write(&p, &bread(1));
+        catch_up_one(&p, &db, None, Game::Unknown, Mark::default()).expect("a first read");
+        assert!(
+            catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p)).is_none(),
+            "nothing changed"
+        );
+
+        // Moved aside and a new file put in its place, as long as the old.
+        std::fs::rename(&p, d.join("old.txt")).unwrap();
+        write(&p, &bread(2));
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), bread(1).len() as u64);
+        let c = catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p))
+            .expect("the replacement is read");
+        assert_eq!((c.from, c.lines), (0, 1));
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p)).is_none());
+
+        // Rewritten in place: same file, same length, other contents.
+        {
+            use std::io::{Seek, SeekFrom};
+            let mut f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+            f.seek(SeekFrom::Start(18)).unwrap();
+            f.write_all(b"5").unwrap();
+        }
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p)).expect("the rewrite is read");
+
+        // A mark from before, a length and nothing else: read once more.
+        store::Store::open_as(&db, "Mirela", "freeport")
+            .unwrap()
+            .note_source(&p.to_string_lossy(), bread(1).len() as u64, 1)
+            .unwrap();
+        catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p))
+            .expect("an old mark is not trusted");
+        assert!(catch_up_one(&p, &db, None, Game::Unknown, mark(&db, &p)).is_none());
+        assert_eq!(stale_bread(&db), 1);
     }
 
     #[test]

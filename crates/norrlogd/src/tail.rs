@@ -20,12 +20,12 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// What a file is, as opposed to what it is called, so a log replaced at
 /// the same path is noticed. A length is not an identity: a new file at
 /// least as long as what had been read looked like the old one growing.
-type Ident = Option<(u64, u64)>;
+pub(crate) type Ident = Option<(u64, u64)>;
 
 /// The open file's identity: device and inode on Unix, volume serial and
 /// file index on Windows. `None` where neither is known, which leaves only
 /// the length check.
-fn ident(file: &File) -> Ident {
+pub(crate) fn ident(file: &File) -> Ident {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -62,6 +62,105 @@ fn at_path(path: &Path) -> Option<(u64, Ident)> {
     // in the client's way.
     let f = File::open(path).ok()?;
     Some((f.metadata().ok()?.len(), ident(&f)))
+}
+
+/// How much of a log has been read, and of which file.
+///
+/// A byte count alone said too little twice. Taken from the file's length
+/// when the history was written, it claimed lines the game appended after
+/// the last read, and a log left then was never read to its end. And a
+/// different file of the same length at the same path looked read. So the
+/// count is what was actually consumed, and it carries the file's identity
+/// and a fingerprint of what was read: a log counts as read only when all
+/// three still hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mark {
+    pub bytes: u64,
+    pub ident: Ident,
+    /// [`fingerprint`] of the first `bytes`; `None` for a mark written
+    /// before there were fingerprints, which therefore never matches.
+    pub print: Option<i64>,
+}
+
+/// How much of each end of what was read the fingerprint covers.
+const PRINT_SPAN: u64 = 4096;
+
+/// A fingerprint of the first `bytes` of `file`: its first and last few KB
+/// and the count. Enough to tell a rewrite at the same length, which an
+/// identity cannot when the file is rewritten in place, for two small reads.
+/// FNV-1a, so it is the same from one build to the next.
+pub(crate) fn fingerprint(file: &mut File, bytes: u64) -> std::io::Result<i64> {
+    use std::io::Read;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |b: &[u8]| {
+        for &x in b {
+            h ^= x as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    eat(&bytes.to_le_bytes());
+    for start in [0, bytes.saturating_sub(PRINT_SPAN)] {
+        let n = PRINT_SPAN.min(bytes - start);
+        let mut buf = vec![0u8; n as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf)?;
+        eat(&buf);
+    }
+    Ok(h as i64)
+}
+
+impl Mark {
+    /// `bytes` read of `path` from the file `ident`. Fingerprinted from the
+    /// file at the path now; if that is another file, the mark has no
+    /// fingerprint, so the log is read again rather than taken as read.
+    pub fn taken(path: &Path, bytes: u64, ident: Ident) -> Mark {
+        let print = File::open(path).ok().and_then(|mut f| {
+            let same = crate::tail::ident(&f) == ident;
+            let long_enough = f.metadata().ok()?.len() >= bytes;
+            (same && long_enough)
+                .then(|| fingerprint(&mut f, bytes).ok())
+                .flatten()
+        });
+        Mark {
+            bytes,
+            ident,
+            print,
+        }
+    }
+
+    /// Whether `file`, `len` bytes long, is exactly what this mark says was
+    /// read: the same file, no longer, with the same contents at its ends.
+    pub fn holds_for(&self, file: &mut File, len: u64) -> bool {
+        self.print.is_some()
+            && len == self.bytes
+            && ident(file) == self.ident
+            && fingerprint(file, len).ok() == self.print
+    }
+}
+
+/// A reader that counts what it hands on, for a [`Mark`] of a read that
+/// went to the end of the file, however long it was by then.
+pub struct Counted<R> {
+    inner: R,
+    bytes: u64,
+}
+
+impl<R> Counted<R> {
+    pub fn new(inner: R) -> Self {
+        Counted { inner, bytes: 0 }
+    }
+
+    pub fn consumed(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes += n as u64;
+        Ok(n)
+    }
 }
 
 /// Follows a log file, invoking a callback for each complete line.
@@ -197,6 +296,12 @@ impl Follower {
             line.clear();
         }
         Ok(None)
+    }
+
+    /// How far this has read, as a [`Mark`]: up to the last whole line it
+    /// handed on, and never a byte the game wrote after.
+    pub fn mark(&self) -> Mark {
+        Mark::taken(&self.path, self.position, self.ident)
     }
 
     /// Read every complete line currently available, calling `on_line` for each.

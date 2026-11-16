@@ -250,6 +250,7 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
+        s.add_source_identity()?;
         let inferred = s.inferred_group_sources()?;
         if !inferred.is_empty() || s.repairs_pending()? {
             s.back_up_before_repair(path)?;
@@ -351,6 +352,7 @@ impl Store {
         s.add_vendor_quoted()?;
         s.add_npc_kind()?;
         s.add_drops_left_behind()?;
+        s.add_source_identity()?;
         s.repair_rule_notice_zones()?;
         s.drop_graded_duplicates()?;
         Ok(s)
@@ -439,6 +441,25 @@ impl Store {
             ",
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Add the identity and fingerprint of what was read to `sources`, once.
+    /// Rows from before have neither, so each log is read once more, as the
+    /// only way to know a size-only mark was about the file there now.
+    fn add_source_identity(&mut self) -> Result<()> {
+        let present: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name='print'")?
+            .query_row([], |r| r.get::<_, i64>(0))?
+            > 0;
+        if !present {
+            self.conn.execute_batch(
+                "ALTER TABLE sources ADD COLUMN ident_dev INTEGER;
+                 ALTER TABLE sources ADD COLUMN ident_ino INTEGER;
+                 ALTER TABLE sources ADD COLUMN print INTEGER;",
+            )?;
+        }
         Ok(())
     }
 
@@ -3599,12 +3620,58 @@ impl Store {
         Ok(())
     }
 
+    /// A mark with a count only, as marks were before they carried the
+    /// file: for tests of what that leaves to be read again.
+    #[cfg(test)]
     pub fn note_source(&mut self, path: &str, bytes: u64, now: i64) -> Result<()> {
+        self.note_mark(
+            path,
+            &crate::tail::Mark {
+                bytes,
+                ..Default::default()
+            },
+            now,
+        )
+    }
+
+    /// Record how much of a log is stored, and of which file; see
+    /// [`crate::tail::Mark`].
+    pub fn note_mark(&mut self, path: &str, mark: &crate::tail::Mark, now: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sources (path, last_seen, bytes) VALUES (?1,?2,?3)",
-            params![path, now, bytes as i64],
+            "INSERT OR REPLACE INTO sources (path, last_seen, bytes, ident_dev, ident_ino, print)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                path,
+                now,
+                mark.bytes as i64,
+                mark.ident.map(|i| i.0 as i64),
+                mark.ident.map(|i| i.1 as i64),
+                mark.print
+            ],
         )?;
         Ok(())
+    }
+
+    /// Every log's mark, by path.
+    pub fn source_marks(&self) -> Result<std::collections::HashMap<String, crate::tail::Mark>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, bytes, ident_dev, ident_ino, print FROM sources")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let dev: Option<i64> = r.get(2)?;
+                let ino: Option<i64> = r.get(3)?;
+                Ok((
+                    r.get::<_, String>(0)?,
+                    crate::tail::Mark {
+                        bytes: r.get::<_, i64>(1)?.max(0) as u64,
+                        ident: dev.zip(ino).map(|(d, i)| (d as u64, i as u64)),
+                        print: r.get(4)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }
 
     /// Hide what nobody played from this connection, until the guard drops.
