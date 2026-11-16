@@ -191,6 +191,106 @@ impl ParserConfig {
             .unwrap_or_default()
     }
 
+    /// The patch that follows `log`, chosen by name (Browse or the list).
+    ///
+    /// The game folder decides the game, its spells and its site, and the
+    /// daemon takes it before the log, so changing the log alone could pair
+    /// a live EverQuest log with the Legends install. The rule:
+    /// - A log in an install's `Logs` folder brings that install with it:
+    ///   its `Logs` folder and its game folder.
+    /// - A log anywhere else (a copy, a backup) keeps the folders set,
+    ///   unless its path names the other game than the game folder does.
+    ///   Then the folders last used for that game are taken, and with none
+    ///   remembered it is refused with what to do instead.
+    ///
+    /// When the game changes, the outgoing paths are kept under `games` for
+    /// the switch back, as [`ParserConfig::switch_to`] keeps them.
+    pub fn follow_log(
+        &self,
+        log: &Path,
+    ) -> Result<(Paths, serde_json::Map<String, serde_json::Value>), String> {
+        let file = log.display().to_string();
+        let keep = || Paths {
+            log_file: file.clone(),
+            logs_dir: self.logs_dir.clone(),
+            game_dir: self.game_dir.clone(),
+        };
+        let next = if let Some(dir) = log.parent().and_then(install_of) {
+            Paths {
+                log_file: file.clone(),
+                logs_dir: log.parent().unwrap_or(log).display().to_string(),
+                game_dir: dir.display().to_string(),
+            }
+        } else {
+            let named = Game::from_path(log);
+            let set = Game::from_path(Path::new(&self.game_dir));
+            if self.game_dir.is_empty()
+                || named == Game::Unknown
+                || set == Game::Unknown
+                || named == set
+            {
+                keep()
+            } else {
+                let p = self
+                    .games
+                    .get(named.slug())
+                    .filter(|p| !p.game_dir.is_empty() && Path::new(&p.game_dir).is_dir())
+                    .ok_or_else(|| {
+                        format!(
+                            "That looks like a {} log, but the game directory is {}'s. Switch game first, or set the {} game directory and Save.",
+                            named.label(),
+                            set.label(),
+                            named.label()
+                        )
+                    })?;
+                Paths {
+                    log_file: file.clone(),
+                    logs_dir: p.logs_dir.clone(),
+                    game_dir: p.game_dir.clone(),
+                }
+            }
+        };
+        let now = self.game();
+        let then = Game::detect(
+            [&next.game_dir, &next.log_file, &next.logs_dir]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .map(Path::new),
+        );
+        let mut patch = serde_json::Map::new();
+        patch.insert("logFile".into(), next.log_file.clone().into());
+        patch.insert("logsDir".into(), next.logs_dir.clone().into());
+        patch.insert("gameDir".into(), next.game_dir.clone().into());
+        if now != Game::Unknown && then != now {
+            let mut games = self.games.clone();
+            games.insert(now.slug().into(), self.paths());
+            patch.insert(
+                "games".into(),
+                serde_json::to_value(games).map_err(|e| e.to_string())?,
+            );
+        }
+        Ok((next, patch))
+    }
+
+    /// What is wrong with these paths together, if anything: a log whose
+    /// path names one game with a game folder that names the other. The
+    /// daemon would read it by the folder's rules, and file what it saw
+    /// under the wrong game.
+    pub fn mismatch(&self) -> Option<String> {
+        if self.log_file.is_empty() || self.game_dir.is_empty() {
+            return None;
+        }
+        let named = Game::from_path(Path::new(&self.log_file));
+        let set = Game::from_path(Path::new(&self.game_dir));
+        (named != Game::Unknown && set != Game::Unknown && named != set).then(|| {
+            format!(
+                "The log is {}'s and the game directory {}'s. Point both at one game.",
+                named.label(),
+                set.label()
+            )
+        })
+    }
+
     /// The saved load window, when it is one the daemon takes: a whole
     /// number of hours or days (`2h`, `1d`). Anything else, a date or a
     /// hand-edited typo, would stop the daemon at startup, and the app would
@@ -386,6 +486,98 @@ mod tests {
             "{a:?}"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Picking a log by name brings its install along, so the game folder
+    /// never contradicts the log; the outgoing game's paths are kept.
+    #[test]
+    fn a_chosen_log_brings_its_install() {
+        let root = std::env::temp_dir().join(format!("norrlog-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let legends = root.join("EverquestLegends/EverQuest Legends");
+        let live = root.join("Everquest/EverQuest");
+        for g in [&legends, &live] {
+            std::fs::create_dir_all(g.join("Logs")).unwrap();
+            std::fs::write(g.join("spells_us.txt"), "").unwrap();
+        }
+        let tharn = legends.join("Logs/eqlog_Tharn_freeport.txt");
+        let mirela = live.join("Logs/eqlog_Mirela_freeport.txt");
+        std::fs::write(&tharn, "").unwrap();
+        std::fs::write(&mirela, "").unwrap();
+        let s = |p: &Path| p.display().to_string();
+        let apply = |c: &ParserConfig, patch: serde_json::Map<String, serde_json::Value>| {
+            let mut v = serde_json::to_value(Paths::default()).unwrap();
+            v.as_object_mut().unwrap().extend(patch);
+            let mut n: ParserConfig = serde_json::from_value(v).unwrap();
+            if n.games.is_empty() {
+                n.games = c.games.clone();
+            }
+            n
+        };
+        let c = ParserConfig {
+            log_file: s(&tharn),
+            logs_dir: s(&legends.join("Logs")),
+            game_dir: s(&legends),
+            ..Default::default()
+        };
+
+        // Legends set up, a live log chosen: the live install comes along.
+        let (next, patch) = c.follow_log(&mirela).unwrap();
+        assert_eq!(next.game_dir, s(&live));
+        assert_eq!(next.logs_dir, s(&live.join("Logs")));
+        let c2 = apply(&c, patch);
+        assert_eq!(c2.game(), Game::EverQuest);
+        assert!(c2.mismatch().is_none());
+        assert!(
+            c2.daemon_args().contains(&live.clone().into_os_string()),
+            "{:?}",
+            c2.daemon_args()
+        );
+        assert_eq!(
+            c2.games["everquest-legends"].log_file,
+            s(&tharn),
+            "kept for the way back"
+        );
+
+        // And back: the Legends install again, and live's paths kept.
+        let (back, patch) = c2.follow_log(&tharn).unwrap();
+        assert_eq!(back.game_dir, s(&legends));
+        let c3 = apply(&c2, patch);
+        assert_eq!(c3.game(), Game::EverQuestLegends);
+        assert_eq!(c3.games["everquest"].game_dir, s(&live));
+
+        // A copy outside any install keeps the folders set...
+        let copies = root.join("copies");
+        std::fs::create_dir_all(&copies).unwrap();
+        let copy = copies.join("eqlog_Tharn_freeport.txt");
+        let (kept, _) = c.follow_log(&copy).unwrap();
+        assert_eq!(kept.game_dir, s(&legends));
+        // ...and a custom game folder that names no game is not second-guessed.
+        let custom = ParserConfig {
+            game_dir: "/opt/eq".into(),
+            ..Default::default()
+        };
+        assert_eq!(custom.follow_log(&copy).unwrap().0.game_dir, "/opt/eq");
+
+        // A copy that names the other game: that game's remembered folders,
+        // and with none, refused rather than read by the wrong rules.
+        let other = root.join("Everquest/backup/eqlog_Mirela_freeport.txt");
+        assert!(
+            c.follow_log(&other)
+                .unwrap_err()
+                .contains("Switch game first")
+        );
+        let (from_memory, _) = c3.follow_log(&other).unwrap();
+        assert_eq!(from_memory.game_dir, s(&live));
+
+        // Save refuses the contradiction by hand too.
+        let bad = ParserConfig {
+            log_file: s(&mirela),
+            game_dir: s(&legends),
+            ..Default::default()
+        };
+        assert!(bad.mismatch().is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

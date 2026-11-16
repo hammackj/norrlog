@@ -108,6 +108,10 @@ pub struct SettingsView {
     log_pid: Option<u32>,
     log_scroll: ScrollHandle,
     tasks: Vec<Task<()>>,
+    /// The Browse dialog's task, kept apart from `tasks`: the log poll adds
+    /// one of those every 1.5 s, and a dialog left open longer than the list
+    /// lasts was dropped with it, cancelling whatever was picked.
+    picking: Option<Task<()>>,
     _poll: Option<Task<()>>,
     /// The overlay cards. The shell listens to them.
     pub overlay: Entity<crate::overlay_settings::OverlayControls>,
@@ -197,6 +201,7 @@ impl SettingsView {
             log_pid: None,
             log_scroll: ScrollHandle::new(),
             tasks: Vec::new(),
+            picking: None,
             _poll: None,
             overlay: cx.new(|cx| crate::overlay_settings::OverlayControls::new(window, cx)),
         }
@@ -477,6 +482,15 @@ impl SettingsView {
             text(&self.inputs.logs_dir),
             text(&self.inputs.game_dir),
         );
+        if let Some(e) = (ParserConfig {
+            log_file: log_file.clone(),
+            game_dir: game_dir.clone(),
+            ..Default::default()
+        })
+        .mismatch()
+        {
+            return self.say(e, 8, cx);
+        }
         let old = ParserConfig::load();
         let restart = log_file != old.log_file
             || logs_dir != old.logs_dir
@@ -518,12 +532,23 @@ impl SettingsView {
         if path == self.inputs.log_file.read(cx).value().trim() {
             return self.say("Already following that log.", 3, cx);
         }
-        self.inputs
-            .log_file
-            .update(cx, |s, cx| s.set_value(path.clone(), window, cx));
-        let restart = path != ParserConfig::load().log_file;
-        let mut patch = serde_json::Map::new();
-        patch.insert("logFile".into(), path.into());
+        // The folders come along with the log, so the game folder never
+        // names the other game; see `ParserConfig::follow_log`.
+        let cfg = ParserConfig::load();
+        let (next, patch) = match cfg.follow_log(std::path::Path::new(&path)) {
+            Ok(x) => x,
+            Err(e) => return self.say(e, 8, cx),
+        };
+        let restart = next.log_file != cfg.log_file
+            || next.logs_dir != cfg.logs_dir
+            || next.game_dir != cfg.game_dir;
+        for (input, value) in [
+            (&self.inputs.log_file, next.log_file),
+            (&self.inputs.logs_dir, next.logs_dir),
+            (&self.inputs.game_dir, next.game_dir),
+        ] {
+            input.update(cx, |s, cx| s.set_value(value, window, cx));
+        }
         match self.apply(patch, restart) {
             Ok(true) => self.say("Switched — daemon restarting…", 6, cx),
             Ok(false) => self.say("Switched.", 6, cx),
@@ -592,7 +617,7 @@ impl SettingsView {
                 .into(),
             ),
         });
-        self.track(cx.spawn_in(window, async move |this, cx| {
+        self.picking = Some(cx.spawn_in(window, async move |this, cx| {
             let got = rx.await;
             let _ = this.update_in(cx, |v, window, cx| match got {
                 Ok(Ok(Some(paths))) => {
