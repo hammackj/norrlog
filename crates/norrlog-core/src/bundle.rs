@@ -1848,7 +1848,7 @@ pub struct ConsiderLevel {
 ///
 /// It is a roster of *names*, and deliberately not a pairing to a map: a map
 /// is named by its archive shortname and nothing in the client pairs the two.
-/// See `tools/import-zone-roster.py`.
+/// The collector's tools build it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RosterZone {
     pub zone: String,
@@ -1888,7 +1888,7 @@ fn yes() -> bool {
 /// So it is read off the item's own tooltip: the window draws the icon, the
 /// screenshots are on disk, and the client's icon sheets are on disk, so the
 /// pairing can be established by finding which sheet icon the window is
-/// showing. `tools/match-item-icons.py` does that and this carries the result.
+/// showing. A tool with the collector does that, and this carries the result.
 ///
 /// That makes an icon the same kind of claim as the tooltip readings beside
 /// it — taken from this game and checkable against the pixels it came from —

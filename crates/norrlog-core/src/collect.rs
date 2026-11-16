@@ -467,7 +467,7 @@ impl Observer for FactionCollector {
             //     ... with Storm Guard could not possibly get any better.
             //     ... with Shadowknights of Night Keep has been adjusted by 3.
             //
-            // tools/import-faction.py breaks there, because its pattern wants
+            // The old faction import broke there, because its pattern wants
             // a number, and reads that kill as two bursts. Both halves still
             // reach the same death, so the recorded facts are identical —
             // it is the burst count that differs, and one event is the

@@ -1,4 +1,4 @@
 {
-  "note": "Items a tradeskill combine hands back rather than makes. The client announces a returned tool with the same line as a product, so without this list a returned Smithing Chisel counts as a combine. The full recipe book is not shipped: put one at <config dir>/recipes.json (tools/import-recipes.py writes it there) and it is read at startup.",
+  "note": "Items a tradeskill combine hands back rather than makes. The client announces a returned tool with the same line as a product, so without this list a returned Smithing Chisel counts as a combine. The full recipe book is not shipped: one at <config dir>/recipes.json is read at startup.",
   "tools": ["Smithing Chisel"]
 }

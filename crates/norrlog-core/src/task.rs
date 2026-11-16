@@ -443,7 +443,7 @@ fn match_step(steps: &[TaskStepDef], killed: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// The body `tools/import-tasks.py` posts to `/api/tasks`.
+    /// The body the collector's task import posts to `/api/tasks`.
     ///
     /// That tool reads a task's objectives off a photograph of the Quest
     /// Journal, which is the only place they are stated -- see this module's

@@ -211,9 +211,9 @@ attribution comes from the skill-up beside it — which it prints *before* a
 success and *after* a failure, so both orders are read. The `Consumed` lines
 follow the same asymmetry, and are attributed the same way. What is left is the
 recipe that never skills you up at all, which no reading of the log can reach;
-those come from a recipe book, which is not shipped: `tools/import-recipes.py`
-builds one from EQTraders' listings into `~/.config/norrlog/recipes.json`, and
-the daemon reads it from there. The build does carry the list of
+those come from a recipe book, which is not shipped: when there is one at
+`~/.config/norrlog/recipes.json` (built from EQTraders' listings by tools that
+live outside this repository), the daemon reads it from there. The build does carry the list of
 **tools**, because a combine hands its tools back and the client announces that
 with the same line it uses for the thing you made — on one character's log that
 was 113 combines that never happened.

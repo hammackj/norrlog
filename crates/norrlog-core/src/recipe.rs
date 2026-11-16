@@ -9,8 +9,9 @@
 //! skilled you up in this log. Those combines are left unattributed, and no
 //! amount of cleverness about the log will fix it: the evidence is not there.
 //!
-//! So it is supplied instead. The book is a curated file, grown by
-//! `tools/import-recipes.py` from EQTraders recipe listings, and a product
+//! So it is supplied instead. The book is a curated file, grown from
+//! EQTraders recipe listings by an import tool kept with the eqldb
+//! collector rather than here, and a product
 //! found in it is declared rather than guessed at.
 //!
 //! The book is not shipped, since the listings are EQTraders' work, not this
@@ -236,7 +237,7 @@ mod tests {
             assert!(
                 crate::tradeskill::is_tradeskill(&r.skill),
                 "{} is attributed to {:?}, which is not a tradeskill the client \
-                 reports — check the alias table in tools/import-recipes.py",
+                 reports — check the import tool's alias table",
                 r.product,
                 r.skill
             );

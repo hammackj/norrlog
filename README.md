@@ -211,16 +211,6 @@ only what happens after the overlay opens.
 # Parser coverage: what fraction of lines are understood, and what is not.
 # The unmatched histogram is the tool for growing the rule table.
 ./target/release/norrlog-coverage <logfile> [top-n] [game-dir]
-
-# Recipe book: grow it by pasting an EQTraders "Full Recipe List" into a file.
-# Merging is additive and deduplicated, so re-importing changes nothing.
-tools/import-recipes.py paste.txt [--check]
-
-# Archive recipe data from eqtraders.com item pages, one request at a time
-# with a five-second gap. Every page is cached, so resuming is free and a
-# rerun costs nothing; touch <cache>/STOP to halt cleanly mid-run.
-tools/import-eqtraders.py --items 1-2000
-tools/import-eqtraders.py --reparse          # rebuild from the cache, no network
 ```
 
 ## How it works
