@@ -58,7 +58,7 @@ jobs:
       - name: Checksum
         run: cd dist && for f in *.AppImage; do sha256sum "$f" > "$f.sha256"; done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Norrlog-linux-x86_64
           path: |
@@ -142,7 +142,7 @@ jobs:
           rm -r dist/Norrlog.app
           (cd dist && shasum -a 256 "$name.dmg" > "$name.dmg.sha256")
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Norrlog-macos-aarch64
           path: dist/*
@@ -211,7 +211,7 @@ jobs:
           "$(cygpath -u "$inst")/unins000.exe" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
           (cd dist && sha256sum "$setup" > "$setup.sha256")
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Norrlog-windows-x86_64
           path: dist/*
