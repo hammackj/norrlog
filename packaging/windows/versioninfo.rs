@@ -28,7 +28,10 @@ fn embed_version_info(description: &str, original_name: &str, icon: Option<&str>
         Some(name) => {
             let path = dir.join(name).canonicalize().expect("the Windows icon");
             // rc reads backslashes as escapes inside a string.
-            format!("1 ICON \"{}\"\n", path.display().to_string().replace('\\', "/"))
+            format!(
+                "1 ICON \"{}\"\n",
+                path.display().to_string().replace('\\', "/")
+            )
         }
         None => String::new(),
     };
