@@ -1095,13 +1095,22 @@ impl OverlayView {
                 .get("seconds_to_next_level")
                 .and_then(Value::as_f64)
                 .map_or("—".to_string(), |s| long_dur(s, false));
-            let kills = x.get("kills").and_then(Value::as_u64).unwrap_or(0);
+            // Kills still to go reads better mid-pull than kills made; until
+            // the level has a kill to go by, the count is all there is.
+            let kills = match x.get("kills_to_next_level").and_then(Value::as_u64) {
+                Some(1) => "1 kill left".to_string(),
+                Some(n) => format!("{n} kills left"),
+                None => {
+                    let n = x.get("kills").and_then(Value::as_u64).unwrap_or(0);
+                    format!("{n} kills")
+                }
+            };
             rows.push(
                 bar_row(
                     div()
                         .text_color(gpui::rgb(YOU))
                         .child(format!("{pct:.1}% → {}", lvl + 1)),
-                    vec![(format!("{kills} kills"), TEXT), (eta, DIM)],
+                    vec![(kills, TEXT), (eta, DIM)],
                     pct / 100.,
                     Side::You.bar(),
                     1.,

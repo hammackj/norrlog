@@ -1284,8 +1284,20 @@ pub(crate) fn flush_history(
             e.record(),
         )
     };
+    // A bar reading carried over a level-up, so that a restart that does
+    // not read back past the level-up still starts from it.
+    let moved_bar = { engine.locked("engine").take_moved_xp_bar() };
     let source = path.to_string_lossy().to_string();
     let mut st = store.locked("history");
+    if let Some(bar) = moved_bar {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Err(e) = st.put_xp_bar(bar, now) {
+            eprintln!("[norrlogd] could not save the carried XP bar: {e}");
+        }
+    }
     let keyed = st
         .put_kills(&kills)
         .and_then(|_| {

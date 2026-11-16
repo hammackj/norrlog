@@ -176,6 +176,9 @@ pub struct ExpSummary {
     /// Whether `percent` starts from a figure the player set.
     pub calibrated: bool,
     pub kills: u32,
+    /// Kills still to go at this level's experience per kill, rounded up;
+    /// `None` before the level has a kill to go by.
+    pub kills_to_next_level: Option<u32>,
     pub rate_per_hour: f64,
     pub seconds_to_next_level: Option<i64>,
     pub aa_earned: u32,
@@ -426,6 +429,13 @@ pub struct Engine {
     combat_text: norrlog_core::combat_text::CombatTexts,
     /// What the player read off their experience bar, if they set it.
     xp_bar: Option<XpBar>,
+    /// A level-up the bar reading applied to, and where the bar truly stood
+    /// before it, until the gain that caused it arrives; see
+    /// [`Engine::carry_xp_bar`].
+    xp_ding: Option<(i64, f64)>,
+    /// The bar reading moved on by itself (carried over a level-up) since it
+    /// was last saved.
+    xp_bar_moved: bool,
     resolver: SpellResolver,
     classes: ClassDetector,
     /// The class the buffs were gathered under, in a one-class game. A
@@ -618,6 +628,8 @@ impl Engine {
             on_others: Default::default(),
             combat_text: Default::default(),
             xp_bar: None,
+            xp_ding: None,
+            xp_bar_moved: false,
             resolver: {
                 let mut r = SpellResolver::new(spell_db, 1);
                 r.set_overrun(norrlog_core::profile::profile(game).buff_overrun);
@@ -1290,14 +1302,30 @@ impl Engine {
                 // the line that says which level it is.
                 self.file_grants(entry.timestamp, *level);
                 self.resolver.set_level(*level);
+                let before = self.xp_bar_applies().then(|| self.xp_percent());
                 self.exp.on_level_up(entry.timestamp, *level);
+                if let Some(before) = before {
+                    self.xp_ding = Some((entry.timestamp, before));
+                    // Held at the new level from zero until the gain says
+                    // how far past the ding it went.
+                    self.carry_xp_bar(*level, 0.);
+                }
                 let trio = self.current_loadout(entry.timestamp);
                 self.class_levels
                     .on_level_up(entry.timestamp, *level, &trio);
             }
             Event::Experience { percent, bonus } => {
                 self.xp_unclaimed = Some(entry.timestamp);
-                self.exp.on_experience(entry.timestamp, *percent, *bonus)
+                self.exp.on_experience(entry.timestamp, *percent, *bonus);
+                // The gain that caused a level-up comes a line after it, in
+                // the same second. Only the bar reading knows how much of it
+                // the old level still needed; the rest is the new level's.
+                if let Some((at, before)) = self.xp_ding.take() {
+                    if entry.timestamp - at <= 1 {
+                        let level = self.exp.current_record().level.unwrap_or(0);
+                        self.carry_xp_bar(level, (before + percent - 100.).max(0.));
+                    }
+                }
             }
             Event::CoinLoot { coin } => self.coin_from_corpses += coin.as_copper(),
             // Selling to a vendor is income just like an auto-sale.
@@ -2042,12 +2070,41 @@ impl Engine {
     /// Set what the experience bar shows now, or clear it with `None`.
     /// Returns what was recorded, for the caller to save.
     pub fn set_xp_bar(&mut self, stated: Option<f64>) -> Option<XpBar> {
+        self.xp_ding = None;
+        self.xp_bar_moved = false;
         self.xp_bar = stated.map(|stated| XpBar {
             level: self.exp.current_record().level.unwrap_or(0),
             stated: stated.clamp(0., 100.),
             counted: self.exp.current_percent(),
         });
         self.xp_bar
+    }
+
+    /// Move the bar reading on to `level`, standing at `stated` with the
+    /// log's count as it is now. A reading made once then holds level after
+    /// level: the log's own count starts every level at the gain that
+    /// crossed it, which it can only split by guessing where the old level
+    /// stood, and came out 0.162% short on live EQ.
+    fn carry_xp_bar(&mut self, level: u32, stated: f64) {
+        self.xp_bar = Some(XpBar {
+            level,
+            stated: stated.clamp(0., 100.),
+            counted: self.exp.current_percent(),
+        });
+        self.xp_bar_moved = true;
+    }
+
+    /// The bar reading, when it has moved on by itself since this was last
+    /// asked, for the caller to save.
+    pub fn take_moved_xp_bar(&mut self) -> Option<Option<XpBar>> {
+        std::mem::take(&mut self.xp_bar_moved).then_some(self.xp_bar)
+    }
+
+    /// Kills to the next level at this level's experience per kill.
+    fn kills_to_next_level(&self) -> Option<u32> {
+        let r = self.exp.current_record();
+        let per_kill = r.percent_per_kill();
+        (per_kill > 0.).then(|| ((100. - self.xp_percent()).max(0.) / per_kill).ceil() as u32)
     }
 
     /// A bar reading saved earlier, as [`Engine::set_xp_bar`] recorded it.
@@ -3791,6 +3848,7 @@ impl Engine {
                 counted_percent: self.exp.current_percent(),
                 calibrated: self.xp_bar_applies(),
                 kills: self.exp.current_record().kills,
+                kills_to_next_level: self.kills_to_next_level(),
                 rate_per_hour: self.exp.current_rate_per_hour(now),
                 seconds_to_next_level: self.seconds_to_next_level(now),
                 aa_earned: self.exp.aa_earned(),
@@ -5549,8 +5607,8 @@ mod tests {
     /// The screenshot prompt is about what you could photograph right now,
     /// which is a narrower question than the loot tally answers but a wider
     /// one than "what is in your bags".
-    /// The bar reading is where the count goes on from, for the level it was
-    /// read on; a level gained since starts from the log's own count.
+    /// The bar reading is where the count goes on from, and it is carried
+    /// over level-ups rather than dropped.
     #[test]
     fn the_xp_bar_reading_carries_the_count_until_the_level_changes() {
         let mut e = engine();
@@ -5576,11 +5634,68 @@ mod tests {
 
         e.push_line("[Tue Jul 28 14:03:00 2026] You have gained a level! Welcome to level 43!");
         e.push_line("[Tue Jul 28 14:04:00 2026] You gain experience! (0.500%)");
-        assert_eq!(pct(&e), (0.5, false), "a new level is counted from zero");
+        assert_eq!(pct(&e), (0.5, true), "a new level goes on from zero");
 
         e.set_xp_bar(Some(10.));
         e.set_xp_bar(None);
         assert_eq!(pct(&e), (0.5, false), "cleared");
+    }
+
+    /// The gain that causes a level-up comes the line after it. The bar
+    /// reading says how much of it the old level still needed, and only the
+    /// rest is the new level's: Garrow's 2.683% at 73 left 0.162% on the bar
+    /// where the log's own count put none.
+    #[test]
+    fn a_bar_reading_splits_the_gain_that_crosses_a_level() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have gained a level! Welcome to level 72!",
+                "[Tue Jul 28 14:01:00 2026] You gain party experience (with a bonus)! (3.000%)",
+            ],
+        );
+        e.set_xp_bar(Some(97.479));
+        assert_eq!(
+            e.take_moved_xp_bar(),
+            None,
+            "set by hand, saved by its caller"
+        );
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:05:00 2026] You have gained a level! Welcome to level 73!",
+                "[Tue Jul 28 14:05:00 2026] You gain party experience (with a bonus)! (2.683%)",
+            ],
+        );
+        let x = e.snapshot(1).exp;
+        assert!(x.calibrated);
+        assert!((x.percent - 0.162).abs() < 1e-9, "{}", x.percent);
+        e.push_line(
+            "[Tue Jul 28 14:06:00 2026] You gain party experience (with a bonus)! (2.225%)",
+        );
+        assert!((e.snapshot(1).exp.percent - 2.387).abs() < 1e-9);
+        let saved = e.take_moved_xp_bar().unwrap().unwrap();
+        assert_eq!(saved.level, 73);
+        assert!((saved.stated - 0.162).abs() < 1e-9);
+        assert_eq!(e.take_moved_xp_bar(), None, "once");
+    }
+
+    /// Kills left goes by this level's experience per kill.
+    #[test]
+    fn kills_left_at_this_levels_rate() {
+        let mut e = engine();
+        feed(
+            &mut e,
+            &[
+                "[Tue Jul 28 14:00:00 2026] You have gained a level! Welcome to level 30!",
+                "[Tue Jul 28 14:01:00 2026] You gain experience! (2.500%)",
+                "[Tue Jul 28 14:01:00 2026] You have slain a rat!",
+            ],
+        );
+        assert_eq!(e.snapshot(1).exp.kills_to_next_level, Some(39));
+        e.set_xp_bar(Some(95.));
+        assert_eq!(e.snapshot(1).exp.kills_to_next_level, Some(2));
     }
 
     /// Combat text is news, like events: the initial read adds none, and
